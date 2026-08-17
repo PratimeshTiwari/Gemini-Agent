@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini Agent</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <!-- Status Bar -->
+  <header id="status-bar">
+    <div class="status-left">
+      <span id="connection-dot" class="dot disconnected"></span>
+      <span id="connection-text">Disconnected</span>
+    </div>
+    <div class="status-right">
+      <button id="mode-toggle" class="mode-btn" title="Toggle Plan/Auto Mode">
+        <span id="mode-icon">🔒</span>
+        <span id="mode-text">Plan</span>
+      </button>
+      <div id="context-bar" class="context-bar" title="Context usage">
+        <div id="context-fill" class="context-fill"></div>
+        <span id="context-label">0%</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Message Stream -->
+  <main id="message-stream">
+    <div id="welcome-message" class="welcome">
+      <div class="welcome-icon">🤖</div>
+      <h2>Gemini Agent</h2>
+      <p>Start the local server and connect to begin.</p>
+      <code>cd server && npm start</code>
+      <div class="welcome-tips">
+        <span class="tip">/plan — require approval</span>
+        <span class="tip">/auto — auto-apply safe edits</span>
+        <span class="tip">/compact — free context</span>
+        <span class="tip">/clear — fresh start</span>
+      </div>
+    </div>
+  </main>
+
+  <!-- Input Area -->
+  <footer id="input-area">
+    <div class="input-wrapper">
+      <textarea
+        id="command-input"
+        placeholder="Ask the agent anything..."
+        rows="1"
+        autofocus
+      ></textarea>
+      <button id="send-btn" title="Send (Enter)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 2L11 13"></path>
+          <path d="M22 2L15 22L11 13L2 9L22 2Z"></path>
+        </svg>
+      </button>
+    </div>
+  </footer>
+
+  <script src="panel.js"></script>
+</body>
+</html>

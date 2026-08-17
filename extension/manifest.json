@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Gemini Agent",
+  "version": "1.0.0",
+  "description": "Claude Code-style coding agent powered by Gemini Web",
+  "permissions": [
+    "tabs",
+    "storage",
+    "sidePanel",
+    "scripting",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://gemini.google.com/*"
+  ],
+  "side_panel": {
+    "default_path": "side-panel/panel.html"
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content-scripts/gemini-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {}
+}

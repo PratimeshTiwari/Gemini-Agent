@@ -1,0 +1,28 @@
+{
+  "name": "gemini-agent-server",
+  "version": "1.0.0",
+  "description": "Local agent server with MCP tools and context engine",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "gemini-agent": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js --workspace ../",
+    "dev": "node --watch src/index.js --workspace ../",
+    "test": "node --test src/**/*.test.js"
+  },
+  "dependencies": {
+    "acorn": "^8.18.0",
+    "chalk": "^6.0.0",
+    "chokidar": "^4.0.0",
+    "diff": "^7.0.0",
+    "fast-glob": "^3.3.0",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
+    "ora": "^9.4.1",
+    "web-tree-sitter": "^0.26.12",
+    "ws": "^8.18.0",
+    "zod": "^3.24.0"
+  }
+}
