@@ -11,7 +11,7 @@ import { SessionStore } from './storage/SessionStore.js';
 import { ContextManager } from './context/ContextManager.js';
 
 // Regex to extract tool calls from Gemini's response (handles json code blocks)
-const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n([\s\S]*?)\n```/g;
+const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n```/gi;
 
 export class AgentLoop {
   constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome, continueSession = false, agentSourceDir }) {
@@ -153,9 +153,8 @@ export class AgentLoop {
       return;
     }
 
-    // Parse tool calls from the response
-    const toolCalls = this._parseToolCalls(content);
-    const cleanContent = this._stripToolCalls(content);
+    // Parse and strip tool calls from the response
+    const { toolCalls, cleanContent } = this._extractToolCalls(content);
 
     // Show the response text (without tool call blocks) in the side panel
     if (cleanContent.trim()) {
@@ -430,35 +429,25 @@ export class AgentLoop {
     this._sendToGemini(resultPrompts.join('\n\n'), this.callbacks);
   }
 
-  _parseToolCalls(content) {
+  _extractToolCalls(content) {
     const calls = [];
-    let match;
+    let cleanContent = content;
 
-    TOOL_CALL_REGEX.lastIndex = 0;
-    while ((match = TOOL_CALL_REGEX.exec(content)) !== null) {
+    // Use String.prototype.replace to both extract valid tool calls and strip them from the output
+    cleanContent = content.replace(TOOL_CALL_REGEX, (fullMatch, jsonGroup) => {
       try {
-        let jsonStr = match[1].trim();
-        
-        // Google's code-block DOM element sometimes includes the language label 
-        // in its textContent. We strip it out if it accidentally gets included.
-        if (jsonStr.toLowerCase().startsWith('json')) {
-          jsonStr = jsonStr.substring(4).trim();
-        }
-
-        const parsed = JSON.parse(jsonStr);
+        const parsed = JSON.parse(jsonGroup.trim());
         if (parsed.name && parsed.args) {
           calls.push(parsed);
+          return ''; // Valid tool call, strip it from the message
         }
       } catch (err) {
-        console.warn('⚠️ Failed to parse tool call:', match[1]);
+        console.warn('⚠️ Failed to parse potential tool call:', err.message);
       }
-    }
+      return fullMatch; // Keep non-tool-calls in the message
+    });
 
-    return calls;
-  }
-
-  _stripToolCalls(content) {
-    return content.replace(TOOL_CALL_REGEX, '').trim();
+    return { toolCalls: calls, cleanContent: cleanContent.trim() };
   }
 
   _getContextInfo() {
