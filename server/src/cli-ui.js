@@ -29,36 +29,64 @@ export class CliUI {
     this.printHeader();
     this.rl.prompt();
 
+    let inputBuffer = [];
+    let submitTimer = null;
+    let isMultilineMode = false;
+
     // Handle Ctrl+C gracefully
     this.rl.on('SIGINT', () => {
+      if (isMultilineMode || inputBuffer.length > 0) {
+        inputBuffer = [];
+        isMultilineMode = false;
+        console.log('\n🛑 Input cancelled.');
+        if (this.isWaitingForDiff) {
+          this.rl.setPrompt('Approve this change? (y/n) or type your feedback: ');
+        } else {
+          this.updatePrompt();
+        }
+        this.rl.prompt();
+        return;
+      }
+
       if (this.agentLoop.isProcessing || this.isWaitingForDiff) {
         this.spinner.stop();
         console.log('\n🛑 Cancelled.');
         this.agentLoop.isProcessing = false;
         this.isWaitingForDiff = false;
         this.pendingDiffId = null;
-        this.rl.setPrompt('🤖 > ');
+        this.updatePrompt();
         this.rl.prompt();
       } else {
         process.exit(0);
       }
     });
 
-    this.rl.on('line', async (line) => {
-      const input = line.trim();
-      
+    const submitInput = async () => {
+      const input = inputBuffer.join('\n').trim();
+      inputBuffer = []; // clear buffer
+      isMultilineMode = false;
+
       if (this.isWaitingForDiff) {
         this.handleDiffInput(input);
         return;
       }
 
       if (!input) {
+        if (this.isWaitingForDiff) {
+          this.rl.setPrompt('Approve this change? (y/n) or type your feedback: ');
+        } else {
+          this.updatePrompt();
+        }
         this.rl.prompt();
         return;
       }
 
       if (input.startsWith('/')) {
-        await this.handleCliCommand(input);
+        // Handle multiline pasted slash commands by taking only the first line as command, 
+        // but typically slash commands shouldn't be pasted with newlines. 
+        // If they are, we'll just evaluate the first part.
+        const firstLine = input.split('\n')[0].trim();
+        await this.handleCliCommand(firstLine);
         return;
       }
 
@@ -67,6 +95,32 @@ export class CliUI {
       this.spinner.start();
       
       await this.agentLoop.handleUserMessage(input, this.callbacks);
+    };
+
+    this.rl.on('line', (line) => {
+      if (isMultilineMode && line.trim() === '') {
+        clearTimeout(submitTimer);
+        submitInput();
+        return;
+      }
+
+      inputBuffer.push(line);
+
+      clearTimeout(submitTimer);
+
+      submitTimer = setTimeout(() => {
+        if (inputBuffer.length > 1 || isMultilineMode) {
+          if (!isMultilineMode) {
+            isMultilineMode = true;
+            process.stdout.write(chalk.dim('\n[Multiline input detected. Press Enter on an empty line to submit]\n'));
+          }
+          this.rl.setPrompt('... ');
+          this.rl.prompt();
+          return;
+        }
+
+        submitInput();
+      }, 50);
     });
   }
 
