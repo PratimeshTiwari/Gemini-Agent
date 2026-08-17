@@ -9,8 +9,9 @@ import { readFileSync, existsSync } from 'fs';
 import { resolve, relative } from 'path';
 
 export class PromptBuilder {
-  constructor(workspace) {
+  constructor(workspace, agentSourceDir) {
     this.workspace = workspace;
+    this.agentSourceDir = agentSourceDir;
     this.agentMdContent = this._loadAgentMd();
   }
 
@@ -110,6 +111,15 @@ ${modeInstructions}
 
 ## Core Behavior
 - You have access to tools that let you search, read, edit, and create files in the user's workspace.
+- Always use absolute paths or paths relative to the current workspace.
+
+<Self-Awareness>
+You are currently operating in the user's workspace at: \`${this.workspace}\`
+However, YOUR OWN source code (the Gemini-Agent Node.js server) is located at: \`${this.agentSourceDir}\`
+If the user asks you to modify your own code, fix bugs in yourself, or add features to yourself, you can read and write files directly in \`${this.agentSourceDir}\`!
+</Self-Awareness>
+
+<Capabilities>
 - When asked to make changes, ALWAYS use the edit_file or create_file tools. Never just show code in your response.
 - When planning complex changes, always save your plans or scratchpad files inside a \`.gemini/\` folder (e.g., \`.gemini/plan.md\`) to avoid cluttering the user's root project directory.
 - Think step by step. Read relevant files before making edits.

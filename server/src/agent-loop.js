@@ -14,7 +14,7 @@ import { ContextManager } from './context/ContextManager.js';
 const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n([\s\S]*?)\n```/g;
 
 export class AgentLoop {
-  constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome }) {
+  constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome, continueSession = false, agentSourceDir }) {
     this.workspace = workspace;
     this.mcpServer = mcpServer;
     this.promptBuilder = promptBuilder;
@@ -22,10 +22,15 @@ export class AgentLoop {
     this.riskClassifier = riskClassifier;
     this.editor = editor;
     this.configHome = configHome;
+    this.agentSourceDir = agentSourceDir;
 
     // Storage & Context
     this.sessionStore = new SessionStore(workspace);
     this.contextManager = new ContextManager(workspace);
+
+    if (!continueSession) {
+      this.sessionStore.clear(); // Start fresh if --continue not passed
+    }
 
     // State
     this.mode = 'plan'; // 'plan' | 'auto'
@@ -56,17 +61,14 @@ export class AgentLoop {
     this.callbacks = callbacks;
     this.isProcessing = true;
 
-    // Check Auto-compaction
+    // Check Context Size Warning
     if (this.contextManager.needsCompaction(this.conversationHistory)) {
       this.callbacks.sendToPanel({
         id: randomUUID(),
         type: 'status',
-        payload: { message: '⚠️ Context size high. Auto-compacting...' },
+        payload: { message: '⚠️ Context size high. Consider running /compact to save tokens.' },
         timestamp: Date.now(),
       });
-      this.queuedUserMessage = content;
-      await this._compactHistory('Auto compaction triggered to save tokens.');
-      return;
     }
 
     try {
@@ -148,14 +150,6 @@ export class AgentLoop {
         payload: { message: '✅ History compacted.' },
         timestamp: Date.now(),
       });
-
-      if (this.queuedUserMessage) {
-        const msg = this.queuedUserMessage;
-        this.queuedUserMessage = null;
-        // Proceed with the original user request
-        this.handleUserMessage(msg, this.callbacks);
-      }
-
       return;
     }
 
@@ -257,15 +251,48 @@ export class AgentLoop {
         return result;
       }
 
+      case 'agent-dir': {
+        const newWorkspace = this.agentSourceDir || this.workspace;
+        this.workspace = newWorkspace;
+        
+        if (this.mcpServer) this.mcpServer.workspace = newWorkspace;
+        if (this.promptBuilder) this.promptBuilder.workspace = newWorkspace;
+        if (this.diffEngine) this.diffEngine.workspace = newWorkspace;
+        if (this.contextManager) {
+          this.contextManager.workspacePath = newWorkspace;
+          this.contextManager.summarizer.workspacePath = newWorkspace;
+        }
+        this.workspaceSummary = '';
+        return { message: `📂 Workspace changed to agent source: ${this.workspace}` };
+      }
+
       case 'workspace':
         if (args?.[0]) {
-          this.workspace = args[0];
+          const newWorkspace = args[0];
+          this.workspace = newWorkspace;
+          
+          // Update all child components with the new workspace path
+          if (this.mcpServer) this.mcpServer.workspace = newWorkspace;
+          if (this.promptBuilder) this.promptBuilder.workspace = newWorkspace;
+          if (this.diffEngine) this.diffEngine.workspace = newWorkspace;
+          
+          // Note: SessionStore and ContextManager currently base off workspace in constructor,
+          // so we should update them too.
+          if (this.contextManager) {
+            this.contextManager.workspacePath = newWorkspace;
+            this.contextManager.summarizer.workspacePath = newWorkspace;
+          }
+          // We don't change SessionStore to avoid saving current history into another project's session.
+          // In a full implementation, we might reload the history from the new project.
+          
+          this.workspaceSummary = ''; // Clear stale summary so it regenerates
+
           return { message: `📂 Workspace changed to: ${this.workspace}` };
         }
         return { message: `📂 Current workspace: ${this.workspace}` };
 
       default:
-        return { message: `Unknown command: /${command}. Available: /plan, /auto, /clear, /context, /compact, /undo, /workspace` };
+        return { message: `Unknown command: /${command}. Available: /plan, /auto, /clear, /context, /compact, /undo, /workspace, /agent-dir` };
     }
   }
 

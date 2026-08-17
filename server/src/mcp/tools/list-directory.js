@@ -23,7 +23,7 @@ export async function listDirectory(args, context) {
     throw new Error(`${relPath} is not a directory. Use read_file to read files.`);
   }
 
-  const tree = buildTree(absPath, workspace, recursive, maxDepth, 0);
+  const tree = buildTree(absPath, workspace, recursive, maxDepth, 0, { currentFiles: 0, maxFiles: 500 });
 
   return {
     path: relPath,
@@ -31,7 +31,7 @@ export async function listDirectory(args, context) {
   };
 }
 
-function buildTree(absPath, workspace, recursive, maxDepth, currentDepth) {
+function buildTree(absPath, workspace, recursive, maxDepth, currentDepth, state) {
   let entries;
   try {
     entries = readdirSync(absPath, { withFileTypes: true });
@@ -55,6 +55,8 @@ function buildTree(absPath, workspace, recursive, maxDepth, currentDepth) {
     const relPath = relative(workspace, entryPath);
 
     if (entry.isDirectory()) {
+      if (state.currentFiles >= state.maxFiles) continue; // safety limit
+
       // Skip hidden/system directories
       if (entry.name.startsWith('.') && entry.name !== '.github') continue;
       if (entry.name === 'node_modules') {
@@ -75,8 +77,8 @@ function buildTree(absPath, workspace, recursive, maxDepth, currentDepth) {
         path: relPath,
       };
 
-      if (recursive && currentDepth < maxDepth) {
-        const subtree = buildTree(entryPath, workspace, recursive, maxDepth, currentDepth + 1);
+      if (recursive && currentDepth < maxDepth && state.currentFiles < state.maxFiles) {
+        const subtree = buildTree(entryPath, workspace, recursive, maxDepth, currentDepth + 1, state);
         child.children = subtree.children;
         child.fileCount = subtree.totalFiles;
         child.dirCount = subtree.totalDirs;
@@ -86,6 +88,14 @@ function buildTree(absPath, workspace, recursive, maxDepth, currentDepth) {
 
       children.push(child);
     } else {
+      if (state.currentFiles >= state.maxFiles) {
+        // Just add a truncate warning instead of continuing
+        children.push({ name: '...[TRUNCATED: Too many files]', type: 'file', path: '' });
+        state.currentFiles = Infinity; // block further processing
+        continue;
+      }
+
+      state.currentFiles++;
       totalFiles++;
       try {
         const stat = statSync(entryPath);

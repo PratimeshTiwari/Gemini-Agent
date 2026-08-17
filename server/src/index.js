@@ -14,8 +14,9 @@
  *   gemini-agent --sessions         # List past sessions
  */
 
-import { resolve } from 'path';
+import { resolve, dirname } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { WebSocketServer } from './websocket-server.js';
 import { MCPServer } from './mcp/mcp-server.js';
 import { AgentLoop } from './agent-loop.js';
@@ -129,10 +130,15 @@ async function main() {
     process.exit(1);
   }
 
+  // Determine agent source directory (the 'server' folder)
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const agentSourceDir = resolve(__dirname, '../');
+
   // Initialize components
   const diffEngine = new DiffEngine(config.workspace);
   const riskClassifier = new RiskClassifier();
-  const promptBuilder = new PromptBuilder(config.workspace);
+  const promptBuilder = new PromptBuilder(config.workspace, agentSourceDir);
   const mcpServer = new MCPServer(config.workspace, diffEngine);
 
   const agentLoop = new AgentLoop({
@@ -143,6 +149,8 @@ async function main() {
     riskClassifier,
     editor: config.editor,
     configHome,
+    continueSession: config.continue,
+    agentSourceDir,
   });
 
   const fileWatcher = new FileWatcher(config.workspace, agentLoop);
