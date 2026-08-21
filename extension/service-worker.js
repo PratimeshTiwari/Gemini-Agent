@@ -331,6 +331,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true });
         break;
 
+      case 'gemini_response_stream':
+        // Content script sending partial/streaming response → forward to server
+        sendToServer({ type: 'gemini_response_stream', payload });
+        sendResponse({ success: true });
+        break;
+
       case 'get_status':
         // Side panel requesting current status
         const state = await getState();

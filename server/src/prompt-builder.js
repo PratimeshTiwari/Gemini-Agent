@@ -3,24 +3,50 @@
  *
  * Constructs the system prompt with tool definitions, workspace context,
  * and conversation history. Manages what gets injected into each Gemini interaction.
+ *
+ * Smart prompt management strategy (similar to how Claude Code handles context):
+ * - Gemini Web maintains its OWN chat history, so we DON'T resend conversation_history.
+ * - Full system prompt + tools sent on: first turn, after /compact, and every Nth turn.
+ * - On regular turns: just the user message (or tool results) with a brief context line.
+ * - This prevents double-counting context and avoids triggering Gemini's repetitive filters.
  */
 
 import { readFileSync, existsSync } from 'fs';
 import { resolve, relative } from 'path';
+
+// How often to resend the full system prompt as a reminder
+const SYSTEM_PROMPT_REFRESH_INTERVAL = 10;
 
 export class PromptBuilder {
   constructor(workspace, agentSourceDir) {
     this.workspace = workspace;
     this.agentSourceDir = agentSourceDir;
     this.agentMdContent = this._loadAgentMd();
+    this.turnCounter = 0; // Tracks turns since last full system prompt
+    this.hasSeenSystemPrompt = false; // Has the current chat session received a system prompt?
   }
 
   /**
-   * Build the full system prompt for a Gemini interaction.
+   * Reset prompt state (call after /compact or /clear which start a new Gemini chat).
+   */
+  resetPromptState() {
+    this.turnCounter = 0;
+    this.hasSeenSystemPrompt = false;
+  }
+
+  /**
+   * Build the prompt for a Gemini interaction.
+   *
+   * Strategy:
+   * - Turn 0 (first message or after reset): Full system prompt + tools + workspace + user message
+   * - Every SYSTEM_PROMPT_REFRESH_INTERVAL turns: Condensed system reminder + tools + user message
+   * - All other turns: Just the user message with a brief context line
+   *
+   * We NEVER re-send conversation_history because Gemini Web already has it in its chat thread.
    *
    * @param {object} options
    * @param {string} options.userMessage - The user's current message
-   * @param {Array} options.conversationHistory - Previous turns
+   * @param {Array} options.conversationHistory - Previous turns (used for token counting only)
    * @param {string} options.workspaceSummary - Workspace overview
    * @param {string} options.mode - 'plan' or 'auto'
    * @returns {string} The complete prompt to inject
@@ -28,28 +54,38 @@ export class PromptBuilder {
   buildPrompt({ userMessage, conversationHistory = [], workspaceSummary = '', mode = 'plan' }) {
     const parts = [];
 
-    // System instructions and tools (always sent to ensure Gemini never loses context)
-    parts.push(this._buildSystemInstructions(mode));
-    parts.push(this._buildToolDefinitions());
+    const needsFullPrompt = !this.hasSeenSystemPrompt;
+    const needsRefresh = this.turnCounter > 0 && (this.turnCounter % SYSTEM_PROMPT_REFRESH_INTERVAL === 0);
 
-    // Workspace context and AGENT.md
-    if (workspaceSummary) {
-      parts.push(`<workspace_context>\n${workspaceSummary}\n</workspace_context>`);
-    }
-    if (this.agentMdContent) {
-      parts.push(`<agent_instructions>\n${this.agentMdContent}\n</agent_instructions>`);
-    }
+    if (needsFullPrompt) {
+      // First turn in this chat session — send everything
+      parts.push(this._buildSystemInstructions(mode));
+      parts.push(this._buildToolDefinitions());
 
-    // Conversation history
-    if (conversationHistory.length > 0) {
-      parts.push(this._buildConversationHistory(conversationHistory));
+      if (workspaceSummary) {
+        parts.push(`<workspace_context>\n${workspaceSummary}\n</workspace_context>`);
+      }
+      if (this.agentMdContent) {
+        parts.push(`<agent_instructions>\n${this.agentMdContent}\n</agent_instructions>`);
+      }
+
+      this.hasSeenSystemPrompt = true;
+    } else if (needsRefresh) {
+      // Periodic refresh — condensed reminder of instructions and tools
+      parts.push(this._buildCondensedReminder(mode));
+      parts.push(this._buildToolDefinitions());
+    } else {
+      // Regular turn — just a brief context line
+      parts.push(`[Workspace: ${this.workspace} | Mode: ${mode}]`);
     }
 
     // Current user message
     parts.push(`<user_message>\n${userMessage}\n</user_message>`);
     
-    // Explicitly demand a single response (prevents A/B test modals)
-    parts.push(`\n**IMPORTANT**: You must provide exactly ONE response. Do NOT provide multiple drafts, and do NOT ask the user to choose between options. Just execute the tools or provide your final answer.`);
+    // Single-response instruction (always include, it's tiny)
+    parts.push(`**IMPORTANT**: Provide exactly ONE response. No drafts, no A/B options.`);
+
+    this.turnCounter++;
 
     return parts.join('\n\n');
   }
@@ -202,6 +238,26 @@ Parameters:
   - path (string, required): File path to open
   - line (number, optional): Line number to jump to
 </available_tools>`;
+  }
+
+  /**
+   * Build a condensed reminder of the system instructions.
+   * Much smaller than the full prompt — just the essential rules and tool format.
+   */
+  _buildCondensedReminder(mode) {
+    const modeStr = mode === 'auto' ? 'AUTO MODE (safe ops auto-applied)' : 'PLAN MODE (all edits need approval)';
+
+    return `<system_reminder>
+You are Gemini Agent, an AI coding assistant. Current mode: ${modeStr}.
+Workspace: \`${this.workspace}\`
+Agent source: \`${this.agentSourceDir}\`
+
+Quick rules:
+- Use tools to read/edit/create files. Don't just show code.
+- Tool call format: \`\`\`json {"name": "tool_name", "args": {...}} \`\`\`
+- ONE response per turn. No drafts.
+- Be concise. Think step by step.
+</system_reminder>`;
   }
 
   _buildConversationHistory(history) {
