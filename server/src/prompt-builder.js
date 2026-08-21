@@ -69,6 +69,11 @@ export class PromptBuilder {
         parts.push(`<agent_instructions>\n${this.agentMdContent}\n</agent_instructions>`);
       }
 
+      const workspaceRules = this._loadWorkspaceRules();
+      if (workspaceRules) {
+        parts.push(`<workspace_rules>\n${workspaceRules}\n</workspace_rules>`);
+      }
+
       this.hasSeenSystemPrompt = true;
     } else if (needsRefresh) {
       // Periodic refresh — condensed reminder of instructions and tools
@@ -157,9 +162,10 @@ If the user asks you to modify your own code, fix bugs in yourself, or add featu
 
 <Capabilities>
 - When asked to make changes, ALWAYS use the edit_file or create_file tools. Never just show code in your response.
-- When planning complex changes, always save your plans or scratchpad files inside a \`.gemini/\` folder (e.g., \`.gemini/plan.md\`) to avoid cluttering the user's root project directory.
+- When planning complex changes, always save your plans or scratchpad files inside a \`.gemini/\` folder to avoid cluttering the root project directory.
 - Think step by step. Read relevant files before making edits.
-- If a user's request is ambiguous or underspecified, ASK clarifying questions before creating plans or executing tools!
+- **Tool Retry Logic**: If a tool call fails, analyze the error and retry it with different arguments or a different approach! Do not just give up.
+- **Clarifying Questions**: If a user's request is ambiguous or underspecified, NEVER assume the answer. You MUST ask clarifying questions using the exact format: \`QUESTION: <your question here>\`. The CLI will pause and prompt the user to answer you interactively.
 - Be concise in your responses. Show what you're doing, but don't over-explain.
 - **CRITICAL**: Never output multiple drafts. Provide a single, definitive answer.
 
@@ -293,6 +299,18 @@ Quick rules:
       }
     }
     return null;
+  }
+
+  _loadWorkspaceRules() {
+    try {
+      const rulesPath = resolve(this.workspace, '.gemini/rules.md');
+      if (existsSync(rulesPath)) {
+        return readFileSync(rulesPath, 'utf-8');
+      }
+    } catch (e) {
+      // ignore
+    }
+    return '';
   }
 
   /**

@@ -30,10 +30,10 @@ const SELECTORS = {
 
   // The send/submit button
   sendButton: [
-    'button[aria-label*="Send"]',
-    'button[aria-label*="submit"]',
+    'button[aria-label*="send" i]',
+    'button[aria-label*="submit" i]',
     'button.send-button',
-    'mat-icon[data-mat-icon-name="send"]',
+    'mat-icon[data-mat-icon-name="send" i]',
     'button[data-test-id="send-button"]',
   ],
 
@@ -172,9 +172,11 @@ async function injectPrompt(text) {
     input.dispatchEvent(new Event('change', { bubbles: true }));
 
     // Wait for the send button to become enabled (Gemini validates input and uploads images)
-    const sendBtn = await waitForSendButton(30000);
+    const sendBtn = await waitForSendButton(input, 30000);
 
-    if (sendBtn) {
+    if (sendBtn === 'submitted') {
+      console.log('[Gemini Bridge] Proceeding since prompt was manually submitted.');
+    } else if (sendBtn) {
       sendBtn.click();
       console.log('[Gemini Bridge] Send button clicked');
     } else {
@@ -214,11 +216,18 @@ async function injectPrompt(text) {
  * Wait for the send button to appear and become enabled.
  * Polls every 200ms up to maxWait ms.
  */
-function waitForSendButton(maxWait = 30000) {
+function waitForSendButton(input, maxWait = 30000) {
   return new Promise((resolve) => {
     const startTime = Date.now();
 
     function check() {
+      // If the user manually clicked send, the input clears! We can stop waiting.
+      if (input && input.textContent.trim().length === 0) {
+        console.log('[Gemini Bridge] Detected manual submission (input cleared).');
+        resolve('submitted');
+        return;
+      }
+
       const btn = findElement(SELECTORS.sendButton);
       
       if (btn) {
@@ -468,8 +477,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'inject_prompt':
       injectPrompt(payload.prompt).then(success => {
         sendResponse({ success });
+      }).catch(err => {
+        console.error('[Gemini Bridge] injectPrompt threw:', err);
+        sendResponse({ success: false, error: err.message });
       });
       return true; // Async response
+
+    case 'stop_generation':
+      // Try to find the stop generating button
+      const stopBtn = findElement([
+        'button[aria-label*="Stop"]',
+        'button[aria-label*="stop"]',
+        'button.stop-generating-button',
+        'button[mattooltip*="Stop"]'
+      ]);
+      
+      if (stopBtn) {
+        stopBtn.click();
+        console.log('[Gemini Bridge] Stop button clicked.');
+      }
+      stopResponseObserver();
+      sendResponse({ success: true });
+      break;
 
     case 'new_chat':
       // Navigate to new chat

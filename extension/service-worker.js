@@ -220,10 +220,13 @@ async function injectPromptIntoGemini(payload) {
   // Try sending to the most recently opened tab first (usually at the end of the array)
   for (let i = tabs.length - 1; i >= 0; i--) {
     try {
-      await chrome.tabs.sendMessage(tabs[i].id, {
+      const response = await chrome.tabs.sendMessage(tabs[i].id, {
         type: 'inject_prompt',
         payload,
       });
+      if (response && response.success === false) {
+        throw new Error(response.error || 'Content script reported failure');
+      }
       success = true;
       break; // It worked!
     } catch (err) {

@@ -216,13 +216,17 @@ export class WebSocketServer {
 
   /**
    * Broadcast a message to all clients of a given type.
+   * Returns true if at least one client received the message.
    */
   broadcast(clientType, message) {
+    let sentCount = 0;
     for (const [id, client] of this.clients) {
       if (client.type === clientType || clientType === 'all') {
         this._send(client.ws, message);
+        sentCount++;
       }
     }
+    return sentCount > 0;
   }
 
   /**
