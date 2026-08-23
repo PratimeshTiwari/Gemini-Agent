@@ -54,6 +54,67 @@ function activate(context) {
     
     // Initial write
     writeState();
+
+    // -- Plan Approval CodeLens --
+    class PlanApprovalCodeLensProvider {
+        provideCodeLenses(document, token) {
+            if (!document.fileName.endsWith('implementation_plan.md')) {
+                return [];
+            }
+            
+            const range = new vscode.Range(0, 0, 0, 0);
+            
+            const approveLens = new vscode.CodeLens(range, {
+                title: '✅ Approve Plan',
+                command: 'geminiCompanion.approvePlan',
+                tooltip: 'Approve the implementation plan and proceed'
+            });
+            
+            const rejectLens = new vscode.CodeLens(range, {
+                title: '❌ Reject Plan',
+                command: 'geminiCompanion.rejectPlan',
+                tooltip: 'Reject the implementation plan'
+            });
+            
+            return [approveLens, rejectLens];
+        }
+    }
+
+    context.subscriptions.push(
+        vscode.languages.registerCodeLensProvider(
+            { language: 'markdown', scheme: 'file', pattern: '**/implementation_plan.md' },
+            new PlanApprovalCodeLensProvider()
+        )
+    );
+
+    function writePlanApproval(status) {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) return;
+
+        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const geminiDir = path.join(workspaceRoot, '.gemini');
+        
+        if (!fs.existsSync(geminiDir)) {
+            try { fs.mkdirSync(geminiDir); } catch(e) {}
+        }
+
+        const approvalFile = path.join(geminiDir, 'plan_approval.json');
+        try {
+            fs.writeFileSync(approvalFile, JSON.stringify({ status, timestamp: Date.now() }));
+            vscode.window.showInformationMessage(`Plan ${status === 'accept' ? 'Approved' : 'Rejected'}! You can return to the terminal.`);
+        } catch(e) {
+            vscode.window.showErrorMessage('Failed to write plan approval.');
+        }
+    }
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('geminiCompanion.approvePlan', () => {
+            writePlanApproval('accept');
+        }),
+        vscode.commands.registerCommand('geminiCompanion.rejectPlan', () => {
+            writePlanApproval('reject');
+        })
+    );
 }
 
 function deactivate() {}
