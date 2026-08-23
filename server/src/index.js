@@ -24,6 +24,7 @@ import { PromptBuilder } from './prompt-builder.js';
 import { DiffEngine } from './diff-engine.js';
 import { RiskClassifier } from './risk-classifier.js';
 import { FileWatcher } from './watcher/FileWatcher.js';
+import { TaskManager } from './TaskManager.js';
 
 // ── Parse CLI Arguments ──────────────────────────────────────────────
 function parseArgs() {
@@ -141,6 +142,15 @@ async function main() {
   const promptBuilder = new PromptBuilder(config.workspace, agentSourceDir);
   const mcpServer = new MCPServer(config.workspace, diffEngine);
 
+  const taskManager = new TaskManager(config.workspace);
+  
+  // Initialize WorkspaceIndexer for Background RAG
+  const { WorkspaceIndexer } = await import('./context/WorkspaceIndexer.js');
+  const workspaceIndexer = new WorkspaceIndexer(config.workspace);
+  // Start building the index asynchronously in the background
+  workspaceIndexer.buildIndex();
+
+
   const agentLoop = new AgentLoop({
     workspace: config.workspace,
     mcpServer,
@@ -151,6 +161,8 @@ async function main() {
     configHome,
     continueSession: config.continue,
     agentSourceDir,
+    taskManager,
+    workspaceIndexer,
   });
 
   const fileWatcher = new FileWatcher(config.workspace, agentLoop);
@@ -192,6 +204,7 @@ async function main() {
   const shutdown = async () => {
     console.log('\n🛑 Shutting down...');
     fileWatcher.stop();
+    taskManager.cleanup();
     await wsServer.stop();
     process.exit(0);
   };

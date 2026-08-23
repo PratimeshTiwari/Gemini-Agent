@@ -3,6 +3,8 @@ import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import chalk from 'chalk';
 import ora from 'ora';
+import { select } from '@inquirer/prompts';
+import { randomUUID } from 'crypto';
 
 marked.use(markedTerminal());
 
@@ -262,6 +264,9 @@ Available Commands:
   /image <path> - Attach an image file to your next message.
   /paste-image  - Attach image from clipboard (macOS).
   /init-skills  - Initialize a .gemini folder for workspace memory & custom rules.
+  /mode <topology> - Switch between topologies (single, duo, swarm).
+  /config <r> <m> - Map a role (main/reviewer/reasoner) to a model (gemini/chatgpt/claude).
+  /memory [on/off] - Toggle long-term memory.
   /model        - Instructions on how to change the Gemini model.
   /exit         - Exit the Gemini Agent server.
   /help         - Show this help menu.
@@ -306,6 +311,65 @@ Available Commands:
       }
       this.rl.prompt();
       return;
+    }
+
+    if (command === 'mode' && args.length === 0) {
+      // Temporarily pause readline for inquirer
+      this.rl.pause();
+      try {
+        const topology = await select({
+          message: 'Select Agent Topology Mode:',
+          choices: [
+            { name: 'Single (Gemini only)', value: 'single' },
+            { name: 'Duo (Gemini + Reviewer)', value: 'duo' },
+            { name: 'Swarm (Gemini + Reasoner + Reviewer)', value: 'swarm' }
+          ]
+        });
+        args.push(topology);
+      } catch (err) {
+        this.rl.resume();
+        this.rl.prompt();
+        return;
+      }
+      this.rl.resume();
+    }
+
+    if (command === 'config' && args.length === 0) {
+      this.rl.pause();
+      try {
+        const role = await select({
+          message: 'Select Role to Configure:',
+          choices: [
+            { name: 'View Current Config', value: 'view' },
+            { name: 'Main Agent', value: 'main' },
+            { name: 'Reviewer Subagent', value: 'reviewer' },
+            { name: 'Reasoner Subagent', value: 'reasoner' }
+          ]
+        });
+        
+        if (role === 'view') {
+          this.rl.resume();
+          const result = await this.agentLoop.handleSlashCommand(command, []);
+          if (result && result.message) console.log(`\n${result.message}\n`);
+          this.rl.prompt();
+          return;
+        }
+
+        const model = await select({
+          message: `Select Model for ${role}:`,
+          choices: [
+            { name: 'Google Gemini', value: 'gemini' },
+            { name: 'ChatGPT', value: 'chatgpt' },
+            { name: 'Claude', value: 'claude' }
+          ]
+        });
+        args.push(role, model);
+      } catch (err) {
+        this.rl.resume();
+        this.rl.prompt();
+        return;
+      }
+      this.rl.resume();
     }
 
     const result = await this.agentLoop.handleSlashCommand(command, args);

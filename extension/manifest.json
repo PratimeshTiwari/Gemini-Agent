@@ -11,7 +11,9 @@
     "alarms"
   ],
   "host_permissions": [
-    "https://gemini.google.com/*"
+    "https://gemini.google.com/*",
+    "https://chatgpt.com/*",
+    "https://claude.ai/*"
   ],
   "side_panel": {
     "default_path": "side-panel/panel.html"
@@ -23,6 +25,16 @@
     {
       "matches": ["https://gemini.google.com/*"],
       "js": ["content-scripts/gemini-bridge.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content-scripts/chatgpt-bridge.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["content-scripts/claude-bridge.js"],
       "run_at": "document_idle"
     }
   ],

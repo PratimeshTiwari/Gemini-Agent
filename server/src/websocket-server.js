@@ -168,6 +168,15 @@ export class WebSocketServer {
         // Handled above to set client type, just break
         break;
 
+      case 'tab_status':
+        if (payload?.connectedModels && payload.connectedModels.length > 0) {
+          if (!client.reportedModels || client.reportedModels.join() !== payload.connectedModels.join()) {
+            client.reportedModels = payload.connectedModels;
+            console.log(`  🌐 Connected Models: ${payload.connectedModels.join(', ')}`);
+          }
+        }
+        break;
+
       default:
         console.warn(`⚠️ Unknown message type: ${type}`);
     }

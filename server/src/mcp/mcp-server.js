@@ -14,6 +14,10 @@ import { createFile } from './tools/create-file.js';
 import { listDirectory } from './tools/list-directory.js';
 import { runCommand } from './tools/run-command.js';
 import { openInEditor } from './tools/open-in-editor.js';
+import { runBackground } from './tools/run-background.js';
+import { manageTask } from './tools/manage-task.js';
+import semanticSearch from './tools/semantic-search.js';
+import getEditorState from './tools/get-editor-state.js';
 
 // Tool registry with schemas
 const TOOL_DEFINITIONS = [
@@ -97,6 +101,38 @@ const TOOL_DEFINITIONS = [
       line: { type: 'number', description: 'Line number to jump to', required: false },
     },
     handler: openInEditor,
+  },
+  {
+    name: 'run_background',
+    description: 'Spawn a long-running background process (dev servers, watchers, builds). Returns immediately with a taskId. Use manage_task to interact with it.',
+    parameters: {
+      command: { type: 'string', description: 'The shell command to execute', required: true },
+      cwd: { type: 'string', description: 'Working directory (default: workspace root)', required: false },
+    },
+    handler: runBackground,
+  },
+  {
+    name: 'manage_task',
+    description: 'Interact with background tasks. Actions: status (check if running), read_logs (read output), send_input (send stdin text), kill (terminate), list (show all tasks).',
+    parameters: {
+      action: { type: 'string', description: 'Action: status, read_logs, send_input, kill, list', required: true },
+      taskId: { type: 'string', description: 'Task ID (required for all actions except list)', required: false },
+      lines: { type: 'number', description: 'Number of log lines to read (default: 50)', required: false },
+      input: { type: 'string', description: 'Text to send to stdin (required for send_input)', required: false },
+    },
+    handler: manageTask,
+  },
+  {
+    name: semanticSearch.name,
+    description: semanticSearch.description,
+    parameters: semanticSearch.schema.properties,
+    handler: semanticSearch.execute,
+  },
+  {
+    name: getEditorState.name,
+    description: getEditorState.description,
+    parameters: getEditorState.schema.properties,
+    handler: getEditorState.execute,
   },
 ];
 
