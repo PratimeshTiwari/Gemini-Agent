@@ -8,7 +8,10 @@ import crypto from 'crypto';
 import SelectInput from 'ink-select-input';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 marked.use(markedTerminal({
   tab: 2,
