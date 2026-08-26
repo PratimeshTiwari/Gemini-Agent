@@ -1,7 +1,7 @@
 {
-  "activeFile": "/extension/src/background/main.js",
+  "activeFile": "/test-dirname.jsx",
   "cursorLine": 1,
   "cursorChar": 1,
-  "visibleText": "import { connectWebSocket } from './socket.js';\nimport { sendToServer } from './messaging.js';\nimport { getState } from './state.js';\n\n// Open side panel on extension icon click\nchrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });\n\n// Handle messages from side panel and content script\nchrome.runtime.onMessage.addListener((message, sender, sendResponse) => {\n  (async () => {\n    const { type, payload } = message;\n\n    switch (type) {\n      case 'user_message':\n      case 'slash_command':\n      case 'diff_response':\n      case 'gemini_response':\n      case 'gemini_response_stream':\n        sendToServer({ type, payload });\n        sendResponse({ success: true });\n        break;\n\n      case 'get_status':\n        const state = await getState();\n        sendResponse({ success: true, ...state });\n        break;\n\n      case 'connect':\n        connectWebSocket();\n        sendResponse({ success: true });\n        break;\n\n      default:\n        sendResponse({ success: false, error: 'Unknown message type' });\n    }\n  })();\n  return true;\n});\n\n// Handle alarms (for reconnection)\nchrome.alarms.onAlarm.addListener((alarm) => {\n  if (alarm.name === 'reconnect') connectWebSocket();\n});\n\n// Connect on install/startup\nchrome.runtime.onInstalled.addListener(() => {\n  console.log('🤖 Gemini Agent extension installed');\n  connectWebSocket();\n});\n\nchrome.runtime.onStartup.addListener(() => {",
-  "timestamp": 1787781901697
+  "visibleText": "import { fileURLToPath } from 'url';\nimport { dirname, resolve } from 'path';\n\ntry {\n  console.log(\"DIRNAME VIA IMPORT:\", dirname(fileURLToPath(import.meta.url)));\n} catch (e) {\n  console.log(\"IMPORT META ERROR:\", e.message);\n}\n\ntry {\n  console.log(\"DIRNAME NATIVE:\", __dirname);\n} catch (e) {\n  console.log(\"DIRNAME NATIVE ERROR:\", e.message);\n}\n",
+  "timestamp": 1787783066384
 }

@@ -242,7 +242,7 @@ export function App({ agentLoop, wsServer }) {
       }
 
       if (command === 'restart') {
-        const indexPath = path.resolve(process.cwd(), 'src', 'index.js');
+        const indexPath = path.resolve(__dirname, '..', 'index.js');
         const now = new Date();
         try {
           fs.utimesSync(indexPath, now, now);
