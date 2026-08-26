@@ -16,6 +16,32 @@ const RESPONSE_ACTIVITY_TIMEOUT = 60000; // 60s of no new text during streaming 
 const RESPONSE_MAX_TIMEOUT = 300000; // 5 min absolute max (safety net)
 const RECONNECT_BASE = 1000;
 
+// ── Anti-Throttling Hack ─────────────────────────────────────────────
+// Chrome drastically throttles setTimeout and requestAnimationFrame in background tabs.
+// Playing a silent looping audio element forces Chrome to keep the tab fully active.
+function enableAntiThrottling() {
+  if (window._antiThrottlingEnabled) return;
+  window._antiThrottlingEnabled = true;
+
+  const audio = document.createElement('audio');
+  // 1-second silent WAV base64
+  audio.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+  audio.loop = true;
+  audio.volume = 0.01;
+  
+  const playAudio = () => {
+    audio.play().catch(err => console.log('Anti-throttling audio play blocked by autoplay policy.', err));
+  };
+
+  // Attempt to play on any user interaction, just in case
+  document.addEventListener('click', playAudio, { once: true });
+  document.addEventListener('keydown', playAudio, { once: true });
+  
+  // Attempt to play immediately (sometimes works if tab has high engagement index)
+  playAudio();
+}
+enableAntiThrottling();
+
 // ── DOM Selectors ────────────────────────────────────────────────────
 // Centralized selectors — update these when Google changes the UI
 const SELECTORS = {

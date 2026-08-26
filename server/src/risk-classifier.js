@@ -5,6 +5,9 @@
  * Safe operations execute immediately; risky ones require user approval.
  */
 
+import fs from 'fs';
+import path from 'path';
+
 // Files that are always considered high-risk to modify
 const SENSITIVE_FILE_PATTERNS = [
   /package\.json$/,
@@ -23,7 +26,8 @@ const SENSITIVE_FILE_PATTERNS = [
 ];
 
 export class RiskClassifier {
-  constructor() {
+  constructor(workspacePath) {
+    this.workspacePath = workspacePath;
     this.overrides = new Map(); // tool_name -> 'safe' | 'risky'
   }
 
@@ -53,9 +57,9 @@ export class RiskClassifier {
       case 'open_in_editor':
         return { level: 'safe', reason: 'Opens file in editor (no modifications)' };
 
-      // Always risky — shell commands
+      // Conditional — shell commands
       case 'run_command':
-        return { level: 'risky', reason: 'Shell command execution' };
+        return this._classifyCommand(args);
 
       // Conditional — file creation
       case 'create_file':
@@ -135,6 +139,63 @@ export class RiskClassifier {
 
   _isSensitiveFile(filePath) {
     return SENSITIVE_FILE_PATTERNS.some(pattern => pattern.test(filePath));
+  }
+
+  _classifyCommand(args) {
+    const { command, cwd } = args;
+    if (!command) return { level: 'risky', reason: 'Empty command' };
+
+    const cmdStr = command.trim();
+    const binary = cmdStr.split(/\s+/)[0].toLowerCase();
+    
+    // Read-only commands
+    const safeBinaries = ['ls', 'cat', 'grep', 'find', 'echo', 'pwd', 'whoami', 'head', 'tail', 'less', 'more', 'rg', 'ag', 'awk', 'sed'];
+    // sed can mutate if it uses -i, but usually in a pipeline it's read-only. Let's be stricter.
+    const strictSafeBinaries = ['ls', 'cat', 'grep', 'find', 'echo', 'pwd', 'whoami', 'head', 'tail', 'less', 'more', 'rg', 'ag'];
+
+    if (strictSafeBinaries.includes(binary)) {
+      return { level: 'safe', reason: 'Read-only shell command' };
+    }
+
+    if (binary === 'git') {
+      const gitSubcommand = cmdStr.split(/\s+/)[1]?.toLowerCase();
+      const safeGit = ['status', 'log', 'diff', 'show', 'branch', 'remote'];
+      if (safeGit.includes(gitSubcommand)) {
+        return { level: 'safe', reason: 'Read-only git command' };
+      }
+    }
+
+    // Mutating commands need directory scoping check
+    const execCwd = cwd || this.workspacePath;
+    const isInsideWorkspace = execCwd.startsWith(this.workspacePath);
+
+    if (!isInsideWorkspace) {
+      // Check whitelist from .gemini/config.json
+      if (this._isAllowedGlobal(cmdStr)) {
+        return { level: 'risky', reason: 'Allowed global mutating command' };
+      }
+      return { level: 'critical', reason: 'Global system modification outside workspace' };
+    }
+
+    return { level: 'risky', reason: 'Mutating shell command within workspace' };
+  }
+
+  _isAllowedGlobal(cmdStr) {
+    if (!this.workspacePath) return false;
+    
+    const configPath = path.join(this.workspacePath, '.gemini', 'config.json');
+    
+    if (fs.existsSync(configPath)) {
+      try {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (config.allowedGlobal && Array.isArray(config.allowedGlobal)) {
+          return config.allowedGlobal.some(allowedCmd => cmdStr.startsWith(allowedCmd));
+        }
+      } catch (e) {
+        // Ignore JSON parse errors
+      }
+    }
+    return false;
   }
 
   /**

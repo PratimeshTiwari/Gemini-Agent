@@ -8,8 +8,16 @@ import crypto from 'crypto';
 import SelectInput from 'ink-select-input';
 import fs from 'fs';
 import path from 'path';
+import { exec } from 'child_process';
 
-marked.use(markedTerminal());
+marked.use(markedTerminal({
+  tab: 2,
+  width: 100,
+  showSectionPrefix: false,
+  tableOptions: {
+    style: { head: ['cyan'] }
+  }
+}));
 
 const FOCUS_CHAT = 'chat';
 const FOCUS_INPUT = 'input';
@@ -46,7 +54,66 @@ export function App({ agentLoop, wsServer }) {
   const [pendingImage, setPendingImage] = useState(null);
   const [activeMenu, setActiveMenu] = useState(null);
   const [planReviewReady, setPlanReviewReady] = useState(false);
+  const [walkthroughReady, setWalkthroughReady] = useState(false);
   const [artifacts, setArtifacts] = useState({ task: null, walkthrough: null });
+  const [inputHistory, setInputHistory] = useState([]);
+  const [historyIdx, setHistoryIdx] = useState(-1);
+
+  // 1. Group history into turns
+  const turns = [];
+  let currentTurn = null;
+  let turnId = 0;
+  history.forEach((msg, i) => {
+    msg._globalIdx = i;
+    if (msg.role === 'user') {
+      if (currentTurn) turns.push(currentTurn);
+      currentTurn = { id: turnId++, userMsg: msg, steps: [], startTime: msg.timestamp || Date.now(), endTime: msg.timestamp || Date.now() };
+    } else if (currentTurn) {
+      currentTurn.steps.push(msg);
+      currentTurn.endTime = msg.timestamp || currentTurn.endTime;
+    } else {
+      currentTurn = { id: turnId++, userMsg: null, steps: [msg], startTime: msg.timestamp || Date.now(), endTime: msg.timestamp || Date.now() };
+    }
+  });
+  if (currentTurn) turns.push(currentTurn);
+
+  // 2. Compute dense array of ALL focusable items for UI navigation
+  const focusableItems = [];
+  turns.forEach(turn => {
+    turn.steps.forEach(msg => {
+      let isFocusable = false;
+      if (msg.role === 'assistant' || msg.role === 'agent') isFocusable = true;
+      if (msg.type === 'tool_call' || msg.type === 'tool_result') isFocusable = true;
+      if (msg.role === 'system' && msg.content?.includes('Command Output')) isFocusable = true;
+      
+      if (isFocusable) {
+        focusableItems.push({ type: 'history', sourceIdx: msg._globalIdx, id: msg.timestamp || msg._globalIdx, turnId: turn.id, msg });
+      }
+    });
+  });
+
+  activeToolCalls.forEach((call, idx) => {
+    focusableItems.push({ type: 'activeCall', sourceIdx: idx, id: call.id, call });
+  });
+
+  // Ensure selected tool index is within bounds of all focusable items
+  const clampedSelectedToolIdx = Math.min(selectedToolIdx, Math.max(0, focusableItems.length - 1));
+
+  // 3. Virtual Scrolling: Calculate sliding window based on focused item
+  let focusedTurnId = turns.length > 0 ? turns[turns.length - 1].id : 0;
+  if (focus === FOCUS_CHAT && focusableItems.length > 0) {
+    const focusedItem = focusableItems[clampedSelectedToolIdx];
+    if (focusedItem && focusedItem.turnId !== undefined) {
+      focusedTurnId = focusedItem.turnId;
+    }
+  }
+
+  // Display the focused turn, the one before it, and the one after it (window size of 3)
+  const windowStart = Math.max(0, focusedTurnId - 2);
+  const windowEnd = Math.min(turns.length, focusedTurnId + 1);
+  const visibleTurns = turns.slice(windowStart, windowEnd);
+
+
 
   useEffect(() => {
     if (!isProcessing) {
@@ -57,8 +124,28 @@ export function App({ agentLoop, wsServer }) {
         try {
           const cp = require('child_process');
           const path = require('path');
-          const planPath = path.join(agentLoop.workspace, '.gemini', 'implementation_plan.md');
+          const fs = require('fs');
+          
+          const implPlanPath = path.join(agentLoop.workspace, '.gemini', 'implementation_plan.md');
+          const simplePlanPath = path.join(agentLoop.workspace, '.gemini', 'plan.md');
+          const planPath = fs.existsSync(implPlanPath) ? implPlanPath : simplePlanPath;
+          
           cp.exec(`"${agentLoop.editor || 'code'}" "${planPath}" || open "${planPath}" || xdg-open "${planPath}"`);
+        } catch (e) {}
+      }
+
+      if (walkthroughReady) {
+        setWalkthroughReady(false);
+        try {
+          const cp = require('child_process');
+          const path = require('path');
+          const fs = require('fs');
+          
+          const walkRoot = path.join(agentLoop.workspace, '.gemini', 'walkthrough.md');
+          const walkFallback = path.join(agentLoop.workspace, 'walkthrough.md');
+          const walkPath = fs.existsSync(walkRoot) ? walkRoot : walkFallback;
+          
+          cp.exec(`"${agentLoop.editor || 'code'}" "${walkPath}" || open "${walkPath}" || xdg-open "${walkPath}"`);
         } catch (e) {}
       }
 
@@ -81,7 +168,7 @@ export function App({ agentLoop, wsServer }) {
         // ignore fs errors
       }
     }
-  }, [isProcessing, planReviewReady, agentLoop.workspace]);
+  }, [isProcessing, planReviewReady, walkthroughReady, agentLoop.workspace]);
 
   useEffect(() => {
     let interval;
@@ -92,7 +179,7 @@ export function App({ agentLoop, wsServer }) {
            setStatus(THINKING_MESSAGES[next]);
            return next;
          });
-       }, 800);
+       }, 500); // Faster cycle for better visual feedback
     }
     return () => clearInterval(interval);
   }, [isProcessing, status]);
@@ -116,6 +203,8 @@ export function App({ agentLoop, wsServer }) {
 
   const handleSubmit = async (query) => {
     if (!query.trim()) return;
+    setInputHistory(prev => [...prev, query]);
+    setHistoryIdx(-1);
     setInput('');
     setIsProcessing(true);
     setStatus('Thinking...');
@@ -138,7 +227,7 @@ export function App({ agentLoop, wsServer }) {
       if (command === 'shortcuts' || command === 'help') {
         const shortcutsMessage = {
           role: 'assistant',
-          content: `### ⌨️ UI & Keyboard Shortcuts\n\n- **[Tab]** - Toggle focus between Chat Input and Tool Executions (Logs)\n- **[Up/Down Arrow]** - Navigate between tool executions (when focused on Tools)\n- **[Enter]** - Expand/Minimize raw output of the focused tool execution\n- **[Ctrl+T]** - Toggle the Agent Terminal at the bottom of the screen\n- **:stop** - Immediately cancel the agent's current thought process or generation\n\n### 🔧 Available Commands:\n- \`/plan\` - Switch to Plan Mode\n- \`/auto\` - Switch to Auto Mode\n- \`/new\` - Start a new chat session\n- \`/clear\` - Clear local history\n- \`/image <path>\` - Attach an image\n- \`/paste-image\` - Attach from clipboard\n- \`/init-skills\` - Create workspace rules\n- \`/mode\` - Change agent topology\n- \`/config\` - Configure models\n- \`/restart\` - Restart the server\n- \`/exit\` - Quit the agent`
+          content: `### ⌨️ UI & Keyboard Shortcuts\n\n- [Tab] - Toggle focus between Chat Input and Tool Executions (Logs)\n- [Up/Down Arrow] - Navigate between tool executions (when focused on Tools)\n- [Enter] - Expand/Minimize raw output of the focused tool execution\n- [Ctrl+T] - Toggle the Agent Terminal at the bottom of the screen\n- :stop - Immediately cancel the agent's current thought process or generation\n\n### 🔧 Available Commands:\n- \`/plan\` - Switch to Plan Mode\n- \`/auto\` - Switch to Auto Mode\n- \`/new\` - Start a new chat session\n- \`/clear\` - Clear local history\n- \`/workspace <path>\` - Change the active workspace\n- \`/undo\` - Undo the last step/action\n- \`/memory\` - View current agent memory context\n- \`/context\` - Show current context window usage\n- \`/compact\` - Compact history to save tokens\n- \`/agent-dir\` - Open the agent data directory\n- \`/image <path>\` - Attach an image\n- \`/paste-image\` - Attach from clipboard\n- \`/init-skills\` - Create workspace rules\n- \`/mode\` - Change agent topology\n- \`/config\` - Configure models\n- \`/reasoning\` - Change agent's cognitive effort level\n- \`/localllm\` - Toggle local LLM engine\n- \`/restart\` - Restart the server\n- \`/exit\` - Quit the agent`
         };
         setHistory(prev => [...prev, { role: 'user', content: query }, shortcutsMessage]);
         setIsProcessing(false);
@@ -191,6 +280,18 @@ export function App({ agentLoop, wsServer }) {
 
       if (command === 'config') {
         setActiveMenu({ type: 'config_role' });
+        setIsProcessing(false);
+        return;
+      }
+
+      if (command === 'reasoning') {
+        setActiveMenu({ type: 'reasoning' });
+        setIsProcessing(false);
+        return;
+      }
+
+      if (command === 'localllm') {
+        setActiveMenu({ type: 'localllm' });
         setIsProcessing(false);
         return;
       }
@@ -272,11 +373,20 @@ export function App({ agentLoop, wsServer }) {
         return;
       }
 
-      // Handle standard agent loop commands (/plan, /auto, /context, etc.)
-      const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact'];
+      // Handle standard agent loop commands
+      const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'reasoning', 'localllm'];
       if (validAgentCommands.includes(command)) {
-        await agentLoop.handleSlashCommand(command, args);
-        setHistory([...agentLoop.conversationHistory]);
+        const result = await agentLoop.handleSlashCommand(command, args);
+        
+        if (command === 'clear' || command === 'undo' || command === 'compact') {
+          const newHistory = [...agentLoop.conversationHistory];
+          if (result && result.message) {
+            newHistory.push({ role: 'assistant', content: result.message });
+          }
+          setHistory(newHistory);
+        } else if (result && result.message) {
+          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: result.message }]);
+        }
       } else {
         setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ Unrecognized command: \`/${command}\`\nType \`/help\` to see the list of available commands.` }]);
       }
@@ -303,6 +413,9 @@ export function App({ agentLoop, wsServer }) {
         } else if (msg.type === 'ask_question') {
           setActiveMenu({ type: 'ask_question', payload: msg.payload });
           setFocus(FOCUS_INPUT);
+        } else if (msg.type === 'request_command_approval') {
+          setActiveMenu({ type: 'command_approval', payload: msg.payload });
+          setFocus(FOCUS_INPUT);
         } else if (msg.type === 'status') {
           setStatus(msg.payload.message || 'Processing...');
         } else if (msg.type === 'tool_call') {
@@ -318,18 +431,20 @@ export function App({ agentLoop, wsServer }) {
               
               if (last.success && (last.name === 'create_file' || last.name === 'edit_file' || last.name === 'write_to_file')) {
                 const pathArg = last.args?.path || last.args?.TargetFile;
-                if (pathArg && pathArg.endsWith('implementation_plan.md') && agentLoop.mode === 'plan') {
+                if (pathArg && (pathArg.endsWith('implementation_plan.md') || pathArg.endsWith('plan.md')) && agentLoop.mode === 'plan') {
                   setPlanReviewReady(true);
+                }
+                if (pathArg && pathArg.endsWith('walkthrough.md')) {
+                  setWalkthroughReady(true);
                 }
               }
             }
             return updated;
           });
         } else if (msg.type === 'response_stream') {
-          if (msg.payload.content) {
-            const preview = msg.payload.content.substring(0, 60).replace(/\n/g, ' ');
-            setStatus(`Generating: ${preview}...`);
-          }
+          // Intentionally do NOT update status here to prevent UI tearing and scroll glitches
+          // caused by re-rendering the entire history component 50+ times per second.
+          // This also allows the 'Thinking...' messages to continue cycling during generation!
         }
       },
       injectPrompt: (msg) => {
@@ -382,7 +497,7 @@ export function App({ agentLoop, wsServer }) {
       setFocus(f => {
         const nextFocus = f === FOCUS_INPUT ? FOCUS_CHAT : FOCUS_INPUT;
         if (nextFocus === FOCUS_CHAT) {
-          setSelectedToolIdx(history.length - 1);
+          setSelectedToolIdx(focusableItems.length - 1);
         }
         return nextFocus;
       });
@@ -407,32 +522,50 @@ export function App({ agentLoop, wsServer }) {
 
     // Input Navigation & History
     if (focus === FOCUS_INPUT) {
-      if (key.upArrow && !input) {
-        setFocus(FOCUS_CHAT);
-        setSelectedToolIdx(history.length - 1);
+      if (key.upArrow) {
+        if (inputHistory.length > 0) {
+          const nextIdx = historyIdx === -1 ? inputHistory.length - 1 : Math.max(0, historyIdx - 1);
+          setHistoryIdx(nextIdx);
+          setInput(inputHistory[nextIdx]);
+        }
+        return;
+      }
+      if (key.downArrow) {
+        if (historyIdx !== -1) {
+          const nextIdx = historyIdx + 1;
+          if (nextIdx >= inputHistory.length) {
+            setHistoryIdx(-1);
+            setInput('');
+          } else {
+            setHistoryIdx(nextIdx);
+            setInput(inputHistory[nextIdx]);
+          }
+        }
         return;
       }
     }
 
     // Chat Navigation (Expand/Collapse Tool Logs)
     if (focus === FOCUS_CHAT) {
+      // Clamp selected index just in case it got out of bounds
+      const clampedIdx = Math.min(selectedToolIdx, Math.max(0, focusableItems.length - 1));
+      
       if (key.upArrow) {
-        setSelectedToolIdx(i => Math.max(0, i - 1));
+        setSelectedToolIdx(Math.max(0, clampedIdx - 1));
       }
       if (key.downArrow) {
-        setSelectedToolIdx(i => Math.min(history.length - 1, i + 1));
+        setSelectedToolIdx(Math.min(focusableItems.length - 1, clampedIdx + 1));
       }
       if (key.return) {
-        setExpandedLogIds(prev => {
-          const next = new Set(prev);
-          const targetMsg = history[selectedToolIdx];
-          const logId = targetMsg?.timestamp || selectedToolIdx;
-          if (targetMsg) {
-            if (next.has(logId)) next.delete(logId);
-            else next.add(logId);
-          }
-          return next;
-        });
+        const item = focusableItems[clampedIdx];
+        if (item) {
+          setExpandedLogIds(prev => {
+            const next = new Set(prev);
+            if (next.has(item.id)) next.delete(item.id);
+            else next.add(item.id);
+            return next;
+          });
+        }
       }
     }
   });
@@ -444,10 +577,35 @@ export function App({ agentLoop, wsServer }) {
       return;
     }
     
-    // Spawn in TaskManager or just exec
-    if (agentLoop.taskManager) {
-      agentLoop.taskManager.spawn(cmd);
+    // Check if docker sandbox is enabled
+    let useSandbox = false;
+    try {
+      const configPath = path.join(agentLoop.workspace, '.gemini', 'config.json');
+      if (fs.existsSync(configPath)) {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (config.useDockerSandbox) useSandbox = true;
+      }
+    } catch(e) {}
+
+    let finalCommand = cmd;
+    if (useSandbox) {
+      const escapedCmd = cmd.replace(/'/g, "'\\''");
+      finalCommand = `docker run --rm -v "${agentLoop.workspace}:/workspace" -w /workspace node:20-alpine sh -c '${escapedCmd}'`;
+    } else {
+      finalCommand = `cd "${agentLoop.workspace}" && ${cmd}`;
     }
+
+    exec(finalCommand, (err, stdout, stderr) => {
+      let output = stdout || stderr || (err ? err.message : '');
+      if (!output) output = 'Command executed successfully (no output).';
+      
+      setHistory(prev => [
+        ...prev,
+        { role: 'user', content: `$ ${cmd}`, timestamp: Date.now() },
+        { role: 'system', content: `**Command Output:**\n\`\`\`\n${output.trim()}\n\`\`\``, timestamp: Date.now() }
+      ]);
+    });
+
     setTerminalInput('');
     setTerminalOpen(false);
     setFocus(FOCUS_INPUT);
@@ -560,13 +718,14 @@ export function App({ agentLoop, wsServer }) {
                     </Box>
                     {/* Steps (Accordions) */}
                     {turn.steps.map((msg, sIdx) => {
-                      const isFocused = focus === FOCUS_CHAT && selectedToolIdx === msg._globalIdx;
+                      // Find if this message is the currently focused item
+                      const isFocused = focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.msg === msg;
                       const isExpanded = expandedLogIds.has(msg.timestamp || msg._globalIdx);
                       const focusPrefix = isFocused ? <Text color="cyan">❯ </Text> : <Text>  </Text>;
 
                       if (msg.role === 'assistant' || msg.role === 'agent') {
                         const thinkMatch = msg.content.match(/<think>([\s\S]*?)<\/think>/);
-                        const cleanContent = msg.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+                        let cleanContent = msg.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
                         const imgMatch = cleanContent.match(/🖼️ Image attached: (.*?\.png|.*?\.jpg|.*?\.jpeg|.*?\.webp)/);
 
                         return (
@@ -578,7 +737,10 @@ export function App({ agentLoop, wsServer }) {
                                 </Text>
                                 {isExpanded && (
                                   <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'}>
-                                    <Text dimColor>{thinkMatch[1].trim()}</Text>
+                                    <Text dimColor>
+                                      {thinkMatch[1].trim().split('\n').slice(0, 15).join('\n')}
+                                      {thinkMatch[1].trim().split('\n').length > 15 ? '\n... [Thought Truncated for UI]' : ''}
+                                    </Text>
                                   </Box>
                                 )}
                               </Box>
@@ -591,7 +753,7 @@ export function App({ agentLoop, wsServer }) {
                                     <Text>🖼️ Attached: {imgMatch[1]}</Text>
                                   </Box>
                                 ) : (
-                                  <Text>{marked.parse(cleanContent).trim()}</Text>
+                                  <Text>{marked.parse(cleanContent.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
                                 )}
                               </Box>
                             )}
@@ -616,16 +778,30 @@ export function App({ agentLoop, wsServer }) {
 
                       if (msg.type === 'tool_result') {
                         const resultStr = typeof msg.result === 'string' ? msg.result : JSON.stringify(msg.result, null, 2);
+                        const lines = resultStr.split('\n');
+                        const truncatedStr = lines.length > 20 
+                          ? lines.slice(0, 20).join('\n') + '\n\n... [Result Truncated for UI]' 
+                          : resultStr;
                         return (
                           <Box key={sIdx} flexDirection="column" marginBottom={1}>
                             <Text color={isFocused ? 'cyan' : 'green'}>
-                              {focusPrefix}⚙️ Result (Press Enter to {isExpanded ? 'collapse' : 'expand'})
+                              {focusPrefix}↙ Result {isExpanded ? '' : (resultStr.substring(0, 40).replace(/\n/g, ' ') + '...')}
                             </Text>
                             {isExpanded && (
                               <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'}>
-                                <Text dimColor>{resultStr.substring(0, 1000)}{resultStr.length > 1000 ? '\n... (truncated)' : ''}</Text>
+                                <Text dimColor>{truncatedStr}</Text>
                               </Box>
                             )}
+                          </Box>
+                        );
+                      }
+
+                      if (msg.role === 'system') {
+                        return (
+                          <Box key={sIdx} flexDirection="column" marginBottom={1}>
+                            <Box paddingLeft={2}>
+                              <Text>{marked.parse((msg.content || '').replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
+                            </Box>
                           </Box>
                         );
                       }
@@ -641,14 +817,14 @@ export function App({ agentLoop, wsServer }) {
                         {artifacts.task && (
                           <Box flexDirection="column" marginTop={1}>
                             <Text bold underline color="cyan">task.md</Text>
-                            <Text>{marked.parse(artifacts.task).trim()}</Text>
+                            <Text>{marked.parse(artifacts.task.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
                           </Box>
                         )}
                         
                         {artifacts.walkthrough && (
                           <Box flexDirection="column" marginTop={1}>
                             <Text bold underline color="cyan">walkthrough.md</Text>
-                            <Text>{marked.parse(artifacts.walkthrough).trim()}</Text>
+                            <Text>{marked.parse(artifacts.walkthrough.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
                           </Box>
                         )}
                       </Box>
@@ -665,7 +841,7 @@ export function App({ agentLoop, wsServer }) {
         <Box flexDirection="column" marginBottom={1} borderStyle="single" borderColor="dim" padding={1}>
           <Text dimColor bold>⚙️ Tool Executions (Tab to focus, Enter to expand)</Text>
           {activeToolCalls.map((call, idx) => {
-            const isFocused = focus === FOCUS_CHAT && selectedToolIdx === idx;
+            const isFocused = focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.call === call;
             const isExpanded = expandedLogIds.has(call.id);
             
             return (
@@ -679,8 +855,8 @@ export function App({ agentLoop, wsServer }) {
                   <Box marginLeft={4} borderStyle="single" borderColor="dim" padding={1}>
                     <Text dimColor>
                       {typeof call.result === 'string' 
-                        ? call.result.substring(0, 500) 
-                        : JSON.stringify(call.result).substring(0, 500)}
+                        ? (call.result.split('\n').length > 20 ? call.result.split('\n').slice(0, 20).join('\n') + '\n\n... [Result Truncated]' : call.result)
+                        : (JSON.stringify(call.result, null, 2).split('\n').length > 20 ? JSON.stringify(call.result, null, 2).split('\n').slice(0, 20).join('\n') + '\n\n... [Result Truncated]' : JSON.stringify(call.result, null, 2))}
                     </Text>
                   </Box>
                 )}
@@ -735,6 +911,29 @@ export function App({ agentLoop, wsServer }) {
         </Box>
       )}
 
+      {activeMenu?.type === 'command_approval' && (
+        <Box flexDirection="column" borderStyle="single" borderColor={activeMenu.payload.riskLevel === 'critical' ? 'red' : 'yellow'} padding={1}>
+          <Text bold color={activeMenu.payload.riskLevel === 'critical' ? 'red' : 'yellow'}>
+            ⚠️ Command Execution Request ({activeMenu.payload.riskLevel.toUpperCase()})
+          </Text>
+          <Text>Command: <Text bold>{activeMenu.payload.command}</Text></Text>
+          <Text>Directory: {activeMenu.payload.cwd}</Text>
+          <Text>Reason: {activeMenu.payload.riskReason}</Text>
+          <SelectInput
+            items={[
+              { label: 'Allow Command', value: 'accept' },
+              { label: 'Reject Command', value: 'reject' }
+            ]}
+            onSelect={(item) => {
+              setActiveMenu(null);
+              agentLoop.answerCommandApproval(item.value === 'accept');
+              setHistory(prev => [...prev, { role: 'user', content: `(I ${item.value === 'accept' ? 'allowed' : 'rejected'} the command: ${activeMenu.payload.command})` }]);
+              setFocus(FOCUS_INPUT);
+            }}
+          />
+        </Box>
+      )}
+
       {activeMenu?.type === 'plan_review' && (
         <Box flexDirection="column" borderStyle="single" borderColor="magenta" padding={1}>
           <Text bold color="magenta">📝 Implementation Plan Ready for Review</Text>
@@ -771,6 +970,43 @@ export function App({ agentLoop, wsServer }) {
             onSelect={async (item) => {
               setActiveMenu(null);
               await agentLoop.handleSlashCommand('mode', [item.value]);
+              setHistory([...agentLoop.conversationHistory]);
+              setFocus(FOCUS_INPUT);
+            }}
+          />
+        </Box>
+      )}
+
+      {activeMenu?.type === 'reasoning' && (
+        <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+          <Text bold color="cyan">Select Cognitive Effort / Reasoning Level:</Text>
+          <SelectInput
+            items={[
+              { label: 'Low (Fast, minimal thinking)', value: 'low' },
+              { label: 'Medium (Balanced approach)', value: 'medium' },
+              { label: 'High (Deep thinking, rigorous)', value: 'high' }
+            ]}
+            onSelect={async (item) => {
+              setActiveMenu(null);
+              await agentLoop.handleSlashCommand('reasoning', [item.value]);
+              setHistory([...agentLoop.conversationHistory]);
+              setFocus(FOCUS_INPUT);
+            }}
+          />
+        </Box>
+      )}
+
+      {activeMenu?.type === 'localllm' && (
+        <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+          <Text bold color="cyan">Toggle Local LLM Engine (node-llama-cpp):</Text>
+          <SelectInput
+            items={[
+              { label: 'Enable Local LLM', value: 'on' },
+              { label: 'Disable Local LLM (Cloud Only)', value: 'off' }
+            ]}
+            onSelect={async (item) => {
+              setActiveMenu(null);
+              await agentLoop.handleSlashCommand('localllm', [item.value]);
               setHistory([...agentLoop.conversationHistory]);
               setFocus(FOCUS_INPUT);
             }}

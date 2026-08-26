@@ -138,7 +138,7 @@ async function main() {
 
   // Initialize components
   const diffEngine = new DiffEngine(config.workspace);
-  const riskClassifier = new RiskClassifier();
+  const riskClassifier = new RiskClassifier(config.workspace);
   const promptBuilder = new PromptBuilder(config.workspace, agentSourceDir);
   const mcpServer = new MCPServer(config.workspace, diffEngine);
 
