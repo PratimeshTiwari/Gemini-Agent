@@ -134,6 +134,7 @@ export class AgentLoop {
       this.conversationHistory = [compactedTurn, ...this.compactionKeep];
       this.sessionStore.saveHistory(this.conversationHistory);
       this.compactionKeep = null;
+      this.promptBuilder.resetPromptState(); // New chat = re-send system prompt
       this.isProcessing = false;
 
       // Tell extension to start a new chat in the browser
@@ -235,10 +236,11 @@ export class AgentLoop {
       case 'clear':
         this.conversationHistory = [];
         this.sessionStore.clear();
+        this.promptBuilder.resetPromptState();
         return { message: '🧹 Conversation history cleared.' };
 
       case 'context':
-        return this._getContextInfo();
+        return await this._getContextInfo();
 
       case 'compact': {
         const focus = args?.join(' ') || '';
@@ -362,11 +364,17 @@ export class AgentLoop {
       this.conversationHistory.push(callTurn);
       this.sessionStore.appendTurn(callTurn);
       
+      const rawResult = result.result || result.error;
+      const resultStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
+      const truncatedResult = resultStr.length > 1000 
+        ? resultStr.substring(0, 1000) + '\n... [truncated]' 
+        : resultStr;
+
       const resultTurn = {
         role: 'system',
         type: 'tool_result',
         toolName: call.name,
-        result: result.result || result.error,
+        result: truncatedResult,
         timestamp: Date.now(),
       };
       this.conversationHistory.push(resultTurn);
@@ -447,10 +455,25 @@ export class AgentLoop {
       return fullMatch; // Keep non-tool-calls in the message
     });
 
+    // Fallback: If Gemini forgets the markdown backticks, look for raw JSON objects matching tool schema
+    const rawJsonRegex = /\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"args"\s*:\s*\{[\s\S]*?\}\s*\}/g;
+    cleanContent = cleanContent.replace(rawJsonRegex, (match) => {
+      try {
+        const parsed = JSON.parse(match);
+        if (parsed.name && parsed.args) {
+          calls.push(parsed);
+          return ''; // Strip valid unformatted tool call
+        }
+      } catch (err) {
+        // Not valid JSON, ignore
+      }
+      return match;
+    });
+
     return { toolCalls: calls, cleanContent: cleanContent.trim() };
   }
 
-  _getContextInfo() {
+  async _getContextInfo() {
     const historyTokenEstimate = this.contextManager 
       ? import('./context/TokenCounter.js').then(m => m.TokenCounter.estimateHistoryTokens(this.conversationHistory)) 
       : 0; // Token counting is now offloaded, but we can do a rough fallback:
@@ -462,14 +485,24 @@ export class AgentLoop {
       return sum + Math.ceil(text.length / 4);
     }, 0);
 
-    return {
-      mode: this.mode,
-      conversationTurns: this.conversationHistory.length,
-      estimatedTokens: syncTokenEstimate,
-      pendingDiffs: this.diffEngine.getPendingDiffs().length,
-      appliedDiffs: this.diffEngine.appliedDiffs.length,
-      workspace: this.workspace,
-    };
+    const chalk = (await import('chalk')).default;
+    
+    const tokenLimit = 50000;
+    const tokenPct = Math.round((syncTokenEstimate / tokenLimit) * 100);
+    const tokenColor = tokenPct > 80 ? chalk.red : tokenPct > 50 ? chalk.yellow : chalk.green;
+    
+    const message = [
+      chalk.dim('╭─ ') + chalk.bold('Context Overview') + chalk.dim(' ─────────────────────────────────────╮'),
+      chalk.dim('│') + ' Mode:            ' + (this.mode === 'plan' ? chalk.cyan('Plan Mode 🔒') : chalk.magenta('Auto Mode ⚡')) + ' '.repeat(this.mode === 'plan' ? 16 : 16) + chalk.dim('│'),
+      chalk.dim('│') + ' Workspace:       ' + chalk.blue(this.workspace.substring(0, 30) + (this.workspace.length > 30 ? '...' : ' '.repeat(30 - this.workspace.length))) + chalk.dim('│'),
+      chalk.dim('│') + ' Turns:           ' + chalk.white(this.conversationHistory.length.toString().padEnd(30)) + chalk.dim('│'),
+      chalk.dim('│') + ' Est. Tokens:     ' + tokenColor(`~${syncTokenEstimate.toLocaleString()} / ${tokenLimit.toLocaleString()}`).padEnd(30) + chalk.dim('│'),
+      chalk.dim('│') + ' Pending Diffs:   ' + chalk.white(this.diffEngine.getPendingDiffs().length.toString().padEnd(30)) + chalk.dim('│'),
+      chalk.dim('│') + ' Applied Diffs:   ' + chalk.white(this.diffEngine.appliedDiffs.length.toString().padEnd(30)) + chalk.dim('│'),
+      chalk.dim('╰────────────────────────────────────────────────────────╯')
+    ].join('\n');
+
+    return { message };
   }
 
   async _compactHistory(focus) {

@@ -124,6 +124,18 @@ export class WebSocketServer {
         this.agentLoop.handleGeminiResponse(id, payload);
         break;
 
+      case 'gemini_response_stream':
+        // Content script sending partial/streaming response — forward to CLI
+        if (this.agentLoop.callbacks) {
+          this.agentLoop.callbacks.sendToPanel({
+            id,
+            type: 'response_stream',
+            payload,
+            timestamp: Date.now(),
+          });
+        }
+        break;
+
       case 'diff_response':
         // User accepted/rejected a diff
         this.agentLoop.handleDiffResponse(id, payload);
