@@ -8,8 +8,9 @@ import { WorkspaceSummarizer } from './WorkspaceSummarizer.js';
  * if the context gets too large.
  */
 export class ContextManager {
-  constructor(workspacePath) {
+  constructor(workspacePath, memoryManager) {
     this.workspacePath = workspacePath;
+    this.memoryManager = memoryManager;
     this.maxTokens = 50000; // safe threshold for Gemini Flash
     this.summarizer = new WorkspaceSummarizer(workspacePath);
   }
@@ -29,6 +30,16 @@ export class ContextManager {
     // If STILL too big, just return root dir info
     if (TokenCounter.estimateTokens(summary) > 5000) {
       summary = `Workspace Directory: ${this.workspacePath}\n(Directory too large to summarize fully)`;
+    }
+
+    if (this.memoryManager && this.memoryManager.isMemoryEnabled()) {
+      const memories = this.memoryManager.getAllMemories();
+      if (memories.length > 0) {
+        summary += '\n\n### Agent Long-Term Memory (User Preferences & Facts):\n';
+        memories.forEach((mem, i) => {
+          summary += `- [${i}]: ${mem}\n`;
+        });
+      }
     }
 
     return summary;

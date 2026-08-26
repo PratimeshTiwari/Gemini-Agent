@@ -1,0 +1,13 @@
+{
+  "name": "gemini-agent-companion",
+  "displayName": "Gemini Agent Companion",
+  "description": "Exposes editor state to the local Gemini Agent CLI.",
+  "version": "1.0.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {}
+}

@@ -65,6 +65,9 @@ function connectWebSocket() {
         timestamp: Date.now(),
       }));
 
+      // Broadcast tab status immediately on connection
+      broadcastTabStatus();
+
       // Start heartbeat
       startHeartbeat();
 
@@ -134,6 +137,8 @@ function startHeartbeat() {
         timestamp: Date.now(),
       }));
     }
+    // Periodically update the server about active model tabs
+    broadcastTabStatus();
   }, HEARTBEAT_INTERVAL);
 }
 
@@ -159,13 +164,13 @@ async function handleServerMessage(message) {
       break;
 
     case 'inject_prompt':
-      // Server wants us to inject a prompt into Gemini
-      await injectPromptIntoGemini(payload);
+      // Server wants us to inject a prompt into a model tab
+      await injectPromptIntoModel(payload);
       break;
 
     case 'new_chat':
-      // Server wants us to start a new chat in Gemini
-      await triggerNewChatInGemini(payload);
+      // Server wants us to start a new chat
+      await triggerNewChatInModel(payload);
       break;
 
     case 'diff_request':
@@ -194,19 +199,119 @@ async function handleServerMessage(message) {
   }
 }
 
+const MODEL_URLS = {
+  'gemini': 'https://gemini.google.com/*',
+  'chatgpt': 'https://chatgpt.com/*',
+  'claude': 'https://claude.ai/*'
+};
+
 /**
- * Inject a prompt into the Gemini tab via content script.
+ * Check which model tabs are open and send the status to the server.
  */
-async function injectPromptIntoGemini(payload) {
-  // Find all Gemini tabs
-  const tabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
+async function broadcastTabStatus() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  
+  const connectedModels = [];
+  for (const [model, targetUrl] of Object.entries(MODEL_URLS)) {
+    try {
+      const tabs = await chrome.tabs.query({ url: targetUrl });
+      if (tabs.length > 0) connectedModels.push(model);
+    } catch (err) {
+      console.warn(`Failed to query tabs for ${model}:`, err);
+    }
+  }
+
+  sendToServer({
+    type: 'tab_status',
+    payload: { connectedModels },
+  });
+}
+
+/**
+ * Content script paths for each model (used for re-injection).
+ */
+const MODEL_SCRIPTS = {
+  'gemini': 'content-scripts/gemini-bridge.js',
+  'chatgpt': 'content-scripts/chatgpt-bridge.js',
+  'claude': 'content-scripts/claude-bridge.js',
+};
+
+/**
+ * Try to send a message to a tab's content script.
+ * If it fails, activate the tab, optionally re-inject the script, and retry.
+ */
+async function trySendToTab(tab, message, targetModel) {
+  // Attempt 1: Direct send
+  try {
+    const response = await chrome.tabs.sendMessage(tab.id, message);
+    if (response && response.success === false) {
+      throw new Error(response.error || 'Content script reported failure');
+    }
+    return true;
+  } catch (firstErr) {
+    console.warn(`[Service Worker] First attempt failed for ${targetModel} tab ${tab.id}:`, firstErr.message);
+  }
+
+  // Attempt 2: Activate the tab (un-freezes Chrome's throttling) then retry
+  try {
+    await chrome.tabs.update(tab.id, { active: true });
+    await new Promise(r => setTimeout(r, 800)); // Wait for tab to wake up
+
+    const response = await chrome.tabs.sendMessage(tab.id, message);
+    if (response && response.success === false) {
+      throw new Error(response.error || 'Content script reported failure');
+    }
+    return true;
+  } catch (secondErr) {
+    console.warn(`[Service Worker] Second attempt (after activation) failed for ${targetModel} tab ${tab.id}:`, secondErr.message);
+  }
+
+  // Attempt 3: Re-inject the content script programmatically and retry
+  const scriptPath = MODEL_SCRIPTS[targetModel];
+  if (scriptPath) {
+    try {
+      console.log(`[Service Worker] Re-injecting ${scriptPath} into tab ${tab.id}`);
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: [scriptPath],
+      });
+      await new Promise(r => setTimeout(r, 1000)); // Wait for script to initialize
+
+      const response = await chrome.tabs.sendMessage(tab.id, message);
+      if (response && response.success === false) {
+        throw new Error(response.error || 'Content script reported failure');
+      }
+      return true;
+    } catch (thirdErr) {
+      console.warn(`[Service Worker] Third attempt (after re-injection) failed for ${targetModel} tab ${tab.id}:`, thirdErr.message);
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Inject a prompt into the specified model tab via content script.
+ */
+async function injectPromptIntoModel(payload) {
+  const targetModel = payload.targetModel || 'gemini';
+  const targetUrl = MODEL_URLS[targetModel];
+
+  if (!targetUrl) {
+    const errorMsg = { type: 'error', payload: { message: `❌ Unsupported model: ${targetModel}` } };
+    broadcastToSidePanel(errorMsg);
+    sendToServer(errorMsg);
+    return;
+  }
+
+  // Find all tabs for the target model
+  const tabs = await chrome.tabs.query({ url: targetUrl });
 
   if (tabs.length === 0) {
-    // No Gemini tab open — notify side panel
     const errorMsg = {
       type: 'error',
       payload: {
-        message: '❌ No gemini.google.com tab found. Please open one and try again.',
+        message: `❌ No ${targetUrl.replace('https://', '').replace('/*', '')} tab found. Please open one and try again.`,
       },
     };
     broadcastToSidePanel(errorMsg);
@@ -215,31 +320,21 @@ async function injectPromptIntoGemini(payload) {
   }
 
   let success = false;
-  let lastErr = null;
+  const message = { type: 'inject_prompt', payload };
 
-  // Try sending to the most recently opened tab first (usually at the end of the array)
+  // Try sending to the most recently opened tab first
   for (let i = tabs.length - 1; i >= 0; i--) {
-    try {
-      await chrome.tabs.sendMessage(tabs[i].id, {
-        type: 'inject_prompt',
-        payload,
-      });
-      success = true;
-      break; // It worked!
-    } catch (err) {
-      console.warn(`[Gemini Agent] Failed to send to tab ${tabs[i].id}:`, err);
-      lastErr = err;
-    }
+    success = await trySendToTab(tabs[i], message, targetModel);
+    if (success) break;
   }
 
-  // If ALL tabs failed to receive the message (e.g., they all need to be refreshed)
   if (!success) {
-    console.error('Failed to send to any content script:', lastErr);
+    console.error(`Failed to send to any ${targetModel} content script after all retries.`);
     
     const errorMsg = {
       type: 'error',
       payload: {
-        message: `Failed to communicate with Gemini tab: ${lastErr?.message || 'Unknown error'}. Please refresh the Gemini tab in your browser!`,
+        message: `Failed to communicate with ${targetModel} tab after multiple retries. Please hard-refresh the tab (Cmd+Shift+R) and try again!`,
       },
     };
     
@@ -249,10 +344,14 @@ async function injectPromptIntoGemini(payload) {
 }
 
 /**
- * Trigger a new chat in the Gemini tab via content script.
+ * Trigger a new chat in the specified model tab via content script.
  */
-async function triggerNewChatInGemini(payload) {
-  const tabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
+async function triggerNewChatInModel(payload) {
+  const targetModel = payload.targetModel || 'gemini';
+  const targetUrl = MODEL_URLS[targetModel];
+  if (!targetUrl) return;
+
+  const tabs = await chrome.tabs.query({ url: targetUrl });
   if (tabs.length === 0) return;
 
   for (let i = tabs.length - 1; i >= 0; i--) {
@@ -263,7 +362,7 @@ async function triggerNewChatInGemini(payload) {
       });
       break; // Success
     } catch (err) {
-      console.warn(`[Gemini Agent] Failed to send new_chat to tab ${tabs[i].id}:`, err);
+      console.warn(`[Gemini Agent] Failed to send new_chat to ${targetModel} tab ${tabs[i].id}:`, err);
     }
   }
 }

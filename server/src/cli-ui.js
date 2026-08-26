@@ -3,6 +3,8 @@ import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import chalk from 'chalk';
 import ora from 'ora';
+import { select } from '@inquirer/prompts';
+import { randomUUID } from 'crypto';
 
 marked.use(markedTerminal());
 
@@ -51,6 +53,7 @@ export class CliUI {
       if (this.agentLoop.isProcessing || this.isWaitingForDiff) {
         this.spinner.stop();
         console.log('\n🛑 Cancelled.');
+        this.wsServer.broadcast('extension', { type: 'stop_generation', timestamp: Date.now(), id: crypto.randomUUID() });
         this.agentLoop.isProcessing = false;
         this.isWaitingForDiff = false;
         this.pendingDiffId = null;
@@ -65,6 +68,22 @@ export class CliUI {
       const input = inputBuffer.join('\n').trim();
       inputBuffer = []; // clear buffer
       isMultilineMode = false;
+
+      if (input === ':stop') {
+        if (this.agentLoop.isProcessing || this.isWaitingForDiff) {
+          this.spinner.stop();
+          console.log('\n🛑 Cancelled via :stop.');
+          this.wsServer.broadcast('extension', { type: 'stop_generation', timestamp: Date.now(), id: crypto.randomUUID() });
+          this.agentLoop.isProcessing = false;
+          this.isWaitingForDiff = false;
+          this.pendingDiffId = null;
+        } else {
+          console.log('\nNothing is currently processing.');
+        }
+        this.updatePrompt();
+        this.rl.prompt();
+        return;
+      }
 
       if (this.isWaitingForDiff) {
         this.handleDiffInput(input);
@@ -90,6 +109,30 @@ export class CliUI {
         return;
       }
 
+      if (input.startsWith('!')) {
+        const cmd = input.slice(1).trim();
+        try {
+          const { execSync } = await import('child_process');
+          const output = execSync(cmd, { cwd: this.agentLoop.workspace, encoding: 'utf-8' });
+          console.log(`\n${output}`);
+          this.agentLoop.conversationHistory.push({
+            role: 'user',
+            content: `[Terminal Command executed by User]\n$ ${cmd}\n\nOutput:\n${output}`
+          });
+          console.log(chalk.dim('📝 Added terminal output to agent memory.'));
+        } catch (err) {
+          console.log(`\n${chalk.red(err.message)}\n`);
+          this.agentLoop.conversationHistory.push({
+            role: 'user',
+            content: `[Terminal Command executed by User]\n$ ${cmd}\n\nFailed with Error:\n${err.message}`
+          });
+          console.log(chalk.dim('📝 Added terminal error to agent memory.'));
+        }
+        this.updatePrompt();
+        this.rl.prompt();
+        return;
+      }
+
       // Auto-detect if the user dragged/dropped an image file or pasted an absolute path
       if (input.match(/^\/.+\.(png|jpe?g|gif|webp|bmp)$/i)) {
         const { existsSync } = await import('fs');
@@ -111,6 +154,7 @@ export class CliUI {
         this.pendingImage = null;
       }
 
+      this.isAnsweringQuestion = false;
       await this.agentLoop.handleUserMessage(messageContent, this.callbacks);
     };
 
@@ -142,10 +186,14 @@ export class CliUI {
   }
 
   updatePrompt() {
-    const turns = this.agentLoop.conversationHistory.length;
-    const modeStr = this.agentLoop.mode === 'plan' ? chalk.yellow('Plan Mode') : chalk.green('Auto Mode');
-    const turnsStr = chalk.dim(`[Context: ${turns}/50]`);
-    this.rl.setPrompt(`\n${modeStr} ${turnsStr}\n🤖 > `);
+    if (this.isAnsweringQuestion) {
+      this.rl.setPrompt(`\n${chalk.yellow.bold('🙋 Your Answer > ')}`);
+    } else {
+      const turns = this.agentLoop.conversationHistory.length;
+      const modeStr = this.agentLoop.mode === 'plan' ? chalk.yellow('Plan Mode') : chalk.green('Auto Mode');
+      const turnsStr = chalk.dim(`[Context: ${turns}/50]`);
+      this.rl.setPrompt(`\n${modeStr} ${turnsStr}\n🤖 > `);
+    }
   }
 
   printHeader() {
@@ -194,11 +242,20 @@ export class CliUI {
       return;
     }
 
+    if (command === 'new') {
+      this.agentLoop.conversationHistory = [];
+      this.wsServer.broadcast('extension', { type: 'new_chat' });
+      console.log('\n✨ Starting a new chat in Gemini...');
+      this.rl.prompt();
+      return;
+    }
+
     if (command === 'help' || command === 'commands') {
       console.log(`
 Available Commands:
   /plan         - Switch to Plan Mode (Safe). All edits require approval.
   /auto         - Switch to Auto Mode (Fast). Safe edits auto-applied.
+  /new          - Start a new chat session in the Gemini UI and clear context.
   /clear        - Clear the local conversation history.
   /context      - Show current context usage and diff stats.
   /compact      - Ask Gemini to summarize history and start a new chat.
@@ -206,6 +263,10 @@ Available Commands:
   /workspace    - Show or change the current workspace directory.
   /image <path> - Attach an image file to your next message.
   /paste-image  - Attach image from clipboard (macOS).
+  /init-skills  - Initialize a .gemini folder for workspace memory & custom rules.
+  /mode <topology> - Switch between topologies (single, duo, swarm).
+  /config <r> <m> - Map a role (main/reviewer/reasoner) to a model (gemini/chatgpt/claude).
+  /memory [on/off] - Toggle long-term memory.
   /model        - Instructions on how to change the Gemini model.
   /exit         - Exit the Gemini Agent server.
   /help         - Show this help menu.
@@ -230,6 +291,87 @@ Available Commands:
       return;
     }
 
+    if (command === 'init-skills') {
+      const { resolve } = await import('path');
+      const { existsSync, mkdirSync, writeFileSync } = await import('fs');
+      const geminiDir = resolve(this.agentLoop.workspace, '.gemini');
+      const rulesPath = resolve(geminiDir, 'rules.md');
+      
+      if (!existsSync(geminiDir)) {
+        mkdirSync(geminiDir, { recursive: true });
+      }
+      
+      if (!existsSync(rulesPath)) {
+        const template = `# Workspace Rules\n\nAdd any custom instructions, architectural rules, or context specific to this project here. The agent will automatically read this file and remember these rules when operating in this workspace!\n\n## Example Rules:\n- We use functional components in React.\n- Do not use Tailwind, use standard CSS.\n- The main entry point is \`src/index.js\`.\n`;
+        writeFileSync(rulesPath, template, 'utf-8');
+        console.log(chalk.green(`\n✅ Created workspace memory at: ${rulesPath}`));
+        console.log(chalk.dim(`Edit this file to teach the agent custom skills and rules for this project!\n`));
+      } else {
+        console.log(chalk.yellow(`\n⚠️ Workspace rules already exist at: ${rulesPath}\n`));
+      }
+      this.rl.prompt();
+      return;
+    }
+
+    if (command === 'mode' && args.length === 0) {
+      // Temporarily pause readline for inquirer
+      this.rl.pause();
+      try {
+        const topology = await select({
+          message: 'Select Agent Topology Mode:',
+          choices: [
+            { name: 'Single (Gemini only)', value: 'single' },
+            { name: 'Duo (Gemini + Reviewer)', value: 'duo' },
+            { name: 'Swarm (Gemini + Reasoner + Reviewer)', value: 'swarm' }
+          ]
+        });
+        args.push(topology);
+      } catch (err) {
+        this.rl.resume();
+        this.rl.prompt();
+        return;
+      }
+      this.rl.resume();
+    }
+
+    if (command === 'config' && args.length === 0) {
+      this.rl.pause();
+      try {
+        const role = await select({
+          message: 'Select Role to Configure:',
+          choices: [
+            { name: 'View Current Config', value: 'view' },
+            { name: 'Main Agent', value: 'main' },
+            { name: 'Reviewer Subagent', value: 'reviewer' },
+            { name: 'Reasoner Subagent', value: 'reasoner' }
+          ]
+        });
+        
+        if (role === 'view') {
+          this.rl.resume();
+          const result = await this.agentLoop.handleSlashCommand(command, []);
+          if (result && result.message) console.log(`\n${result.message}\n`);
+          this.rl.prompt();
+          return;
+        }
+
+        const model = await select({
+          message: `Select Model for ${role}:`,
+          choices: [
+            { name: 'Google Gemini', value: 'gemini' },
+            { name: 'ChatGPT', value: 'chatgpt' },
+            { name: 'Claude', value: 'claude' }
+          ]
+        });
+        args.push(role, model);
+      } catch (err) {
+        this.rl.resume();
+        this.rl.prompt();
+        return;
+      }
+      this.rl.resume();
+    }
+
     const result = await this.agentLoop.handleSlashCommand(command, args);
     if (result && result.message) {
       console.log(`\n${result.message}\n`);
@@ -244,9 +386,19 @@ Available Commands:
 
         if (msg.type === 'agent_response') {
           this.spinner.stop();
-          console.log(`\n${chalk.blue.bold('🤖 Agent:')}\n`);
-          console.log(marked.parse(msg.payload.content).trim());
-          console.log('');
+          const content = msg.payload.content;
+          
+          if (/^QUESTION:/m.test(content)) {
+            console.log(`\n${chalk.yellow.bold('🙋 Clarifying Question:')}\n`);
+            console.log(marked.parse(content).trim());
+            console.log('');
+            this.isAnsweringQuestion = true;
+          } else {
+            console.log(`\n${chalk.magenta.bold('🧠 Agent Thinking:')}\n`);
+            console.log(chalk.dim(marked.parse(content).trim()));
+            console.log('');
+          }
+          
           if (!this.isWaitingForDiff) { this.updatePrompt(); this.rl.prompt(); }
         } else if (msg.type === 'response_stream') {
           // Streaming partial response — show preview in spinner
@@ -282,11 +434,18 @@ Available Commands:
 
           this.spinner.text = `${icon} ${chalk.bold(name)}${detail}`;
         } else if (msg.type === 'tool_result') {
+          this.spinner.stop();
           if (!msg.payload.success) {
-            this.spinner.stop();
-            console.log(chalk.red(`  ✗ ${msg.payload.name} failed: ${msg.payload.error}`));
-            this.spinner.start();
+            console.log(chalk.red(`  ✗ ${msg.payload.name} failed: ${msg.payload.error}\n`));
+          } else {
+            console.log(chalk.dim(`  [⚡️ Agent ran ${msg.payload.name}]`));
+            if (msg.payload.name === 'run_command' && msg.payload.result) {
+              const out = typeof msg.payload.result === 'string' ? msg.payload.result : JSON.stringify(msg.payload.result);
+              const preview = out.length > 500 ? out.substring(0, 500) + '\n... [truncated]' : out;
+              console.log(chalk.dim(`  > Output:\n  > ${preview.replace(/\n/g, '\n  > ')}\n`));
+            }
           }
+          this.spinner.start();
         } else if (msg.type === 'error') {
           this.spinner.stop();
           console.log(`\n${chalk.bgRed.white(' ❌ ERROR ')} ${chalk.red(msg.payload.message)}\n`);
@@ -295,12 +454,20 @@ Available Commands:
       },
       
       injectPrompt: (msg) => {
-        this.wsServer.broadcast('extension', {
+        const success = this.wsServer.broadcast('extension', {
           id: crypto.randomUUID(),
           type: 'inject_prompt',
           payload: msg,
           timestamp: Date.now(),
         });
+        
+        if (!success) {
+          this.spinner.stop();
+          console.log(`\n${chalk.bgRed.white(' ❌ CONNECTION ERROR ')} ${chalk.red('Gemini client is not connected!')}`);
+          console.log(chalk.yellow(`\n💡 To fix this:\n1. Close all gemini.google.com tabs and open a fresh one.\n2. If that doesn't work, reload the Chrome extension in chrome://extensions and refresh the tab.\n`));
+          this.agentLoop.isProcessing = false;
+          if (!this.isWaitingForDiff) { this.updatePrompt(); this.rl.prompt(); }
+        }
       },
       
       requestDiffApproval: (diff) => {

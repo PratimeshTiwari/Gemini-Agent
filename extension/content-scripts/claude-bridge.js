@@ -1,72 +1,64 @@
 /**
- * Gemini Bridge — Content Script
+ * Claude Bridge — Content Script
  *
- * Injected into gemini.google.com pages. Handles:
- * - Injecting prompts into Gemini's input field
- * - Extracting Gemini's responses from the DOM
- * - Detecting when Gemini finishes responding
+ * Injected into claude.ai pages. Handles:
+ * - Injecting prompts into Claude's ProseMirror input field
+ * - Extracting Claude's responses from the DOM
+ * - Detecting when Claude finishes responding
  * - Creating new chat sessions
  */
 
 // ── Constants & State ───────────────────────────────────────────────
 
-const WS_URL = 'ws://localhost:7777';
-const RESPONSE_IDLE_TIMEOUT = 15000; // 15s of no new text = response complete
+const RESPONSE_IDLE_TIMEOUT = 4000; // 15s of no new text = response complete
 const RESPONSE_ACTIVITY_TIMEOUT = 60000; // 60s of no new text during streaming = consider done
 const RESPONSE_MAX_TIMEOUT = 300000; // 5 min absolute max (safety net)
-const RECONNECT_BASE = 1000;
 
 // ── DOM Selectors ────────────────────────────────────────────────────
-// Centralized selectors — update these when Google changes the UI
+// Centralized selectors — update these when Anthropic changes the UI
 const SELECTORS = {
-  // The main prompt input textarea
+  // The main prompt input (ProseMirror)
   inputField: [
-    'div.ql-editor[contenteditable="true"]',
-    'rich-textarea div[contenteditable="true"]',
-    '.text-input-field textarea',
-    'textarea[aria-label*="prompt"]',
-    'div[role="textbox"]',
+    'div[contenteditable="true"].ProseMirror',
+    'div[contenteditable="true"][data-placeholder]',
+    'fieldset div[contenteditable="true"]',
   ],
 
   // The send/submit button
   sendButton: [
-    'button[aria-label*="send" i]',
-    'button[aria-label*="submit" i]',
-    'button.send-button',
-    'mat-icon[data-mat-icon-name="send" i]',
-    'button[data-test-id="send-button"]',
+    'button[aria-label="Send Message"]',
+    'button[aria-label*="Send"]',
+    'fieldset button[type="button"]:not([aria-label*="Attach"])',
   ],
 
-  // Container for response messages
+  // Container for response messages (stable class)
   responseContainer: [
-    'message-content',
-    '.model-response-text',
-    '.response-content',
-    'model-response',
-    '.conversation-container',
+    '.font-claude-message',
+    '[data-testid="chat-message-content"]',
   ],
 
-  // Individual response message
+  // Individual response message — use ONLY stable selectors for counting
   responseMessage: [
-    'model-response .model-response-text',
-    'model-response message-content',
-    '.response-container .model-response-text',
-    'message-content',
+    '.font-claude-message',
   ],
 
   // New chat button
   newChatButton: [
-    'button[aria-label*="New chat"]',
-    'a[href="/app"]',
-    '.new-chat-button',
+    'a[href="/new"]',
+    'button[aria-label="New chat"]',
   ],
 
-  // Loading/streaming indicator
+  // Streaming indicator
   streamingIndicator: [
-    '.loading-indicator',
-    '.streaming-indicator',
-    'mat-progress-bar',
-    '.response-loading',
+    'div[data-is-streaming="true"]',
+    '.stop-button',
+    'button[aria-label="Stop Response"]',
+  ],
+
+  // Stop generation
+  stopGeneratingButton: [
+    'button[aria-label="Stop Response"]',
+    'button[aria-label*="Stop"]',
   ],
 };
 
@@ -96,6 +88,7 @@ function findElement(selectorList) {
 
 /**
  * Get the current number of response blocks in the DOM.
+ * Uses ONLY stable container selectors (not data-is-streaming which flips).
  */
 function getResponseCount() {
   for (const selector of SELECTORS.responseMessage) {
@@ -108,11 +101,11 @@ function getResponseCount() {
 // ── Prompt Injection ────────────────────────────────────────────────
 
 /**
- * Inject a prompt into Gemini's input field and send it.
+ * Inject a prompt into Claude's ProseMirror input field and send it.
  */
 async function injectPrompt(text) {
   if (isInjecting) {
-    console.warn('[Gemini Bridge] Already injecting a prompt');
+    console.warn('[Claude Bridge] Already injecting a prompt');
     return false;
   }
 
@@ -121,7 +114,7 @@ async function injectPrompt(text) {
   try {
     const input = findElement(SELECTORS.inputField);
     if (!input) {
-      throw new Error('Could not find Gemini input field');
+      throw new Error('Could not find Claude input field');
     }
 
     // Record how many responses exist BEFORE we send
@@ -129,75 +122,62 @@ async function injectPrompt(text) {
 
     input.focus();
 
-    // Safely clear content
+    // Clear existing content
     document.execCommand('selectAll', false, null);
     document.execCommand('delete', false, null);
 
-    // Paste event
-    const dataTransfer = new DataTransfer();
-
-    // Intercept image data if present
+    // Strip image data (Claude web doesn't support programmatic image injection the same way)
     const imgRegex = /<image_data>\n(data:image\/[^;]+;base64,[^\n]+)\n<\/image_data>/;
-    const imgMatch = text.match(imgRegex);
-    
-    if (imgMatch) {
-      const dataUrl = imgMatch[1];
-      text = text.replace(imgRegex, '').trim(); // Remove raw base64 from the text
-      
-      try {
-        const res = await fetch(dataUrl);
-        const blob = await res.blob();
-        // Determine extension from mime type
-        const ext = blob.type.split('/')[1] || 'png';
-        const file = new File([blob], `image.${ext}`, { type: blob.type });
-        dataTransfer.items.add(file);
-        console.log(`[Gemini Bridge] Attached image file: image.${ext} (${Math.round(blob.size/1024)}KB)`);
-      } catch (err) {
-        console.error('[Gemini Bridge] Failed to convert image data URL to Blob', err);
-      }
-    }
+    text = text.replace(imgRegex, '').trim();
 
+    // ProseMirror-specific injection:
+    // 1. Try clipboard paste first (most reliable for ProseMirror)
+    const dataTransfer = new DataTransfer();
     dataTransfer.setData('text/plain', text);
     const pasteEvent = new ClipboardEvent('paste', {
       clipboardData: dataTransfer,
       bubbles: true,
-      cancelable: true
+      cancelable: true,
     });
 
     const pasteHandled = !input.dispatchEvent(pasteEvent);
-    if (!pasteHandled && text) {
-      document.execCommand('insertText', false, text);
+
+    if (!pasteHandled) {
+      // 2. Fallback: Use InputEvent with insertText (ProseMirror respects this)
+      const inputEvent = new InputEvent('beforeinput', {
+        inputType: 'insertText',
+        data: text,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      });
+      input.dispatchEvent(inputEvent);
+
+      // 3. Last resort: execCommand
+      if (input.textContent.trim().length === 0) {
+        document.execCommand('insertText', false, text);
+      }
     }
 
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
 
-    // Wait for the send button to become enabled (Gemini validates input and uploads images)
+    // Wait for the send button to become enabled
     const sendBtn = await waitForSendButton(input, 30000);
 
     if (sendBtn === 'submitted') {
-      console.log('[Gemini Bridge] Proceeding since prompt was manually submitted.');
+      console.log('[Claude Bridge] Proceeding since prompt was manually submitted.');
     } else if (sendBtn) {
       sendBtn.click();
-      console.log('[Gemini Bridge] Send button clicked');
+      console.log('[Claude Bridge] Send button clicked');
     } else {
-      // Fallback 1: Try submitting the closest form
-      const form = input.closest('form');
-      if (form) {
-        try { form.requestSubmit(); console.log('[Gemini Bridge] Form submitted via fallback'); }
-        catch { /* requestSubmit not supported */ }
-      }
-
-      // Fallback 2: Dispatch Enter key
-      console.warn('[Gemini Bridge] Send button not found or still disabled, pressing Enter as last resort');
+      // Fallback: Dispatch Enter key
+      console.warn('[Claude Bridge] Send button not found, pressing Enter as last resort');
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-      
-      // Wait a moment to see if the fallbacks worked by checking if input cleared
+
+      // Wait to see if submission worked
       await new Promise(r => setTimeout(r, 1000));
       if (input.textContent.trim().length > 0) {
-        throw new Error("Failed to submit prompt: Send button never became active (Image upload might be stuck).");
+        throw new Error("Failed to submit prompt: Send button never became active.");
       }
     }
 
@@ -206,7 +186,7 @@ async function injectPrompt(text) {
 
     return true;
   } catch (err) {
-    console.error('[Gemini Bridge] Injection failed:', err);
+    console.error('[Claude Bridge] Injection failed:', err);
     return false;
   } finally {
     isInjecting = false;
@@ -222,9 +202,9 @@ function waitForSendButton(input, maxWait = 30000) {
     const startTime = Date.now();
 
     function check() {
-      // If the user manually clicked send, the input clears! We can stop waiting.
+      // If the user manually clicked send, the input clears
       if (input && input.textContent.trim().length === 0) {
-        console.log('[Gemini Bridge] Detected manual submission (input cleared).');
+        console.log('[Claude Bridge] Detected manual submission (input cleared).');
         resolve('submitted');
         return;
       }
@@ -232,7 +212,6 @@ function waitForSendButton(input, maxWait = 30000) {
       const btn = findElement(SELECTORS.sendButton);
       
       if (btn) {
-        // Check if button is visually enabled (not disabled, not aria-disabled)
         const isDisabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true';
         if (!isDisabled) {
           resolve(btn);
@@ -241,8 +220,7 @@ function waitForSendButton(input, maxWait = 30000) {
       }
 
       if (Date.now() - startTime >= maxWait) {
-        console.warn(`[Gemini Bridge] Timed out waiting for send button after ${maxWait}ms`);
-        // Time's up — return null because the button is still disabled
+        console.warn(`[Claude Bridge] Timed out waiting for send button after ${maxWait}ms`);
         resolve(null);
         return;
       }
@@ -258,7 +236,7 @@ function waitForSendButton(input, maxWait = 30000) {
 // ── Response Extraction ─────────────────────────────────────────────
 
 /**
- * Start observing for Gemini's response.
+ * Start observing for Claude's response.
  */
 function startResponseObserver() {
   stopResponseObserver();
@@ -273,7 +251,7 @@ function startResponseObserver() {
     // Only process if a NEW response element has appeared
     const currentCount = getResponseCount();
     if (currentCount <= initialResponseCount) {
-      return; // Still waiting for Gemini to start replying
+      return; // Still waiting for Claude to start replying
     }
 
     const currentResponse = extractLatestResponse();
@@ -313,7 +291,7 @@ function startResponseObserver() {
     characterData: true,
   });
 
-  // Activity checker: runs every 5s to detect if Gemini has gone silent
+  // Activity checker: runs every 5s to detect if Claude has gone silent
   activityCheckTimer = setInterval(() => {
     const now = Date.now();
     const totalElapsed = now - responseStartTime;
@@ -321,7 +299,7 @@ function startResponseObserver() {
 
     // Absolute max timeout (5 minutes)
     if (totalElapsed >= RESPONSE_MAX_TIMEOUT) {
-      console.warn('[Gemini Bridge] Absolute max timeout reached (5 min)');
+      console.warn('[Claude Bridge] Absolute max timeout reached (5 min)');
       clearInterval(streamingUpdateTimer);
       stopResponseObserver();
       chrome.runtime.sendMessage({
@@ -330,14 +308,25 @@ function startResponseObserver() {
           content: lastResponseText || '[No response received — max timeout reached]',
           complete: false,
           timedOut: true,
+          requestId: currentRequestData?.requestId,
+          isSubagent: currentRequestData?.isSubagent,
         },
       });
       return;
     }
 
-    // If Gemini has been silent for 30s after producing some text, consider it done
+    // Also check if Claude's streaming indicator has disappeared (response done)
+    const isStillStreaming = !!findElement(SELECTORS.streamingIndicator);
+    if (lastResponseText && !isStillStreaming && silenceDuration >= 3000) {
+      console.log('[Claude Bridge] Streaming indicator gone + 3s silence → response complete');
+      clearInterval(streamingUpdateTimer);
+      onResponseComplete(lastResponseText);
+      return;
+    }
+
+    // If Claude has been silent for 60s after producing some text, consider it done
     if (lastResponseText && silenceDuration >= RESPONSE_ACTIVITY_TIMEOUT) {
-      console.warn('[Gemini Bridge] Response activity timeout (30s silence)');
+      console.warn('[Claude Bridge] Response activity timeout (60s silence)');
       clearInterval(streamingUpdateTimer);
       onResponseComplete(lastResponseText);
     }
@@ -358,20 +347,18 @@ function stopResponseObserver() {
  * Extract the latest response text from the DOM.
  */
 function extractLatestResponse() {
-  // Try each selector
-  for (const selector of SELECTORS.responseMessage) {
-    const elements = document.querySelectorAll(selector);
-    if (elements.length > 0) {
-      const lastEl = elements[elements.length - 1];
-      return extractTextContent(lastEl);
-    }
+  // Try the stable response container selector
+  const elements = document.querySelectorAll('.font-claude-message');
+  if (elements.length > 0) {
+    const lastEl = elements[elements.length - 1];
+    return extractTextContent(lastEl);
   }
 
-  // Fallback: get all model-response or message-content elements
-  const responses = document.querySelectorAll('model-response, .model-response-text, message-content');
-  if (responses.length > 0) {
-    const lastResponse = responses[responses.length - 1];
-    return extractTextContent(lastResponse);
+  // Fallback: try data-is-streaming containers
+  const streamingEls = document.querySelectorAll('div[data-is-streaming]');
+  if (streamingEls.length > 0) {
+    const lastEl = streamingEls[streamingEls.length - 1];
+    return extractTextContent(lastEl);
   }
 
   return null;
@@ -424,7 +411,7 @@ function extractTextContent(element) {
     el.replaceWith(document.createTextNode(`\n${hashes} ${el.textContent}\n`));
   });
 
-  // Preserve newlines for block elements (only direct leaf blocks to avoid nested multiplication)
+  // Preserve newlines for block elements
   clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
   clone.querySelectorAll('p').forEach(p => p.append('\n\n'));
   
@@ -448,7 +435,7 @@ function extractTextContent(element) {
     li.append('\n');
   });
 
-  // Replace multiple consecutive newlines (3 or more) with just 2 newlines to avoid huge gaps
+  // Replace multiple consecutive newlines (3 or more) with just 2 newlines
   return clone.textContent.trim().replace(/\n{3,}/g, '\n\n');
 }
 
@@ -485,31 +472,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       injectPrompt(payload.prompt).then(success => {
         sendResponse({ success });
       }).catch(err => {
-        console.error('[Gemini Bridge] injectPrompt threw:', err);
+        console.error('[Claude Bridge] injectPrompt threw:', err);
         sendResponse({ success: false, error: err.message });
       });
       return true; // Async response
 
     case 'stop_generation':
-      // Try to find the stop generating button
-      const stopBtn = findElement([
-        'button[aria-label*="Stop"]',
-        'button[aria-label*="stop"]',
-        'button.stop-generating-button',
-        'button[mattooltip*="Stop"]'
-      ]);
+      const stopBtn = findElement(SELECTORS.stopGeneratingButton);
       
       if (stopBtn) {
         stopBtn.click();
-        console.log('[Gemini Bridge] Stop button clicked.');
+        console.log('[Claude Bridge] Stop button clicked.');
       }
       stopResponseObserver();
       sendResponse({ success: true });
       break;
 
     case 'new_chat':
-      // Navigate to new chat
-      window.location.href = 'https://gemini.google.com/app';
+      // Navigate to Claude's new chat page
+      window.location.href = 'https://claude.ai/new';
       sendResponse({ success: true });
       break;
 
@@ -530,13 +511,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // ── Initialization ──────────────────────────────────────────────────
-console.log('[Gemini Agent] Content script loaded on:', window.location.href);
+console.log('[Claude Bridge] Content script loaded on:', window.location.href);
 
 // Notify service worker that we're ready
 chrome.runtime.sendMessage({
   type: 'content_script_ready',
   payload: {
     url: window.location.href,
+    model: 'claude',
     timestamp: Date.now(),
   },
 }).catch(() => {

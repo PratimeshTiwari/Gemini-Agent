@@ -168,6 +168,15 @@ export class WebSocketServer {
         // Handled above to set client type, just break
         break;
 
+      case 'tab_status':
+        if (payload?.connectedModels && payload.connectedModels.length > 0) {
+          if (!client.reportedModels || client.reportedModels.join() !== payload.connectedModels.join()) {
+            client.reportedModels = payload.connectedModels;
+            console.log(`  🌐 Connected Models: ${payload.connectedModels.join(', ')}`);
+          }
+        }
+        break;
+
       default:
         console.warn(`⚠️ Unknown message type: ${type}`);
     }
@@ -216,13 +225,17 @@ export class WebSocketServer {
 
   /**
    * Broadcast a message to all clients of a given type.
+   * Returns true if at least one client received the message.
    */
   broadcast(clientType, message) {
+    let sentCount = 0;
     for (const [id, client] of this.clients) {
       if (client.type === clientType || clientType === 'all') {
         this._send(client.ws, message);
+        sentCount++;
       }
     }
+    return sentCount > 0;
   }
 
   /**

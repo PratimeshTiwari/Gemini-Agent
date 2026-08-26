@@ -6,15 +6,18 @@
  *   Execute tool calls → Inject results → Loop until complete → Respond
  */
 
+import fs from 'fs';
+import path from 'path';
 import { randomUUID } from 'crypto';
 import { SessionStore } from './storage/SessionStore.js';
 import { ContextManager } from './context/ContextManager.js';
+import { MemoryManager } from './context/MemoryManager.js';
 
 // Regex to extract tool calls from Gemini's response (handles json code blocks)
 const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n```/gi;
 
 export class AgentLoop {
-  constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome, continueSession = false, agentSourceDir }) {
+  constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome, continueSession = false, agentSourceDir, taskManager, workspaceIndexer }) {
     this.workspace = workspace;
     this.mcpServer = mcpServer;
     this.promptBuilder = promptBuilder;
@@ -23,22 +26,34 @@ export class AgentLoop {
     this.editor = editor;
     this.configHome = configHome;
     this.agentSourceDir = agentSourceDir;
+    this.taskManager = taskManager;
+    this.workspaceIndexer = workspaceIndexer;
 
     // Storage & Context
     this.sessionStore = new SessionStore(workspace);
-    this.contextManager = new ContextManager(workspace);
+    this.memoryManager = new MemoryManager(workspace);
+    this.contextManager = new ContextManager(workspace, this.memoryManager);
 
     if (!continueSession) {
       this.sessionStore.clear(); // Start fresh if --continue not passed
     }
 
-    // State
+    // State defaults
     this.mode = 'plan'; // 'plan' | 'auto'
+    this.topology = 'single'; // 'single' | 'duo' | 'swarm'
+    this.modelConfig = {
+      main: 'gemini',
+      reviewer: 'claude',
+      reasoner: 'chatgpt'
+    };
+    
+    this._loadConfig();
     this.conversationHistory = this.sessionStore.loadHistory();
     this.pendingGeminiResponse = null;
     this.queuedUserMessage = null;
     this.callbacks = null;
     this.isProcessing = false;
+    this.pendingSubagents = new Map(); // Maps requestId -> { resolve, reject }
 
     // Workspace summary (generated dynamically by context manager)
     this.workspaceSummary = '';
@@ -91,6 +106,8 @@ export class AgentLoop {
         conversationHistory: this.conversationHistory,
         workspaceSummary: this.workspaceSummary,
         mode: this.mode,
+        topology: this.topology,
+        modelConfig: this.modelConfig,
       });
 
       // Send to Gemini via Chrome Extension
@@ -113,10 +130,15 @@ export class AgentLoop {
    * Handle a response from Gemini (via content script).
    */
   async handleGeminiResponse(messageId, payload) {
-    const { content } = payload;
+    const { content, requestId, isSubagent } = payload;
 
     if (!this.callbacks) {
       console.warn('⚠️ Received Gemini response but no callbacks registered');
+      return;
+    }
+
+    if (isSubagent) {
+      this.handleSubagentResponse(requestId, content);
       return;
     }
 
@@ -185,6 +207,19 @@ export class AgentLoop {
   }
 
   /**
+   * Handle a response from a subagent (e.g. ChatGPT/Claude).
+   */
+  handleSubagentResponse(requestId, content) {
+    if (this.pendingSubagents.has(requestId)) {
+      const { resolve } = this.pendingSubagents.get(requestId);
+      this.pendingSubagents.delete(requestId);
+      resolve({ success: true, result: content });
+    } else {
+      console.warn(`⚠️ Received subagent response for unknown requestId: ${requestId}`);
+    }
+  }
+
+  /**
    * Handle a diff approval/rejection from the side panel.
    */
   handleDiffResponse(messageId, payload) {
@@ -232,6 +267,52 @@ export class AgentLoop {
       case 'auto':
         this.mode = 'auto';
         return { message: '⚡ Switched to Auto Mode. Safe edits will be auto-applied.' };
+
+      case 'memory':
+        if (args?.[0]) {
+          const action = args[0].toLowerCase();
+          if (action === 'on') {
+            this.memoryManager.memoryEnabled = true;
+            return { message: '🧠 Long-Term Memory is now ON.' };
+          } else if (action === 'off') {
+            this.memoryManager.memoryEnabled = false;
+            return { message: '🧠 Long-Term Memory is now OFF.' };
+          }
+        }
+        const state = this.memoryManager.toggleMemory();
+        return { message: `🧠 Long-Term Memory is now ${state ? 'ON' : 'OFF'}.` };
+
+      case 'mode':
+        if (args?.[0]) {
+          const newTopology = args[0].toLowerCase();
+          if (['single', 'duo', 'swarm'].includes(newTopology)) {
+            this.topology = newTopology;
+            this._saveConfig();
+            this.promptBuilder.resetPromptState();
+            return { message: `🌐 Switched to Agent Topology: ${newTopology.toUpperCase()}` };
+          }
+          return { message: `❌ Invalid mode. Use: single, duo, or swarm.` };
+        }
+        return { message: `Current Agent Topology: ${this.topology}` };
+
+      case 'config':
+        if (args?.length === 2) {
+          const role = args[0].toLowerCase();
+          const model = args[1].toLowerCase();
+          if (['main', 'reviewer', 'reasoner'].includes(role) && ['gemini', 'chatgpt', 'claude'].includes(model)) {
+            this.modelConfig[role] = model;
+            this._saveConfig();
+            this.promptBuilder.resetPromptState();
+            return { message: `✅ Assigned ${model} to ${role} role.` };
+          }
+          return { message: `❌ Invalid args. Usage: /config <role> <model>\nRoles: main, reviewer, reasoner\nModels: gemini, chatgpt, claude` };
+        }
+        
+        // No args given -> format the current config string cleanly
+        const configStr = Object.entries(this.modelConfig)
+          .map(([r, m]) => `  ${r.charAt(0).toUpperCase() + r.slice(1)} Agent: ${m}`)
+          .join('\n');
+        return { message: `Current Agent Topology: ${this.topology.toUpperCase()}\nCurrent Model Config:\n${configStr}` };
 
       case 'clear':
         this.conversationHistory = [];
@@ -299,6 +380,35 @@ export class AgentLoop {
 
   // ── Private Methods ──────────────────────────────────────────────
 
+  _loadConfig() {
+    const configPath = path.join(this.workspace, '.gemini', 'config.json');
+    if (fs.existsSync(configPath)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (data.topology) this.topology = data.topology;
+        if (data.modelConfig) this.modelConfig = { ...this.modelConfig, ...data.modelConfig };
+      } catch (err) {
+        console.warn('⚠️ Failed to load .gemini/config.json:', err.message);
+      }
+    }
+  }
+
+  _saveConfig() {
+    const geminiDir = path.join(this.workspace, '.gemini');
+    if (!fs.existsSync(geminiDir)) {
+      fs.mkdirSync(geminiDir, { recursive: true });
+    }
+    const configPath = path.join(geminiDir, 'config.json');
+    try {
+      fs.writeFileSync(configPath, JSON.stringify({
+        topology: this.topology,
+        modelConfig: this.modelConfig
+      }, null, 2));
+    } catch (err) {
+      console.warn('⚠️ Failed to save config:', err.message);
+    }
+  }
+
   async _sendToGemini(prompt, callbacks) {
     // Create a promise that will be resolved when we get the Gemini response
     this.pendingGeminiResponse = true;
@@ -306,6 +416,7 @@ export class AgentLoop {
     callbacks.injectPrompt({
       prompt,
       expectResponse: true,
+      targetModel: this.modelConfig.main || 'gemini',
     });
 
     // Notify side panel that we're waiting for Gemini
@@ -349,9 +460,33 @@ export class AgentLoop {
       }
 
       // Execute the tool
-      const result = await this.mcpServer.executeTool(call.name, call.args, {
-        editor: this.editor,
-      });
+      let result;
+      if (call.name === 'ask_reviewer' || call.name === 'ask_reasoner') {
+        const role = call.name.split('_')[1];
+        const targetModel = this.modelConfig[role] || 'claude'; // default to claude for subagents if not set
+        
+        // Auto-wrap the prompt with role-specific instructions
+        const wrapper = this.promptBuilder.buildSubagentWrapper(role);
+        const wrappedPrompt = wrapper + call.args.prompt;
+        
+        result = await this._executeSubagent(targetModel, wrappedPrompt);
+      } else if (call.name === 'manage_memory') {
+        if (call.args.action === 'add') {
+          const success = this.memoryManager.addMemory(call.args.fact);
+          result = { result: success ? `Added memory: ${call.args.fact}` : `Failed to add memory or memory is disabled.` };
+        } else if (call.args.action === 'remove') {
+          const success = this.memoryManager.removeMemory(call.args.index);
+          result = { result: success ? `Removed memory at index ${call.args.index}` : `Failed to remove memory (invalid index or disabled).` };
+        } else {
+          result = { error: 'Invalid action. Use "add" or "remove".' };
+        }
+      } else {
+        result = await this.mcpServer.executeTool(call.name, call.args, {
+          editor: this.editor,
+          taskManager: this.taskManager,
+          workspaceIndexer: this.workspaceIndexer,
+        });
+      }
 
       // Add to conversation history
       const callTurn = {
@@ -441,36 +576,99 @@ export class AgentLoop {
     const calls = [];
     let cleanContent = content;
 
-    // Use String.prototype.replace to both extract valid tool calls and strip them from the output
-    cleanContent = content.replace(TOOL_CALL_REGEX, (fullMatch, jsonGroup) => {
+    // First try the standard markdown regex for speed and to remove backticks cleanly
+    const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n```/gi;
+    cleanContent = cleanContent.replace(TOOL_CALL_REGEX, (fullMatch, jsonGroup) => {
       try {
-        const parsed = JSON.parse(jsonGroup.trim());
+        const cleaned = this._cleanJsonString(jsonGroup.trim());
+        const parsed = JSON.parse(cleaned);
         if (parsed.name && parsed.args) {
           calls.push(parsed);
-          return ''; // Valid tool call, strip it from the message
+          return ''; 
         }
-      } catch (err) {
-        console.warn('⚠️ Failed to parse potential tool call:', err.message);
-      }
-      return fullMatch; // Keep non-tool-calls in the message
+        if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].name) {
+          calls.push(...parsed);
+          return '';
+        }
+      } catch (err) {}
+      return fullMatch;
     });
 
-    // Fallback: If Gemini forgets the markdown backticks, look for raw JSON objects matching tool schema
-    const rawJsonRegex = /\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"args"\s*:\s*\{[\s\S]*?\}\s*\}/g;
-    cleanContent = cleanContent.replace(rawJsonRegex, (match) => {
-      try {
-        const parsed = JSON.parse(match);
-        if (parsed.name && parsed.args) {
-          calls.push(parsed);
-          return ''; // Strip valid unformatted tool call
+    // Fallback: Robust brace-matching to find any JSON object hidden in the text
+    // This handles missing backticks, weird UI wrappers, or malformed markdown
+    let startIndex = 0;
+    while ((startIndex = cleanContent.indexOf('{', startIndex)) !== -1) {
+      let openBraces = 0;
+      let endIndex = -1;
+      let inString = false;
+      let escapeNext = false;
+      
+      for (let i = startIndex; i < cleanContent.length; i++) {
+        const char = cleanContent[i];
+        if (escapeNext) { escapeNext = false; continue; }
+        if (char === '\\') { escapeNext = true; continue; }
+        if (char === '"') { inString = !inString; continue; }
+        if (!inString) {
+          if (char === '{') openBraces++;
+          if (char === '}') openBraces--;
+          if (openBraces === 0) { endIndex = i; break; }
         }
-      } catch (err) {
-        // Not valid JSON, ignore
       }
-      return match;
-    });
+      
+      if (endIndex !== -1) {
+        const jsonStr = cleanContent.substring(startIndex, endIndex + 1);
+        try {
+          const cleaned = this._cleanJsonString(jsonStr);
+          const parsed = JSON.parse(cleaned);
+          if (parsed.name && parsed.args) {
+            calls.push(parsed);
+            cleanContent = cleanContent.substring(0, startIndex) + cleanContent.substring(endIndex + 1);
+            continue; // startIndex is now at the character after the removed JSON
+          }
+        } catch (e) {}
+      }
+      startIndex++;
+    }
+
+    // Clean up any dangling "JSON" or "tool_call" text that Gemini might have left behind
+    cleanContent = cleanContent.replace(/(?:^|\n)(?:JSON|tool_call)\s*(?:\n|$)/gi, '\n');
 
     return { toolCalls: calls, cleanContent: cleanContent.trim() };
+  }
+
+  _cleanJsonString(str) {
+    // LLMs often emit raw newlines inside JSON string literals which breaks JSON.parse
+    return str.replace(/"(.*?)"/gs, (match) => match.replace(/\n/g, '\\n'));
+  }
+
+  async _executeSubagent(targetModel, prompt) {
+    return new Promise((resolve, reject) => {
+      const requestId = randomUUID();
+      this.pendingSubagents.set(requestId, { resolve, reject });
+
+      this.callbacks.sendToPanel({
+        id: randomUUID(),
+        type: 'status',
+        payload: { message: `🤖 [${targetModel}] Thinking...`, status: `waiting_for_${targetModel}` },
+        timestamp: Date.now(),
+      });
+
+      this.callbacks.injectPrompt({
+        prompt,
+        expectResponse: true,
+        targetModel,
+        requestId,
+        isSubagent: true,
+      });
+      
+      // Safety timeout (5 minutes)
+      setTimeout(() => {
+        if (this.pendingSubagents.has(requestId)) {
+          this.pendingSubagents.delete(requestId);
+          resolve({ success: false, error: `${targetModel} timeout after 5 minutes.` });
+        }
+      }, 300000);
+    });
   }
 
   async _getContextInfo() {
