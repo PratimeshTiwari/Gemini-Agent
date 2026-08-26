@@ -9,5 +9,16 @@
   "categories": ["Other"],
   "activationEvents": ["onStartupFinished"],
   "main": "./extension.js",
-  "contributes": {}
+  "contributes": {
+    "commands": [
+      {
+        "command": "geminiCompanion.approvePlan",
+        "title": "Gemini: Approve Plan"
+      },
+      {
+        "command": "geminiCompanion.rejectPlan",
+        "title": "Gemini: Reject Plan"
+      }
+    ]
+  }
 }

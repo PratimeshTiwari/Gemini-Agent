@@ -92,7 +92,7 @@ export class PromptBuilder {
 
     this.turnCounter++;
 
-    return '\u200B' + parts.join('\n\n');
+    return parts.join('\n\n');
   }
 
   /**
@@ -279,12 +279,6 @@ Your job:
 
   _buildToolDefinitions(topology = 'single', modelConfig = {}) {
     let tools = `<available_tools>
-## ask_question
-Ask the user a question with a list of multiple-choice options. Execution blocks until the user answers.
-Parameters:
-  - question (string, required): The question to ask
-  - options (array of strings, required): Multiple-choice options
-
 ## search_files
 Search for files by name or path pattern using fuzzy matching.
 Parameters:
@@ -411,7 +405,6 @@ Agent source: \`${this.agentSourceDir}\`
 Quick rules:
 - Use tools to read/edit/create files. Don't just show code.
 - Tool call format: \`\`\`json {"name": "tool_name", "args": {...}} \`\`\`
-- If a requirement is ambiguous, use the \`ask_question\` tool. Do not just ask textually.
 - ONE response per turn. No drafts.
 - Be concise. Think step by step.
 </system_reminder>`;

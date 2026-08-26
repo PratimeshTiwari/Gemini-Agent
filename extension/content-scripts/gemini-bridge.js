@@ -139,6 +139,7 @@ async function injectPrompt(text) {
     // Intercept image data if present
     const imgRegex = /<image_data>\n(data:image\/[^;]+;base64,[^\n]+)\n<\/image_data>/;
     const imgMatch = text.match(imgRegex);
+    let hasImage = false;
     
     if (imgMatch) {
       const dataUrl = imgMatch[1];
@@ -147,30 +148,51 @@ async function injectPrompt(text) {
       try {
         const res = await fetch(dataUrl);
         const blob = await res.blob();
-        // Determine extension from mime type
         const ext = blob.type.split('/')[1] || 'png';
         const file = new File([blob], `image.${ext}`, { type: blob.type });
         dataTransfer.items.add(file);
+        hasImage = true;
         console.log(`[Gemini Bridge] Attached image file: image.${ext} (${Math.round(blob.size/1024)}KB)`);
       } catch (err) {
         console.error('[Gemini Bridge] Failed to convert image data URL to Blob', err);
       }
     }
 
-    dataTransfer.setData('text/plain', text);
+    if (text) {
+      dataTransfer.setData('text/plain', text);
+    }
+
+    // Dispatch a single paste event for both image and text
     const pasteEvent = new ClipboardEvent('paste', {
       clipboardData: dataTransfer,
       bubbles: true,
       cancelable: true
     });
-
+    
+    // Focus before pasting
+    input.focus();
     const pasteHandled = !input.dispatchEvent(pasteEvent);
+
+    // If we pasted an image, wait for it to process
+    if (hasImage) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    // Fallback: If paste wasn't handled natively by Gemini, use insertText
     if (!pasteHandled && text) {
+      input.focus(); // Re-focus to prevent selection loss
       document.execCommand('insertText', false, text);
     }
 
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // Wait for the send button to become enabled (Gemini validates input and uploads images)
+    // Extra wait for image upload to complete if we pasted an image
+    if (hasImage) {
+      console.log('[Gemini Bridge] Waiting extra time for image upload to complete...');
+      await new Promise(r => setTimeout(r, 1500));
+    }
 
     // Wait for the send button to become enabled (Gemini validates input and uploads images)
     const sendBtn = await waitForSendButton(input, 30000);
@@ -282,11 +304,8 @@ function startResponseObserver() {
       lastResponseText = currentResponse;
       lastActivityTime = Date.now(); // Reset activity timer
 
-      // Reset the idle timer (response is still coming)
-      clearTimeout(responseIdleTimer);
-      responseIdleTimer = setTimeout(() => {
-        onResponseComplete(currentResponse);
-      }, RESPONSE_IDLE_TIMEOUT);
+      // We rely on the activityCheckTimer to determine completion based on the Stop button
+      // No need for a blind 15-second idle timer here.
 
       // Send streaming update every 2 seconds so CLI can show partial text
       if (!streamingUpdateTimer) {
@@ -313,11 +332,37 @@ function startResponseObserver() {
     characterData: true,
   });
 
-  // Activity checker: runs every 5s to detect if Gemini has gone silent
+  // Activity checker: runs every 2s to dynamically detect completion
+  // We add an initial delay of 3 seconds before checking for the stop button,
+  // because the stop button takes a moment to appear after clicking send.
   activityCheckTimer = setInterval(() => {
     const now = Date.now();
     const totalElapsed = now - responseStartTime;
     const silenceDuration = now - lastActivityTime;
+
+    // Do not check for completion in the first 3 seconds to allow the DOM to update
+    if (totalElapsed < 3000) return;
+
+    // Check if the "Stop Generating" button exists in the DOM and is visible
+    const stopBtn = findElement([
+      'button[aria-label*="stop" i]',
+      'button.stop-generating-button',
+    ]);
+    let isGenerating = false;
+    if (stopBtn) {
+      const rect = stopBtn.getBoundingClientRect();
+      const style = window.getComputedStyle(stopBtn);
+      isGenerating = rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    }
+
+    // If Gemini has stopped generating (no stop button) AND we have some text, it's done!
+    // We add a tiny 1-second silence buffer to ensure the DOM is fully settled.
+    if (!isGenerating && lastResponseText && silenceDuration >= 1000) {
+      console.log('[Gemini Bridge] Generation finished (Stop button disappeared + 1s settled)');
+      clearInterval(streamingUpdateTimer);
+      onResponseComplete(lastResponseText);
+      return;
+    }
 
     // Absolute max timeout (5 minutes)
     if (totalElapsed >= RESPONSE_MAX_TIMEOUT) {
@@ -335,13 +380,13 @@ function startResponseObserver() {
       return;
     }
 
-    // If Gemini has been silent for 30s after producing some text, consider it done
-    if (lastResponseText && silenceDuration >= RESPONSE_ACTIVITY_TIMEOUT) {
-      console.warn('[Gemini Bridge] Response activity timeout (30s silence)');
+    // Fallback: If for some reason the Stop button check fails but it has been silent for 15s
+    if (lastResponseText && silenceDuration >= RESPONSE_IDLE_TIMEOUT) {
+      console.warn('[Gemini Bridge] Fallback idle timeout reached (15s silence)');
       clearInterval(streamingUpdateTimer);
       onResponseComplete(lastResponseText);
     }
-  }, 5000);
+  }, 2000);
 }
 
 function stopResponseObserver() {
@@ -349,7 +394,6 @@ function stopResponseObserver() {
     responseObserver.disconnect();
     responseObserver = null;
   }
-  clearTimeout(responseIdleTimer);
   clearInterval(activityCheckTimer);
   activityCheckTimer = null;
 }

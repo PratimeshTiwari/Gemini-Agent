@@ -8,22 +8,32 @@
     "gemini-agent": "./src/index.js"
   },
   "scripts": {
-    "start": "node src/index.js --workspace ../",
-    "dev": "node --watch src/index.js --workspace ../",
+    "start": "tsx src/index.js --workspace ../",
+    "dev": "tsx --watch src/index.js --workspace ../",
     "test": "node --test src/**/*.test.js"
   },
   "dependencies": {
+    "@ink-tools/ink-mouse": "^2.1.0",
     "@inquirer/prompts": "^8.6.0",
     "acorn": "^8.18.0",
     "chalk": "^6.0.0",
     "chokidar": "^4.0.0",
     "diff": "^7.0.0",
     "fast-glob": "^3.3.0",
+    "ink": "^7.1.1",
+    "ink-select-input": "^6.2.0",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0",
     "ora": "^9.4.1",
+    "react": "^19.2.8",
     "web-tree-sitter": "^0.26.12",
     "ws": "^8.18.0",
     "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "tsx": "^4.23.12"
   }
 }

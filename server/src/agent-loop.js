@@ -121,7 +121,6 @@ export class AgentLoop {
         payload: { message: `Agent error: ${err.stack}` },
         timestamp: Date.now(),
       });
-    } finally {
       this.isProcessing = false;
     }
   }
@@ -130,7 +129,12 @@ export class AgentLoop {
    * Handle a response from Gemini (via content script).
    */
   async handleGeminiResponse(messageId, payload) {
-    const { content, requestId, isSubagent } = payload;
+    if (!this.isProcessing) {
+      console.warn('[Agent Loop] Received Gemini response but agent is no longer processing (likely stopped).');
+      return;
+    }
+
+    const { content, requestId, isSubagent, complete } = payload;
 
     if (!this.callbacks) {
       console.warn('⚠️ Received Gemini response but no callbacks registered');
@@ -139,6 +143,20 @@ export class AgentLoop {
 
     if (isSubagent) {
       this.handleSubagentResponse(requestId, content);
+      return;
+    }
+
+    if (!complete) {
+      if (payload.timedOut) {
+        console.warn('⚠️ Gemini response timed out');
+        this.callbacks.sendToPanel({
+          id: randomUUID(),
+          type: 'agent_response',
+          payload: { content: payload.content || '❌ Agent timed out waiting for Gemini response.' },
+          timestamp: Date.now(),
+        });
+        this.isProcessing = false;
+      }
       return;
     }
 
@@ -181,13 +199,6 @@ export class AgentLoop {
 
     // Show the response text (without tool call blocks) in the side panel
     if (cleanContent.trim()) {
-      this.callbacks.sendToPanel({
-        id: randomUUID(),
-        type: 'agent_response',
-        payload: { content: cleanContent.trim() },
-        timestamp: Date.now(),
-      });
-
       const agentTurn = {
         role: 'agent',
         content: cleanContent.trim(),
@@ -195,6 +206,13 @@ export class AgentLoop {
       };
       this.conversationHistory.push(agentTurn);
       this.sessionStore.appendTurn(agentTurn);
+
+      this.callbacks.sendToPanel({
+        id: randomUUID(),
+        type: 'agent_response',
+        payload: { content: cleanContent.trim() },
+        timestamp: Date.now(),
+      });
     }
 
     // Execute tool calls
@@ -380,6 +398,13 @@ export class AgentLoop {
 
   // ── Private Methods ──────────────────────────────────────────────
 
+  answerQuestion(answer) {
+    if (this.pendingQuestionResolve) {
+      this.pendingQuestionResolve({ success: true, result: `User answered: ${answer}` });
+      this.pendingQuestionResolve = null;
+    }
+  }
+
   _loadConfig() {
     const configPath = path.join(this.workspace, '.gemini', 'config.json');
     if (fs.existsSync(configPath)) {
@@ -461,7 +486,17 @@ export class AgentLoop {
 
       // Execute the tool
       let result;
-      if (call.name === 'ask_reviewer' || call.name === 'ask_reasoner') {
+      if (call.name === 'ask_question') {
+        result = await new Promise((resolve) => {
+          this.pendingQuestionResolve = resolve;
+          this.callbacks.sendToPanel({
+            id: randomUUID(),
+            type: 'ask_question',
+            payload: { question: call.args.question, options: call.args.options },
+            timestamp: Date.now(),
+          });
+        });
+      } else if (call.name === 'ask_reviewer' || call.name === 'ask_reasoner') {
         const role = call.name.split('_')[1];
         const targetModel = this.modelConfig[role] || 'claude'; // default to claude for subagents if not set
         
