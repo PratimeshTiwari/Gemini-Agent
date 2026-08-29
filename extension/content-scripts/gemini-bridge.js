@@ -369,6 +369,26 @@ function startResponseObserver() {
     // Do not check for completion in the first 3 seconds to allow the DOM to update
     if (totalElapsed < 3000) return;
 
+    // Detect and dismiss Gemini A/B test dialog ("Which response is more helpful?")
+    // These dialogs block the UI and prevent completion
+    const abTestTitle = document.querySelector('h2, .title');
+    if (abTestTitle && abTestTitle.textContent.toLowerCase().includes('which response is more helpful')) {
+      const choiceBtn = document.querySelector('button:has-text("Choice A"), button:has-text("Choice 1"), .choice-a, [aria-label*="Choice A" i]');
+      
+      // Fallback for :has-text which isn't standard CSS
+      let btnToClick = choiceBtn;
+      if (!btnToClick) {
+        const buttons = Array.from(document.querySelectorAll('button'));
+        btnToClick = buttons.find(b => b.textContent.includes('Choice A') || b.textContent.includes('Choice 1'));
+      }
+
+      if (btnToClick) {
+        console.warn('[Gemini Bridge] Detected A/B test dialog! Auto-selecting Choice A to dismiss it.');
+        btnToClick.click();
+        lastActivityTime = Date.now(); // reset timeout to allow extraction
+      }
+    }
+
     // Check if the "Stop Generating" button exists in the DOM and is visible
     const stopBtn = findElement([
       'button[aria-label*="stop" i]',

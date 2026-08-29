@@ -54,6 +54,15 @@ export class GitHubEventHandler extends EventEmitter {
     this.ciParser = new CILogParser();
     this.planGenerator = new PlanGenerator(workspace, this.config.planOutputDir);
 
+    // ── Concurrency Queue ──────────────────────────────────────────
+    // One comment is analyzed at a time. Others queue up.
+    // 30s cooldown between completions to avoid Gemini rate limits.
+    this._commentQueue = [];          // [{ pr, comment, force }]
+    this._isProcessingComment = false;
+    this._currentAnalysis = null;     // { commentId, prNumber, author } for UI
+    this._processedCommentIds = new Set(); // Dedup within current session
+    this.COMMENT_COOLDOWN_MS = 30000; // 30s between consecutive analyses
+
     // Stats
     this.stats = {
       totalPolls: 0,
@@ -131,131 +140,131 @@ export class GitHubEventHandler extends EventEmitter {
    * Used by PR Explorer when user explicitly presses Enter on a comment.
    */
   async forceAnalyzeComment(pr, comment) {
-    const classification = this.classifier.classify(comment, this.config.ignoreAuthors, this.config.avoidWords || []);
-    // Override noise — user explicitly requested analysis
-    const effectiveClassification = classification.category === 'noise'
-      ? { ...classification, category: 'requires_review', matchedKeywords: [], priority: 2 }
-      : classification;
-
-    let aiAnalysis = null;
-    if (this.agentLoop) {
-      const diffContext = comment.diff_hunk ? `\nFile Context (Diff):\n\`\`\`diff\n${comment.diff_hunk}\n\`\`\`\n` : '';
-      const prompt = `You are an elite Senior Staff Engineer. Analyze this GitHub PR comment and produce an actionable implementation plan.
-
-PR: ${pr.title} (#${pr.number})
-Comment by @${comment.author}:
-> ${comment.body}
-${diffContext}
-
-Search the codebase for relevant files, understand the context, and produce a concrete step-by-step plan.`;
-
-      try {
-        const systemInstruction = `You MUST use tools (grep_search, view_file, list_dir) to explore the codebase before producing your plan. Do not guess — search first.`;
-        const response = await this.agentLoop.runHeadlessTask(prompt, systemInstruction);
-        if (response.success) aiAnalysis = response.result;
-        else {
-          appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `[forceAnalyze] Failed: ${response.error}\n`);
-        }
-      } catch (e) {
-        appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `[forceAnalyze] Exception: ${e.stack}\n`);
-      }
+    // If this exact comment is currently being analyzed, return immediately
+    if (this._currentAnalysis?.commentId === comment.id) {
+      this.emit('status', { message: `⏳ Comment #${comment.id} is already being analyzed. Please wait.` });
+      return { skipped: true, reason: 'processing' };
     }
 
-    // Delete existing plan file so deduplication doesn't skip it
+    // Delete existing plan so deduplication doesn't skip it
     const prDir = join(this.planGenerator.outputDir, `PR-${pr.number}`);
     const planPath = join(prDir, `comment-${comment.id}.md`);
     try { unlinkSync(planPath); } catch (_) {}
 
-    const result = this.planGenerator.generateCommentPlan({ pr, comment, classification: effectiveClassification, aiAnalysis });
+    // Remove from dedup set so the queue processes it
+    this._processedCommentIds.delete(comment.id);
 
-    if (!result.skipped) {
-      this.emit('plan_generated', {
-        type: 'comment',
-        pr, comment,
-        classification: effectiveClassification,
-        filePath: result.filePath,
-        isNew: result.isNew,
-      });
+    // Enqueue with force flag
+    this._enqueueComment({ pr, comment, force: true });
+    return { queued: true };
+  }
+
+  /**
+   * Enqueue a comment for analysis.
+   * Deduplicates automatically; force=true bypasses dedup.
+   */
+  _enqueueComment({ pr, comment, force = false }) {
+    const key = comment.id;
+
+    // Dedup: skip if already processed or already in queue
+    if (!force) {
+      if (this._processedCommentIds.has(key)) return;
+      if (this._commentQueue.some(item => item.comment.id === key)) return;
     }
-    return result;
+
+    this._commentQueue.push({ pr, comment });
+    this._drainCommentQueue();
+  }
+
+  /**
+   * Process the next item in the queue (one at a time).
+   */
+  async _drainCommentQueue() {
+    if (this._isProcessingComment || this._commentQueue.length === 0) return;
+
+    this._isProcessingComment = true;
+    const { pr, comment } = this._commentQueue.shift();
+
+    this._processedCommentIds.add(comment.id);
+    this._currentAnalysis = { commentId: comment.id, prNumber: pr.number, author: comment.author };
+
+    this.emit('processing_started', {
+      commentId: comment.id,
+      prNumber: pr.number,
+      author: comment.author,
+      body: comment.body,
+    });
+
+    try {
+      await this._analyzeComment(pr, comment);
+    } finally {
+      this._currentAnalysis = null;
+      this._isProcessingComment = false;
+
+      this.emit('processing_finished', { commentId: comment.id, prNumber: pr.number });
+
+      // Cooldown before next item
+      if (this._commentQueue.length > 0) {
+        setTimeout(() => this._drainCommentQueue(), this.COMMENT_COOLDOWN_MS);
+      }
+    }
+  }
+
+  /**
+   * Run AI analysis + plan generation for a single comment.
+   */
+  async _analyzeComment(pr, comment) {
+    const classification = this.classifier.classify(comment, this.config.ignoreAuthors, this.config.avoidWords || []);
+    if (classification.category === 'noise') return;
+
+    let aiAnalysis = null;
+    if (this.agentLoop) {
+      const diffContext = comment.diff_hunk ? `\nFile Context (Diff):\n\`\`\`diff\n${comment.diff_hunk}\n\`\`\`\n` : '';
+      const prompt = `You are a Senior Staff Engineer performing a code review response.
+
+PR: "${pr.title}" (#${pr.number}) on branch ${pr.head_ref || 'unknown'}
+Comment by @${comment.author}:
+> ${comment.body}
+${diffContext}
+
+Your task:
+1. Use grep_search and read_file to locate the relevant code in the workspace.
+2. Understand the context fully before writing your plan.
+3. Produce ONE consolidated markdown plan with: Problem Summary, Relevant Files Found, Concrete Action Items (step-by-step), and Test Strategy.
+4. Be direct and technically precise. No filler.`;
+
+      try {
+        const response = await this.agentLoop.runHeadlessTask(prompt);
+        if (response.success) {
+          aiAnalysis = response.result;
+        } else {
+          appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `[analyzeComment] Failed: ${response.error}\n`);
+        }
+      } catch (e) {
+        appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `[analyzeComment] Exception: ${e.stack}\n`);
+      }
+    }
+
+    const result = this.planGenerator.generateCommentPlan({ pr, comment, classification, aiAnalysis });
+    if (result.skipped) return;
+
+    this.stats.totalCommentsProcessed++;
+    this.stats.totalPlansGenerated++;
+
+    this.emit('plan_generated', { type: 'comment', pr, comment, classification, filePath: result.filePath, isNew: result.isNew });
+    this.emit('notification', {
+      message: `📝 ${classification.label} on PR #${pr.number} by @${comment.author} → ${result.filePath}`,
+      category: classification.category,
+      prNumber: pr.number,
+    });
   }
 
   // ── Private: Event Wiring ──────────────────────────────────────
 
   _wireEvents() {
     // ── New Comment ────────────────────────────────────────────────
-    this.poller.on('new_comment', async ({ pr, comment }) => {
-      try {
-        // Classify the comment
-        const classification = this.classifier.classify(comment, this.config.ignoreAuthors, this.config.avoidWords || []);
-
-        // Skip noise
-        if (classification.category === 'noise') {
-          return;
-        }
-
-        let aiAnalysis = null;
-        if (this.agentLoop) {
-          const diffContext = comment.diff_hunk ? `\nFile Context (Diff):\n\`\`\`diff\n${comment.diff_hunk}\n\`\`\`\n` : '';
-          const prompt = `You are an elite Senior Staff Engineer and Security Auditor specializing in complex code reviews and architectural design. 
-Analyze the following GitHub PR comment and formulate a highly technical, rigorous, and actionable plan for the developer to address it.
-
-Directives:
-1. Identify any hidden edge cases, security vulnerabilities, or performance bottlenecks related to the request.
-2. Provide concrete implementation steps. If code changes are required, specify exact modifications.
-3. Suggest robust testing scenarios (unit, integration, or edge-case tests) to validate the fix.
-4. Do NOT use conversational filler. Be extremely direct and technically precise.
-
-Comment by @${comment.author}:
-> ${comment.body}
-${diffContext}`;
-          
-          try {
-            const systemInstruction = `You are an elite Senior Staff Engineer and Security Auditor. You MUST use your available tools (like grep_search, view_file, list_dir, run_command) to search the workspace, analyze the codebase context around this PR comment, and verify your assumptions before forming your final plan.`;
-            const subagentResponse = await this.agentLoop.runHeadlessTask(prompt, systemInstruction);
-            if (subagentResponse.success) {
-              aiAnalysis = subagentResponse.result;
-            } else {
-              appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `Headless Task Failed: ${subagentResponse.error}\n`);
-            }
-          } catch (e) {
-            appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `AI Analysis threw exception: ${e.stack}\n`);
-            console.error('AI Analysis failed:', e);
-          }
-        }
-
-        const result = this.planGenerator.generateCommentPlan({
-          pr,
-          comment,
-          classification,
-          aiAnalysis,
-        });
-
-        if (result.skipped) {
-          return;
-        }
-
-        this.stats.totalCommentsProcessed++;
-        this.stats.totalPlansGenerated++;
-
-        this.emit('plan_generated', {
-          type: 'comment',
-          pr,
-          comment,
-          classification,
-          filePath: result.filePath,
-          isNew: result.isNew,
-        });
-
-        this.emit('notification', {
-          message: `📝 ${classification.label} on PR #${pr.number} by @${comment.author} → ${result.filePath}`,
-          category: classification.category,
-          prNumber: pr.number,
-        });
-
-      } catch (err) {
-        this.emit('error', { message: `Failed to process comment: ${err.message}` });
-      }
+    this.poller.on('new_comment', ({ pr, comment }) => {
+      this._enqueueComment({ pr, comment });
     });
 
     // ── CI Failure ─────────────────────────────────────────────────

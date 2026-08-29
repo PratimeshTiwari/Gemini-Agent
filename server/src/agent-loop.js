@@ -964,22 +964,48 @@ export class AgentLoop {
 
   async runHeadlessTask(prompt, systemInstruction = null) {
     const localHistory = [];
-    
-    const baseSystem = `You are a headless background agent running in the user's codebase. 
-You have access to tools via the MCP server. You MUST use tools to explore the codebase and answer the user's request.
-Return your tool calls in a <tool_call> JSON block.
-When you are done, return a final summary of your findings. Do NOT return any tool calls in your final turn.`;
 
-    const finalSystem = systemInstruction ? `${baseSystem}\n\n${systemInstruction}` : baseSystem;
-    
+    const baseSystem = `You are a headless background agent running inside the user's code workspace.
+You have access to a local MCP tool server. You MUST use tools to explore the codebase before drawing conclusions.
+
+## TOOLS AVAILABLE (use these exact names and argument keys):
+
+- grep_search({ "pattern": "string", "isRegex": false, "includes": ["*.js"] })
+  → Search for text/patterns across all files. Use "pattern" NOT "query".
+
+- read_file({ "path": "relative/or/absolute/path", "startLine": 1, "endLine": 50 })
+  → Read a file, optionally a line range.
+
+- list_directory({ "path": "." })
+  → List directory contents.
+
+- search_files({ "query": "filename or path fragment" })
+  → Find files by name.
+
+## TOOL CALL FORMAT (exact format required):
+<tool_call>
+{"name": "grep_search", "args": {"pattern": "your search term"}}
+</tool_call>
+
+## RULES:
+1. Make UP TO 5 tool calls to understand the codebase before writing your plan.
+2. After gathering context, produce ONE consolidated final plan in markdown.
+3. Do NOT produce partial plans between tool calls — wait until the end.
+4. Do NOT repeat tool calls you already made.
+5. When done, output ONLY the final plan. Do not include any tool call blocks in the final turn.`;
+
+    const finalSystem = systemInstruction ? `${baseSystem}\n\n## ADDITIONAL DIRECTIVE:\n${systemInstruction}` : baseSystem;
+
     localHistory.push({ role: 'system', content: finalSystem });
     localHistory.push({ role: 'user', content: prompt });
 
-    let finalOutput = '';
+    let lastCleanContent = '';
+    let turnCount = 0;
 
-    for (let turn = 0; turn < 15; turn++) {
+    for (let turn = 0; turn < 10; turn++) {
+      turnCount = turn + 1;
       const serializedPrompt = localHistory.map(t => `${t.role.toUpperCase()}:\n${t.content}`).join('\n\n') + '\n\nAGENT:\n';
-      
+
       const response = await this._executeSubagent('gemini', serializedPrompt);
       if (!response.success) {
         return { success: false, error: response.error };
@@ -996,13 +1022,17 @@ When you are done, return a final summary of your findings. Do NOT return any to
         toolCalls = extracted.toolCalls;
         cleanContent = extracted.cleanContent;
       } catch (err) {
-        localHistory.push({ role: 'system', content: `JSON Parse Error: ${err.message}` });
+        localHistory.push({ role: 'system', content: `JSON Parse Error: ${err.message}. Fix your tool call format.` });
         continue;
       }
 
-      finalOutput += '\n' + cleanContent;
+      // Track the last non-empty clean content as the candidate final plan
+      if (cleanContent.trim()) {
+        lastCleanContent = cleanContent.trim();
+      }
 
       if (toolCalls.length === 0) {
+        // No more tool calls — this is the final plan turn
         break;
       }
 
@@ -1010,26 +1040,28 @@ When you are done, return a final summary of your findings. Do NOT return any to
       for (const call of toolCalls) {
         let result;
         const risk = this.riskClassifier.classify(call.name, call.args);
-        
+
         if (call.name === 'run_command' && risk.level !== 'safe') {
-           result = { success: false, error: `Command blocked in background agent for security: ${risk.reason}` };
+          result = { success: false, error: `Command blocked in background agent for security: ${risk.reason}` };
         } else {
-           try {
-             result = await this.mcpServer.executeTool(call.name, call.args, {
-               editor: this.editor,
-               taskManager: this.taskManager,
-               workspaceIndexer: this.workspaceIndexer,
-             });
-           } catch(e) {
-             result = { success: false, error: e.message };
-           }
+          try {
+            result = await this.mcpServer.executeTool(call.name, call.args, {
+              editor: this.editor,
+              taskManager: this.taskManager,
+              workspaceIndexer: this.workspaceIndexer,
+            });
+          } catch (e) {
+            result = { success: false, error: e.message };
+          }
         }
         toolResults.push({ call_id: call.id || randomUUID(), name: call.name, result });
       }
-      localHistory.push({ role: 'tool', content: JSON.stringify(toolResults) });
+      localHistory.push({ role: 'tool', content: JSON.stringify(toolResults, null, 2) });
     }
 
-    return { success: true, result: finalOutput.trim() };
+    // Return only the final consolidated plan (last clean output)
+    const finalOutput = lastCleanContent || '(No plan generated)';
+    return { success: true, result: `## 🧠 AI Context Analysis\n\n${finalOutput}`, turns: turnCount };
   }
 
   async _getContextInfo() {

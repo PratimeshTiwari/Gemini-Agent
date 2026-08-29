@@ -1044,6 +1044,15 @@ export function App({ agentLoop, wsServer }) {
                 <Text>Status: {agentLoop.githubHandler?.getStatus()?.prsWatched || 0} PRs Watched | CI Watch: {agentLoop.githubHandler?.config?.enableCIWatch ? '✅ ON' : '⛔ OFF'}</Text>
                 <Text dimColor>Last poll: {agentLoop.githubHandler?.getStatus()?.lastPollTime || 'Never'}</Text>
               </Box>
+
+              {agentLoop.githubHandler?._currentAnalysis && (
+                <Box borderStyle="round" borderColor="yellow" paddingX={2} marginBottom={1} flexDirection="column">
+                  <Text color="yellow" bold>
+                    <Text>🔄 Analyzing comment by @{agentLoop.githubHandler._currentAnalysis.author} on PR #{agentLoop.githubHandler._currentAnalysis.prNumber}...</Text>
+                  </Text>
+                  <Text dimColor>Please wait while the AI generates a plan. Queue size: {agentLoop.githubHandler?._commentQueue?.length || 0}</Text>
+                </Box>
+              )}
               
               <Box borderStyle="single" borderColor="gray" flexDirection="column" flexGrow={1} padding={1}>
                 <Text bold marginBottom={1}>── Recent Activity ───────────────────────</Text>

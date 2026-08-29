@@ -248,8 +248,28 @@ export class WebSocketServer {
         payload: data,
         timestamp: Date.now(),
       };
-      this.pendingGitHubNotifications.push(msg);
-      this.broadcast('extension', msg);
+      this.githubNotifications.push(msg);
+      if (this.githubNotifications.length > 200) this.githubNotifications.shift();
+    });
+
+    this.githubHandler.on('processing_started', (data) => {
+      this.githubNotifications.push({
+        id: randomUUID(),
+        type: 'github_processing_started',
+        payload: data,
+        timestamp: Date.now(),
+      });
+      if (this.githubNotifications.length > 200) this.githubNotifications.shift();
+    });
+
+    this.githubHandler.on('processing_finished', (data) => {
+      this.githubNotifications.push({
+        id: randomUUID(),
+        type: 'github_processing_finished',
+        payload: data,
+        timestamp: Date.now(),
+      });
+      if (this.githubNotifications.length > 200) this.githubNotifications.shift();
     });
 
     this.githubHandler.on('plan_generated', (data) => {
