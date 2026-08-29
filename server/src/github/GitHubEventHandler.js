@@ -13,6 +13,9 @@
 
 import { EventEmitter } from 'events';
 import { execSync } from 'child_process';
+import { unlinkSync } from 'fs';
+import { appendFileSync } from 'fs';
+import { join } from 'path';
 import { GitHubPoller } from './GitHubPoller.js';
 import { CommentClassifier } from './CommentClassifier.js';
 import { CILogParser } from './CILogParser.js';
@@ -123,6 +126,60 @@ export class GitHubEventHandler extends EventEmitter {
     return await this.poller.fetchAllOpenPRs();
   }
 
+  /**
+   * Force-analyze a specific comment regardless of deduplication.
+   * Used by PR Explorer when user explicitly presses Enter on a comment.
+   */
+  async forceAnalyzeComment(pr, comment) {
+    const classification = this.classifier.classify(comment, this.config.ignoreAuthors, this.config.avoidWords || []);
+    // Override noise — user explicitly requested analysis
+    const effectiveClassification = classification.category === 'noise'
+      ? { ...classification, category: 'requires_review', matchedKeywords: [], priority: 2 }
+      : classification;
+
+    let aiAnalysis = null;
+    if (this.agentLoop) {
+      const diffContext = comment.diff_hunk ? `\nFile Context (Diff):\n\`\`\`diff\n${comment.diff_hunk}\n\`\`\`\n` : '';
+      const prompt = `You are an elite Senior Staff Engineer. Analyze this GitHub PR comment and produce an actionable implementation plan.
+
+PR: ${pr.title} (#${pr.number})
+Comment by @${comment.author}:
+> ${comment.body}
+${diffContext}
+
+Search the codebase for relevant files, understand the context, and produce a concrete step-by-step plan.`;
+
+      try {
+        const systemInstruction = `You MUST use tools (grep_search, view_file, list_dir) to explore the codebase before producing your plan. Do not guess — search first.`;
+        const response = await this.agentLoop.runHeadlessTask(prompt, systemInstruction);
+        if (response.success) aiAnalysis = response.result;
+        else {
+          appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `[forceAnalyze] Failed: ${response.error}\n`);
+        }
+      } catch (e) {
+        appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `[forceAnalyze] Exception: ${e.stack}\n`);
+      }
+    }
+
+    // Delete existing plan file so deduplication doesn't skip it
+    const prDir = join(this.planGenerator.outputDir, `PR-${pr.number}`);
+    const planPath = join(prDir, `comment-${comment.id}.md`);
+    try { unlinkSync(planPath); } catch (_) {}
+
+    const result = this.planGenerator.generateCommentPlan({ pr, comment, classification: effectiveClassification, aiAnalysis });
+
+    if (!result.skipped) {
+      this.emit('plan_generated', {
+        type: 'comment',
+        pr, comment,
+        classification: effectiveClassification,
+        filePath: result.filePath,
+        isNew: result.isNew,
+      });
+    }
+    return result;
+  }
+
   // ── Private: Event Wiring ──────────────────────────────────────
 
   _wireEvents() {
@@ -138,7 +195,7 @@ export class GitHubEventHandler extends EventEmitter {
         }
 
         let aiAnalysis = null;
-        if (this.agentLoop && this.agentLoop.callbacks) {
+        if (this.agentLoop) {
           const diffContext = comment.diff_hunk ? `\nFile Context (Diff):\n\`\`\`diff\n${comment.diff_hunk}\n\`\`\`\n` : '';
           const prompt = `You are an elite Senior Staff Engineer and Security Auditor specializing in complex code reviews and architectural design. 
 Analyze the following GitHub PR comment and formulate a highly technical, rigorous, and actionable plan for the developer to address it.
@@ -158,8 +215,11 @@ ${diffContext}`;
             const subagentResponse = await this.agentLoop.runHeadlessTask(prompt, systemInstruction);
             if (subagentResponse.success) {
               aiAnalysis = subagentResponse.result;
+            } else {
+              appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `Headless Task Failed: ${subagentResponse.error}\n`);
             }
           } catch (e) {
+            appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `AI Analysis threw exception: ${e.stack}\n`);
             console.error('AI Analysis failed:', e);
           }
         }

@@ -68,6 +68,20 @@ export class AgentLoop {
   }
 
   /**
+   * Set a persistent background callbacks object so headless/GitHub tasks
+   * can always use the extension bridge (injectPrompt) even when no user
+   * message is being processed. Called once after the WebSocket server starts.
+   */
+  setBackgroundCallbacks(callbacks) {
+    // Only update if callbacks isn't already set by a live user session
+    if (!this.callbacks) {
+      this.callbacks = callbacks;
+    }
+    // Always store as the background fallback
+    this._backgroundCallbacks = callbacks;
+  }
+
+  /**
    * Handle a user message from the side panel.
    */
   async handleUserMessage(content, callbacks) {
@@ -141,13 +155,18 @@ export class AgentLoop {
    * Handle a response from Gemini (via content script).
    */
   async handleGeminiResponse(messageId, payload) {
-    if (!this.isProcessing) {
+    const { content, requestId, isSubagent, complete } = payload;
+
+    // Allow subagent responses through even when main agent isn't processing —
+    // background GitHub tasks use _executeSubagent without setting isProcessing.
+    if (!this.isProcessing && !isSubagent) {
       console.warn('[Agent Loop] Received Gemini response but agent is no longer processing (likely stopped).');
       return;
     }
 
-    const { content, requestId, isSubagent, complete } = payload;
-
+    if (!this.callbacks && this._backgroundCallbacks) {
+      this.callbacks = this._backgroundCallbacks;
+    }
     if (!this.callbacks) {
       console.warn('⚠️ Received Gemini response but no callbacks registered');
       return;
@@ -247,6 +266,10 @@ export class AgentLoop {
     } else {
       // No tool calls — agent is done
       this.isProcessing = false;
+      // Restore background callbacks so GitHub tasks still work
+      if (this._backgroundCallbacks) {
+        this.callbacks = this._backgroundCallbacks;
+      }
     }
   }
 
@@ -931,6 +954,8 @@ export class AgentLoop {
       setTimeout(() => {
         if (this.pendingSubagents.has(requestId)) {
           this.pendingSubagents.delete(requestId);
+          this.isExtensionBusy = false;
+          this._processExtensionQueue();
           resolve({ success: false, error: `${targetModel} timeout after 5 minutes.` });
         }
       }, 300000);

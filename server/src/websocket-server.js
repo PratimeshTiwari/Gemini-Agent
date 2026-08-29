@@ -30,6 +30,24 @@ export class WebSocketServer {
     if (this.githubHandler) {
       this._wireGitHubEvents();
     }
+
+    // Always provide background callbacks so headless tasks (e.g. GitHub agent)
+    // can use the extension bridge even when no user message is being processed.
+    this._wireBackgroundCallbacks();
+  }
+
+  _wireBackgroundCallbacks() {
+    const backgroundCallbacks = {
+      sendToPanel: (msg) => this.broadcast('extension', msg),
+      injectPrompt: (msg) => this.broadcast('extension', {
+        id: randomUUID(),
+        type: 'inject_prompt',
+        payload: msg,
+        timestamp: Date.now(),
+      }),
+      requestDiffApproval: () => {}, // No-op for background tasks
+    };
+    this.agentLoop.setBackgroundCallbacks(backgroundCallbacks);
   }
 
   async start() {

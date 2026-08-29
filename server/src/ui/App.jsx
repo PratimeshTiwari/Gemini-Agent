@@ -606,11 +606,46 @@ export function App({ agentLoop, wsServer }) {
       }
 
       if (key.escape) {
+        if (githubView === 'pr_explorer' && explorerMode === 'comments') {
+          setExplorerMode('prs');
+          return;
+        }
         if (githubView !== 'activity') {
           setGithubView('activity');
           return;
         }
       }
+      
+      if (githubView === 'pr_explorer') {
+        if (explorerMode === 'prs') {
+          if (key.upArrow) setSelectedPrIdx(prev => Math.max(0, prev - 1));
+          if (key.downArrow) setSelectedPrIdx(prev => Math.min(prList.length - 1, prev + 1));
+          if (key.return && prList.length > 0) {
+             const pr = prList[selectedPrIdx];
+             if (pr && agentLoop?.githubHandler?.poller) {
+               agentLoop.githubHandler.poller.fetchAllComments(pr)
+                 .then(comments => { setPrComments(comments); setExplorerMode('comments'); setSelectedPrCommentIdx(0); })
+                 .catch(err => {});
+             }
+          }
+        } else if (explorerMode === 'comments') {
+          if (key.upArrow) setSelectedPrCommentIdx(prev => Math.max(0, prev - 1));
+          if (key.downArrow) setSelectedPrCommentIdx(prev => Math.min(prComments.length - 1, prev + 1));
+          if (key.return && prComments.length > 0) {
+             const pr = prList[selectedPrIdx];
+             const comment = prComments[selectedPrCommentIdx];
+             if (agentLoop?.githubHandler?.forceAnalyzeComment && pr && comment) {
+               // Show feedback immediately, run analysis in background
+               setGithubView('activity');
+               agentLoop.githubHandler.forceAnalyzeComment(pr, comment).catch(() => {});
+             } else {
+               setGithubView('activity');
+             }
+          }
+        }
+        return;
+      }
+
       const visiblePlans = githubActivity.slice().reverse().filter(a => a.type === 'github_plan_generated').slice(0, 10);
       let currentIdx = visiblePlans.findIndex(p => p.id === selectedPlanId);
       if (currentIdx === -1 && visiblePlans.length > 0) currentIdx = 0;
@@ -900,18 +935,35 @@ export function App({ agentLoop, wsServer }) {
               
               {explorerMode === "comments" && (
                 <Box flexDirection="column" marginY={1}>
-                  <Text color="gray">Select a comment to force AI analysis:</Text>
-                  {prComments.length === 0 && <Text dimColor>Loading comments...</Text>}
-                  {prComments.map((c, i) => (
-                    <Box key={i} flexDirection="row">
-                      <Text color={i === selectedPrCommentIdx ? "white" : "gray"}>
-                        {i === selectedPrCommentIdx ? "❯ " : "  "}@{c.author}: 
-                      </Text>
-                      <Text color={i === selectedPrCommentIdx ? "cyan" : "dim"} dimColor={i !== selectedPrCommentIdx}>
-                         {c.body.replace(/\n/g, " ").substring(0, 60)}{c.body.length > 60 ? "..." : ""}
-                      </Text>
-                    </Box>
-                  ))}
+                  <Box marginBottom={1}>
+                    <Text bold color="cyan">PR #{prList[selectedPrIdx]?.number}</Text>
+                    <Text color="gray"> — </Text>
+                    <Text color="white">{prList[selectedPrIdx]?.title}</Text>
+                  </Box>
+                  <Text color="gray" dimColor>↵ Enter to dispatch to AI Agent  ·  ESC to go back</Text>
+                  <Box flexDirection="column" marginTop={1}>
+                    {prComments.length === 0 && <Text dimColor>Loading comments...</Text>}
+                    {prComments.map((c, i) => {
+                      const isSelected = i === selectedPrCommentIdx;
+                      const date = c.created_at ? new Date(c.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+                      const typeTag = c.type === 'review_comment' ? '[review]' : '[comment]';
+                      return (
+                        <Box key={i} flexDirection="column" marginBottom={1} borderStyle={isSelected ? 'single' : undefined} borderColor={isSelected ? 'cyan' : undefined} paddingX={isSelected ? 1 : 0}>
+                          <Box flexDirection="row">
+                            <Text color={isSelected ? 'cyan' : 'yellow'} bold>{isSelected ? '❯ ' : '  '}@{c.author}</Text>
+                            <Text color="gray"> {typeTag}</Text>
+                            {date ? <Text color="gray" dimColor>  {date}</Text> : null}
+                            {c.path ? <Text color="magenta" dimColor>  📄 {c.path}</Text> : null}
+                          </Box>
+                          <Box marginLeft={isSelected ? 0 : 2}>
+                            <Text color={isSelected ? 'white' : 'gray'} wrap="wrap">
+                              {c.body.replace(/\n/g, ' ').substring(0, 100)}{c.body.length > 100 ? '...' : ''}
+                            </Text>
+                          </Box>
+                        </Box>
+                      );
+                    })}
+                  </Box>
                 </Box>
               )}
               
