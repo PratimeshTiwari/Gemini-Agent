@@ -48,7 +48,7 @@ export class AgentLoop {
       main: 'gemini',
       reviewer: 'claude',
       reasoner: 'chatgpt',
-      reasoningEffort: 'medium',
+      reasoningEffort: 'high',
       useLocalLlm: false
     };
     
@@ -58,7 +58,10 @@ export class AgentLoop {
     this.queuedUserMessage = null;
     this.callbacks = null;
     this.isProcessing = false;
+    this.extensionQueue = [];
+    this.isExtensionBusy = false;
     this.pendingSubagents = new Map(); // Maps requestId -> { resolve, reject }
+    this.githubHandler = null; // Set externally after initialization
 
     // Workspace summary (generated dynamically by context manager)
     // Workspace summary removed to save context window.
@@ -151,7 +154,11 @@ export class AgentLoop {
     }
 
     if (isSubagent) {
-      this.handleSubagentResponse(requestId, content);
+      if (complete) {
+        this.handleSubagentResponse(requestId, content);
+        this.isExtensionBusy = false;
+        this._processExtensionQueue();
+      }
       return;
     }
 
@@ -165,9 +172,15 @@ export class AgentLoop {
           timestamp: Date.now(),
         });
         this.isProcessing = false;
+        this.isExtensionBusy = false;
+        this._processExtensionQueue();
       }
       return;
     }
+
+    // Request complete
+    this.isExtensionBusy = false;
+    this._processExtensionQueue();
 
     // (Auto-compaction is now handled silently via background subagents, so the old isCompacting logic is removed from here)
 
@@ -411,7 +424,7 @@ export class AgentLoop {
           this._saveConfig();
           return { message: `🧠 Reasoning effort set to: **${this.modelConfig.reasoningEffort.toUpperCase()}**` };
         }
-        return { message: `🧠 Current reasoning effort: **${this.modelConfig.reasoningEffort?.toUpperCase() || 'MEDIUM'}**\nUsage: \`/reasoning <low|medium|high>\`` };
+        return { message: `🧠 Current reasoning effort: **${this.modelConfig.reasoningEffort?.toUpperCase() || 'HIGH'}**\nUsage: \`/reasoning <low|medium|high>\`` };
       }
       
       case 'localllm': {
@@ -423,8 +436,101 @@ export class AgentLoop {
         return { message: `💻 Local LLM Engine is currently: **${this.modelConfig.useLocalLlm ? 'ENABLED' : 'DISABLED'}**\nUsage: \`/localllm <on|off>\`` };
       }
 
+      case 'github': {
+        if (!this.githubHandler) {
+          return { message: '⚠️ GitHub Agent not initialized. Set GITHUB_TOKEN env var and restart.' };
+        }
+
+        const subCommand = args?.[0]?.toLowerCase();
+
+        switch (subCommand) {
+          case 'plans': {
+            const plans = this.githubHandler.listPlans();
+            if (plans.length === 0) {
+              return { message: '📋 No plan files generated yet. Waiting for PR comments...' };
+            }
+            const planList = plans.map(p =>
+              `  📄 ${p.fileName} (modified: ${p.lastModified.toLocaleString()})`
+            ).join('\n');
+            return { message: `📋 Generated Plans (${plans.length}):\n${planList}` };
+          }
+
+          case 'refresh': {
+            this.githubHandler.refresh().catch(err => {
+              console.error(`[GitHub] Refresh error: ${err.message}`);
+            });
+            return { message: '🔄 Forcing immediate GitHub poll...' };
+          }
+
+          case 'ci-watch': {
+            const toggle = args?.[1]?.toLowerCase();
+            if (toggle === 'on') {
+              this.githubHandler.setCIWatch(true);
+              return { message: '✅ CI failure watching enabled.' };
+            } else if (toggle === 'off') {
+              this.githubHandler.setCIWatch(false);
+              return { message: '⛔ CI failure watching disabled. Only comments will be tracked.' };
+            }
+            const ciStatus = this.githubHandler.config.enableCIWatch;
+            return { message: `🔧 CI Watch is currently: **${ciStatus ? 'ON' : 'OFF'}**\nUsage: \`/github ci-watch <on|off>\`` };
+          }
+
+          case 'clear-state': {
+            const stateFile = path.resolve(this.workspace, '.gemini-agent/github-state.json');
+            if (fs.existsSync(stateFile)) {
+              fs.unlinkSync(stateFile);
+            }
+            if (this.githubHandler && this.githubHandler.poller) {
+               this.githubHandler.poller.state = { commentWatermarks: {}, seenCIRuns: {} };
+               this.githubHandler.refresh();
+            }
+            return { message: '🗑️ GitHub Poller state cleared! Rescanning...' };
+          }
+
+          case 'remove-token': {
+            delete process.env.GITHUB_TOKEN;
+            this.modelConfig.githubToken = '';
+            this._saveConfig();
+            if (this.githubHandler) {
+              this.githubHandler.stop();
+              this.githubHandler = null;
+            }
+            return { message: '🗑️ GitHub Token removed. Integration disabled.' };
+          }
+
+          case 'stats': {
+            if (!this.githubHandler) {
+              return { message: 'GitHub integration is currently disabled. Please setup your token first.' };
+            }
+            // Show status
+            const status = this.githubHandler.getStatus();
+            const statusLines = [
+              `📊 GitHub Agent Status:`,
+              `  PRs Watched: ${status.prsWatched}`,
+              `  Total Polls: ${status.totalPolls}`,
+              `  Comments Processed: ${status.totalCommentsProcessed}`,
+              `  CI Failures Processed: ${status.totalCIFailuresProcessed}`,
+              `  Plans Generated: ${status.totalPlansGenerated}`,
+              `  CI Watch: ${status.ciWatchEnabled ? '✅ ON' : '⛔ OFF'}`,
+              `  Poll Interval: ${status.pollInterval}`,
+              `  Last Poll: ${status.lastPollTime || 'Never'}`,
+              `  Plan Directory: ${status.planDir}`,
+              ``,
+              `  Commands: /github plans | /github refresh | /github ci-watch <on|off> | /github clear-state | /github remove-token | /github stats`,
+            ];
+            return { message: statusLines.join('\n') };
+          }
+          default: {
+            if (!subCommand) {
+              return { message: 'Usage: /github <plans|refresh|ci-watch|clear-state|remove-token|stats>' };
+            }
+            return { message: `❌ Unknown github command: '${subCommand}'\nUsage: /github <plans|refresh|ci-watch|clear-state|remove-token|stats>` };
+          }
+        }
+      }
+
       default:
-        return { message: `Unknown command: /${command}. Available: /plan, /auto, /clear, /context, /compact, /undo, /workspace, /agent-dir` };
+        return { message: `Unknown command: /${command}. Available: /plan, /auto, /clear, /context, /compact, /undo, /workspace, /agent-dir, /github` };
     }
   }
 
@@ -473,11 +579,26 @@ export class AgentLoop {
     }
   }
 
+
+  _enqueueExtensionRequest(payload) {
+    this.extensionQueue.push(payload);
+    this._processExtensionQueue();
+  }
+
+  _processExtensionQueue() {
+    if (this.isExtensionBusy || this.extensionQueue.length === 0) return;
+    this.isExtensionBusy = true;
+    const payload = this.extensionQueue.shift();
+    if (this.callbacks && this.callbacks.injectPrompt) {
+      this.callbacks.injectPrompt(payload);
+    }
+  }
+
   async _sendToGemini(prompt, callbacks) {
     // Create a promise that will be resolved when we get the Gemini response
     this.pendingGeminiResponse = true;
 
-    callbacks.injectPrompt({
+    this._enqueueExtensionRequest({
       prompt,
       expectResponse: true,
       targetModel: this.modelConfig.main || 'gemini',
@@ -798,7 +919,7 @@ export class AgentLoop {
         timestamp: Date.now(),
       });
 
-      this.callbacks.injectPrompt({
+      this._enqueueExtensionRequest({
         prompt,
         expectResponse: true,
         targetModel,
@@ -814,6 +935,76 @@ export class AgentLoop {
         }
       }, 300000);
     });
+  }
+
+  async runHeadlessTask(prompt, systemInstruction = null) {
+    const localHistory = [];
+    
+    const baseSystem = `You are a headless background agent running in the user's codebase. 
+You have access to tools via the MCP server. You MUST use tools to explore the codebase and answer the user's request.
+Return your tool calls in a <tool_call> JSON block.
+When you are done, return a final summary of your findings. Do NOT return any tool calls in your final turn.`;
+
+    const finalSystem = systemInstruction ? `${baseSystem}\n\n${systemInstruction}` : baseSystem;
+    
+    localHistory.push({ role: 'system', content: finalSystem });
+    localHistory.push({ role: 'user', content: prompt });
+
+    let finalOutput = '';
+
+    for (let turn = 0; turn < 15; turn++) {
+      const serializedPrompt = localHistory.map(t => `${t.role.toUpperCase()}:\n${t.content}`).join('\n\n') + '\n\nAGENT:\n';
+      
+      const response = await this._executeSubagent('gemini', serializedPrompt);
+      if (!response.success) {
+        return { success: false, error: response.error };
+      }
+
+      const content = response.result || response.content;
+      localHistory.push({ role: 'agent', content });
+
+      let toolCalls = [];
+      let cleanContent = content;
+
+      try {
+        const extracted = this._extractToolCalls(content);
+        toolCalls = extracted.toolCalls;
+        cleanContent = extracted.cleanContent;
+      } catch (err) {
+        localHistory.push({ role: 'system', content: `JSON Parse Error: ${err.message}` });
+        continue;
+      }
+
+      finalOutput += '\n' + cleanContent;
+
+      if (toolCalls.length === 0) {
+        break;
+      }
+
+      const toolResults = [];
+      for (const call of toolCalls) {
+        let result;
+        const risk = this.riskClassifier.classify(call.name, call.args);
+        
+        if (call.name === 'run_command' && risk.level !== 'safe') {
+           result = { success: false, error: `Command blocked in background agent for security: ${risk.reason}` };
+        } else {
+           try {
+             result = await this.mcpServer.executeTool(call.name, call.args, {
+               editor: this.editor,
+               taskManager: this.taskManager,
+               workspaceIndexer: this.workspaceIndexer,
+             });
+           } catch(e) {
+             result = { success: false, error: e.message };
+           }
+        }
+        toolResults.push({ call_id: call.id || randomUUID(), name: call.name, result });
+      }
+      localHistory.push({ role: 'tool', content: JSON.stringify(toolResults) });
+    }
+
+    return { success: true, result: finalOutput.trim() };
   }
 
   async _getContextInfo() {

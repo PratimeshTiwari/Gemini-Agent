@@ -18,11 +18,18 @@ import { WebSocketServer as WS } from 'ws';
 import { randomUUID } from 'crypto';
 
 export class WebSocketServer {
-  constructor({ port, agentLoop }) {
+  constructor({ port, agentLoop, githubHandler }) {
     this.port = port;
     this.agentLoop = agentLoop;
+    this.githubHandler = githubHandler;
     this.wss = null;
     this.clients = new Map(); // id -> { ws, type, connectedAt }
+    this.pendingGitHubNotifications = []; // Buffer for CLI
+
+    // Wire GitHub events to broadcast
+    if (this.githubHandler) {
+      this._wireGitHubEvents();
+    }
   }
 
   async start() {
@@ -177,9 +184,86 @@ export class WebSocketServer {
         }
         break;
 
+      case 'github_pr_comment':
+        // Real-time comment from GitHub content script
+        if (this.githubHandler) {
+          console.log(`  [GitHub Bridge] New comment detected on PR #${payload?.pr?.number}`);
+          // Emit as if it came from the poller — the classifier/plan generator will handle it
+          this.githubHandler.poller.emit('new_comment', {
+            pr: {
+              number: payload.pr.number,
+              title: payload.pr.title || `PR #${payload.pr.number}`,
+              html_url: payload.pr.url || `https://github.com/${payload.pr.full_name}/pull/${payload.pr.number}`,
+              head_ref: payload.pr.head_ref || 'unknown',
+              head_sha: null,
+              repo: {
+                owner: payload.pr.owner,
+                name: payload.pr.repo,
+                full_name: payload.pr.full_name,
+              },
+              key: `${payload.pr.full_name}#${payload.pr.number}`,
+            },
+            comment: payload.comment,
+          });
+        }
+        break;
+
+      case 'github_pr_viewing':
+        // User is viewing a PR page
+        if (payload?.pr) {
+          console.log(`  [GitHub Bridge] User viewing PR #${payload.pr.number} on ${payload.pr.full_name}`);
+        }
+        break;
+
       default:
         console.warn(`⚠️ Unknown message type: ${type}`);
     }
+  }
+
+  // ── GitHub Event Wiring ─────────────────────────────────────────
+
+  _wireGitHubEvents() {
+    this.githubHandler.on('notification', (data) => {
+      const msg = {
+        id: randomUUID(),
+        type: 'github_notification',
+        payload: data,
+        timestamp: Date.now(),
+      };
+      this.pendingGitHubNotifications.push(msg);
+      this.broadcast('extension', msg);
+    });
+
+    this.githubHandler.on('plan_generated', (data) => {
+      const payload = {
+        type: data.type,
+        prNumber: data.pr.number,
+        prTitle: data.pr.title,
+        filePath: data.filePath,
+        isNew: data.isNew,
+        category: data.classification?.category || data.type,
+        comment: data.comment,
+      };
+      
+      const msg = {
+        id: randomUUID(),
+        type: 'github_plan_generated',
+        payload: payload,
+        timestamp: Date.now(),
+      };
+      
+      this.pendingGitHubNotifications.push(msg);
+      this.broadcast('extension', msg);
+    });
+  }
+
+  /**
+   * Get and clear pending GitHub notifications (for CLI display).
+   */
+  getGitHubNotifications() {
+    const notifications = [...this.pendingGitHubNotifications];
+    this.pendingGitHubNotifications = [];
+    return notifications;
   }
 
   async _handleUserMessage(clientId, messageId, payload) {

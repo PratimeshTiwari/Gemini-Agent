@@ -18,6 +18,7 @@ import { resolve, dirname } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from './websocket-server.js';
+import { GitHubEventHandler } from './github/GitHubEventHandler.js';
 import { MCPServer } from './mcp/mcp-server.js';
 import { AgentLoop } from './agent-loop.js';
 import { PromptBuilder } from './prompt-builder.js';
@@ -36,6 +37,8 @@ function parseArgs() {
     sessions: false,
     sessionId: null,
     editor: process.env.EDITOR || 'code',
+    github: true,
+    ciWatch: true,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -60,6 +63,12 @@ function parseArgs() {
         break;
       case '--editor':
         config.editor = args[++i];
+        break;
+      case '--no-github':
+        config.github = false;
+        break;
+      case '--no-ci-watch':
+        config.ciWatch = false;
         break;
       case '--help':
       case '-h':
@@ -86,11 +95,14 @@ Options:
   --resume <session-id>    Resume a specific session
   --sessions               List past sessions
   --editor <command>       Editor command (default: $EDITOR or 'code')
+  --no-github              Disable GitHub PR comment watching
+  --no-ci-watch            Disable CI failure watching (comments only)
   --help, -h               Show this help message
 
 Environment:
   EDITOR                   Default editor command (fallback: 'code')
   GEMINI_AGENT_HOME        Config directory (default: ~/.gemini-agent)
+  GITHUB_TOKEN             GitHub PAT for PR comment watching (required for --github)
 `);
 }
 
@@ -168,9 +180,46 @@ async function main() {
   const fileWatcher = new FileWatcher(config.workspace, agentLoop);
   fileWatcher.start();
 
+  // ── GitHub PR Comment Agent ──────────────────────────────────────
+  let githubHandler = null;
+  const githubToken = agentLoop.modelConfig?.githubToken || process.env.GITHUB_TOKEN;
+
+  if (config.github && githubToken) {
+    githubHandler = new GitHubEventHandler({
+      token: githubToken,
+      workspace: config.workspace,
+      configOverrides: {
+        enableCIWatch: config.ciWatch,
+      },
+      agentLoop,
+    });
+
+    // Wire GitHub events to console output
+    githubHandler.on('status', ({ message }) => {
+      console.log(`  [GitHub] ${message}`);
+    });
+    githubHandler.on('error', ({ message }) => {
+      console.error(`  [GitHub] ❌ ${message}`);
+    });
+    githubHandler.on('notification', ({ message }) => {
+      console.log(`  [GitHub] ${message}`);
+    });
+
+    // Connect to agent loop for /github slash commands
+    agentLoop.githubHandler = githubHandler;
+
+    // Start watching
+    githubHandler.start().catch(err => {
+      console.error(`  [GitHub] ❌ Failed to start: ${err.message}`);
+    });
+  } else if (config.github && !githubToken) {
+    console.log('  ℹ️  Set GITHUB_TOKEN env var to enable PR comment watching');
+  }
+
   const wsServer = new WebSocketServer({
     port: config.port,
     agentLoop,
+    githubHandler,
   });
 
   // Start listening
@@ -203,6 +252,7 @@ async function main() {
   // Graceful shutdown
   const shutdown = async () => {
     console.log('\n🛑 Shutting down...');
+    if (githubHandler) githubHandler.stop();
     fileWatcher.stop();
     taskManager.cleanup();
     await wsServer.stop();

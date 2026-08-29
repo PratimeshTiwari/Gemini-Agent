@@ -20,6 +20,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true });
         break;
 
+      case 'github_pr_comment':
+      case 'github_pr_viewing':
+        sendToServer({ type, payload });
+        sendResponse({ success: true });
+        break;
+
       case 'get_status':
         const state = await getState();
         sendResponse({ success: true, ...state });

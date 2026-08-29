@@ -119,6 +119,8 @@ async function handleServerMessage(message) {
     case 'diff_auto_applied':
     case 'error':
     case 'command_result':
+    case 'github_notification':
+    case 'github_plan_generated':
       broadcastToSidePanel(message);
       break;
     case 'inject_prompt':

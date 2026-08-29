@@ -7,3 +7,5 @@ dist/
 build/
 *.log
 *.zip
+.agent-github-plans/
+.gemini-agent/

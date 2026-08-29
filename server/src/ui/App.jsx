@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useReducer } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, useApp } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { marked } from 'marked';
@@ -38,6 +38,7 @@ const THINKING_MESSAGES = [
 ];
 
 export function App({ agentLoop, wsServer }) {
+  const { exit } = useApp();
   const [input, setInput] = useState('');
   const [history, setHistory] = useState([...agentLoop.conversationHistory]);
   const [activeToolCalls, setActiveToolCalls] = useState([]);
@@ -51,6 +52,7 @@ export function App({ agentLoop, wsServer }) {
   // UI State
   const [focus, setFocus] = useState(FOCUS_INPUT);
   const [expandedLogIds, setExpandedLogIds] = useState(new Set());
+  const [expandedComments, setExpandedComments] = useState(new Set());
   const [selectedToolIdx, setSelectedToolIdx] = useState(-1);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalInput, setTerminalInput] = useState('');
@@ -61,6 +63,19 @@ export function App({ agentLoop, wsServer }) {
   const [artifacts, setArtifacts] = useState({ task: null, walkthrough: null });
   const [inputHistory, setInputHistory] = useState([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
+  const [activeTab, setActiveTab] = useState('agent'); // 'agent' | 'github'
+  const [githubActivity, setGithubActivity] = useState([]);
+  const [selectedPlanId, setSelectedPlanId] = useState(null);
+  const [hasNewGitHubEvent, setHasNewGitHubEvent] = useState(false);
+  const [githubView, setGithubView] = useState("activity");
+  const [prList, setPrList] = useState([]);
+  const [selectedPrIdx, setSelectedPrIdx] = useState(0);
+  const [prComments, setPrComments] = useState([]);
+  const [selectedPrCommentIdx, setSelectedPrCommentIdx] = useState(0);
+  const [explorerMode, setExplorerMode] = useState("prs");
+  const [avoidWords, setAvoidWords] = useState(agentLoop.githubHandler?.config?.avoidWords || []);
+  const [newAvoidWord, setNewAvoidWord] = useState("");
+  const [githubSetupToken, setGithubSetupToken] = useState('');
 
   // 1. Group history into turns
   const turns = [];
@@ -204,6 +219,22 @@ export function App({ agentLoop, wsServer }) {
     return () => clearInterval(updateInterval);
   }, [agentLoop]);
 
+  // Poll GitHub Activity
+  useEffect(() => {
+    const updateInterval = setInterval(() => {
+      if (wsServer) {
+        const notifications = wsServer.getGitHubNotifications();
+        if (notifications.length > 0) {
+          setGithubActivity(prev => [...prev, ...notifications].slice(-50)); // keep last 50
+          if (activeTab !== 'github') {
+            setHasNewGitHubEvent(true);
+          }
+        }
+      }
+    }, 1000);
+    return () => clearInterval(updateInterval);
+  }, [wsServer, activeTab]);
+
   const handleSubmit = async (query) => {
     if (!query.trim()) return;
     setInputHistory(prev => [...prev, query]);
@@ -230,7 +261,41 @@ export function App({ agentLoop, wsServer }) {
       if (command === 'shortcuts' || command === 'help') {
         const shortcutsMessage = {
           role: 'assistant',
-          content: `### ⌨️ UI & Keyboard Shortcuts\n\n- [Tab] - Toggle focus between Chat Input and Tool Executions (Logs)\n- [Up/Down Arrow] - Navigate between tool executions (when focused on Tools)\n- [Enter] - Expand/Minimize raw output of the focused tool execution\n- [Ctrl+T] - Toggle the Agent Terminal at the bottom of the screen\n- :stop - Immediately cancel the agent's current thought process or generation\n\n### 🔧 Available Commands:\n- \`/plan\` - Switch to Plan Mode\n- \`/auto\` - Switch to Auto Mode\n- \`/new\` - Start a new chat session\n- \`/clear\` - Clear local history\n- \`/workspace <path>\` - Change the active workspace\n- \`/undo\` - Undo the last step/action\n- \`/memory\` - View current agent memory context\n- \`/context\` - Show current context window usage\n- \`/compact\` - Compact history to save tokens\n- \`/agent-dir\` - Open the agent data directory\n- \`/image <path>\` - Attach an image\n- \`/paste-image\` - Attach from clipboard\n- \`/init-skills\` - Create workspace rules\n- \`/mode\` - Change agent topology\n- \`/config\` - Configure models\n- \`/reasoning\` - Change agent's cognitive effort level\n- \`/localllm\` - Toggle local LLM engine\n- \`/restart\` - Restart the server\n- \`/exit\` - Quit the agent`
+          content: [
+            '### ⌨️ UI & Navigation',
+            '  [Tab]     - Toggle focus between Chat Input and Tool Executions',
+            '  [Up/Down] - Navigate between tool executions or CLI tabs',
+            '  [Enter]   - Expand/Minimize raw output of tools, or Open GitHub Plan',
+            '  [Ctrl+T]  - Toggle the Agent Terminal at the bottom of the screen',
+            '  [Ctrl+O]  - Toggle between Agent Chat and GitHub PR Dashboard',
+            "  :stop     - Immediately cancel the agent's current generation",
+            '',
+            '### 🧠 AI & LLM Settings',
+            '  /mode       - Change agent topology (Single, Duo, Swarm)',
+            '  /reasoning  - Change agent cognitive effort (Low, Medium, High)',
+            '  /config     - Configure models for specific roles',
+            '  /localllm   - Toggle local LLM engine',
+            '  /plan       - Switch to Plan Mode (requires approval for edits)',
+            '  /auto       - Switch to Auto Mode (auto-applies safe edits)',
+            '',
+            '### 📁 Workspace & Context',
+            '  /workspace <path> - Change the active workspace',
+            '  /memory           - View current agent memory context',
+            '  /context          - Show current context window usage',
+            '  /compact          - Compact history to save tokens',
+            '  /clear            - Clear local history',
+            '  /new              - Start a new chat session',
+            '  /undo             - Undo the last step/action',
+            '  /init-skills      - Create workspace rules (.gemini/rules.md)',
+            '',
+            '### 🛠️ System & Tools',
+            '  /github     - Run GitHub specific commands (e.g., /github refresh)',
+            '  /image      - Attach an image (e.g., /image path/to/img.png)',
+            '  /paste-image- Attach image directly from clipboard (macOS only)',
+            '  /agent-dir  - Open the agent data directory',
+            '  /restart    - Restart the server',
+            '  /exit       - Quit the agent'
+          ].join('\n')
         };
         setHistory(prev => [...prev, { role: 'user', content: query }, shortcutsMessage]);
         setIsProcessing(false);
@@ -295,6 +360,12 @@ export function App({ agentLoop, wsServer }) {
 
       if (command === 'localllm') {
         setActiveMenu({ type: 'localllm' });
+        setIsProcessing(false);
+        return;
+      }
+
+      if (command === 'github' && args.length === 0) {
+        setActiveMenu({ type: 'github' });
         setIsProcessing(false);
         return;
       }
@@ -377,7 +448,7 @@ export function App({ agentLoop, wsServer }) {
       }
 
       // Handle standard agent loop commands
-      const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'reasoning', 'localllm'];
+      const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'reasoning', 'localllm', 'github'];
       if (validAgentCommands.includes(command)) {
         const result = await agentLoop.handleSlashCommand(command, args);
         
@@ -487,6 +558,100 @@ export function App({ agentLoop, wsServer }) {
       if (char === 'y') handleDiffResponse('accept');
       if (char === 'n') handleDiffResponse('reject');
       return;
+    }
+
+    // Toggle Tabs (Ctrl+O)
+    if (key.ctrl && char === 'o') {
+      setActiveTab(prev => {
+        const next = prev === 'agent' ? 'github' : 'agent';
+        if (next === 'github') setHasNewGitHubEvent(false);
+        return next;
+      });
+      return;
+    }
+
+    if (activeTab === 'github') {
+      if (!agentLoop.githubHandler) {
+        return; // Skip 'r' and navigation keys when on setup screen
+      }
+
+      if (char === 'r' || char === 'R') {
+        handleSubmit('/github refresh');
+        return;
+      }
+      
+      if (char === 'a' || char === 'A') {
+        setGithubView(prev => prev === 'avoid_words' ? 'activity' : 'avoid_words');
+        return;
+      }
+
+      if (char === 'p' || char === 'P') {
+        setGithubView(prev => (prev === 'pr_explorer' ? 'activity' : 'pr_explorer'));
+        
+        // If we are opening the explorer and don't have PRs, fetch them.
+        if (githubView !== 'pr_explorer' && prList.length === 0) {
+          try {
+            if (agentLoop?.githubHandler?.fetchAllOpenPRs) {
+              agentLoop.githubHandler.fetchAllOpenPRs()
+                .then(prs => setPrList(prs))
+                .catch(err => {
+                   // Gracefully handle promise rejection without crashing
+                });
+            }
+          } catch (err) {
+             // Gracefully handle synchronous errors without crashing
+          }
+        }
+        return;
+      }
+
+      if (key.escape) {
+        if (githubView !== 'activity') {
+          setGithubView('activity');
+          return;
+        }
+      }
+      const visiblePlans = githubActivity.slice().reverse().filter(a => a.type === 'github_plan_generated').slice(0, 10);
+      let currentIdx = visiblePlans.findIndex(p => p.id === selectedPlanId);
+      if (currentIdx === -1 && visiblePlans.length > 0) currentIdx = 0;
+      
+      if (key.upArrow) {
+        if (visiblePlans.length > 0) {
+          const nextIdx = Math.max(0, currentIdx - 1);
+          setSelectedPlanId(visiblePlans[nextIdx].id);
+        }
+        return;
+      }
+      if (key.downArrow) {
+        if (visiblePlans.length > 0) {
+          const nextIdx = Math.min(visiblePlans.length - 1, currentIdx + 1);
+          setSelectedPlanId(visiblePlans[nextIdx].id);
+        }
+        return;
+      }
+      if (key.return) {
+        const item = visiblePlans[currentIdx];
+        if (item && item.payload?.filePath) {
+          try {
+            const cp = require('child_process');
+            cp.exec(`"${agentLoop.editor || 'code'}" "${item.payload.filePath}" || open "${item.payload.filePath}" || xdg-open "${item.payload.filePath}"`);
+          } catch(e) {}
+        }
+        return;
+      }
+      if (char === ' ') {
+        const item = visiblePlans[currentIdx];
+        if (item) {
+          setExpandedComments(prev => {
+            const next = new Set(prev);
+            if (next.has(item.id)) next.delete(item.id);
+            else next.add(item.id);
+            return next;
+          });
+        }
+        return;
+      }
+      return; // Skip agent tab hotkeys when on github tab
     }
 
     // Ctrl+V for paste-image
@@ -641,21 +806,249 @@ export function App({ agentLoop, wsServer }) {
     return () => clearInterval(approvalInterval);
   }, [activeMenu, agentLoop, handleSubmit]);
 
+  // Rough token estimation for the status bar
+  const syncTokenEstimate = Math.round(agentLoop.conversationHistory.reduce((sum, turn) => {
+    return sum + ((turn.content?.length || 0) / 4);
+  }, 0));
+  const tokenLimit = 50000;
+  const tokenPct = Math.round((syncTokenEstimate / tokenLimit) * 100);
+  const tokenColor = tokenPct > 80 ? 'red' : tokenPct > 50 ? 'yellow' : 'cyan';
+
   return (
-    <Box flexDirection="column" width="100%" height={terminalOpen ? '100%' : undefined}>
+    <Box flexDirection="column" height="100%">
       {/* Persistent Header */}
       <Box flexDirection="column" marginBottom={1}>
-        <Box borderStyle="round" borderColor="blue" paddingX={2} width="100%">
+        <Box borderStyle="round" borderColor="blue" paddingX={2} width="100%" justifyContent="space-between">
           <Text bold color="white">🤖 Gemini Agent CLI (Ink Mode)</Text>
+          <Text color="gray">
+            {activeTab === 'agent' ? (
+              <Text>[<Text color="white">🤖 Agent</Text>]  [<Text color="dim">Ctrl+O</Text> 📋 GitHub{hasNewGitHubEvent ? ' 🔴' : ''}]</Text>
+            ) : (
+              <Text>[<Text color="dim">Ctrl+O</Text> 🤖 Agent]  [<Text color="white">📋 GitHub</Text>]</Text>
+            )}
+          </Text>
         </Box>
         <Box paddingX={1} flexDirection="column">
           <Text color="gray">Workspace: <Text color="white">{agentLoop.workspace}</Text></Text>
           <Text color="gray">Port:      <Text color="white">{wsServer.port || 7777}</Text></Text>
           <Text color="gray">Status:    {wsServer.clients?.size > 0 ? <Text color="green">✅ Connected to Extension</Text> : <Text color="yellow">⏳ Waiting for Chrome Extension...</Text>}</Text>
+          {(!wsServer.clients || wsServer.clients.size === 0) && (
+            <Text color="dim">           💡 Tip: Go to chrome://extensions and refresh the Gemini Agent extension</Text>
+          )}
         </Box>
       </Box>
 
-      {/* History */}
+      {activeTab === 'github' && (
+        <Box flexDirection="column" flexGrow={1} borderStyle="single" borderColor="cyan" padding={1}>
+          <Text bold color="cyan">📋 GitHub PR Dashboard</Text>
+          
+          
+          {githubView === "avoid_words" && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold color="yellow">🚫 Avoid Words Editor</Text>
+              <Text color="gray">These words indicate that a comment is noise (e.g. LGTM, +1) and should not be analyzed by the AI.</Text>
+              
+              <Box flexDirection="column" marginY={1} borderStyle="single" borderColor="gray" padding={1}>
+                {avoidWords.map((word, i) => (
+                  <Text key={i}>• {word}</Text>
+                ))}
+                {avoidWords.length === 0 && <Text dimColor>No avoid words configured.</Text>}
+              </Box>
+              
+              <Box>
+                <Text bold color="green">Add Word: </Text>
+                <TextInput
+                  focus={githubView === "avoid_words"}
+                  value={newAvoidWord}
+                  onChange={setNewAvoidWord}
+                  onSubmit={(val) => {
+                    if (!val.trim()) return;
+                    const updated = [...avoidWords, val.trim()];
+                    setAvoidWords(updated);
+                    setNewAvoidWord("");
+                    
+                    if (agentLoop.githubHandler) {
+                      agentLoop.githubHandler.config.avoidWords = updated;
+                      agentLoop.modelConfig = agentLoop.modelConfig || {};
+                      agentLoop.modelConfig.githubAvoidWords = updated;
+                      agentLoop._saveConfig();
+                    }
+                  }}
+                />
+              </Box>
+              <Text dimColor marginTop={1}>[Enter] to add | [ESC] to return to Dashboard</Text>
+            </Box>
+          )}
+
+
+
+          {githubView === "pr_explorer" && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold color="magenta">🧭 PR Explorer</Text>
+              
+              {explorerMode === "prs" && (
+                <Box flexDirection="column" marginY={1}>
+                  <Text color="gray">Select a PR to view comments:</Text>
+                  {prList.length === 0 && <Text dimColor>Loading PRs...</Text>}
+                  {prList.map((pr, i) => (
+                    <Text key={i} color={i === selectedPrIdx ? "white" : "gray"}>
+                      {i === selectedPrIdx ? "❯ " : "  "}[{pr.repo.name}] #{pr.number} {pr.title}
+                    </Text>
+                  ))}
+                </Box>
+              )}
+              
+              {explorerMode === "comments" && (
+                <Box flexDirection="column" marginY={1}>
+                  <Text color="gray">Select a comment to force AI analysis:</Text>
+                  {prComments.length === 0 && <Text dimColor>Loading comments...</Text>}
+                  {prComments.map((c, i) => (
+                    <Box key={i} flexDirection="row">
+                      <Text color={i === selectedPrCommentIdx ? "white" : "gray"}>
+                        {i === selectedPrCommentIdx ? "❯ " : "  "}@{c.author}: 
+                      </Text>
+                      <Text color={i === selectedPrCommentIdx ? "cyan" : "dim"} dimColor={i !== selectedPrCommentIdx}>
+                         {c.body.replace(/\n/g, " ").substring(0, 60)}{c.body.length > 60 ? "..." : ""}
+                      </Text>
+                    </Box>
+                  ))}
+                </Box>
+              )}
+              
+              <Text dimColor marginTop={1}>[↑/↓] Navigate | [Enter] Select | [ESC] Back</Text>
+            </Box>
+          )}
+
+          {githubView === "activity" && (
+            <Box flexDirection="column" marginTop={1}>
+
+          {!agentLoop.githubHandler ? (
+            <Box flexDirection="column" marginTop={1}>
+              <Text color="yellow" bold>⚠️ GitHub Setup Pending</Text>
+              <Text>The GitHub PR integration is currently disabled because the <Text bold>GITHUB_TOKEN</Text> environment variable is not set.</Text>
+              <Text></Text>
+              <Text>To enable PR comment and CI failure watching:</Text>
+              <Text>1. Go to <Text color="blue" underline>https://github.com/settings/tokens/new</Text> and generate a token with `repo` scope.</Text>
+              <Text>2. Paste it below to automatically save it to your ~/.zshrc and start the integration.</Text>
+              <Text></Text>
+              <Box>
+                <Text bold color="green">Token: </Text>
+                <TextInput 
+                  focus={activeTab === 'github' && !agentLoop.githubHandler}
+                  value={githubSetupToken}
+                  onChange={setGithubSetupToken}
+                  onSubmit={async (val) => {
+                    const token = val.trim();
+                    if (!token) return;
+                    try {
+                      // Validate token first
+                      const res = await fetch('https://api.github.com/user', {
+                        headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'Gemini-Agent' }
+                      });
+                      if (!res.ok) {
+                        console.error(`❌ Invalid token: GitHub API returned ${res.status}`);
+                        setGithubSetupToken('');
+                        return;
+                      }
+
+                      // Save to .gemini/config.json
+                      agentLoop.modelConfig = agentLoop.modelConfig || {};
+                      agentLoop.modelConfig.githubToken = token;
+                      agentLoop._saveConfig(); // Fixed method name
+                      
+                      process.env.GITHUB_TOKEN = token;
+                      
+                      const { GitHubEventHandler } = await import('../github/GitHubEventHandler.js');
+                      const handler = new GitHubEventHandler({
+                        token,
+                        workspace: agentLoop.workspace,
+                        configOverrides: { enableCIWatch: true }
+                      });
+                      
+                      handler.on('status', ({ message }) => console.log(`  [GitHub] ${message}`));
+                      handler.on('error', ({ message }) => console.error(`  [GitHub] ❌ ${message}`));
+                      handler.on('notification', ({ message }) => console.log(`  [GitHub] ${message}`));
+                      
+                      agentLoop.githubHandler = handler;
+                      wsServer.githubHandler = handler;
+                      if (typeof wsServer._wireGitHubEvents === 'function') {
+                        wsServer._wireGitHubEvents();
+                      }
+                      handler.start().catch(err => console.error(err));
+                      
+                      setGithubSetupToken('');
+                    } catch (e) {
+                      console.error("Failed to setup token:", e);
+                    }
+                  }}
+                />
+              </Box>
+              <Text></Text>
+              <Text dimColor>Press [Ctrl+O] to return to the Agent tab.</Text>
+            </Box>
+          ) : (
+            <>
+              <Box flexDirection="row" marginBottom={1} justifyContent="space-between">
+                <Text>Status: {agentLoop.githubHandler?.getStatus()?.prsWatched || 0} PRs Watched | CI Watch: {agentLoop.githubHandler?.config?.enableCIWatch ? '✅ ON' : '⛔ OFF'}</Text>
+                <Text dimColor>Last poll: {agentLoop.githubHandler?.getStatus()?.lastPollTime || 'Never'}</Text>
+              </Box>
+              
+              <Box borderStyle="single" borderColor="gray" flexDirection="column" flexGrow={1} padding={1}>
+                <Text bold marginBottom={1}>── Recent Activity ───────────────────────</Text>
+                {githubActivity.length === 0 ? (
+                  <Text dimColor>No activity yet. Waiting for PR comments or CI runs...</Text>
+                ) : (
+                  githubActivity.slice().reverse().map((activity, i) => {
+                    if (activity.type === 'github_plan_generated') {
+                      const visiblePlans = githubActivity.slice().reverse().filter(a => a.type === 'github_plan_generated').slice(0, 10);
+                      const isSelected = activity.id === selectedPlanId || (selectedPlanId === null && visiblePlans[0]?.id === activity.id);
+                      const isExpanded = expandedComments.has(activity.id);
+                      let snippet = '';
+                      if (activity.payload.comment && activity.payload.comment.body) {
+                        snippet = activity.payload.comment.body;
+                        if (!isExpanded) {
+                          const lines = snippet.split('\n');
+                          snippet = lines.slice(0, 2).join('\n') + (lines.length > 2 || snippet.length > 100 ? '...' : '');
+                          if (snippet.length > 100) snippet = snippet.substring(0, 100) + '...';
+                        }
+                      }
+                      return (
+                        <Box key={activity.id} flexDirection="column" marginBottom={1}>
+                          <Text color={isSelected ? 'cyan' : 'white'}>{isSelected ? '❯ ' : '  '}📝 PR #{activity.payload.prNumber} — AI Plan Generated</Text>
+                          <Text dimColor marginLeft={4}>Category: {activity.payload.category}</Text>
+                          {snippet && (
+                            <Box marginLeft={4} flexDirection="column">
+                              <Text dimColor>💬 {snippet}</Text>
+                            </Box>
+                          )}
+                          <Text dimColor marginLeft={4}>→ {activity.payload.filePath.split('/').slice(-2).join('/')}</Text>
+                        </Box>
+                      );
+                    } else if (activity.type === 'github_notification') {
+                      return (
+                        <Box key={activity.id} flexDirection="column" marginBottom={1}>
+                          <Text>  ℹ️ {activity.payload.message}</Text>
+                        </Box>
+                      );
+                    }
+                    return null;
+                  }).filter(Boolean).slice(0, 10)
+                )}
+              </Box>
+
+              <Box marginTop={1}>
+                <Text dimColor>[↑/↓] Navigate  [Space] Expand Comment  [Enter] Open Plan  [A] Avoid Words  [P] PR Explorer  [R] Refresh  [Ctrl+O] Agent</Text>
+              </Box>
+            </>
+          )}
+          </Box>
+          )}
+        </Box>
+      )}
+
+      {activeTab === 'agent' && (
+        <>
+          {/* History */}
       <Box flexDirection="column" marginBottom={1}>
         {(() => {
           // 1. Parse history into Turns
@@ -966,9 +1359,9 @@ export function App({ agentLoop, wsServer }) {
           <Text bold color="cyan">Select Agent Topology Mode:</Text>
           <SelectInput
             items={[
-              { label: 'Single (Gemini only)', value: 'single' },
-              { label: 'Duo (Gemini + Reviewer)', value: 'duo' },
-              { label: 'Swarm (Gemini + Reasoner + Reviewer)', value: 'swarm' }
+              { label: `Single (Gemini only)${agentLoop.topology === 'single' ? '  ← (Current)' : ''}`, value: 'single' },
+              { label: `Duo (Gemini + Reviewer)${agentLoop.topology === 'duo' ? '  ← (Current)' : ''}`, value: 'duo' },
+              { label: `Swarm (Gemini + Reasoner + Reviewer)${agentLoop.topology === 'swarm' ? '  ← (Current)' : ''}`, value: 'swarm' }
             ]}
             onSelect={async (item) => {
               setActiveMenu(null);
@@ -985,9 +1378,9 @@ export function App({ agentLoop, wsServer }) {
           <Text bold color="cyan">Select Cognitive Effort / Reasoning Level:</Text>
           <SelectInput
             items={[
-              { label: 'Low (Fast, minimal thinking)', value: 'low' },
-              { label: 'Medium (Balanced approach)', value: 'medium' },
-              { label: 'High (Deep thinking, rigorous)', value: 'high' }
+              { label: `Low (Fast, minimal thinking)${agentLoop.modelConfig?.reasoningEffort === 'low' ? '  ← (Current)' : ''}`, value: 'low' },
+              { label: `Medium (Balanced approach)${agentLoop.modelConfig?.reasoningEffort === 'medium' ? '  ← (Current)' : ''}`, value: 'medium' },
+              { label: `High (Deep thinking, rigorous)${agentLoop.modelConfig?.reasoningEffort === 'high' ? '  ← (Current)' : ''}`, value: 'high' }
             ]}
             onSelect={async (item) => {
               setActiveMenu(null);
@@ -1004,8 +1397,8 @@ export function App({ agentLoop, wsServer }) {
           <Text bold color="cyan">Toggle Local LLM Engine (node-llama-cpp):</Text>
           <SelectInput
             items={[
-              { label: 'Enable Local LLM', value: 'on' },
-              { label: 'Disable Local LLM (Cloud Only)', value: 'off' }
+              { label: `Enable Local LLM${agentLoop.modelConfig?.useLocalLlm ? '  ← (Current)' : ''}`, value: 'on' },
+              { label: `Disable Local LLM (Cloud Only)${!agentLoop.modelConfig?.useLocalLlm ? '  ← (Current)' : ''}`, value: 'off' }
             ]}
             onSelect={async (item) => {
               setActiveMenu(null);
@@ -1061,6 +1454,35 @@ export function App({ agentLoop, wsServer }) {
         </Box>
       )}
 
+      {activeMenu?.type === 'github' && (
+        <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+          <Text bold color="cyan">📋 GitHub Integration Menu</Text>
+          <SelectInput
+            items={[
+              { label: 'Refresh PR Activity Now', value: 'refresh' },
+              { label: `CI Failure Watch [Currently: ${agentLoop.githubHandler?.config?.enableCIWatch ? 'ON' : 'OFF'}]`, value: 'ci-watch' },
+              { label: 'Clear Poller State & Rescan', value: 'clear-state' },
+              { label: 'Open PR Dashboard (Ctrl+O)', value: 'dashboard' },
+              { label: 'Remove/Update GitHub Token', value: 'remove-token' },
+            ]}
+            onSelect={(item) => {
+              setActiveMenu(null);
+              if (item.value === 'dashboard') {
+                setActiveTab('github');
+                setFocus(FOCUS_CHAT);
+              } else if (item.value === 'ci-watch') {
+                const current = agentLoop.githubHandler?.config?.enableCIWatch;
+                handleSubmit(`/github ci-watch ${current ? 'off' : 'on'}`);
+              } else if (item.value === 'remove-token') {
+                handleSubmit('/github remove-token');
+              } else {
+                handleSubmit(`/github ${item.value}`);
+              }
+            }}
+          />
+        </Box>
+      )}
+
       {/* Agent Terminal Bottom Sheet */}
       {terminalOpen && (
         <Box borderStyle="single" borderColor="green" padding={1} flexDirection="column" width="100%">
@@ -1075,12 +1497,22 @@ export function App({ agentLoop, wsServer }) {
           </Box>
         </Box>
       )}
+      </>
+      )}
 
       {/* Fixed Status Bar */}
-      <Box marginTop={1} paddingX={1} flexDirection="row" justifyContent="space-between" width="100%">
-        <Text dimColor>[Ctrl+T] Terminal | [Tab] Navigate Logs | [ESC] Focus Input | Context: {history.length}/50</Text>
-        <Text color="yellow">{tasks.filter(t => t.status === 'running').length} background tasks</Text>
-      </Box>
+      {activeTab === 'agent' && (
+        <Box marginTop={1} paddingX={1} flexDirection="column" width="100%">
+          <Box flexDirection="row" justifyContent="space-between" width="100%">
+            <Text dimColor>[Ctrl+T] Terminal | [Tab] Navigate Logs | [ESC] Focus Input | Context: {history.length}/50</Text>
+            <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} background tasks` : ''}</Text>
+          </Box>
+          <Box flexDirection="row" justifyContent="space-between" width="100%">
+            <Text dimColor>Mode: <Text bold>{agentLoop.topology?.toUpperCase() || 'SINGLE'}</Text> | Reasoning: <Text bold>{agentLoop.modelConfig?.reasoningEffort?.toUpperCase() || 'HIGH'}</Text></Text>
+            <Text dimColor>Tokens: <Text color={tokenColor}>~{syncTokenEstimate.toLocaleString()} / {tokenLimit.toLocaleString()} ({tokenPct}%)</Text></Text>
+          </Box>
+        </Box>
+      )}
     </Box>
   );
 }
