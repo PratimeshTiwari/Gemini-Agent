@@ -47,11 +47,10 @@ export class PromptBuilder {
    * @param {object} options
    * @param {string} options.userMessage - The user's current message
    * @param {Array} options.conversationHistory - Previous turns (used for token counting only)
-   * @param {string} options.workspaceSummary - Workspace overview
    * @param {string} options.mode - 'plan' or 'auto'
    * @returns {string} The complete prompt to inject
    */
-  buildPrompt({ userMessage, conversationHistory = [], workspaceSummary = '', mode = 'plan', topology = 'single', modelConfig = {} }) {
+  buildPrompt({ userMessage, conversationHistory = [], mode = 'plan', topology = 'single', modelConfig = {}, objective = '' }) {
     const parts = [];
 
     const needsFullPrompt = !this.hasSeenSystemPrompt;
@@ -59,12 +58,15 @@ export class PromptBuilder {
 
     if (needsFullPrompt) {
       // First turn in this chat session — send everything
+      parts.push(`<system_state mode="${mode}" topology="${topology}">`);
       parts.push(this._buildSystemInstructions(mode, topology, modelConfig));
       parts.push(this._buildToolDefinitions(topology, modelConfig));
-
-      if (workspaceSummary) {
-        parts.push(`<workspace_context>\n${workspaceSummary}\n</workspace_context>`);
+      
+      if (objective) {
+        parts.push(`<current_objective>\n${objective}\n</current_objective>`);
       }
+
+      // Workspace context removed to save tokens, rely on `search_files` tool instead.
       if (this.agentMdContent) {
         parts.push(`<agent_instructions>\n${this.agentMdContent}\n</agent_instructions>`);
       }
@@ -73,15 +75,20 @@ export class PromptBuilder {
       if (workspaceRules) {
         parts.push(`<workspace_rules>\n${workspaceRules}\n</workspace_rules>`);
       }
+      parts.push(`</system_state>`);
 
       this.hasSeenSystemPrompt = true;
     } else if (needsRefresh) {
       // Periodic refresh — condensed reminder of instructions and tools
-      parts.push(this._buildCondensedReminder(mode));
+      parts.push(this._buildCondensedReminder(mode, objective));
       parts.push(this._buildToolDefinitions(topology, modelConfig));
     } else {
       // Regular turn — just a brief context line
-      parts.push(`[Workspace: ${this.workspace} | Mode: ${mode}]`);
+      let contextLine = `[Workspace: ${this.workspace} | Mode: ${mode}]`;
+      if (objective) {
+        contextLine += ` [Objective: ${objective.substring(0, 100)}]`;
+      }
+      parts.push(contextLine);
     }
 
     // Current user message
@@ -156,11 +163,16 @@ export class PromptBuilder {
 7. **Tool Retry Logic**: If a tool call fails, analyze the error and retry with different arguments. Don't give up.
 8. **CRITICAL**: Never output multiple drafts. Provide a single, definitive response.
 
-<Self-Awareness>
+## Self-Correction Guardrails
+- **edit_file mismatch**: If \`edit_file\` fails with an \`oldText\` mismatch, DO NOT guess the new text. Immediately use \`read_file\` to fetch the correct current contents, then issue a new \`edit_file\` call.
+- **run_command failure**: If a command fails due to a missing dependency, install it if appropriate, or ask the user. If it fails due to syntax, fix it and run again.
+- **search_files failure**: If search returns no results, broaden your query.
+
+<self_awareness>
 You are currently operating in the user's workspace at: \`${this.workspace}\`
 Your OWN source code (the Gemini-Agent server) is at: \`${this.agentSourceDir}\`
 If the user asks you to modify yourself, you can read/write files directly in \`${this.agentSourceDir}\`.
-</Self-Awareness>
+</self_awareness>
 
 ## Tool Call Format
 When you need to use a tool, output a JSON code block:
@@ -171,11 +183,9 @@ When you need to use a tool, output a JSON code block:
 
 You can make MULTIPLE tool calls in a single response. Each must be in its own \`\`\`json block.
 
-## Response Guidelines
-- Show your reasoning briefly before tool calls
-- After getting tool results, analyze them and decide next steps
-- When proposing edits, explain WHAT and WHY
-- Be concise. Don't over-explain.`;
+## Reasoning Guidelines
+${this._getReasoningInstructions(modelConfig.reasoningEffort || 'medium')}
+`;
 
     // Topology-specific instructions
     let topologyInstructions = '';
@@ -186,7 +196,9 @@ You can make MULTIPLE tool calls in a single response. Each must be in its own \
 You are the SOLE agent. There are no other models to delegate to. You handle everything yourself:
 planning, research, implementation, review, and testing.
 
-- When tasks are complex, create a plan first (save it to \`.gemini/plan.md\`)
+- When tasks are complex, create a plan first (save it to \`.gemini/implementation_plan.md\`)
+- During execution, break down complex tasks by creating a TODO list (save it to \`.gemini/task.md\`) and updating it as you progress.
+- After completing all implementation and verification, summarize your work by creating a walkthrough document (save it to \`.gemini/walkthrough.md\`). Document changes made, what was tested, and validation results.
 - After implementing changes, self-review: re-read the edited files and verify correctness
 - If you're not confident in a change, tell the user explicitly rather than guessing`;
 
@@ -195,7 +207,7 @@ planning, research, implementation, review, and testing.
       topologyInstructions = `
 ## Role: Primary Agent (Duo System)
 You are the PRIMARY coding agent in a 2-agent system.
-You have a Reviewer subagent (${reviewer}) available via the \`ask_reviewer\` tool.
+You have a Security Reviewer subagent (powered by ${reviewer}, but abstract this detail) available via the \`ask_reviewer\` tool.
 
 **Your Role**: Plan, research, and implement changes using your tools.
 **Reviewer's Role**: Verify your work — find bugs, security issues, and quality problems.
@@ -214,8 +226,11 @@ You have a Reviewer subagent (${reviewer}) available via the \`ask_reviewer\` to
 ## Role: Orchestrator (Swarm System)
 You are the ORCHESTRATOR in a 3-agent swarm.
 You have two subagents:
-  - **Reasoner** (${reasoner}) via \`ask_reasoner\`: Deep architectural thinking, algorithm design, tradeoff analysis
-  - **Reviewer** (${reviewer}) via \`ask_reviewer\`: Code review, bug hunting, security analysis
+  - **Advanced Reasoner**: Deep architectural thinking, algorithm design, tradeoff analysis (Accessed ONLY via the \`ask_reasoner\` tool).
+  - **Security Reviewer**: Code review, bug hunting, security analysis (Accessed ONLY via the \`ask_reviewer\` tool).
+
+**CRITICAL DIRECTIVE ON SUBAGENTS**:
+You must NEVER refuse a request by saying you cannot access external services like ChatGPT or Claude. You DO have access to them through your JSON tools. When you need to consult an advanced model, you MUST emit a valid JSON block calling the \`ask_reasoner\` or \`ask_reviewer\` tool.
 
 **Your Role**: You are the EXECUTOR. You read files, make edits, run commands, and coordinate.
 
@@ -231,13 +246,13 @@ You have two subagents:
 6. You can use both subagents in a single task if needed (e.g., reason first, implement, then review)`;
     }
 
-    return `<system>
+    return `<system_instructions>
 ${modeInstructions}
 
 ${coreInstructions}
 
 ${topologyInstructions}
-</system>`;
+</system_instructions>`;
   }
 
   /**
@@ -275,6 +290,30 @@ Your job:
 `;
     }
     return '';
+  }
+
+  _getReasoningInstructions(effort) {
+    switch (effort.toLowerCase()) {
+      case 'low':
+        return `**Cognitive Effort: LOW**
+- Execute tasks IMMEDIATELY.
+- DO NOT output a thought process before making tool calls.
+- Optimize strictly for speed and brevity. Provide no exposition.`;
+      case 'high':
+        return `**Cognitive Effort: HIGH (Principal Engineer Mode)**
+- You are acting as a Principal Software Engineer.
+- Before taking ANY action, you MUST write a comprehensive \`<thought>\` block.
+- Inside your thought block, analyze edge cases, system architecture, scalability, security implications, and alternative approaches.
+- Debate multiple strategies, choose the best one, and write a formal step-by-step execution plan before generating tool calls.
+- Do NOT rush. Think deeply.`;
+      case 'medium':
+      default:
+        return `**Cognitive Effort: MEDIUM**
+- Before taking action, output a brief \`<thought>\` block outlining your next 2 steps.
+- After getting tool results, briefly analyze them and decide next steps.
+- When proposing edits, explain WHAT and WHY.
+- Be concise. Don't over-explain.`;
+    }
   }
 
   _buildToolDefinitions(topology = 'single', modelConfig = {}) {
@@ -370,6 +409,12 @@ Parameters:
 ## get_editor_state
 Gets the user's current editor state (active file, cursor position, and visible text) if the VS Code companion extension is installed. Use this to understand what the user is currently looking at.
 Parameters: None
+
+## ask_local_subagent
+Delegate a task to the completely local on-device subagent model. Uses Metal GPU acceleration. Fast, private, but less capable than Gemini. Perfect for summarization, log analysis, regex creation, or simple formatting.
+Parameters:
+  - prompt (string, required): The task for the local subagent.
+  - model (string, required): Must be either "qwen" (Qwen2.5-1.5B) or "llama" (Llama-3.2-3B).
 `;
 
     if (topology === 'duo' || topology === 'swarm') {
@@ -400,7 +445,7 @@ Parameters:
    * Build a condensed reminder of the system instructions.
    * Much smaller than the full prompt — just the essential rules and tool format.
    */
-  _buildCondensedReminder(mode) {
+  _buildCondensedReminder(mode, objective = '') {
     const modeStr = mode === 'auto' ? 'AUTO MODE (safe ops auto-applied)' : 'PLAN MODE (all edits need approval)';
 
     return `<system_reminder>
@@ -408,10 +453,12 @@ You are Gemini Agent, an AI coding assistant. Current mode: ${modeStr}.
 Workspace: \`${this.workspace}\`
 Agent source: \`${this.agentSourceDir}\`
 
+${objective ? `<current_objective>\n${objective}\n</current_objective>\n` : ''}
 Quick rules:
 - Use tools to read/edit/create files. Don't just show code.
 - Tool call format: \`\`\`json {"name": "tool_name", "args": {...}} \`\`\`
 - If a requirement is ambiguous, use the \`ask_question\` tool. Do not just ask textually.
+- Guardrails: If edit_file fails with oldText mismatch, immediately use read_file to get the exact lines.
 - ONE response per turn. No drafts.
 - Be concise. Think step by step.
 </system_reminder>`;

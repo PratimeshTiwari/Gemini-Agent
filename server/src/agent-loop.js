@@ -9,9 +9,11 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { z } from 'zod';
 import { SessionStore } from './storage/SessionStore.js';
 import { ContextManager } from './context/ContextManager.js';
 import { MemoryManager } from './context/MemoryManager.js';
+
 
 // Regex to extract tool calls from Gemini's response (handles json code blocks)
 const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n```/gi;
@@ -29,6 +31,7 @@ export class AgentLoop {
     this.taskManager = taskManager;
     this.workspaceIndexer = workspaceIndexer;
 
+
     // Storage & Context
     this.sessionStore = new SessionStore(workspace);
     this.memoryManager = new MemoryManager(workspace);
@@ -44,7 +47,9 @@ export class AgentLoop {
     this.modelConfig = {
       main: 'gemini',
       reviewer: 'claude',
-      reasoner: 'chatgpt'
+      reasoner: 'chatgpt',
+      reasoningEffort: 'medium',
+      useLocalLlm: false
     };
     
     this._loadConfig();
@@ -56,7 +61,7 @@ export class AgentLoop {
     this.pendingSubagents = new Map(); // Maps requestId -> { resolve, reject }
 
     // Workspace summary (generated dynamically by context manager)
-    this.workspaceSummary = '';
+    // Workspace summary removed to save context window.
   }
 
   /**
@@ -76,13 +81,17 @@ export class AgentLoop {
     this.callbacks = callbacks;
     this.isProcessing = true;
 
-    // Check Context Size Warning
-    if (this.contextManager.needsCompaction(this.conversationHistory)) {
+    // Check Context Size Warning and Auto-Compact
+    if (!this.isCompacting && this.contextManager.needsCompaction(this.conversationHistory)) {
       this.callbacks.sendToPanel({
         id: randomUUID(),
         type: 'status',
-        payload: { message: '⚠️ Context size high. Consider running /compact to save tokens.' },
+        payload: { message: '⏳ Context limit reached. Auto-compacting older history in background...' },
         timestamp: Date.now(),
+      });
+      // Fire and forget, runs in the background
+      this._compactHistory().catch(err => {
+        console.warn('Auto-compaction failed:', err);
       });
     }
 
@@ -96,18 +105,18 @@ export class AgentLoop {
       this.conversationHistory.push(turn);
       this.sessionStore.appendTurn(turn);
 
-      if (!this.workspaceSummary) {
-        this.workspaceSummary = this.contextManager.getWorkspaceSummary();
-      }
+      // Workspace summary injection removed
+
+      this.currentObjective = content;
 
       // Build the full prompt
       const prompt = this.promptBuilder.buildPrompt({
         userMessage: content,
         conversationHistory: this.conversationHistory,
-        workspaceSummary: this.workspaceSummary,
         mode: this.mode,
         topology: this.topology,
         modelConfig: this.modelConfig,
+        objective: this.currentObjective,
       });
 
       // Send to Gemini via Chrome Extension
@@ -160,42 +169,46 @@ export class AgentLoop {
       return;
     }
 
-    if (this.isCompacting) {
-      this.isCompacting = false;
-      const summary = content.trim();
+    // (Auto-compaction is now handled silently via background subagents, so the old isCompacting logic is removed from here)
 
-      const compactedTurn = {
-        role: 'system',
-        type: 'compaction_summary',
-        content: `[Context Summary]\n${summary}`,
-        timestamp: Date.now(),
-      };
+    let toolCalls = [];
+    let cleanContent = content;
 
-      this.conversationHistory = [compactedTurn, ...this.compactionKeep];
-      this.sessionStore.saveHistory(this.conversationHistory);
-      this.compactionKeep = null;
-      this.promptBuilder.resetPromptState(); // New chat = re-send system prompt
-      this.isProcessing = false;
-
-      // Tell extension to start a new chat in the browser
-      this.callbacks.sendToPanel({
-        id: randomUUID(),
-        type: 'new_chat',
-        payload: {},
-        timestamp: Date.now(),
-      });
-
+    try {
+      const extracted = this._extractToolCalls(content);
+      toolCalls = extracted.toolCalls;
+      cleanContent = extracted.cleanContent;
+    } catch (err) {
+      console.warn('⚠️ JSON Parse Error. Self-correcting...', err.message);
+      
       this.callbacks.sendToPanel({
         id: randomUUID(),
         type: 'status',
-        payload: { message: '✅ History compacted.' },
+        payload: { message: '⚠️ Invalid JSON detected. Self-correcting...' },
         timestamp: Date.now(),
       });
+
+      const errorPrompt = `ERROR PARSING TOOL CALLS:\n${err.message}\n\nPlease fix the JSON formatting of your tool calls and output them again. Ensure you close all tags properly and escape newlines in strings.`;
+      
+      const agentTurn = {
+        role: 'agent',
+        content: content,
+        timestamp: Date.now(),
+      };
+      
+      const systemErrorTurn = {
+        role: 'system',
+        content: errorPrompt,
+        timestamp: Date.now(),
+      };
+      
+      this.conversationHistory.push(agentTurn, systemErrorTurn);
+      this.sessionStore.appendTurn(agentTurn);
+      this.sessionStore.appendTurn(systemErrorTurn);
+      
+      this._sendToGemini('Please correct the previous JSON formatting error.', this.callbacks);
       return;
     }
-
-    // Parse and strip tool calls from the response
-    const { toolCalls, cleanContent } = this._extractToolCalls(content);
 
     // Show the response text (without tool call blocks) in the side panel
     if (cleanContent.trim()) {
@@ -362,7 +375,7 @@ export class AgentLoop {
           this.contextManager.workspacePath = newWorkspace;
           this.contextManager.summarizer.workspacePath = newWorkspace;
         }
-        this.workspaceSummary = '';
+        // this.workspaceSummary removed
         return { message: `📂 Workspace changed to agent source: ${this.workspace}` };
       }
 
@@ -385,11 +398,30 @@ export class AgentLoop {
           // We don't change SessionStore to avoid saving current history into another project's session.
           // In a full implementation, we might reload the history from the new project.
           
-          this.workspaceSummary = ''; // Clear stale summary so it regenerates
+           this.workspaceSummary = ''; // Clear stale summary so it regenerates
 
           return { message: `📂 Workspace changed to: ${this.workspace}` };
         }
         return { message: `📂 Current workspace: ${this.workspace}` };
+
+      case 'reasoning': {
+        const levels = ['low', 'medium', 'high'];
+        if (args?.[0] && levels.includes(args[0].toLowerCase())) {
+          this.modelConfig.reasoningEffort = args[0].toLowerCase();
+          this._saveConfig();
+          return { message: `🧠 Reasoning effort set to: **${this.modelConfig.reasoningEffort.toUpperCase()}**` };
+        }
+        return { message: `🧠 Current reasoning effort: **${this.modelConfig.reasoningEffort?.toUpperCase() || 'MEDIUM'}**\nUsage: \`/reasoning <low|medium|high>\`` };
+      }
+      
+      case 'localllm': {
+        if (args?.[0] && ['on', 'off'].includes(args[0].toLowerCase())) {
+          this.modelConfig.useLocalLlm = args[0].toLowerCase() === 'on';
+          this._saveConfig();
+          return { message: `💻 Local LLM Engine: **${this.modelConfig.useLocalLlm ? 'ENABLED' : 'DISABLED'}**` };
+        }
+        return { message: `💻 Local LLM Engine is currently: **${this.modelConfig.useLocalLlm ? 'ENABLED' : 'DISABLED'}**\nUsage: \`/localllm <on|off>\`` };
+      }
 
       default:
         return { message: `Unknown command: /${command}. Available: /plan, /auto, /clear, /context, /compact, /undo, /workspace, /agent-dir` };
@@ -402,6 +434,13 @@ export class AgentLoop {
     if (this.pendingQuestionResolve) {
       this.pendingQuestionResolve({ success: true, result: `User answered: ${answer}` });
       this.pendingQuestionResolve = null;
+    }
+  }
+
+  answerCommandApproval(approved) {
+    if (this.pendingCommandResolve) {
+      this.pendingCommandResolve({ approved });
+      this.pendingCommandResolve = null;
     }
   }
 
@@ -486,7 +525,36 @@ export class AgentLoop {
 
       // Execute the tool
       let result;
-      if (call.name === 'ask_question') {
+      
+      if (call.name === 'run_command' && risk.level === 'critical') {
+        result = { success: false, error: `❌ Command blocked by Security Constraints: ${risk.reason}` };
+      } else if (call.name === 'run_command' && needsApproval) {
+        // Pause and request user approval for risky commands
+        const approval = await new Promise((resolve) => {
+          this.pendingCommandResolve = resolve;
+          this.callbacks.sendToPanel({
+            id: randomUUID(),
+            type: 'request_command_approval',
+            payload: { 
+              command: call.args.command,
+              cwd: call.args.cwd || this.workspace,
+              riskLevel: risk.level,
+              riskReason: risk.reason
+            },
+            timestamp: Date.now(),
+          });
+        });
+        
+        if (approval.approved) {
+          result = await this.mcpServer.executeTool(call.name, call.args, {
+            editor: this.editor,
+            taskManager: this.taskManager,
+            workspaceIndexer: this.workspaceIndexer,
+          });
+        } else {
+          result = { success: false, error: 'User rejected command execution.' };
+        }
+      } else if (call.name === 'ask_question') {
         result = await new Promise((resolve) => {
           this.pendingQuestionResolve = resolve;
           this.callbacks.sendToPanel({
@@ -505,6 +573,38 @@ export class AgentLoop {
         const wrappedPrompt = wrapper + call.args.prompt;
         
         result = await this._executeSubagent(targetModel, wrappedPrompt);
+      } else if (call.name === 'ask_local_subagent') {
+        this.callbacks.sendToPanel({
+          id: randomUUID(),
+          type: 'status',
+          payload: { message: `Running Local Model...` },
+          timestamp: Date.now(),
+        });
+        
+        try {
+          if (!this.modelConfig.useLocalLlm) {
+            throw new Error("Local LLMs are currently DISABLED. Use `/localllm on` to enable them.");
+          }
+          
+          if (!this.localLLM) {
+            this.callbacks.sendToPanel({ id: randomUUID(), type: 'status', payload: { message: 'Initializing Local LLM Engine...' }, timestamp: Date.now() });
+            const { LocalLLM } = await import('./local-llm.js');
+            this.localLLM = new LocalLLM();
+          }
+
+          const model = call.args.model || 'qwen';
+          const answer = await this.localLLM.generate(call.args.prompt, model, (progress) => {
+            this.callbacks.sendToPanel({
+              id: randomUUID(),
+              type: 'status',
+              payload: { message: progress },
+              timestamp: Date.now(),
+            });
+          });
+          result = { success: true, result: answer };
+        } catch (err) {
+          result = { success: false, error: err.message };
+        }
       } else if (call.name === 'manage_memory') {
         if (call.args.action === 'add') {
           const success = this.memoryManager.addMemory(call.args.fact);
@@ -610,23 +710,33 @@ export class AgentLoop {
   _extractToolCalls(content) {
     const calls = [];
     let cleanContent = content;
+    const toolSchema = z.object({
+      name: z.string().min(1),
+      args: z.record(z.any()).default({})
+    });
 
     // First try the standard markdown regex for speed and to remove backticks cleanly
     const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n```/gi;
     cleanContent = cleanContent.replace(TOOL_CALL_REGEX, (fullMatch, jsonGroup) => {
+      let parsed;
       try {
         const cleaned = this._cleanJsonString(jsonGroup.trim());
-        const parsed = JSON.parse(cleaned);
-        if (parsed.name && parsed.args) {
-          calls.push(parsed);
-          return ''; 
+        parsed = JSON.parse(cleaned);
+      } catch (err) {
+        throw new Error(`Failed to parse JSON block: ${err.message}\nRaw block: ${jsonGroup}`);
+      }
+
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      for (const item of items) {
+        if (item.name) {
+          const validated = toolSchema.safeParse(item);
+          if (!validated.success) {
+            throw new Error(`Schema validation failed: ${validated.error.message}\nItem: ${JSON.stringify(item)}`);
+          }
+          calls.push(validated.data);
         }
-        if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].name) {
-          calls.push(...parsed);
-          return '';
-        }
-      } catch (err) {}
-      return fullMatch;
+      }
+      return '';
     });
 
     // Fallback: Robust brace-matching to find any JSON object hidden in the text
@@ -743,16 +853,53 @@ export class AgentLoop {
       return { message: 'Conversation is too short to compact.' };
     }
 
-    // Keep the last 5 turns, compact the rest
-    const toCompact = this.conversationHistory.slice(0, -5);
-    const toKeep = this.conversationHistory.slice(-5);
-
     this.isCompacting = true;
-    this.compactionKeep = toKeep;
 
-    const compactionPrompt = this.promptBuilder.buildCompactionPrompt(toCompact, focus);
-    await this._sendToGemini(compactionPrompt, this.callbacks);
+    try {
+      // Keep the last 5 turns exactly as they are
+      const toCompact = this.conversationHistory.slice(0, -5);
+      const toKeep = this.conversationHistory.slice(-5);
 
-    return { message: '⏳ Compacting history with Gemini...' };
+      // Deterministic lightweight truncation:
+      // Instead of an LLM summarization, we just strip the heavy tool execution outputs
+      // from the older context, preserving only the tool names and user/assistant messages.
+      let compactedSummary = toCompact.map(turn => {
+        if (turn.role === 'system' && turn.content) {
+          if (turn.content.includes('**Command Output:**')) {
+            return '[System: Command executed. Output truncated for context compaction.]';
+          }
+          if (turn.content.includes('**File Contents:**') || turn.content.includes('**Search Results:**')) {
+             return '[System: File/Search data truncated for context compaction.]';
+          }
+          if (turn.content.length > 500) {
+            return `[System: Output truncated. Original length: ${turn.content.length}]`;
+          }
+        }
+        return `[${turn.role.toUpperCase()}]: ${turn.content}`;
+      }).join('\n\n');
+
+      const compactedTurn = {
+        role: 'system',
+        type: 'compaction_summary',
+        content: `[Context Summary of older turns]\n${compactedSummary}`,
+        timestamp: Date.now(),
+      };
+
+      // Mutate the history safely
+      this.conversationHistory = [compactedTurn, ...toKeep];
+      this.sessionStore.saveHistory(this.conversationHistory);
+      this.promptBuilder.resetPromptState();
+
+      this.callbacks.sendToPanel({
+        id: randomUUID(),
+        type: 'status',
+        payload: { message: '✅ History successfully auto-compacted (Lightweight Truncation).' },
+        timestamp: Date.now(),
+      });
+      
+      return { message: '✅ History compacted.' };
+    } finally {
+      this.isCompacting = false;
+    }
   }
 }

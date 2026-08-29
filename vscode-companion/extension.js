@@ -58,7 +58,8 @@ function activate(context) {
     // -- Plan Approval CodeLens --
     class PlanApprovalCodeLensProvider {
         provideCodeLenses(document, token) {
-            if (!document.fileName.endsWith('implementation_plan.md')) {
+            const fileName = document.fileName;
+            if (!fileName.endsWith('implementation_plan.md') && !fileName.endsWith('plan.md')) {
                 return [];
             }
             
@@ -82,7 +83,7 @@ function activate(context) {
 
     context.subscriptions.push(
         vscode.languages.registerCodeLensProvider(
-            { language: 'markdown', scheme: 'file', pattern: '**/implementation_plan.md' },
+            { language: 'markdown', scheme: 'file', pattern: '**/{implementation_plan,plan}.md' },
             new PlanApprovalCodeLensProvider()
         )
     );

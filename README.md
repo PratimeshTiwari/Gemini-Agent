@@ -13,8 +13,9 @@ A powerful, Claude Code-style autonomous coding agent that runs locally and conn
   - `manage_task`: Monitor logs in real-time, send `stdin` inputs to interactive prompts, and kill running background processes.
 - **Agentic Background RAG**: Automatically chunks and indexes your workspace codebase on startup using a built-in, lightweight TF-IDF indexer. The agent can use `semantic_search` to instantly find code concepts conceptually, just like Cursor.
 - **Editor State Awareness**: The agent knows what you are currently looking at! A companion VS Code extension tracks your active file, cursor position, and visible text, allowing the agent to read your editor context instantly.
-- **Robust Model Bridges**: Improved Chrome Extension bridges for Gemini, ChatGPT, and Claude, complete with smart retries, frozen tab activation, and real-time streaming response handling.
-- **Interactive CLI UI**: An elegant, terminal-based interface with real-time streaming output, unified diff approvals, and long-running process monitors.
+- **Robust Model Bridges**: Improved Chrome Extension bridges for Gemini, ChatGPT, and Claude, complete with smart retries, frozen tab activation, and real-time streaming response handling. The extension is now heavily modularized and bundled automatically via `esbuild`.
+- **Interactive CLI UI**: An elegant, terminal-based interface with real-time streaming output, unified diff approvals, long-running process monitors, and a high-performance virtual "sliding window" to gracefully handle infinite scroll history without terminal tearing.
+- **Local LLM Engine Integration**: An optional, lazy-loaded local inference engine (via `node-llama-cpp`) that can be toggled on the fly, keeping the core server incredibly lightweight while allowing users with powerful hardware to fallback to local execution.
 ## 🚀 How to Setup
 
 ### 1. Prerequisites
@@ -62,3 +63,5 @@ Once the agent is running, you can use built-in slash commands to manage your se
 - Type `/help` in the CLI to see all available commands.
 - Type `/mode` to switch between Solo, Duo, and Swarm agent topologies.
 - Type `/config` to configure which web models (Gemini, Claude, ChatGPT) act as your primary, reasoner, and reviewer agents.
+- Type `/reasoning <low|medium|high>` to dynamically adjust the cognitive effort and strictness the agent applies to planning and execution (similar to Claude's reasoning profiles).
+- Type `/localllm <on|off>` to hot-swap between cloud-based web bridges and your local hardware engine.

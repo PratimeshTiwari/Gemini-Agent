@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import madge from 'madge';
 
 /**
  * A lightweight, in-memory TF-IDF indexer for the workspace.
@@ -10,6 +11,7 @@ export class WorkspaceIndexer {
     this.workspaceRoot = workspaceRoot;
     this.index = new Map(); // token -> [{ chunkId, score }]
     this.chunks = new Map(); // chunkId -> { filePath, text, lines }
+    this.dependencyGraph = {}; // File dependencies
     this.isReady = false;
   }
 
@@ -63,6 +65,15 @@ export class WorkspaceIndexer {
       
       this.isReady = true;
       console.log(`\n[WorkspaceIndexer] Built index over ${this.chunks.size} chunks from ${files.length} files.`);
+
+      // Build dependency graph using madge
+      try {
+        const res = await madge(this.workspaceRoot, { includeNpm: false, fileExtensions: ['js', 'jsx', 'ts', 'tsx'] });
+        this.dependencyGraph = res.obj();
+        console.log(`[WorkspaceIndexer] Built dependency graph with ${Object.keys(this.dependencyGraph).length} modules.`);
+      } catch (err) {
+        console.error(`[WorkspaceIndexer] Failed to build dependency graph:`, err.message);
+      }
     } catch (err) {
       console.error(`\n[WorkspaceIndexer] Failed to build index:`, err.message);
     }
@@ -93,11 +104,22 @@ export class WorkspaceIndexer {
     
     return sorted.map(([chunkId, score]) => {
       const chunk = this.chunks.get(chunkId);
+      
+      // Look up dependencies if available
+      let depsStr = '';
+      const relativePath = chunk.filePath.startsWith('/') ? chunk.filePath.slice(1) : chunk.filePath;
+      if (this.dependencyGraph && this.dependencyGraph[relativePath]) {
+        const deps = this.dependencyGraph[relativePath];
+        if (deps.length > 0) {
+          depsStr = `\nDependencies:\n  - ${deps.join('\n  - ')}`;
+        }
+      }
+
       return {
         file: chunk.filePath,
         lines: `${chunk.startLine}-${chunk.endLine}`,
         score: score.toFixed(2),
-        content: chunk.text
+        content: chunk.text + depsStr
       };
     });
   }
