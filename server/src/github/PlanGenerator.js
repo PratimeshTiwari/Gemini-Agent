@@ -235,13 +235,7 @@ export class PlanGenerator {
       lines.push('');
     }
 
-    // Assumptions
-    lines.push('### ⚠️ Assumptions (Clear These Before Proceeding)');
-    lines.push('');
-    lines.push('1. **Assumed**: The reviewer\'s comment applies to the current latest commit.');
-    lines.push('2. **Assumed**: No other related PRs are currently modifying this exact code path.');
-    lines.push('*(Agent note: I will explicitly list any technical assumptions I make during the implementation phase here)*');
-    lines.push('');
+    // End of generated plan
 
     lines.push('---');
     lines.push('');

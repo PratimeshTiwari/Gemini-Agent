@@ -227,11 +227,27 @@ Comment by @${comment.author}:
 > ${comment.body}
 ${diffContext}
 
-Your task:
-1. Use grep_search and read_file to locate the relevant code in the workspace.
-2. Understand the context fully before writing your plan.
-3. Produce ONE consolidated markdown plan with: Problem Summary, Relevant Files Found, Concrete Action Items (step-by-step), and Test Strategy.
-4. Be direct and technically precise. No filler.`;
+Your task is to explore the codebase using your tools and produce ONE consolidated markdown plan. Do NOT guess. Follow these exact stages:
+
+### Stage 1: Discovery & Code Context
+Use \`grep_search\` and \`read_file\` to find the relevant files. Explain what you searched for and what you found.
+CRITICAL: Do NOT run \`git checkout\` or switch branches. The user may have unsaved work. Rely on the provided PR diff and your search tools to understand the context.
+
+### Stage 2: RCA & Applicability
+Does the reviewer's comment make sense in the current codebase context? Is a code change actually required, or is it a misunderstanding? Explain the root cause of the issue the reviewer is pointing out.
+
+### Stage 3: Solutions & Tradeoffs
+If a code change is needed, list the possible solutions. For each solution, provide:
+- The exact file path to change
+- A code block showing the proposed change
+- Pros and Tradeoffs of this approach
+If there are multiple solutions, explicitly compare them.
+
+### Stage 4: Commit Strategy
+Provide a suggested conventional commit message for this change.
+
+### Stage 5: Open Questions for the User
+If anything is ambiguous, do NOT guess. Write explicit questions for the developer to answer before proceeding.`;
 
       try {
         const response = await this.agentLoop.runHeadlessTask(prompt);
