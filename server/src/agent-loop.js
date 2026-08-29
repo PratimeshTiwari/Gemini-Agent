@@ -48,7 +48,7 @@ export class AgentLoop {
       main: 'gemini',
       reviewer: 'claude',
       reasoner: 'chatgpt',
-      reasoningEffort: 'medium',
+      reasoningEffort: 'high',
       useLocalLlm: false
     };
     
@@ -58,10 +58,27 @@ export class AgentLoop {
     this.queuedUserMessage = null;
     this.callbacks = null;
     this.isProcessing = false;
+    this.extensionQueue = [];
+    this.isExtensionBusy = false;
     this.pendingSubagents = new Map(); // Maps requestId -> { resolve, reject }
+    this.githubHandler = null; // Set externally after initialization
 
     // Workspace summary (generated dynamically by context manager)
     // Workspace summary removed to save context window.
+  }
+
+  /**
+   * Set a persistent background callbacks object so headless/GitHub tasks
+   * can always use the extension bridge (injectPrompt) even when no user
+   * message is being processed. Called once after the WebSocket server starts.
+   */
+  setBackgroundCallbacks(callbacks) {
+    // Only update if callbacks isn't already set by a live user session
+    if (!this.callbacks) {
+      this.callbacks = callbacks;
+    }
+    // Always store as the background fallback
+    this._backgroundCallbacks = callbacks;
   }
 
   /**
@@ -138,20 +155,29 @@ export class AgentLoop {
    * Handle a response from Gemini (via content script).
    */
   async handleGeminiResponse(messageId, payload) {
-    if (!this.isProcessing) {
+    const { content, requestId, isSubagent, complete } = payload;
+
+    // Allow subagent responses through even when main agent isn't processing —
+    // background GitHub tasks use _executeSubagent without setting isProcessing.
+    if (!this.isProcessing && !isSubagent) {
       console.warn('[Agent Loop] Received Gemini response but agent is no longer processing (likely stopped).');
       return;
     }
 
-    const { content, requestId, isSubagent, complete } = payload;
-
+    if (!this.callbacks && this._backgroundCallbacks) {
+      this.callbacks = this._backgroundCallbacks;
+    }
     if (!this.callbacks) {
       console.warn('⚠️ Received Gemini response but no callbacks registered');
       return;
     }
 
     if (isSubagent) {
-      this.handleSubagentResponse(requestId, content);
+      if (complete) {
+        this.handleSubagentResponse(requestId, content);
+        this.isExtensionBusy = false;
+        this._processExtensionQueue();
+      }
       return;
     }
 
@@ -165,9 +191,15 @@ export class AgentLoop {
           timestamp: Date.now(),
         });
         this.isProcessing = false;
+        this.isExtensionBusy = false;
+        this._processExtensionQueue();
       }
       return;
     }
+
+    // Request complete
+    this.isExtensionBusy = false;
+    this._processExtensionQueue();
 
     // (Auto-compaction is now handled silently via background subagents, so the old isCompacting logic is removed from here)
 
@@ -234,6 +266,10 @@ export class AgentLoop {
     } else {
       // No tool calls — agent is done
       this.isProcessing = false;
+      // Restore background callbacks so GitHub tasks still work
+      if (this._backgroundCallbacks) {
+        this.callbacks = this._backgroundCallbacks;
+      }
     }
   }
 
@@ -411,7 +447,7 @@ export class AgentLoop {
           this._saveConfig();
           return { message: `🧠 Reasoning effort set to: **${this.modelConfig.reasoningEffort.toUpperCase()}**` };
         }
-        return { message: `🧠 Current reasoning effort: **${this.modelConfig.reasoningEffort?.toUpperCase() || 'MEDIUM'}**\nUsage: \`/reasoning <low|medium|high>\`` };
+        return { message: `🧠 Current reasoning effort: **${this.modelConfig.reasoningEffort?.toUpperCase() || 'HIGH'}**\nUsage: \`/reasoning <low|medium|high>\`` };
       }
       
       case 'localllm': {
@@ -423,8 +459,101 @@ export class AgentLoop {
         return { message: `💻 Local LLM Engine is currently: **${this.modelConfig.useLocalLlm ? 'ENABLED' : 'DISABLED'}**\nUsage: \`/localllm <on|off>\`` };
       }
 
+      case 'github': {
+        if (!this.githubHandler) {
+          return { message: '⚠️ GitHub Agent not initialized. Set GITHUB_TOKEN env var and restart.' };
+        }
+
+        const subCommand = args?.[0]?.toLowerCase();
+
+        switch (subCommand) {
+          case 'plans': {
+            const plans = this.githubHandler.listPlans();
+            if (plans.length === 0) {
+              return { message: '📋 No plan files generated yet. Waiting for PR comments...' };
+            }
+            const planList = plans.map(p =>
+              `  📄 ${p.fileName} (modified: ${p.lastModified.toLocaleString()})`
+            ).join('\n');
+            return { message: `📋 Generated Plans (${plans.length}):\n${planList}` };
+          }
+
+          case 'refresh': {
+            this.githubHandler.refresh().catch(err => {
+              console.error(`[GitHub] Refresh error: ${err.message}`);
+            });
+            return { message: '🔄 Forcing immediate GitHub poll...' };
+          }
+
+          case 'ci-watch': {
+            const toggle = args?.[1]?.toLowerCase();
+            if (toggle === 'on') {
+              this.githubHandler.setCIWatch(true);
+              return { message: '✅ CI failure watching enabled.' };
+            } else if (toggle === 'off') {
+              this.githubHandler.setCIWatch(false);
+              return { message: '⛔ CI failure watching disabled. Only comments will be tracked.' };
+            }
+            const ciStatus = this.githubHandler.config.enableCIWatch;
+            return { message: `🔧 CI Watch is currently: **${ciStatus ? 'ON' : 'OFF'}**\nUsage: \`/github ci-watch <on|off>\`` };
+          }
+
+          case 'clear-state': {
+            const stateFile = path.resolve(this.workspace, '.gemini-agent/github-state.json');
+            if (fs.existsSync(stateFile)) {
+              fs.unlinkSync(stateFile);
+            }
+            if (this.githubHandler && this.githubHandler.poller) {
+               this.githubHandler.poller.state = { commentWatermarks: {}, seenCIRuns: {} };
+               this.githubHandler.refresh();
+            }
+            return { message: '🗑️ GitHub Poller state cleared! Rescanning...' };
+          }
+
+          case 'remove-token': {
+            delete process.env.GITHUB_TOKEN;
+            this.modelConfig.githubToken = '';
+            this._saveConfig();
+            if (this.githubHandler) {
+              this.githubHandler.stop();
+              this.githubHandler = null;
+            }
+            return { message: '🗑️ GitHub Token removed. Integration disabled.' };
+          }
+
+          case 'stats': {
+            if (!this.githubHandler) {
+              return { message: 'GitHub integration is currently disabled. Please setup your token first.' };
+            }
+            // Show status
+            const status = this.githubHandler.getStatus();
+            const statusLines = [
+              `📊 GitHub Agent Status:`,
+              `  PRs Watched: ${status.prsWatched}`,
+              `  Total Polls: ${status.totalPolls}`,
+              `  Comments Processed: ${status.totalCommentsProcessed}`,
+              `  CI Failures Processed: ${status.totalCIFailuresProcessed}`,
+              `  Plans Generated: ${status.totalPlansGenerated}`,
+              `  CI Watch: ${status.ciWatchEnabled ? '✅ ON' : '⛔ OFF'}`,
+              `  Poll Interval: ${status.pollInterval}`,
+              `  Last Poll: ${status.lastPollTime || 'Never'}`,
+              `  Plan Directory: ${status.planDir}`,
+              ``,
+              `  Commands: /github plans | /github refresh | /github ci-watch <on|off> | /github clear-state | /github remove-token | /github stats`,
+            ];
+            return { message: statusLines.join('\n') };
+          }
+          default: {
+            if (!subCommand) {
+              return { message: 'Usage: /github <plans|refresh|ci-watch|clear-state|remove-token|stats>' };
+            }
+            return { message: `❌ Unknown github command: '${subCommand}'\nUsage: /github <plans|refresh|ci-watch|clear-state|remove-token|stats>` };
+          }
+        }
+      }
+
       default:
-        return { message: `Unknown command: /${command}. Available: /plan, /auto, /clear, /context, /compact, /undo, /workspace, /agent-dir` };
+        return { message: `Unknown command: /${command}. Available: /plan, /auto, /clear, /context, /compact, /undo, /workspace, /agent-dir, /github` };
     }
   }
 
@@ -473,11 +602,26 @@ export class AgentLoop {
     }
   }
 
+
+  _enqueueExtensionRequest(payload) {
+    this.extensionQueue.push(payload);
+    this._processExtensionQueue();
+  }
+
+  _processExtensionQueue() {
+    if (this.isExtensionBusy || this.extensionQueue.length === 0) return;
+    this.isExtensionBusy = true;
+    const payload = this.extensionQueue.shift();
+    if (this.callbacks && this.callbacks.injectPrompt) {
+      this.callbacks.injectPrompt(payload);
+    }
+  }
+
   async _sendToGemini(prompt, callbacks) {
     // Create a promise that will be resolved when we get the Gemini response
     this.pendingGeminiResponse = true;
 
-    callbacks.injectPrompt({
+    this._enqueueExtensionRequest({
       prompt,
       expectResponse: true,
       targetModel: this.modelConfig.main || 'gemini',
@@ -798,7 +942,7 @@ export class AgentLoop {
         timestamp: Date.now(),
       });
 
-      this.callbacks.injectPrompt({
+      this._enqueueExtensionRequest({
         prompt,
         expectResponse: true,
         targetModel,
@@ -810,10 +954,114 @@ export class AgentLoop {
       setTimeout(() => {
         if (this.pendingSubagents.has(requestId)) {
           this.pendingSubagents.delete(requestId);
+          this.isExtensionBusy = false;
+          this._processExtensionQueue();
           resolve({ success: false, error: `${targetModel} timeout after 5 minutes.` });
         }
       }, 300000);
     });
+  }
+
+  async runHeadlessTask(prompt, systemInstruction = null) {
+    const localHistory = [];
+
+    const baseSystem = `You are a headless background agent running inside the user's code workspace.
+You have access to a local MCP tool server. You MUST use tools to explore the codebase before drawing conclusions.
+
+## TOOLS AVAILABLE (use these exact names and argument keys):
+
+- grep_search({ "pattern": "string", "isRegex": false, "includes": ["*.js"] })
+  → Search for text/patterns across all files. Use "pattern" NOT "query".
+
+- read_file({ "path": "relative/or/absolute/path", "startLine": 1, "endLine": 50 })
+  → Read a file, optionally a line range.
+
+- list_directory({ "path": "." })
+  → List directory contents.
+
+- search_files({ "query": "filename or path fragment" })
+  → Find files by name.
+
+## TOOL CALL FORMAT (exact format required):
+<tool_call>
+{"name": "grep_search", "args": {"pattern": "your search term"}}
+</tool_call>
+
+## RULES:
+1. Make UP TO 5 tool calls to understand the codebase before writing your plan.
+2. After gathering context, produce ONE consolidated final plan in markdown.
+3. Do NOT produce partial plans between tool calls — wait until the end.
+4. Do NOT repeat tool calls you already made.
+5. When done, output ONLY the final plan. Do not include any tool call blocks in the final turn.`;
+
+    const finalSystem = systemInstruction ? `${baseSystem}\n\n## ADDITIONAL DIRECTIVE:\n${systemInstruction}` : baseSystem;
+
+    localHistory.push({ role: 'system', content: finalSystem });
+    localHistory.push({ role: 'user', content: prompt });
+
+    let lastCleanContent = '';
+    let turnCount = 0;
+
+    for (let turn = 0; turn < 10; turn++) {
+      turnCount = turn + 1;
+      const serializedPrompt = localHistory.map(t => `${t.role.toUpperCase()}:\n${t.content}`).join('\n\n') + '\n\nAGENT:\n';
+
+      const response = await this._executeSubagent('gemini', serializedPrompt);
+      if (!response.success) {
+        return { success: false, error: response.error };
+      }
+
+      const content = response.result || response.content;
+      localHistory.push({ role: 'agent', content });
+
+      let toolCalls = [];
+      let cleanContent = content;
+
+      try {
+        const extracted = this._extractToolCalls(content);
+        toolCalls = extracted.toolCalls;
+        cleanContent = extracted.cleanContent;
+      } catch (err) {
+        localHistory.push({ role: 'system', content: `JSON Parse Error: ${err.message}. Fix your tool call format.` });
+        continue;
+      }
+
+      // Track the last non-empty clean content as the candidate final plan
+      if (cleanContent.trim()) {
+        lastCleanContent = cleanContent.trim();
+      }
+
+      if (toolCalls.length === 0) {
+        // No more tool calls — this is the final plan turn
+        break;
+      }
+
+      const toolResults = [];
+      for (const call of toolCalls) {
+        let result;
+        const risk = this.riskClassifier.classify(call.name, call.args);
+
+        if (call.name === 'run_command' && risk.level !== 'safe') {
+          result = { success: false, error: `Command blocked in background agent for security: ${risk.reason}` };
+        } else {
+          try {
+            result = await this.mcpServer.executeTool(call.name, call.args, {
+              editor: this.editor,
+              taskManager: this.taskManager,
+              workspaceIndexer: this.workspaceIndexer,
+            });
+          } catch (e) {
+            result = { success: false, error: e.message };
+          }
+        }
+        toolResults.push({ call_id: call.id || randomUUID(), name: call.name, result });
+      }
+      localHistory.push({ role: 'tool', content: JSON.stringify(toolResults, null, 2) });
+    }
+
+    // Return only the final consolidated plan (last clean output)
+    const finalOutput = lastCleanContent || '(No plan generated)';
+    return { success: true, result: `## 🧠 AI Context Analysis\n\n${finalOutput}`, turns: turnCount };
   }
 
   async _getContextInfo() {

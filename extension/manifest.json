@@ -13,7 +13,8 @@
   "host_permissions": [
     "https://gemini.google.com/*",
     "https://chatgpt.com/*",
-    "https://claude.ai/*"
+    "https://claude.ai/*",
+    "https://github.com/*"
   ],
   "side_panel": {
     "default_path": "side-panel/panel.html"
@@ -35,6 +36,11 @@
     {
       "matches": ["https://claude.ai/*"],
       "js": ["content-scripts/claude-bridge.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://github.com/*"],
+      "js": ["content-scripts/github-bridge.js"],
       "run_at": "document_idle"
     }
   ],
