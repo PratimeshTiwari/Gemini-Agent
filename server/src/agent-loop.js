@@ -49,6 +49,7 @@ export class AgentLoop {
       reviewer: 'claude',
       reasoner: 'chatgpt',
       reasoningEffort: 'high',
+      modelTier: 'pro',
       useLocalLlm: false
     };
     
@@ -440,14 +441,39 @@ export class AgentLoop {
         }
         return { message: `📂 Current workspace: ${this.workspace}` };
 
+      case 'model': {
+        const tiers = {
+          'flash': { modelTier: 'flash', reasoningEffort: 'low', label: '⚡ Flash (Fast)', browserHint: 'Gemini 2.5 Flash' },
+          'flash-thinking': { modelTier: 'flash-thinking', reasoningEffort: 'medium', label: '🧠 Flash Thinking', browserHint: 'Gemini 2.5 Flash (Thinking)' },
+          'pro': { modelTier: 'pro', reasoningEffort: 'high', label: '🔬 Pro (Deep Reasoning)', browserHint: 'Gemini 2.5 Pro' },
+        };
+        const tierKey = args?.[0]?.toLowerCase();
+        if (tierKey && tiers[tierKey]) {
+          const tier = tiers[tierKey];
+          this.modelConfig.modelTier = tier.modelTier;
+          this.modelConfig.reasoningEffort = tier.reasoningEffort;
+          this._saveConfig();
+          this.promptBuilder.resetPromptState();
+          return { message: `${tier.label}\n\n📌 Prompt profile switched to **${tier.modelTier.toUpperCase()}**.\n💡 Make sure your Gemini browser tab is set to **${tier.browserHint}** for best results.` };
+        }
+        const current = this.modelConfig.modelTier || 'pro';
+        return { message: `🤖 Current model tier: **${current.toUpperCase()}**\n\nAvailable tiers:\n  ⚡ \`/model flash\` — Ultra-fast, minimal reasoning (use with 2.5 Flash)\n  🧠 \`/model flash-thinking\` — Moderate reasoning (use with 2.5 Flash Thinking)\n  🔬 \`/model pro\` — Full principal-engineer protocol (use with 2.5 Pro)` };
+      }
+
       case 'reasoning': {
+        // Backwards-compatible alias for /model
+        const effortToTier = { low: 'flash', medium: 'flash-thinking', high: 'pro' };
         const levels = ['low', 'medium', 'high'];
         if (args?.[0] && levels.includes(args[0].toLowerCase())) {
-          this.modelConfig.reasoningEffort = args[0].toLowerCase();
+          const effort = args[0].toLowerCase();
+          const tierName = effortToTier[effort];
+          this.modelConfig.reasoningEffort = effort;
+          this.modelConfig.modelTier = tierName;
           this._saveConfig();
-          return { message: `🧠 Reasoning effort set to: **${this.modelConfig.reasoningEffort.toUpperCase()}**` };
+          this.promptBuilder.resetPromptState();
+          return { message: `🧠 Reasoning effort set to: **${effort.toUpperCase()}** (model tier: ${tierName})` };
         }
-        return { message: `🧠 Current reasoning effort: **${this.modelConfig.reasoningEffort?.toUpperCase() || 'HIGH'}**\nUsage: \`/reasoning <low|medium|high>\`` };
+        return { message: `🧠 Current reasoning effort: **${this.modelConfig.reasoningEffort?.toUpperCase() || 'HIGH'}**\nUsage: \`/reasoning <low|medium|high>\`\n\n💡 Tip: Use \`/model <flash|flash-thinking|pro>\` for the new tier system.` };
       }
       
       case 'localllm': {
@@ -553,7 +579,7 @@ export class AgentLoop {
       }
 
       default:
-        return { message: `Unknown command: /${command}. Available: /plan, /auto, /clear, /context, /compact, /undo, /workspace, /agent-dir, /github` };
+        return { message: `Unknown command: /${command}. Available: /plan, /auto, /clear, /context, /compact, /undo, /workspace, /agent-dir, /model, /github` };
     }
   }
 

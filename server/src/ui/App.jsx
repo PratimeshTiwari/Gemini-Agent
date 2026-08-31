@@ -272,7 +272,8 @@ export function App({ agentLoop, wsServer }) {
             '',
             '### 🧠 AI & LLM Settings',
             '  /mode       - Change agent topology (Single, Duo, Swarm)',
-            '  /reasoning  - Change agent cognitive effort (Low, Medium, High)',
+            '  /model      - Switch model tier (Flash, Flash Thinking, Pro)',
+            '  /reasoning  - Change agent cognitive effort (alias for /model)',
             '  /config     - Configure models for specific roles',
             '  /localllm   - Toggle local LLM engine',
             '  /plan       - Switch to Plan Mode (requires approval for edits)',
@@ -352,8 +353,8 @@ export function App({ agentLoop, wsServer }) {
         return;
       }
 
-      if (command === 'reasoning') {
-        setActiveMenu({ type: 'reasoning' });
+      if (command === 'reasoning' || command === 'model') {
+        setActiveMenu({ type: 'model' });
         setIsProcessing(false);
         return;
       }
@@ -448,7 +449,7 @@ export function App({ agentLoop, wsServer }) {
       }
 
       // Handle standard agent loop commands
-      const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'reasoning', 'localllm', 'github'];
+      const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'model', 'reasoning', 'localllm', 'github'];
       if (validAgentCommands.includes(command)) {
         const result = await agentLoop.handleSlashCommand(command, args);
         
@@ -1434,18 +1435,19 @@ export function App({ agentLoop, wsServer }) {
         </Box>
       )}
 
-      {activeMenu?.type === 'reasoning' && (
+      {activeMenu?.type === 'model' && (
         <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-          <Text bold color="cyan">Select Cognitive Effort / Reasoning Level:</Text>
+          <Text bold color="cyan">Select Model Tier:</Text>
+          <Text dimColor>  Tip: Also switch the model in your Gemini browser tab</Text>
           <SelectInput
             items={[
-              { label: `Low (Fast, minimal thinking)${agentLoop.modelConfig?.reasoningEffort === 'low' ? '  ← (Current)' : ''}`, value: 'low' },
-              { label: `Medium (Balanced approach)${agentLoop.modelConfig?.reasoningEffort === 'medium' ? '  ← (Current)' : ''}`, value: 'medium' },
-              { label: `High (Deep thinking, rigorous)${agentLoop.modelConfig?.reasoningEffort === 'high' ? '  ← (Current)' : ''}`, value: 'high' }
+              { label: `⚡ Flash (Fast, minimal reasoning — use with 2.5 Flash)${agentLoop.modelConfig?.modelTier === 'flash' ? '  ← (Current)' : ''}`, value: 'flash' },
+              { label: `🧠 Flash Thinking (Moderate reasoning — use with 2.5 Flash Thinking)${agentLoop.modelConfig?.modelTier === 'flash-thinking' ? '  ← (Current)' : ''}`, value: 'flash-thinking' },
+              { label: `🔬 Pro (Deep principal-engineer reasoning — use with 2.5 Pro)${agentLoop.modelConfig?.modelTier === 'pro' ? '  ← (Current)' : ''}`, value: 'pro' }
             ]}
             onSelect={async (item) => {
               setActiveMenu(null);
-              await agentLoop.handleSlashCommand('reasoning', [item.value]);
+              await agentLoop.handleSlashCommand('model', [item.value]);
               setHistory([...agentLoop.conversationHistory]);
               setFocus(FOCUS_INPUT);
             }}
@@ -1569,7 +1571,7 @@ export function App({ agentLoop, wsServer }) {
             <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} background tasks` : ''}</Text>
           </Box>
           <Box flexDirection="row" justifyContent="space-between" width="100%">
-            <Text dimColor>Mode: <Text bold>{agentLoop.topology?.toUpperCase() || 'SINGLE'}</Text> | Reasoning: <Text bold>{agentLoop.modelConfig?.reasoningEffort?.toUpperCase() || 'HIGH'}</Text></Text>
+            <Text dimColor>Mode: <Text bold>{agentLoop.topology?.toUpperCase() || 'SINGLE'}</Text> | Model: <Text bold>{agentLoop.modelConfig?.modelTier?.toUpperCase() || 'PRO'}</Text></Text>
             <Text dimColor>Tokens: <Text color={tokenColor}>~{syncTokenEstimate.toLocaleString()} / {tokenLimit.toLocaleString()} ({tokenPct}%)</Text></Text>
           </Box>
         </Box>

@@ -21,6 +21,7 @@ import { CommentClassifier } from './CommentClassifier.js';
 import { CILogParser } from './CILogParser.js';
 import { PlanGenerator } from './PlanGenerator.js';
 import { resolveGitHubConfig } from './github-config.js';
+import { GITHUB_REVIEW_PROMPT } from './github-review-prompt.js';
 
 export class GitHubEventHandler extends EventEmitter {
   /**
@@ -219,35 +220,28 @@ export class GitHubEventHandler extends EventEmitter {
 
     let aiAnalysis = null;
     if (this.agentLoop) {
-      const diffContext = comment.diff_hunk ? `\nFile Context (Diff):\n\`\`\`diff\n${comment.diff_hunk}\n\`\`\`\n` : '';
-      const prompt = `You are a Senior Staff Engineer performing a code review response.
+      // Build structured context for the AI analysis
+      const diffContext = comment.diff_hunk
+        ? `<diff_context>\n\`\`\`diff\n${comment.diff_hunk}\n\`\`\`\n</diff_context>`
+        : '';
 
-PR: "${pr.title}" (#${pr.number}) on branch ${pr.head_ref || 'unknown'}
-Comment by @${comment.author}:
-> ${comment.body}
-${diffContext}
+      const fileContext = comment.path
+        ? `<file_context path="${comment.path}"${comment.line ? ` line="${comment.line}"` : ''} />`
+        : '';
 
-Your task is to explore the codebase using your tools and produce ONE consolidated markdown plan. Do NOT guess. Follow these exact stages:
+      const prompt = `${GITHUB_REVIEW_PROMPT}
 
-### Stage 1: Discovery & Code Context
-Use \`grep_search\` and \`read_file\` to find the relevant files. Explain what you searched for and what you found.
-CRITICAL: Do NOT run \`git checkout\` or switch branches. The user may have unsaved work. Rely on the provided PR diff and your search tools to understand the context.
+<pr_context>
+  <pr title="${pr.title}" number="${pr.number}" branch="${pr.head_ref || 'unknown'}" />
+  <comment author="${comment.author}">
+${comment.body}
+  </comment>
+  ${fileContext}
+  ${diffContext}
+</pr_context>
 
-### Stage 2: RCA & Applicability
-Does the reviewer's comment make sense in the current codebase context? Is a code change actually required, or is it a misunderstanding? Explain the root cause of the issue the reviewer is pointing out.
-
-### Stage 3: Solutions & Tradeoffs
-If a code change is needed, list the possible solutions. For each solution, provide:
-- The exact file path to change
-- A code block showing the proposed change
-- Pros and Tradeoffs of this approach
-If there are multiple solutions, explicitly compare them.
-
-### Stage 4: Commit Strategy
-Provide a suggested conventional commit message for this change.
-
-### Stage 5: Open Questions for the User
-If anything is ambiguous, do NOT guess. Write explicit questions for the developer to answer before proceeding.`;
+Investigate this review comment using your tools and produce ONE consolidated markdown plan.
+CRITICAL: Do NOT run \`git checkout\` or switch branches. The user may have unsaved work.`;
 
       try {
         const response = await this.agentLoop.runHeadlessTask(prompt);
