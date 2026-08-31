@@ -273,7 +273,7 @@ export function App({ agentLoop, wsServer }) {
             '### 🧠 AI & LLM Settings',
             '  /mode       - Change agent topology (Single, Duo, Swarm)',
             '  /model      - Switch model tier (Flash, Flash Thinking, Pro)',
-            '  /reasoning  - Change agent cognitive effort (alias for /model)',
+            '  /allowlist  - Manage auto-approved/blocked command rules',
             '  /config     - Configure models for specific roles',
             '  /localllm   - Toggle local LLM engine',
             '  /plan       - Switch to Plan Mode (requires approval for edits)',
@@ -353,7 +353,7 @@ export function App({ agentLoop, wsServer }) {
         return;
       }
 
-      if (command === 'reasoning' || command === 'model') {
+      if (command === 'model') {
         setActiveMenu({ type: 'model' });
         setIsProcessing(false);
         return;
@@ -449,7 +449,7 @@ export function App({ agentLoop, wsServer }) {
       }
 
       // Handle standard agent loop commands
-      const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'model', 'reasoning', 'localllm', 'github'];
+      const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'model', 'allowlist', 'localllm', 'github'];
       if (validAgentCommands.includes(command)) {
         const result = await agentLoop.handleSlashCommand(command, args);
         
@@ -1379,13 +1379,22 @@ export function App({ agentLoop, wsServer }) {
           <Text>Reason: {activeMenu.payload.riskReason}</Text>
           <SelectInput
             items={[
-              { label: 'Allow Command', value: 'accept' },
-              { label: 'Reject Command', value: 'reject' }
+              { label: 'Allow Command Once', value: 'allow_once' },
+              { label: 'Allow Always (Add to Allowlist)', value: 'allow_always' },
+              { label: 'Reject Command', value: 'reject' },
+              { label: 'Reject Always (Add to Blocklist)', value: 'reject_always' }
             ]}
             onSelect={(item) => {
               setActiveMenu(null);
-              agentLoop.answerCommandApproval(item.value === 'accept');
-              setHistory(prev => [...prev, { role: 'user', content: `(I ${item.value === 'accept' ? 'allowed' : 'rejected'} the command: ${activeMenu.payload.command})` }]);
+              agentLoop.answerCommandApproval(item.value, activeMenu.payload.command);
+              
+              let statusMsg = '';
+              if (item.value === 'allow_once') statusMsg = 'allowed once';
+              if (item.value === 'allow_always') statusMsg = 'allowed always (added to allowlist)';
+              if (item.value === 'reject') statusMsg = 'rejected';
+              if (item.value === 'reject_always') statusMsg = 'rejected always (added to blocklist)';
+              
+              setHistory(prev => [...prev, { role: 'user', content: `(I ${statusMsg} the command: ${activeMenu.payload.command})` }]);
               setFocus(FOCUS_INPUT);
             }}
           />
@@ -1441,9 +1450,9 @@ export function App({ agentLoop, wsServer }) {
           <Text dimColor>  Tip: Also switch the model in your Gemini browser tab</Text>
           <SelectInput
             items={[
-              { label: `⚡ Flash (Fast, minimal reasoning — use with 2.5 Flash)${agentLoop.modelConfig?.modelTier === 'flash' ? '  ← (Current)' : ''}`, value: 'flash' },
-              { label: `🧠 Flash Thinking (Moderate reasoning — use with 2.5 Flash Thinking)${agentLoop.modelConfig?.modelTier === 'flash-thinking' ? '  ← (Current)' : ''}`, value: 'flash-thinking' },
-              { label: `🔬 Pro (Deep principal-engineer reasoning — use with 2.5 Pro)${agentLoop.modelConfig?.modelTier === 'pro' ? '  ← (Current)' : ''}`, value: 'pro' }
+              { label: `⚡ Flash (Fast, minimal reasoning)${agentLoop.modelConfig?.modelTier === 'flash' ? '  ← (Current)' : ''}`, value: 'flash' },
+              { label: `🧠 Flash Thinking (Moderate reasoning)${agentLoop.modelConfig?.modelTier === 'flash-thinking' ? '  ← (Current)' : ''}`, value: 'flash-thinking' },
+              { label: `🔬 Pro (Deep principal-engineer reasoning)${agentLoop.modelConfig?.modelTier === 'pro' ? '  ← (Current)' : ''}`, value: 'pro' }
             ]}
             onSelect={async (item) => {
               setActiveMenu(null);

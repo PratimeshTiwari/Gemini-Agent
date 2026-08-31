@@ -11,7 +11,9 @@ A powerful, Claude Code-style autonomous coding agent that runs locally and conn
 - **Background Task Manager (Terminal Capabilities)**: 
   - `run_background`: Spawn long-running background processes (dev servers, builds, watchers).
   - `manage_task`: Monitor logs in real-time, send `stdin` inputs to interactive prompts, and kill running background processes.
-- **Agentic Background RAG**: Automatically chunks and indexes your workspace codebase on startup using a built-in, lightweight TF-IDF indexer. The agent can use `semantic_search` to instantly find code concepts conceptually, just like Cursor.
+- **Command Allowlist & Blocklist**: Persistent rules that automatically approve or reject commands based on your preferences, saving you from repetitive prompts. Manage them easily with the `/allowlist` command.
+- **Agentic Background RAG & Context Routing**: Automatically chunks and indexes your workspace codebase on startup using a built-in, lightweight TF-IDF indexer. The agent can use `semantic_search` to find code concepts, and automatically routes to detailed flow documentation based on a centralized `summary.md` context index.
+- **Self-Correction & Auto-Learning**: If you point out a mistake in a documented flow, the agent verifies it against the code, corrects the markdown file, and permanently commits the verified fact to its long-term RAG memory to avoid making the same mistake twice.
 - **Editor State Awareness**: The agent knows what you are currently looking at! A companion VS Code extension tracks your active file, cursor position, and visible text, allowing the agent to read your editor context instantly.
 - **Robust Model Bridges**: Improved Chrome Extension bridges for Gemini, ChatGPT, and Claude, complete with smart retries, frozen tab activation, and real-time streaming response handling. The extension is now heavily modularized and bundled automatically via `esbuild`.
 - **Tiered Model Profiles**: A dynamic system prompt that adjusts its complexity based on the model tier you select.
@@ -69,4 +71,5 @@ Once the agent is running, you can use built-in slash commands to manage your se
 - Type `/mode` to switch between Solo, Duo, and Swarm agent topologies.
 - Type `/config` to configure which web models (Gemini, Claude, ChatGPT) act as your primary, reasoner, and reviewer agents.
 - Type `/model <flash|flash-thinking|pro>` to dynamically adjust the cognitive effort and prompt complexity (optimizing for the model you select in your browser tab).
+- Type `/allowlist` to view and manage your auto-approved and auto-rejected command rules.
 - Type `/localllm <on|off>` to hot-swap between cloud-based web bridges and your local hardware engine.

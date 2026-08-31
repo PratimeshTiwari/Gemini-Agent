@@ -11,7 +11,9 @@
  * - This prevents double-counting context and avoids triggering Gemini's repetitive filters.
  */
 
+import path from 'path';
 import { readFileSync, existsSync } from 'fs';
+import os from 'os';
 import { resolve, relative } from 'path';
 
 // How often to resend the full system prompt as a reminder
@@ -173,9 +175,21 @@ If the user asks you to modify yourself, you can read/write files directly in \`
 Model tier: ${modelTier}
 </self_awareness>`;
 
+    // Load workspace context summary if it exists
+    let contextSummary = '';
+    const repoName = path.basename(this.workspace);
+    const localContextPath = path.join(this.workspace, '.gemini', 'context', 'summary.md');
+    const globalContextPath = path.join(os.homedir(), '.gemini', 'context', repoName, 'summary.md');
+    
+    if (existsSync(localContextPath)) {
+      contextSummary = `\n<workspace_context_summary>\n${readFileSync(localContextPath, 'utf8')}\n</workspace_context_summary>\n`;
+    } else if (existsSync(globalContextPath)) {
+      contextSummary = `\n<workspace_context_summary>\n${readFileSync(globalContextPath, 'utf8')}\n</workspace_context_summary>\n`;
+    }
+
     const combined = `
 ${selfAwareness}
-
+${contextSummary}
 ${coreInstructions}
 
 ${toolCallFormat}
@@ -315,7 +329,7 @@ Your job:
   /**
    * Full core instructions for flash-thinking and pro tiers.
    */
-  _buildFullCoreInstructions(tier) {
+  _buildFullCoreInstructions(modelTier) {
     return `## Core Principles
 1. **NEVER ASSUME. ALWAYS ASK.** If a requirement is ambiguous, underspecified, or could be interpreted multiple ways, you MUST ask the user for clarification using: \`QUESTION: <your question here>\`. The CLI will pause and prompt the user. Do NOT guess, infer, or make assumptions about what the user wants. The only exception is when the user explicitly tells you to "be creative" or "use your judgment".
 2. **INVESTIGATE BEFORE ACTING.** Always read relevant files before making edits. Never edit blind.
@@ -326,9 +340,25 @@ Your job:
 7. **Tool Retry Logic**: If a tool call fails, analyze the error and retry with different arguments. Don't give up.
 8. **CRITICAL**: Never output multiple drafts. Provide a single, definitive response.
 
+## 2. Source Code and Execution
+- ONLY reference code that you have explicitly read using \`read_file\` or \`grep_search\`.
+- Never guess line numbers, function signatures, or variable names.
+- When running commands, ensure the \`cwd\` is correct.
+
+## 3. Documentation & Context Maintenance
+- **Routing**: If provided a \`<workspace_context_summary>\`, use it as an index. If a user asks about a specific flow, check this summary to see which \`.md\` file contains the details, then use \`read_file\` to read that specific file before acting.
+- **Self-Correction & Auto-Learning (Agentic RAG)**: If the user states that a documented flow is wrong, you MUST: (1) Ask clarifying questions if the claim is vague. (2) Verify the claim by reading the actual source code. (3) Use \`edit_file\` to correct the context \`.md\` file so it matches reality. (4) Once verified against the codebase, use the \`manage_memory\` tool to store this verified fact in your long-term Agentic RAG memory so you don't make the same mistake twice.
+- **Mistakes Log**: If you make a logic error, append a note to \`.gemini/agent_mistakes.md\`. Before writing to this log, ensure the correction is a VERIFIED FACT backed by code.
+
+${modelTier === 'pro' ? `## 4. Communication
+- Be exceptionally concise. Skip greetings and filler.
+- Format all technical output (code, file paths) in markdown.
+- Give a brief summary of completed steps at the end of your turn.` : ''}
+
 ## Self-Correction Guardrails
 - **edit_file mismatch**: If \`edit_file\` fails with an \`oldText\` mismatch, DO NOT guess the new text. Immediately use \`read_file\` to fetch the correct current contents, then issue a new \`edit_file\` call.
 - **run_command failure**: If a command fails due to a missing dependency, install it if appropriate, or ask the user. If it fails due to syntax, fix it and run again.
+- **Blocklisted commands**: If a command is rejected with "Command blocked by user blocklist", you must either find an alternative command to achieve your goal, or ask the user to remove it from their blocklist using \`/allowlist remove <cmd>\`.
 - **search_files failure**: If search returns no results, broaden your query.`;
   }
 
