@@ -54,6 +54,7 @@ export class AgentLoop {
     };
     
     this.commandRules = {
+      enabled: true,
       allow: [],
       block: []
     };
@@ -467,7 +468,8 @@ export class AgentLoop {
 
       case 'allowlist': {
         if (args?.[0] === 'clear') {
-          this.commandRules = { allow: [], block: [] };
+          this.commandRules.allow = [];
+          this.commandRules.block = [];
           this._saveConfig();
           return { message: '✅ Command allowlist and blocklist cleared.' };
         } else if (args?.[0] === 'remove' && args[1]) {
@@ -476,13 +478,21 @@ export class AgentLoop {
           this.commandRules.block = this.commandRules.block.filter(c => c !== cmdToRemove);
           this._saveConfig();
           return { message: `✅ Removed \`${cmdToRemove}\` from rules.` };
+        } else if (args?.[0] === 'enable') {
+          this.commandRules.enabled = true;
+          this._saveConfig();
+          return { message: '✅ Command allowlist is now **enabled**.' };
+        } else if (args?.[0] === 'disable') {
+          this.commandRules.enabled = false;
+          this._saveConfig();
+          return { message: '⛔ Command allowlist is now **disabled**. All commands will prompt for approval.' };
         }
-        let msg = '🛡️ **Command Rules**\n\n';
+        let msg = `🛡️ **Command Rules** (Status: ${this.commandRules.enabled !== false ? '✅ Enabled' : '⛔ Disabled'})\n\n`;
         msg += '**Allowed Commands:**\n';
         msg += this.commandRules.allow.length > 0 ? this.commandRules.allow.map(cmd => `  - \`${cmd}\``).join('\n') : '  *(None)*';
         msg += '\n\n**Blocked Commands:**\n';
         msg += this.commandRules.block.length > 0 ? this.commandRules.block.map(cmd => `  - \`${cmd}\``).join('\n') : '  *(None)*';
-        msg += '\n\nTo clear all rules: `/allowlist clear`\nTo remove a specific rule: `/allowlist remove <command>`';
+        msg += '\n\n**Commands:**\n  `/allowlist enable` or `/allowlist disable`\n  `/allowlist remove <command>`\n  `/allowlist clear`';
         return { message: msg };
       }
       
@@ -724,10 +734,12 @@ export class AgentLoop {
         const commandToRun = call.args.command;
         let isApproved = false;
 
-        if (this.commandRules.block.includes(commandToRun)) {
+        const rulesEnabled = this.commandRules.enabled !== false;
+
+        if (rulesEnabled && this.commandRules.block.includes(commandToRun)) {
           result = { success: false, error: 'Command blocked by user blocklist.' };
           continue; // Skip the rest of the loop block
-        } else if (this.commandRules.allow.includes(commandToRun)) {
+        } else if (rulesEnabled && this.commandRules.allow.includes(commandToRun)) {
           isApproved = true;
         } else if (needsApproval) {
           // Pause and request user approval for risky commands
