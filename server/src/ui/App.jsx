@@ -865,27 +865,6 @@ export function App({ agentLoop, wsServer }) {
 
   return (
     <Box flexDirection="column" height={terminalHeight} overflow="hidden">
-      {/* Persistent Header */}
-      <Box flexDirection="column" marginBottom={1}>
-        <Box borderStyle="round" borderColor="blue" paddingX={2} width="100%" justifyContent="space-between">
-          <Text bold color="white">🤖 Gemini Agent CLI (Ink Mode)</Text>
-          <Text color="gray">
-            {activeTab === 'agent' ? (
-              <Text>[<Text color="white">🤖 Agent</Text>]  [<Text color="dim">Ctrl+O</Text> 📋 GitHub{hasNewGitHubEvent ? ' 🔴' : ''}]</Text>
-            ) : (
-              <Text>[<Text color="dim">Ctrl+O</Text> 🤖 Agent]  [<Text color="white">📋 GitHub</Text>]</Text>
-            )}
-          </Text>
-        </Box>
-        <Box paddingX={1} flexDirection="column">
-          <Text color="gray">Workspace: <Text color="white">{agentLoop.workspace}</Text></Text>
-          <Text color="gray">Port:      <Text color="white">{wsServer.port || 7777}</Text></Text>
-          <Text color="gray">Status:    {wsServer.clients?.size > 0 ? <Text color="green">✅ Connected to Extension</Text> : <Text color="yellow">⏳ Waiting for Chrome Extension...</Text>}</Text>
-          {(!wsServer.clients || wsServer.clients.size === 0) && (
-            <Text color="dim">           💡 Tip: Go to chrome://extensions and refresh the Gemini Agent extension</Text>
-          )}
-        </Box>
-      </Box>
 
       {activeTab === 'github' && (
         <Box flexDirection="column" flexGrow={1} borderStyle="single" borderColor="cyan" padding={1}>
@@ -1601,18 +1580,32 @@ export function App({ agentLoop, wsServer }) {
       )}
 
       {/* Fixed Status Bar */}
-      {activeTab === 'agent' && (
-        <Box marginTop={1} paddingX={1} flexDirection="column" width="100%">
-          <Box flexDirection="row" justifyContent="space-between" width="100%">
-            <Text dimColor>[Ctrl+T] Terminal | [Tab] Navigate Logs | [ESC] Focus Input | Context: {history.length}/50</Text>
-            <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} background tasks` : ''}</Text>
-          </Box>
-          <Box flexDirection="row" justifyContent="space-between" width="100%">
-            <Text dimColor>Mode: <Text bold>{agentLoop.topology?.toUpperCase() || 'SINGLE'}</Text> | Model: <Text bold>{agentLoop.modelConfig?.modelTier?.toUpperCase() || 'PRO'}</Text></Text>
-            <Text dimColor>Tokens: <Text color={tokenColor}>~{syncTokenEstimate.toLocaleString()} / {tokenLimit.toLocaleString()} ({tokenPct}%)</Text></Text>
-          </Box>
+      <Box marginTop={1} paddingX={1} flexDirection="column" width="100%" borderTopStyle="single" borderTopColor="gray">
+        <Box flexDirection="row" justifyContent="space-between" width="100%">
+          <Text color="gray">
+            {activeTab === 'agent' ? (
+              <Text>[<Text color="white">🤖 Agent</Text>]  [<Text color="dim">Ctrl+O</Text> 📋 GitHub{hasNewGitHubEvent ? ' 🔴' : ''}]</Text>
+            ) : (
+              <Text>[<Text color="dim">Ctrl+O</Text> 🤖 Agent]  [<Text color="white">📋 GitHub</Text>]</Text>
+            )}
+          </Text>
+          <Text color="gray">
+            {wsServer.clients?.size > 0 ? <Text color="green">✅ Ext Connected</Text> : <Text color="yellow">⏳ Waiting for Ext</Text>}
+          </Text>
         </Box>
-      )}
+        {activeTab === 'agent' && (
+          <>
+            <Box flexDirection="row" justifyContent="space-between" width="100%">
+              <Text dimColor>[Ctrl+T] Terminal | [Tab] Navigate Logs | [ESC] Focus Input | Context: {history.length}/50</Text>
+              <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} bg tasks` : ''}</Text>
+            </Box>
+            <Box flexDirection="row" justifyContent="space-between" width="100%">
+              <Text dimColor>Mode: <Text bold>{agentLoop.topology?.toUpperCase() || 'SINGLE'}</Text> | Model: <Text bold>{agentLoop.modelConfig?.modelTier?.toUpperCase() || 'PRO'}</Text></Text>
+              <Text dimColor>Tokens: <Text color={tokenColor}>~{syncTokenEstimate.toLocaleString()} / {tokenLimit.toLocaleString()} ({tokenPct}%)</Text></Text>
+            </Box>
+          </>
+        )}
+      </Box>
     </Box>
   );
 }
