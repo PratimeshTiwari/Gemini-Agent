@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useReducer } from 'react';
-import { Box, Text, useInput, useApp, useStdout } from 'ink';
+import { Box, Text, useInput, useApp, useStdout, Static } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { marked } from 'marked';
@@ -1157,11 +1157,7 @@ export function App({ agentLoop, wsServer }) {
           });
           if (currentTurn) turns.push(currentTurn);
 
-          // 2. Render only the last 3 turns to prevent overflow
-          const visibleTurns = turns.slice(-3);
-
-          return visibleTurns.map((turn, tIdx) => {
-            const isLastTurn = tIdx === visibleTurns.length - 1;
+          const renderTurn = (turn, isLastTurn, isProcessingTurn, isStatic) => {
             const duration = ((turn.endTime - turn.startTime) / 1000).toFixed(1);
 
             return (
@@ -1175,12 +1171,12 @@ export function App({ agentLoop, wsServer }) {
 
                 {/* Agent Actions Block */}
                 {turn.steps.length > 0 && (
-                  <Box flexDirection="column" borderStyle="single" borderColor={isLastTurn && isProcessing ? "magenta" : "gray"} paddingX={1} width="100%" flexShrink={1}>
+                  <Box flexDirection="column" borderStyle="single" borderColor={isLastTurn && isProcessingTurn ? "magenta" : "gray"} paddingX={1} width="100%" flexShrink={1}>
                     
                     {/* Header */}
                     <Box marginBottom={1} width="100%">
                       <Text color="gray">
-                        {isLastTurn && isProcessing ? (
+                        {isLastTurn && isProcessingTurn ? (
                            <Text><Text color="magenta"><Spinner type="dots" /></Text> {status}</Text>
                         ) : (
                            <Text>✓ Worked for {duration}s</Text>
@@ -1189,9 +1185,10 @@ export function App({ agentLoop, wsServer }) {
                     </Box>
                     {/* Steps (Accordions) */}
                     {turn.steps.map((msg, sIdx) => {
-                      // Find if this message is the currently focused item
-                      const isFocused = focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.msg === msg;
-                      const isExpanded = expandedLogIds.has(msg.timestamp || msg._globalIdx);
+                      // Find if this message is the currently focused item (always false in Static)
+                      const isFocused = !isStatic && focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.msg === msg;
+                      // In Static mode, we auto-expand tool results so they are visible in the scrollback!
+                      const isExpanded = isStatic || expandedLogIds.has(msg.timestamp || msg._globalIdx);
                       const focusPrefix = isFocused ? <Text color="cyan">❯ </Text> : <Text>  </Text>;
 
                       if (msg.role === 'assistant' || msg.role === 'agent') {
@@ -1204,7 +1201,7 @@ export function App({ agentLoop, wsServer }) {
                             {thinkMatch && (
                               <Box flexDirection="column" width="100%" flexShrink={1}>
                                 <Text color={isFocused ? 'cyan' : 'gray'}>
-                                  {focusPrefix}🤔 Thought (Press Enter to {isExpanded ? 'collapse' : 'expand'})
+                                  {focusPrefix}🤔 Thought {isStatic ? '' : `(Press Enter to ${isExpanded ? 'collapse' : 'expand'})`}
                                 </Text>
                                 {isExpanded && (
                                   <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'} width="100%" flexShrink={1}>
@@ -1281,21 +1278,25 @@ export function App({ agentLoop, wsServer }) {
                     })}
 
                     {/* Artifacts Summary Box */}
-                    {isLastTurn && !isProcessing && (artifacts.task || artifacts.walkthrough) && (
+                    {isLastTurn && !isProcessingTurn && (artifacts.task || artifacts.walkthrough) && (
                       <Box flexDirection="column" borderStyle="round" borderColor="yellow" padding={1} marginTop={1}>
                         <Text bold color="yellow">📋 Workspace Artifacts Summary</Text>
                         
                         {artifacts.task && (
                           <Box flexDirection="column" marginTop={1}>
                             <Text bold underline color="cyan">task.md</Text>
-                            <Text>{marked.parse(artifacts.task.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
+                            <Box paddingLeft={2}>
+                              <Text dimColor wrap="wrap">{artifacts.task}</Text>
+                            </Box>
                           </Box>
                         )}
                         
                         {artifacts.walkthrough && (
                           <Box flexDirection="column" marginTop={1}>
                             <Text bold underline color="cyan">walkthrough.md</Text>
-                            <Text>{marked.parse(artifacts.walkthrough.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
+                            <Box paddingLeft={2}>
+                              <Text dimColor wrap="wrap">{artifacts.walkthrough}</Text>
+                            </Box>
                           </Box>
                         )}
                       </Box>
@@ -1304,7 +1305,21 @@ export function App({ agentLoop, wsServer }) {
                 )}
               </Box>
             );
-          });
+          };
+
+          const completedTurns = isProcessing ? turns.slice(0, -1) : turns;
+          const activeTurn = isProcessing ? turns[turns.length - 1] : null;
+
+          return (
+            <>
+              {completedTurns.length > 0 && (
+                <Static items={completedTurns}>
+                  {(turn) => renderTurn(turn, false, false, true)}
+                </Static>
+              )}
+              {activeTurn && renderTurn(activeTurn, true, true, false)}
+            </>
+          );
         })()}
       </Box>
       {/* Tool Calls (Expandable) */}
