@@ -1149,6 +1149,9 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
 - search_files({ "query": "filename or path fragment" })
   → Find files by name.
 
+- ask_subagent({ "prompt": "string" })
+  → Spawn a parallel background agent to research a sub-topic for you.
+
 ## TOOL CALL FORMAT (exact format required):
 <tool_call>
 {"name": "grep_search", "args": {"pattern": "your search term"}}
@@ -1159,7 +1162,8 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
 2. After gathering context, produce ONE consolidated final plan in markdown.
 3. Do NOT produce partial plans between tool calls — wait until the end.
 4. Do NOT repeat tool calls you already made.
-5. When done, output ONLY the final plan. Do not include any tool call blocks in the final turn.`;
+5. You can spawn multiple subagents at once by making multiple tool calls.
+6. When done, output ONLY the final plan. Do not include any tool call blocks in the final turn.`;
 
     const finalSystem = systemInstruction ? `${baseSystem}\n\n## ADDITIONAL DIRECTIVE:\n${systemInstruction}` : baseSystem;
 
@@ -1203,26 +1207,37 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
         break;
       }
 
-      const toolResults = [];
-      for (const call of toolCalls) {
+      const toolPromises = toolCalls.map(async (call) => {
         let result;
-        const risk = this.riskClassifier.classify(call.name, call.args);
-
-        if (call.name === 'run_command' && risk.level !== 'safe') {
-          result = { success: false, error: `Command blocked in background agent for security: ${risk.reason}` };
+        
+        if (call.name === 'ask_subagent') {
+          // Provide workspace context and strictly enforce Gemini model for subagent swarming
+          const subPrompt = call.args.prompt;
+          const contextMsg = `[System: You are running in workspace root: ${this.workspace}. Use tools to explore.]`;
+          const sessionResult = await this._runSubAgentSession('subagent', `${contextMsg}\n\nUser Prompt: ${subPrompt}`, 'gemini');
+          result = sessionResult;
         } else {
-          try {
-            result = await this.mcpServer.executeTool(call.name, call.args, {
-              editor: this.editor,
-              taskManager: this.taskManager,
-              workspaceIndexer: this.workspaceIndexer,
-            });
-          } catch (e) {
-            result = { success: false, error: e.message };
+          const risk = this.riskClassifier.classify(call.name, call.args);
+
+          if (call.name === 'run_command' && risk.level !== 'safe') {
+            result = { success: false, error: `Command blocked in background agent for security: ${risk.reason}` };
+          } else {
+            try {
+              result = await this.mcpServer.executeTool(call.name, call.args, {
+                editor: this.editor,
+                taskManager: this.taskManager,
+                workspaceIndexer: this.workspaceIndexer,
+              });
+            } catch (e) {
+              result = { success: false, error: e.message };
+            }
           }
         }
-        toolResults.push({ call_id: call.id || randomUUID(), name: call.name, result });
-      }
+        
+        return { call_id: call.id || randomUUID(), name: call.name, result };
+      });
+
+      const toolResults = await Promise.all(toolPromises);
       localHistory.push({ role: 'tool', content: JSON.stringify(toolResults, null, 2) });
     }
 
@@ -1275,28 +1290,47 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
       const toCompact = this.conversationHistory.slice(0, -5);
       const toKeep = this.conversationHistory.slice(-5);
 
-      // Deterministic lightweight truncation:
-      // Instead of an LLM summarization, we just strip the heavy tool execution outputs
-      // from the older context, preserving only the tool names and user/assistant messages.
+      // Deterministic lightweight truncation (fallback)
       let compactedSummary = toCompact.map(turn => {
         if (turn.role === 'system' && turn.content) {
-          if (turn.content.includes('**Command Output:**')) {
-            return '[System: Command executed. Output truncated for context compaction.]';
-          }
-          if (turn.content.includes('**File Contents:**') || turn.content.includes('**Search Results:**')) {
-             return '[System: File/Search data truncated for context compaction.]';
-          }
-          if (turn.content.length > 500) {
-            return `[System: Output truncated. Original length: ${turn.content.length}]`;
-          }
+          if (turn.content.includes('**Command Output:**')) return '[System: Command executed. Output truncated for context compaction.]';
+          if (turn.content.includes('**File Contents:**') || turn.content.includes('**Search Results:**')) return '[System: File/Search data truncated for context compaction.]';
+          if (turn.content.length > 500) return `[System: Output truncated. Original length: ${turn.content.length}]`;
         }
         return `[${turn.role.toUpperCase()}]: ${turn.content}`;
       }).join('\n\n');
 
+      this.callbacks.sendToPanel({
+        id: randomUUID(),
+        type: 'status',
+        payload: { message: '🧠 Compacting massive context window via Gemini LLM...' },
+        timestamp: Date.now(),
+      });
+
+      const summaryPrompt = `You are a context compactor for an AI coding agent.
+Your job is to read the following conversation history and summarize it into a tight, dense block of text.
+CRITICAL RULES:
+1. Preserve ALL file paths that were explored.
+2. Preserve ALL technical conclusions, bugs found, or decisions made.
+3. Preserve the exact current state of the user's task.
+4. Do NOT output markdown formatting like \`\`\`json, just pure dense text.
+
+HISTORY TO SUMMARIZE:
+${compactedSummary}`;
+
+      const llmResponse = await this._executeSubagent('gemini', summaryPrompt);
+      let finalSummaryText = compactedSummary;
+      
+      if (llmResponse.success && llmResponse.result) {
+        finalSummaryText = llmResponse.result;
+      } else if (llmResponse.success && llmResponse.content) {
+        finalSummaryText = llmResponse.content;
+      }
+
       const compactedTurn = {
         role: 'system',
         type: 'compaction_summary',
-        content: `[Context Summary of older turns]\n${compactedSummary}`,
+        content: `[Context Summary of older turns]\n${finalSummaryText}`,
         timestamp: Date.now(),
       };
 
@@ -1308,7 +1342,7 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
       this.callbacks.sendToPanel({
         id: randomUUID(),
         type: 'status',
-        payload: { message: '✅ History successfully auto-compacted (Lightweight Truncation).' },
+        payload: { message: llmResponse.success ? '✅ History successfully auto-compacted (Gemini Summary).' : '✅ History auto-compacted (Lightweight Fallback).' },
         timestamp: Date.now(),
       });
       

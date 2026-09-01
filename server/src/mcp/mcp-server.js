@@ -176,20 +176,44 @@ export class MCPServer {
       };
     }
 
-    try {
-      const result = await tool.handler(args, {
-        workspace: this.workspace,
-        diffEngine: this.diffEngine,
-        ...context,
-      });
+    let retries = 0;
+    let lastErr = null;
 
-      return { success: true, result };
-    } catch (err) {
-      return {
-        success: false,
-        error: `Tool ${name} failed: ${err.message}`,
-      };
+    while (retries < 3) {
+      try {
+        const result = await tool.handler(args, {
+          workspace: this.workspace,
+          diffEngine: this.diffEngine,
+          ...context,
+        });
+        return { success: true, result };
+      } catch (err) {
+        lastErr = err;
+        // Only retry on transient OS-level file errors
+        if (['EBUSY', 'EACCES', 'EAGAIN', 'EMFILE', 'EPERM'].includes(err.code)) {
+          retries++;
+          // Exponential backoff: 500ms, 1000ms, 2000ms
+          await new Promise(r => setTimeout(r, 250 * Math.pow(2, retries)));
+          continue;
+        }
+        break; // Non-retriable error
+      }
     }
+
+    // Format OS errors into human-readable instructions for the LLM
+    let errorMsg = lastErr.message;
+    if (lastErr.code === 'EACCES' || lastErr.code === 'EPERM') {
+      errorMsg = `Permission denied. The file is locked by the OS and may be open in another process. Please ask the user to close it or fix permissions.`;
+    } else if (lastErr.code === 'EBUSY') {
+      errorMsg = `The file is currently busy/locked by another process (like a dev server). Please try again or ask the user.`;
+    } else if (lastErr.code === 'ENOENT') {
+      errorMsg = `The file or directory does not exist. Double-check the path.`;
+    }
+
+    return {
+      success: false,
+      error: `Tool ${name} failed: ${errorMsg}`,
+    };
   }
 
   /**

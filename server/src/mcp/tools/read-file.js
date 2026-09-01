@@ -65,26 +65,29 @@ export async function readFile(args, context) {
   const allLines = content.split('\n');
   const totalLines = allLines.length;
 
-  // Apply line range
-  let lines = allLines;
-  let rangeStart = 1;
-  let rangeEnd = totalLines;
+  // Apply line range and 800-line pagination limit
+  let rangeStart = startLine ? Math.max(1, startLine) : 1;
+  let rangeEnd = endLine ? Math.min(totalLines, endLine) : totalLines;
 
-  if (startLine || endLine) {
-    rangeStart = Math.max(1, startLine || 1);
-    rangeEnd = Math.min(totalLines, endLine || totalLines);
-
-    if (rangeStart > totalLines) {
-      throw new Error(`Start line ${rangeStart} exceeds file length (${totalLines} lines)`);
-    }
-
-    lines = allLines.slice(rangeStart - 1, rangeEnd);
+  if (rangeStart > totalLines) {
+    throw new Error(`Start line ${rangeStart} exceeds file length (${totalLines} lines)`);
   }
 
+  // Enforce 800-line limit to protect context window
+  if (rangeEnd - rangeStart + 1 > 800) {
+    rangeEnd = rangeStart + 800 - 1;
+  }
+
+  const lines = allLines.slice(rangeStart - 1, rangeEnd);
+
   // Add line numbers
-  const numberedContent = lines
+  let numberedContent = lines
     .map((line, i) => `${String(rangeStart + i).padStart(4)}: ${line}`)
     .join('\n');
+
+  if (rangeEnd < totalLines) {
+    numberedContent += `\n\n... [File truncated at line ${rangeEnd} of ${totalLines}. Call read_file with startLine=${rangeEnd + 1} to read more.]`;
+  }
 
   const ext = extname(absPath).toLowerCase();
   const language = LANG_MAP[ext] || 'plaintext';

@@ -45,17 +45,17 @@ export class DiffEngine {
       // Apply search-and-replace edits
       for (const edit of edits) {
         if (edit.oldText && edit.newText !== undefined) {
-          const idx = newContent.indexOf(edit.oldText);
-          if (idx === -1) {
+          const match = this._findMatch(newContent, edit.oldText);
+          if (!match) {
             throw new Error(
-              `Edit target not found in ${relPath}:\n` +
+              `Edit target not found in ${relPath} (even with fuzzy matching):\n` +
               `  Looking for: ${edit.oldText.substring(0, 80)}...`
             );
           }
           newContent =
-            newContent.substring(0, idx) +
+            newContent.substring(0, match.index) +
             edit.newText +
-            newContent.substring(idx + edit.oldText.length);
+            newContent.substring(match.index + match.length);
         }
       }
     }
@@ -229,6 +229,30 @@ export class DiffEngine {
   }
 
   // ── Private Methods ──────────────────────────────────────────────
+
+  _findMatch(content, targetText) {
+    // 1. Try exact match first
+    const exactIdx = content.indexOf(targetText);
+    if (exactIdx !== -1) return { index: exactIdx, length: targetText.length };
+
+    // 2. Try fuzzy whitespace matching
+    // Escape all regex specials EXCEPT whitespace
+    const escaped = targetText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Replace sequences of literal whitespace with a flexible whitespace matcher
+    const regexStr = escaped.replace(/\s+/g, '\\s+');
+    
+    try {
+      const regex = new RegExp(regexStr);
+      const match = content.match(regex);
+      if (match) {
+        return { index: match.index, length: match[0].length };
+      }
+    } catch (e) {
+      // Fallback if regex compilation fails due to size or weird characters
+    }
+    
+    return null;
+  }
 
   _resolvePath(filePath) {
     if (filePath.startsWith('/')) return filePath;
