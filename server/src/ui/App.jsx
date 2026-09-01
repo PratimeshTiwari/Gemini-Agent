@@ -1356,7 +1356,7 @@ export function App({ agentLoop, wsServer }) {
 
       {/* Main Input */}
       {!diffRequest && !terminalOpen && !activeMenu && (
-        <Box>
+        <Box marginTop={1} paddingTop={1} borderTopStyle="single" borderTopColor="gray">
           <Text bold color={focus === FOCUS_INPUT ? 'white' : 'gray'}>🤖 &gt; </Text>
           {focus === FOCUS_INPUT ? (
             <TextInput focus={focus === FOCUS_INPUT} value={input} onChange={setInput} onSubmit={handleSubmit} />

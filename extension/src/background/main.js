@@ -16,6 +16,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'diff_response':
       case 'gemini_response':
       case 'gemini_response_stream':
+        if (type === 'gemini_response' && payload.complete && payload.isSubagent && sender.tab) {
+          payload.subagentUrl = sender.tab.url;
+          chrome.tabs.remove(sender.tab.id).catch(err => console.warn('Failed to auto-close subagent tab:', err));
+        }
         sendToServer({ type, payload });
         sendResponse({ success: true });
         break;
