@@ -49,7 +49,14 @@ export class AgentLoop {
       reviewer: 'claude',
       reasoner: 'chatgpt',
       reasoningEffort: 'high',
+      modelTier: 'pro',
       useLocalLlm: false
+    };
+    
+    this.commandRules = {
+      enabled: true,
+      allow: [],
+      block: []
     };
     
     this._loadConfig();
@@ -440,14 +447,53 @@ export class AgentLoop {
         }
         return { message: `📂 Current workspace: ${this.workspace}` };
 
-      case 'reasoning': {
-        const levels = ['low', 'medium', 'high'];
-        if (args?.[0] && levels.includes(args[0].toLowerCase())) {
-          this.modelConfig.reasoningEffort = args[0].toLowerCase();
+      case 'model': {
+        const tiers = {
+          'flash': { modelTier: 'flash', reasoningEffort: 'low', label: '⚡ Flash (Fast)', browserHint: 'Gemini Flash' },
+          'flash-thinking': { modelTier: 'flash-thinking', reasoningEffort: 'medium', label: '🧠 Flash Thinking', browserHint: 'Gemini Flash (Thinking)' },
+          'pro': { modelTier: 'pro', reasoningEffort: 'high', label: '🔬 Pro (Deep Reasoning)', browserHint: 'Gemini Pro' },
+        };
+        const tierKey = args?.[0]?.toLowerCase();
+        if (tierKey && tiers[tierKey]) {
+          const tier = tiers[tierKey];
+          this.modelConfig.modelTier = tier.modelTier;
+          this.modelConfig.reasoningEffort = tier.reasoningEffort;
           this._saveConfig();
-          return { message: `🧠 Reasoning effort set to: **${this.modelConfig.reasoningEffort.toUpperCase()}**` };
+          this.promptBuilder.resetPromptState();
+          return { message: `${tier.label}\n\n📌 Prompt profile switched to **${tier.modelTier.toUpperCase()}**.\n💡 Make sure your Gemini browser tab is set to **${tier.browserHint}** for best results.` };
         }
-        return { message: `🧠 Current reasoning effort: **${this.modelConfig.reasoningEffort?.toUpperCase() || 'HIGH'}**\nUsage: \`/reasoning <low|medium|high>\`` };
+        const current = this.modelConfig.modelTier || 'pro';
+        return { message: `🤖 Current model tier: **${current.toUpperCase()}**\n\nAvailable tiers:\n  ⚡ \`/model flash\` — Ultra-fast, minimal reasoning (use with Flash)\n  🧠 \`/model flash-thinking\` — Moderate reasoning (use with Flash Thinking)\n  🔬 \`/model pro\` — Full principal-engineer protocol (use with Pro)` };
+      }
+
+      case 'allowlist': {
+        if (args?.[0] === 'clear') {
+          this.commandRules.allow = [];
+          this.commandRules.block = [];
+          this._saveConfig();
+          return { message: '✅ Command allowlist and blocklist cleared.' };
+        } else if (args?.[0] === 'remove' && args[1]) {
+          const cmdToRemove = args.slice(1).join(' ');
+          this.commandRules.allow = this.commandRules.allow.filter(c => c !== cmdToRemove);
+          this.commandRules.block = this.commandRules.block.filter(c => c !== cmdToRemove);
+          this._saveConfig();
+          return { message: `✅ Removed \`${cmdToRemove}\` from rules.` };
+        } else if (args?.[0] === 'enable') {
+          this.commandRules.enabled = true;
+          this._saveConfig();
+          return { message: '✅ Command allowlist is now **enabled**.' };
+        } else if (args?.[0] === 'disable') {
+          this.commandRules.enabled = false;
+          this._saveConfig();
+          return { message: '⛔ Command allowlist is now **disabled**. All commands will prompt for approval.' };
+        }
+        let msg = `🛡️ **Command Rules** (Status: ${this.commandRules.enabled !== false ? '✅ Enabled' : '⛔ Disabled'})\n\n`;
+        msg += '**Allowed Commands:**\n';
+        msg += this.commandRules.allow.length > 0 ? this.commandRules.allow.map(cmd => `  - \`${cmd}\``).join('\n') : '  *(None)*';
+        msg += '\n\n**Blocked Commands:**\n';
+        msg += this.commandRules.block.length > 0 ? this.commandRules.block.map(cmd => `  - \`${cmd}\``).join('\n') : '  *(None)*';
+        msg += '\n\n**Commands:**\n  `/allowlist enable` or `/allowlist disable`\n  `/allowlist remove <command>`\n  `/allowlist clear`';
+        return { message: msg };
       }
       
       case 'localllm': {
@@ -553,7 +599,7 @@ export class AgentLoop {
       }
 
       default:
-        return { message: `Unknown command: /${command}. Available: /plan, /auto, /clear, /context, /compact, /undo, /workspace, /agent-dir, /github` };
+        return { message: `Unknown command: /${command}. Available: /plan, /auto, /clear, /context, /compact, /undo, /workspace, /agent-dir, /model, /allowlist, /github` };
     }
   }
 
@@ -566,9 +612,19 @@ export class AgentLoop {
     }
   }
 
-  answerCommandApproval(approved) {
+  answerCommandApproval(action, command) {
     if (this.pendingCommandResolve) {
-      this.pendingCommandResolve({ approved });
+      if (action === 'allow_always') {
+        this.commandRules.allow.push(command);
+        this._saveConfig();
+        this.pendingCommandResolve({ approved: true });
+      } else if (action === 'reject_always') {
+        this.commandRules.block.push(command);
+        this._saveConfig();
+        this.pendingCommandResolve({ approved: false });
+      } else {
+        this.pendingCommandResolve({ approved: action === 'allow_once' || action === 'accept' });
+      }
       this.pendingCommandResolve = null;
     }
   }
@@ -580,6 +636,7 @@ export class AgentLoop {
         const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         if (data.topology) this.topology = data.topology;
         if (data.modelConfig) this.modelConfig = { ...this.modelConfig, ...data.modelConfig };
+        if (data.commandRules) this.commandRules = { ...this.commandRules, ...data.commandRules };
       } catch (err) {
         console.warn('⚠️ Failed to load .gemini/config.json:', err.message);
       }
@@ -595,7 +652,8 @@ export class AgentLoop {
     try {
       fs.writeFileSync(configPath, JSON.stringify({
         topology: this.topology,
-        modelConfig: this.modelConfig
+        modelConfig: this.modelConfig,
+        commandRules: this.commandRules
       }, null, 2));
     } catch (err) {
       console.warn('⚠️ Failed to save config:', err.message);
@@ -672,24 +730,40 @@ export class AgentLoop {
       
       if (call.name === 'run_command' && risk.level === 'critical') {
         result = { success: false, error: `❌ Command blocked by Security Constraints: ${risk.reason}` };
-      } else if (call.name === 'run_command' && needsApproval) {
-        // Pause and request user approval for risky commands
-        const approval = await new Promise((resolve) => {
-          this.pendingCommandResolve = resolve;
-          this.callbacks.sendToPanel({
-            id: randomUUID(),
-            type: 'request_command_approval',
-            payload: { 
-              command: call.args.command,
-              cwd: call.args.cwd || this.workspace,
-              riskLevel: risk.level,
-              riskReason: risk.reason
-            },
-            timestamp: Date.now(),
+      } else if (call.name === 'run_command') {
+        const commandToRun = call.args.command;
+        let isApproved = false;
+
+        const rulesEnabled = this.commandRules.enabled !== false;
+
+        if (rulesEnabled && this.commandRules.block.includes(commandToRun)) {
+          result = { success: false, error: 'Command blocked by user blocklist.' };
+          continue; // Skip the rest of the loop block
+        } else if (rulesEnabled && this.commandRules.allow.includes(commandToRun)) {
+          isApproved = true;
+        } else if (needsApproval) {
+          // Pause and request user approval for risky commands
+          const approval = await new Promise((resolve) => {
+            this.pendingCommandResolve = resolve;
+            this.callbacks.sendToPanel({
+              id: randomUUID(),
+              type: 'request_command_approval',
+              payload: { 
+                command: commandToRun,
+                cwd: call.args.cwd || this.workspace,
+                riskLevel: risk.level,
+                riskReason: risk.reason
+              },
+              timestamp: Date.now(),
+            });
           });
-        });
+          isApproved = approval.approved;
+        } else {
+          // Safe commands in auto mode
+          isApproved = true;
+        }
         
-        if (approval.approved) {
+        if (isApproved) {
           result = await this.mcpServer.executeTool(call.name, call.args, {
             editor: this.editor,
             taskManager: this.taskManager,
