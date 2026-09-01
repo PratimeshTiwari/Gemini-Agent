@@ -864,7 +864,7 @@ export function App({ agentLoop, wsServer }) {
   const tokenColor = tokenPct > 80 ? 'red' : tokenPct > 50 ? 'yellow' : 'cyan';
 
   return (
-    <Box flexDirection="column" height={terminalHeight} overflow="hidden">
+    <Box flexDirection="column" width="100%" height={activeTab === 'github' ? terminalHeight : undefined} overflow="hidden">
 
       {activeTab === 'github' && (
         <Box flexDirection="column" flexGrow={1} borderStyle="single" borderColor="cyan" padding={1}>
@@ -1289,11 +1289,37 @@ export function App({ agentLoop, wsServer }) {
           const completedTurns = isProcessing ? turns.slice(0, -1) : turns;
           const activeTurn = isProcessing ? turns[turns.length - 1] : null;
 
+          const staticItems = [{ id: 'app-banner', isBanner: true }, ...completedTurns];
+
           return (
             <>
-              {completedTurns.length > 0 && (
-                <Static items={completedTurns}>
-                  {(turn) => renderTurn(turn, false, false, true)}
+              {staticItems.length > 0 && (
+                <Static items={staticItems}>
+                  {(item) => {
+                    if (item.isBanner) {
+                      return (
+                        <Box key="banner" flexDirection="column" marginBottom={1} width="100%">
+                          <Box borderStyle="round" borderColor="blue" paddingX={2} paddingY={0} width="100%" flexDirection="column">
+                            <Text bold color="cyan">🤖 Gemini Agent CLI</Text>
+                            <Box flexDirection="row" width="100%">
+                              <Text color="gray">Workspace: <Text color="white">{agentLoop.workspace}</Text></Text>
+                              <Box marginLeft={4}>
+                                <Text color="gray">Port: <Text color="white">{wsServer.port || 7777}</Text></Text>
+                              </Box>
+                            </Box>
+                            <Box flexDirection="row" width="100%">
+                              {agentLoop.githubHandler ? (
+                                <Text color="gray">GitHub: <Text color="white">{agentLoop.githubHandler.poller?.username ? `Connected as @${agentLoop.githubHandler.poller.username}` : 'Enabled (Connecting...)'}</Text></Text>
+                              ) : (
+                                <Text color="gray">GitHub: <Text dimColor>Disabled (No GITHUB_TOKEN)</Text></Text>
+                              )}
+                            </Box>
+                          </Box>
+                        </Box>
+                      );
+                    }
+                    return renderTurn(item, false, false, true);
+                  }}
                 </Static>
               )}
               {activeTurn && renderTurn(activeTurn, true, true, false)}
@@ -1350,15 +1376,30 @@ export function App({ agentLoop, wsServer }) {
 
       {/* Main Input */}
       {!diffRequest && !terminalOpen && !activeMenu && (
-        <Box marginTop={1} paddingTop={1} borderTopStyle="single" borderTopColor="gray">
-          <Text bold color={focus === FOCUS_INPUT ? 'white' : 'gray'}>🤖 &gt; </Text>
-          {focus === FOCUS_INPUT ? (
-            <TextInput focus={focus === FOCUS_INPUT} value={input} onChange={setInput} onSubmit={handleSubmit} />
-          ) : (
-            <Text dimColor>{input || 'Press Tab to focus input...'}</Text>
-          )}
+        <Box flexDirection="column" marginTop={1} paddingTop={1} borderTopStyle="single" borderTopColor="gray">
+          {(() => {
+            const hasExtension = wsServer.clients && Array.from(wsServer.clients.values()).some(c => c.type === 'extension');
+            if (!hasExtension) {
+              return (
+                <Box marginBottom={1} flexDirection="column">
+                  <Text color="yellow">⚠️ Chrome Extension is not connected.</Text>
+                  <Text color="dim">💡 Tip: Go to chrome://extensions and refresh the Gemini Agent extension</Text>
+                </Box>
+              );
+            }
+            return null;
+          })()}
+          <Box flexDirection="row">
+            <Text bold color={focus === FOCUS_INPUT ? 'white' : 'gray'}>🤖 &gt; </Text>
+            {focus === FOCUS_INPUT ? (
+              <TextInput focus={focus === FOCUS_INPUT} value={input} onChange={setInput} onSubmit={handleSubmit} />
+            ) : (
+              <Text dimColor>{input || 'Press Tab to focus input...'}</Text>
+            )}
+          </Box>
         </Box>
       )}
+
 
       {/* Interactive Menus */}
       {activeMenu?.type === 'ask_question' && (
@@ -1584,13 +1625,33 @@ export function App({ agentLoop, wsServer }) {
         <Box flexDirection="row" justifyContent="space-between" width="100%">
           <Text color="gray">
             {activeTab === 'agent' ? (
-              <Text>[<Text color="white">🤖 Agent</Text>]  [<Text color="dim">Ctrl+O</Text> 📋 GitHub{hasNewGitHubEvent ? ' 🔴' : ''}]</Text>
+              <Text>
+                <Text inverse> 🤖 Agent </Text>
+                {' | '}
+                <Text> 📋 GitHub {hasNewGitHubEvent ? '🔴 ' : ''}</Text>
+                {'  '}<Text color="dim">(Press Ctrl+O to switch)</Text>
+              </Text>
             ) : (
-              <Text>[<Text color="dim">Ctrl+O</Text> 🤖 Agent]  [<Text color="white">📋 GitHub</Text>]</Text>
+              <Text>
+                <Text> 🤖 Agent </Text>
+                {' | '}
+                <Text inverse> 📋 GitHub </Text>
+                {'  '}<Text color="dim">(Press Ctrl+O to switch)</Text>
+              </Text>
             )}
           </Text>
           <Text color="gray">
-            {wsServer.clients?.size > 0 ? <Text color="green">✅ Ext Connected</Text> : <Text color="yellow">⏳ Waiting for Ext</Text>}
+            {(() => {
+              if (wsServer.clients?.size > 0) {
+                const extClients = Array.from(wsServer.clients.values()).filter(c => c.type === 'extension');
+                let models = [];
+                extClients.forEach(c => { if (c.reportedModels) models.push(...c.reportedModels); });
+                models = [...new Set(models)];
+                return <Text color="green">✅ Ext Connected{models.length > 0 ? ` (Models: ${models.join(', ')})` : ''}</Text>;
+              } else {
+                return <Text color="yellow">⏳ Waiting for Ext</Text>;
+              }
+            })()}
           </Text>
         </Box>
         {activeTab === 'agent' && (

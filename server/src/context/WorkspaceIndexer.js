@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import madge from 'madge';
+import chalk from 'chalk';
 
 /**
  * A lightweight, in-memory TF-IDF indexer for the workspace.

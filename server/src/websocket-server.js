@@ -51,7 +51,7 @@ export class WebSocketServer {
   }
 
   async start() {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       this.wss = new WS({ port: this.port });
 
       this.wss.on('connection', (ws, req) => {
@@ -63,7 +63,7 @@ export class WebSocketServer {
       });
 
       this.wss.on('error', (err) => {
-        console.error('❌ WebSocket server error:', err.message);
+        reject(err);
       });
     });
   }
@@ -86,8 +86,6 @@ export class WebSocketServer {
     };
     this.clients.set(clientId, clientInfo);
 
-    console.log(`🔌 Client connected: ${clientId}`);
-
     ws.on('message', async (data) => {
       try {
         const message = JSON.parse(data.toString());
@@ -104,7 +102,6 @@ export class WebSocketServer {
     });
 
     ws.on('close', (code, reason) => {
-      console.log(`🔌 Client disconnected: ${clientId} (code: ${code})`);
       this.clients.delete(clientId);
     });
 
@@ -135,7 +132,6 @@ export class WebSocketServer {
     // Identify client type from first message
     if (payload?.clientType && client.type === 'unknown') {
       client.type = payload.clientType;
-      console.log(`  📋 Client ${clientId} identified as: ${client.type}`);
     }
 
     switch (type) {
@@ -197,7 +193,6 @@ export class WebSocketServer {
         if (payload?.connectedModels && payload.connectedModels.length > 0) {
           if (!client.reportedModels || client.reportedModels.join() !== payload.connectedModels.join()) {
             client.reportedModels = payload.connectedModels;
-            console.log(`  🌐 Connected Models: ${payload.connectedModels.join(', ')}`);
           }
         }
         break;
@@ -205,7 +200,6 @@ export class WebSocketServer {
       case 'github_pr_comment':
         // Real-time comment from GitHub content script
         if (this.githubHandler) {
-          console.log(`  [GitHub Bridge] New comment detected on PR #${payload?.pr?.number}`);
           // Emit as if it came from the poller — the classifier/plan generator will handle it
           this.githubHandler.poller.emit('new_comment', {
             pr: {

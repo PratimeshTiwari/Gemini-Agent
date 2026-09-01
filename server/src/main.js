@@ -126,17 +126,7 @@ function ensureConfigDir() {
 async function main() {
   const config = parseArgs();
   const configHome = ensureConfigDir();
-
-  console.log(`
-╔══════════════════════════════════════════════════════════╗
-║               🤖 Gemini Agent Server                    ║
-╚══════════════════════════════════════════════════════════╝
-  Workspace:  ${config.workspace}
-  Port:       ${config.port}
-  Editor:     ${config.editor}
-  Config:     ${configHome}
-`);
-
+  
   // Verify workspace exists
   if (!existsSync(config.workspace)) {
     console.error(`❌ Workspace directory not found: ${config.workspace}`);
@@ -194,9 +184,9 @@ async function main() {
       agentLoop,
     });
 
-    // Wire GitHub events to console output
+    // Wire GitHub events to console output (errors only, status is handled by UI)
     githubHandler.on('status', ({ message }) => {
-      console.log(`  [GitHub] ${message}`);
+      // console.log(`  [GitHub] ${message}`);
     });
     githubHandler.on('error', ({ message }) => {
       console.error(`  [GitHub] ❌ ${message}`);
@@ -209,9 +199,11 @@ async function main() {
     agentLoop.githubHandler = githubHandler;
 
     // Start watching
-    githubHandler.start().catch(err => {
+    try {
+      await githubHandler.start();
+    } catch (err) {
       console.error(`  [GitHub] ❌ Failed to start: ${err.message}`);
-    });
+    }
   } else if (config.github && !githubToken) {
     console.log('  ℹ️  Set GITHUB_TOKEN env var to enable PR comment watching');
   }
@@ -223,10 +215,33 @@ async function main() {
   });
 
   // Start listening
-  await wsServer.start();
-
-  console.log(`  ✅ WebSocket server listening on ws://localhost:${config.port}`);
-  console.log(`  ⏳ Waiting for Chrome Extension connection...\n`);
+  try {
+    await wsServer.start();
+  } catch (err) {
+    if (err.code === 'EADDRINUSE') {
+      const { confirm } = await import('@inquirer/prompts');
+      const { execSync } = await import('child_process');
+      const shouldKill = await confirm({
+        message: `Port ${config.port} is already in use by another process. Do you want to kill it?`
+      });
+      if (shouldKill) {
+        try {
+          execSync(`lsof -t -i:${config.port} | xargs kill -9`);
+          console.log(`  ✅ Killed existing process on port ${config.port}. Restarting server...`);
+          await new Promise(r => setTimeout(r, 500)); // wait a bit for port to free up
+          await wsServer.start();
+        } catch (killErr) {
+          console.error(`  ❌ Failed to kill process: ${killErr.message}`);
+          process.exit(1);
+        }
+      } else {
+        console.log('  ❌ Exiting.');
+        process.exit(1);
+      }
+    } else {
+      throw err;
+    }
+  }
 
   // Start CLI UI
   const { CliUI } = await import('./cli-ui.jsx');
@@ -237,7 +252,7 @@ async function main() {
   try {
     const { exec } = await import('child_process');
     const startUrl = 'https://gemini.google.com/app';
-    console.log(`\n🌐 Opening ${startUrl} in your browser...`);
+
     if (process.platform === 'darwin') {
       exec(`open ${startUrl}`);
     } else if (process.platform === 'win32') {
