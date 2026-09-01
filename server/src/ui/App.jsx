@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useReducer } from 'react';
-import { Box, Text, useInput, useApp } from 'ink';
+import { Box, Text, useInput, useApp, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { marked } from 'marked';
@@ -73,6 +73,16 @@ export function App({ agentLoop, wsServer }) {
   const [prComments, setPrComments] = useState([]);
   const [selectedPrCommentIdx, setSelectedPrCommentIdx] = useState(0);
   const [explorerMode, setExplorerMode] = useState("prs");
+
+  const { stdout } = useStdout();
+  const [terminalHeight, setTerminalHeight] = useState(stdout ? stdout.rows : process.stdout.rows);
+
+  useEffect(() => {
+    if (!stdout) return;
+    const onResize = () => setTerminalHeight(stdout.rows);
+    stdout.on('resize', onResize);
+    return () => stdout.off('resize', onResize);
+  }, [stdout]);
   const [avoidWords, setAvoidWords] = useState(agentLoop.githubHandler?.config?.avoidWords || []);
   const [newAvoidWord, setNewAvoidWord] = useState("");
   const [githubSetupToken, setGithubSetupToken] = useState('');
@@ -190,14 +200,17 @@ export function App({ agentLoop, wsServer }) {
 
   useEffect(() => {
     let interval;
-    if (isProcessing && THINKING_MESSAGES.includes(status)) {
+    if (isProcessing && THINKING_MESSAGES.some(msg => status.includes(msg))) {
        interval = setInterval(() => {
          setThinkingIndex(i => {
            const next = (i + 1) % THINKING_MESSAGES.length;
-           setStatus(THINKING_MESSAGES[next]);
+           // Extract prefix assuming the current message is one of the THINKING_MESSAGES
+           const currentMsg = THINKING_MESSAGES.find(msg => status.includes(msg)) || 'Thinking...';
+           const prefix = status.split(currentMsg)[0] || '';
+           setStatus(`${prefix}${THINKING_MESSAGES[next]}`);
            return next;
          });
-       }, 500); // Faster cycle for better visual feedback
+       }, 2500); // Slower cycle for more natural reading
     }
     return () => clearInterval(interval);
   }, [isProcessing, status]);
@@ -851,7 +864,7 @@ export function App({ agentLoop, wsServer }) {
   const tokenColor = tokenPct > 80 ? 'red' : tokenPct > 50 ? 'yellow' : 'cyan';
 
   return (
-    <Box flexDirection="column" height="100%">
+    <Box flexDirection="column" height={terminalHeight} overflow="hidden">
       {/* Persistent Header */}
       <Box flexDirection="column" marginBottom={1}>
         <Box borderStyle="round" borderColor="blue" paddingX={2} width="100%" justifyContent="space-between">

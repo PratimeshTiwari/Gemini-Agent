@@ -181,7 +181,7 @@ export class AgentLoop {
 
     if (isSubagent) {
       if (complete) {
-        this.handleSubagentResponse(requestId, content);
+        this.handleSubagentResponse(requestId, content, payload.subagentUrl);
         this.isExtensionBusy = false;
         this._processExtensionQueue();
       }
@@ -283,11 +283,11 @@ export class AgentLoop {
   /**
    * Handle a response from a subagent (e.g. ChatGPT/Claude).
    */
-  handleSubagentResponse(requestId, content) {
+  handleSubagentResponse(requestId, content, url) {
     if (this.pendingSubagents.has(requestId)) {
       const { resolve } = this.pendingSubagents.get(requestId);
       this.pendingSubagents.delete(requestId);
-      resolve({ success: true, result: content });
+      resolve({ success: true, result: content, url });
     } else {
       console.warn(`⚠️ Received subagent response for unknown requestId: ${requestId}`);
     }
@@ -695,11 +695,16 @@ export class AgentLoop {
   }
 
   async _executeToolCalls(toolCalls) {
-    const toolResults = [];
+    const toolResults = new Array(toolCalls.length);
+    const executionPromises = [];
 
-    for (const call of toolCalls) {
-      // Notify side panel about tool call
-      this.callbacks.sendToPanel({
+    for (let i = 0; i < toolCalls.length; i++) {
+      const call = toolCalls[i];
+      const isParallel = ['ask_researcher', 'ask_reviewer', 'ask_reasoner', 'ask_subagent'].includes(call.name);
+
+      const executePromise = (async () => {
+        // Notify side panel about tool call
+        this.callbacks.sendToPanel({
         id: randomUUID(),
         type: 'tool_call',
         payload: {
@@ -737,8 +742,8 @@ export class AgentLoop {
         const rulesEnabled = this.commandRules.enabled !== false;
 
         if (rulesEnabled && this.commandRules.block.includes(commandToRun)) {
-          result = { success: false, error: 'Command blocked by user blocklist.' };
-          continue; // Skip the rest of the loop block
+          result = { success: false, error: `❌ Command blocked by user blocklist. Do NOT try this command again. If it is essential, ask the user to remove it from the deny list, or try an alternative approach.` };
+          isApproved = false;
         } else if (rulesEnabled && this.commandRules.allow.includes(commandToRun)) {
           isApproved = true;
         } else if (needsApproval) {
@@ -770,7 +775,7 @@ export class AgentLoop {
             workspaceIndexer: this.workspaceIndexer,
           });
         } else {
-          result = { success: false, error: 'User rejected command execution.' };
+          result = result || { success: false, error: 'User rejected command execution.' };
         }
       } else if (call.name === 'ask_question') {
         result = await new Promise((resolve) => {
@@ -782,15 +787,11 @@ export class AgentLoop {
             timestamp: Date.now(),
           });
         });
-      } else if (call.name === 'ask_reviewer' || call.name === 'ask_reasoner') {
+      } else if (call.name === 'ask_reviewer' || call.name === 'ask_reasoner' || call.name === 'ask_researcher' || call.name === 'ask_subagent') {
         const role = call.name.split('_')[1];
-        const targetModel = this.modelConfig[role] || 'claude'; // default to claude for subagents if not set
+        const targetModel = this.modelConfig[role] || 'gemini'; // default to gemini for subagents if not set
         
-        // Auto-wrap the prompt with role-specific instructions
-        const wrapper = this.promptBuilder.buildSubagentWrapper(role);
-        const wrappedPrompt = wrapper + call.args.prompt;
-        
-        result = await this._executeSubagent(targetModel, wrappedPrompt);
+        result = await this._runSubAgentSession(role, call.args.prompt || call.args.query, targetModel);
       } else if (call.name === 'ask_local_subagent') {
         this.callbacks.sendToPanel({
           id: randomUUID(),
@@ -842,6 +843,16 @@ export class AgentLoop {
       }
 
       // Add to conversation history
+      const truncatedResult = typeof result.result === 'string' && result.result.length > 50000
+        ? result.result.substring(0, 50000) + '\n\n...[Output Truncated]...'
+        : result.result || result.error;
+
+      toolResults[i] = {
+        call_id: call.id || randomUUID(),
+        name: call.name,
+        result: truncatedResult,
+      };
+
       const callTurn = {
         role: 'system',
         type: 'tool_call',
@@ -851,12 +862,6 @@ export class AgentLoop {
       };
       this.conversationHistory.push(callTurn);
       this.sessionStore.appendTurn(callTurn);
-      
-      const rawResult = result.result || result.error;
-      const resultStr = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
-      const truncatedResult = resultStr.length > 1000 
-        ? resultStr.substring(0, 1000) + '\n... [truncated]' 
-        : resultStr;
 
       const resultTurn = {
         role: 'system',
@@ -910,12 +915,15 @@ export class AgentLoop {
           });
         }
       }
+      })();
 
-      toolResults.push({
-        name: call.name,
-        result: result.success ? result.result : result.error,
-      });
+      if (isParallel) {
+        executionPromises.push(executePromise);
+      } else {
+        await executePromise;
+      }
     }
+    await Promise.all(executionPromises);
 
     // Send tool results back to Gemini for continuation
     const resultPrompts = toolResults.map(tr =>
@@ -1034,6 +1042,91 @@ export class AgentLoop {
         }
       }, 300000);
     });
+  }
+
+  async _runSubAgentSession(role, prompt, targetModel) {
+    const wrapper = this.promptBuilder.buildSubagentWrapper(role);
+    const baseSystem = `${wrapper}\nYou also have access to read-only tools to explore the codebase if needed.
+Workspace root path: ${this.workspace}
+
+## TOOLS AVAILABLE:
+- grep_search({ "pattern": "string", "isRegex": false, "includes": ["*.js"] })
+- read_file({ "path": "path/to/file", "startLine": 1, "endLine": 50 })
+- list_directory({ "path": "." })
+- search_files({ "query": "filename" })
+- return_result({ "result": "your final markdown output" })
+
+## TOOL CALL FORMAT (exact format required):
+\`\`\`json
+{"name": "tool_name", "args": {"key": "value"}}
+\`\`\`
+RULES: Make up to 5 tool calls before calling return_result with your final answer.`;
+
+    const localHistory = [
+      { role: 'system', content: baseSystem },
+      { role: 'user', content: prompt }
+    ];
+
+    let lastCleanContent = '';
+
+    for (let turn = 0; turn < 6; turn++) {
+      const serializedPrompt = localHistory.map(t => {
+        if (t.role === 'system') return `[System Context/Tool Results]\n${t.content}`;
+        if (t.role === 'user') return `[User Task]\n${t.content}`;
+        if (t.role === 'agent') return `[Your Previous Output]\n${t.content}`;
+        return t.content;
+      }).join('\n\n');
+      const response = await this._executeSubagent(targetModel, serializedPrompt);
+      if (!response.success) return { success: false, error: response.error };
+
+      if (response.url) {
+        this.callbacks.sendToPanel({
+          id: randomUUID(),
+          type: 'status',
+          payload: { message: `🔗 [${role}] Subagent background tab: ${response.url}` },
+          timestamp: Date.now(),
+        });
+      }
+
+      const content = response.result || response.content;
+      localHistory.push({ role: 'agent', content });
+
+      let toolCalls = [];
+      let cleanContent = content;
+      try {
+        const extracted = this._extractToolCalls(content);
+        toolCalls = extracted.toolCalls;
+        cleanContent = extracted.cleanContent;
+      } catch (err) {
+        localHistory.push({ role: 'system', content: `JSON Parse Error: ${err.message}` });
+        continue;
+      }
+
+      if (cleanContent.trim()) lastCleanContent = cleanContent.trim();
+      
+      if (toolCalls.length === 0) break; // Finished
+
+      const toolResults = [];
+      let returned = false;
+      for (const call of toolCalls) {
+        if (call.name === 'return_result') {
+          return { success: true, result: call.args.result };
+        }
+        
+        let result;
+        if (!['grep_search', 'read_file', 'list_directory', 'search_files'].includes(call.name)) {
+          result = { success: false, error: `Tool ${call.name} not permitted for subagents.` };
+        } else {
+          result = await this.mcpServer.executeTool(call.name, call.args, {
+            editor: this.editor, taskManager: this.taskManager, workspaceIndexer: this.workspaceIndexer,
+          });
+        }
+        toolResults.push({ name: call.name, result: result.result || result.error });
+      }
+      localHistory.push({ role: 'system', content: `Tool Results:\n${JSON.stringify(toolResults, null, 2)}` });
+    }
+    
+    return { success: false, error: "Subagent failed to use the return_result tool. Raw output: " + (lastCleanContent || "No output provided.") };
   }
 
   async runHeadlessTask(prompt, systemInstruction = null) {
