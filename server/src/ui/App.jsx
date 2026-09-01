@@ -1165,20 +1165,20 @@ export function App({ agentLoop, wsServer }) {
             const duration = ((turn.endTime - turn.startTime) / 1000).toFixed(1);
 
             return (
-              <Box key={turn.id} flexDirection="column" marginBottom={1}>
+              <Box key={turn.id} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
                 {/* User Message */}
                 {turn.userMsg && (
-                  <Box flexDirection="column" marginBottom={1}>
-                    <Text bold color="green">🙋 {turn.userMsg.content}</Text>
+                  <Box flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
+                    <Text bold color="green" wrap="wrap">🙋 {turn.userMsg.content}</Text>
                   </Box>
                 )}
 
                 {/* Agent Actions Block */}
                 {turn.steps.length > 0 && (
-                  <Box flexDirection="column" borderStyle="single" borderColor={isLastTurn && isProcessing ? "magenta" : "gray"} paddingX={1}>
+                  <Box flexDirection="column" borderStyle="single" borderColor={isLastTurn && isProcessing ? "magenta" : "gray"} paddingX={1} width="100%" flexShrink={1}>
                     
                     {/* Header */}
-                    <Box marginBottom={1}>
+                    <Box marginBottom={1} width="100%">
                       <Text color="gray">
                         {isLastTurn && isProcessing ? (
                            <Text><Text color="magenta"><Spinner type="dots" /></Text> {status}</Text>
@@ -1200,15 +1200,15 @@ export function App({ agentLoop, wsServer }) {
                         const imgMatch = cleanContent.match(/🖼️ Image attached: (.*?\.png|.*?\.jpg|.*?\.jpeg|.*?\.webp)/);
 
                         return (
-                          <Box key={sIdx} flexDirection="column" marginBottom={1}>
+                          <Box key={sIdx} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
                             {thinkMatch && (
-                              <Box flexDirection="column">
+                              <Box flexDirection="column" width="100%" flexShrink={1}>
                                 <Text color={isFocused ? 'cyan' : 'gray'}>
                                   {focusPrefix}🤔 Thought (Press Enter to {isExpanded ? 'collapse' : 'expand'})
                                 </Text>
                                 {isExpanded && (
-                                  <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'}>
-                                    <Text dimColor>
+                                  <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'} width="100%" flexShrink={1}>
+                                    <Text dimColor wrap="wrap">
                                       {thinkMatch[1].trim().split('\n').slice(0, 15).join('\n')}
                                       {thinkMatch[1].trim().split('\n').length > 15 ? '\n... [Thought Truncated for UI]' : ''}
                                     </Text>
@@ -1218,13 +1218,13 @@ export function App({ agentLoop, wsServer }) {
                             )}
 
                             {cleanContent && (
-                              <Box paddingLeft={2} marginTop={thinkMatch ? 1 : 0}>
+                              <Box paddingLeft={2} marginTop={thinkMatch ? 1 : 0} width="100%" flexShrink={1}>
                                 {imgMatch ? (
                                   <Box borderStyle="single" borderColor="cyan" paddingX={1}>
                                     <Text>🖼️ Attached: {imgMatch[1]}</Text>
                                   </Box>
                                 ) : (
-                                  <Text>{marked.parse(cleanContent.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
+                                  <Text wrap="wrap">{marked.parse(cleanContent.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
                                 )}
                               </Box>
                             )}
@@ -1234,13 +1234,13 @@ export function App({ agentLoop, wsServer }) {
 
                       if (msg.type === 'tool_call') {
                         return (
-                          <Box key={sIdx} flexDirection="column" marginBottom={1}>
-                            <Text color={isFocused ? 'cyan' : 'blue'}>
+                          <Box key={sIdx} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
+                            <Text color={isFocused ? 'cyan' : 'blue'} wrap="wrap">
                               {focusPrefix}▶ Executed {msg.toolName} {isExpanded ? '' : JSON.stringify(msg.args || {}).substring(0, 40) + '...'}
                             </Text>
                             {isExpanded && (
-                              <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'}>
-                                <Text dimColor>{JSON.stringify(msg.args || {}, null, 2)}</Text>
+                              <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'} width="100%" flexShrink={1}>
+                                <Text dimColor wrap="wrap">{JSON.stringify(msg.args || {}, null, 2)}</Text>
                               </Box>
                             )}
                           </Box>
@@ -1254,13 +1254,13 @@ export function App({ agentLoop, wsServer }) {
                           ? lines.slice(0, 20).join('\n') + '\n\n... [Result Truncated for UI]' 
                           : resultStr;
                         return (
-                          <Box key={sIdx} flexDirection="column" marginBottom={1}>
-                            <Text color={isFocused ? 'cyan' : 'green'}>
+                          <Box key={sIdx} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
+                            <Text color={isFocused ? 'cyan' : 'green'} wrap="wrap">
                               {focusPrefix}↙ Result {isExpanded ? '' : (resultStr.substring(0, 40).replace(/\n/g, ' ') + '...')}
                             </Text>
                             {isExpanded && (
-                              <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'}>
-                                <Text dimColor>{truncatedStr}</Text>
+                              <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'} width="100%" flexShrink={1}>
+                                <Text dimColor wrap="wrap">{truncatedStr}</Text>
                               </Box>
                             )}
                           </Box>
@@ -1269,9 +1269,9 @@ export function App({ agentLoop, wsServer }) {
 
                       if (msg.role === 'system') {
                         return (
-                          <Box key={sIdx} flexDirection="column" marginBottom={1}>
-                            <Box paddingLeft={2}>
-                              <Text>{marked.parse((msg.content || '').replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
+                          <Box key={sIdx} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
+                            <Box paddingLeft={2} width="100%" flexShrink={1}>
+                              <Text wrap="wrap">{marked.parse((msg.content || '').replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
                             </Box>
                           </Box>
                         );
@@ -1339,9 +1339,9 @@ export function App({ agentLoop, wsServer }) {
 
       {/* Diff Request */}
       {diffRequest && (
-        <Box borderStyle="single" borderColor="yellow" padding={1} flexDirection="column">
-          <Text bold color="yellow">⚠️ Diff Approval Required: {diffRequest.filePath}</Text>
-          <Text>Approve this change? (y/n)</Text>
+        <Box borderStyle="single" borderColor="yellow" padding={1} flexDirection="column" width="100%" flexShrink={1}>
+          <Text bold color="yellow" wrap="wrap">⚠️ Diff Approval Required: {diffRequest.filePath}</Text>
+          <Text wrap="wrap">Approve this change? (y/n)</Text>
         </Box>
       )}
 
