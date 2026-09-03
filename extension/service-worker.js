@@ -65,35 +65,45 @@
     });
   }
   async function trySendToTab(tab, message, targetModel) {
+    let originalActiveTabId = null;
+    try {
+      const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (activeTabs.length > 0) originalActiveTabId = activeTabs[0].id;
+      if (tab.id !== originalActiveTabId) {
+        await chrome.tabs.update(tab.id, { active: true });
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    } catch (e) {
+      console.warn("Failed to execute Tab Wakeup:", e);
+    }
+    let success = false;
     try {
       const response = await chrome.tabs.sendMessage(tab.id, message);
       if (response && response.success === false) throw new Error(response.error || "Content script reported failure");
-      return true;
+      success = true;
     } catch (firstErr) {
       console.warn(`[Service Worker] First attempt failed for ${targetModel} tab ${tab.id}:`, firstErr.message);
-    }
-    try {
-      await chrome.tabs.update(tab.id, { active: true });
-      await new Promise((r) => setTimeout(r, 800));
-      const response = await chrome.tabs.sendMessage(tab.id, message);
-      if (response && response.success === false) throw new Error(response.error || "Content script reported failure");
-      return true;
-    } catch (secondErr) {
-      console.warn(`[Service Worker] Second attempt failed for ${targetModel} tab ${tab.id}:`, secondErr.message);
-    }
-    const scriptPath = MODEL_SCRIPTS[targetModel];
-    if (scriptPath) {
-      try {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [scriptPath] });
-        await new Promise((r) => setTimeout(r, 1e3));
-        const response = await chrome.tabs.sendMessage(tab.id, message);
-        if (response && response.success === false) throw new Error(response.error || "Content script reported failure");
-        return true;
-      } catch (thirdErr) {
-        console.warn(`[Service Worker] Third attempt failed for ${targetModel} tab ${tab.id}:`, thirdErr.message);
+      const scriptPath = MODEL_SCRIPTS[targetModel];
+      if (scriptPath) {
+        try {
+          await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [scriptPath] });
+          await new Promise((r) => setTimeout(r, 1e3));
+          const response = await chrome.tabs.sendMessage(tab.id, message);
+          if (response && response.success === false) throw new Error(response.error || "Content script reported failure");
+          success = true;
+        } catch (secondErr) {
+          console.warn(`[Service Worker] Second attempt failed for ${targetModel} tab ${tab.id}:`, secondErr.message);
+        }
       }
     }
-    return false;
+    if (originalActiveTabId && originalActiveTabId !== tab.id) {
+      try {
+        await chrome.tabs.update(originalActiveTabId, { active: true });
+      } catch (e) {
+        console.warn("Failed to restore original tab:", e);
+      }
+    }
+    return success;
   }
   async function injectPromptIntoModel(payload) {
     const targetModel = payload.targetModel || "gemini";
@@ -104,21 +114,27 @@
       sendToServer(errorMsg);
       return;
     }
-    const tabs = await chrome.tabs.query({ url: targetUrl });
-    if (tabs.length === 0) {
-      const errorMsg = {
-        type: "error",
-        payload: { message: `\u274C No ${targetUrl.replace("https://", "").replace("/*", "")} tab found. Please open one and try again.` }
-      };
-      broadcastToSidePanel(errorMsg);
-      sendToServer(errorMsg);
-      return;
-    }
-    let success = false;
     const message = { type: "inject_prompt", payload };
-    for (let i = tabs.length - 1; i >= 0; i--) {
-      success = await trySendToTab(tabs[i], message, targetModel);
-      if (success) break;
+    let success = false;
+    if (payload.isSubagent) {
+      const newTab = await chrome.tabs.create({ url: targetUrl.replace("/*", ""), active: false });
+      await new Promise((r) => setTimeout(r, 4e3));
+      success = await trySendToTab(newTab, message, targetModel);
+    } else {
+      const tabs = await chrome.tabs.query({ url: targetUrl });
+      if (tabs.length === 0) {
+        const errorMsg = {
+          type: "error",
+          payload: { message: `\u274C No ${targetUrl.replace("https://", "").replace("/*", "")} tab found. Please open one and try again.` }
+        };
+        broadcastToSidePanel(errorMsg);
+        sendToServer(errorMsg);
+        return;
+      }
+      for (let i = tabs.length - 1; i >= 0; i--) {
+        success = await trySendToTab(tabs[i], message, targetModel);
+        if (success) break;
+      }
     }
     if (!success) {
       const errorMsg = {
@@ -244,6 +260,8 @@
       case "diff_auto_applied":
       case "error":
       case "command_result":
+      case "github_notification":
+      case "github_plan_generated":
         broadcastToSidePanel(message);
         break;
       case "inject_prompt":
@@ -271,6 +289,15 @@
         case "diff_response":
         case "gemini_response":
         case "gemini_response_stream":
+          if (type === "gemini_response" && payload.complete && payload.isSubagent && sender.tab) {
+            payload.subagentUrl = sender.tab.url;
+            chrome.tabs.remove(sender.tab.id).catch((err) => console.warn("Failed to auto-close subagent tab:", err));
+          }
+          sendToServer({ type, payload });
+          sendResponse({ success: true });
+          break;
+        case "github_pr_comment":
+        case "github_pr_viewing":
           sendToServer({ type, payload });
           sendResponse({ success: true });
           break;

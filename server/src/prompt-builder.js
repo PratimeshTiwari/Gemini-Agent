@@ -298,8 +298,27 @@ Your job:
 </role>
 
 `;
+    } else if (role === 'researcher') {
+      return `<role>
+You are acting as a CODEBASE RESEARCHER. The main coding agent has asked you to explore the codebase to find specific logic, trace dependencies, or gather context.
+
+Your job:
+- Use your read-only tools to explore the codebase deeply
+- Be thorough: trace imports, check usages, and read related files
+- Summarize your findings clearly for the main agent
+- Include exact file paths and line numbers
+</role>
+
+`;
     }
-    return '';
+    
+    // Default generic subagent wrapper
+    return `<role>
+You are a HELPER SUBAGENT. The main coding agent has delegated a task to you to run in parallel.
+Your job is to execute the task using your read-only tools if necessary and return a clear, concise result.
+</role>
+
+`;
   }
 
   /**
@@ -640,8 +659,8 @@ Do NOT proceed past assumptions silently. They are blockers.`;
 ## manage_task — Manage background tasks. Args: action ("status"|"read_logs"|"send_input"|"kill"|"list"), taskId? (string)
 ## semantic_search — Conceptual code search. Args: query (string), topK? (number)
 ## get_editor_state — Get current editor state. No args.
-## ask_local_subagent — Delegate to local model. Args: prompt (string), model ("qwen"|"llama")
-`;
+## ask_subagent — Delegate to Gemini subagent. Args: prompt (string)
+${modelConfig.useLocalLlm ? '## ask_local_subagent — Delegate to local model. Args: prompt (string), model ("qwen"|"llama")\n' : ''}`;
     } else {
       // Full tool definitions for Pro/Flash-thinking
       tools += `## ask_question
@@ -736,12 +755,21 @@ Parameters:
 Gets the user's current editor state (active file, cursor position, and visible text) if the VS Code companion extension is installed. Use this to understand what the user is currently looking at.
 Parameters: None
 
+## ask_subagent
+Delegate a task to a generic parallel Gemini subagent. It will run in the background and return the result.
+Parameters:
+  - prompt (string, required): The task for the subagent.
+`;
+
+      if (modelConfig.useLocalLlm) {
+        tools += `
 ## ask_local_subagent
 Delegate a task to the completely local on-device subagent model. Uses Metal GPU acceleration. Fast, private, but less capable than Gemini. Perfect for summarization, log analysis, regex creation, or simple formatting.
 Parameters:
   - prompt (string, required): The task for the local subagent.
   - model (string, required): Must be either "qwen" (Qwen2.5-1.5B) or "llama" (Llama-3.2-3B).
 `;
+      }
     }
 
     if (topology === 'duo' || topology === 'swarm') {

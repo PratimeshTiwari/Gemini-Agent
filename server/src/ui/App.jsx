@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useReducer } from 'react';
-import { Box, Text, useInput, useApp } from 'ink';
+import { Box, Text, useInput, useApp, useStdout, Static } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { marked } from 'marked';
@@ -73,6 +73,16 @@ export function App({ agentLoop, wsServer }) {
   const [prComments, setPrComments] = useState([]);
   const [selectedPrCommentIdx, setSelectedPrCommentIdx] = useState(0);
   const [explorerMode, setExplorerMode] = useState("prs");
+
+  const { stdout } = useStdout();
+  const [terminalHeight, setTerminalHeight] = useState(stdout ? stdout.rows : process.stdout.rows);
+
+  useEffect(() => {
+    if (!stdout) return;
+    const onResize = () => setTerminalHeight(stdout.rows);
+    stdout.on('resize', onResize);
+    return () => stdout.off('resize', onResize);
+  }, [stdout]);
   const [avoidWords, setAvoidWords] = useState(agentLoop.githubHandler?.config?.avoidWords || []);
   const [newAvoidWord, setNewAvoidWord] = useState("");
   const [githubSetupToken, setGithubSetupToken] = useState('');
@@ -190,14 +200,17 @@ export function App({ agentLoop, wsServer }) {
 
   useEffect(() => {
     let interval;
-    if (isProcessing && THINKING_MESSAGES.includes(status)) {
+    if (isProcessing && THINKING_MESSAGES.some(msg => status.includes(msg))) {
        interval = setInterval(() => {
          setThinkingIndex(i => {
            const next = (i + 1) % THINKING_MESSAGES.length;
-           setStatus(THINKING_MESSAGES[next]);
+           // Extract prefix assuming the current message is one of the THINKING_MESSAGES
+           const currentMsg = THINKING_MESSAGES.find(msg => status.includes(msg)) || 'Thinking...';
+           const prefix = status.split(currentMsg)[0] || '';
+           setStatus(`${prefix}${THINKING_MESSAGES[next]}`);
            return next;
          });
-       }, 500); // Faster cycle for better visual feedback
+       }, 2500); // Slower cycle for more natural reading
     }
     return () => clearInterval(interval);
   }, [isProcessing, status]);
@@ -851,28 +864,7 @@ export function App({ agentLoop, wsServer }) {
   const tokenColor = tokenPct > 80 ? 'red' : tokenPct > 50 ? 'yellow' : 'cyan';
 
   return (
-    <Box flexDirection="column" height="100%">
-      {/* Persistent Header */}
-      <Box flexDirection="column" marginBottom={1}>
-        <Box borderStyle="round" borderColor="blue" paddingX={2} width="100%" justifyContent="space-between">
-          <Text bold color="white">🤖 Gemini Agent CLI (Ink Mode)</Text>
-          <Text color="gray">
-            {activeTab === 'agent' ? (
-              <Text>[<Text color="white">🤖 Agent</Text>]  [<Text color="dim">Ctrl+O</Text> 📋 GitHub{hasNewGitHubEvent ? ' 🔴' : ''}]</Text>
-            ) : (
-              <Text>[<Text color="dim">Ctrl+O</Text> 🤖 Agent]  [<Text color="white">📋 GitHub</Text>]</Text>
-            )}
-          </Text>
-        </Box>
-        <Box paddingX={1} flexDirection="column">
-          <Text color="gray">Workspace: <Text color="white">{agentLoop.workspace}</Text></Text>
-          <Text color="gray">Port:      <Text color="white">{wsServer.port || 7777}</Text></Text>
-          <Text color="gray">Status:    {wsServer.clients?.size > 0 ? <Text color="green">✅ Connected to Extension</Text> : <Text color="yellow">⏳ Waiting for Chrome Extension...</Text>}</Text>
-          {(!wsServer.clients || wsServer.clients.size === 0) && (
-            <Text color="dim">           💡 Tip: Go to chrome://extensions and refresh the Gemini Agent extension</Text>
-          )}
-        </Box>
-      </Box>
+    <Box flexDirection="column" width="100%" height={activeTab === 'github' ? terminalHeight : undefined} overflow="hidden">
 
       {activeTab === 'github' && (
         <Box flexDirection="column" flexGrow={1} borderStyle="single" borderColor="cyan" padding={1}>
@@ -1144,30 +1136,26 @@ export function App({ agentLoop, wsServer }) {
           });
           if (currentTurn) turns.push(currentTurn);
 
-          // 2. Render only the last 3 turns to prevent overflow
-          const visibleTurns = turns.slice(-3);
-
-          return visibleTurns.map((turn, tIdx) => {
-            const isLastTurn = tIdx === visibleTurns.length - 1;
+          const renderTurn = (turn, isLastTurn, isProcessingTurn, isStatic) => {
             const duration = ((turn.endTime - turn.startTime) / 1000).toFixed(1);
 
             return (
-              <Box key={turn.id} flexDirection="column" marginBottom={1}>
+              <Box key={turn.id} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
                 {/* User Message */}
                 {turn.userMsg && (
-                  <Box flexDirection="column" marginBottom={1}>
-                    <Text bold color="green">🙋 {turn.userMsg.content}</Text>
+                  <Box flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
+                    <Text bold color="green" wrap="wrap">🙋 {turn.userMsg.content}</Text>
                   </Box>
                 )}
 
                 {/* Agent Actions Block */}
                 {turn.steps.length > 0 && (
-                  <Box flexDirection="column" borderStyle="single" borderColor={isLastTurn && isProcessing ? "magenta" : "gray"} paddingX={1}>
+                  <Box flexDirection="column" borderStyle="single" borderColor={isLastTurn && isProcessingTurn ? "magenta" : "gray"} paddingX={1} width="100%" flexShrink={1}>
                     
                     {/* Header */}
-                    <Box marginBottom={1}>
+                    <Box marginBottom={1} width="100%">
                       <Text color="gray">
-                        {isLastTurn && isProcessing ? (
+                        {isLastTurn && isProcessingTurn ? (
                            <Text><Text color="magenta"><Spinner type="dots" /></Text> {status}</Text>
                         ) : (
                            <Text>✓ Worked for {duration}s</Text>
@@ -1176,9 +1164,10 @@ export function App({ agentLoop, wsServer }) {
                     </Box>
                     {/* Steps (Accordions) */}
                     {turn.steps.map((msg, sIdx) => {
-                      // Find if this message is the currently focused item
-                      const isFocused = focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.msg === msg;
-                      const isExpanded = expandedLogIds.has(msg.timestamp || msg._globalIdx);
+                      // Find if this message is the currently focused item (always false in Static)
+                      const isFocused = !isStatic && focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.msg === msg;
+                      // In Static mode, we auto-expand tool results so they are visible in the scrollback!
+                      const isExpanded = isStatic || expandedLogIds.has(msg.timestamp || msg._globalIdx);
                       const focusPrefix = isFocused ? <Text color="cyan">❯ </Text> : <Text>  </Text>;
 
                       if (msg.role === 'assistant' || msg.role === 'agent') {
@@ -1187,15 +1176,15 @@ export function App({ agentLoop, wsServer }) {
                         const imgMatch = cleanContent.match(/🖼️ Image attached: (.*?\.png|.*?\.jpg|.*?\.jpeg|.*?\.webp)/);
 
                         return (
-                          <Box key={sIdx} flexDirection="column" marginBottom={1}>
+                          <Box key={sIdx} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
                             {thinkMatch && (
-                              <Box flexDirection="column">
+                              <Box flexDirection="column" width="100%" flexShrink={1}>
                                 <Text color={isFocused ? 'cyan' : 'gray'}>
-                                  {focusPrefix}🤔 Thought (Press Enter to {isExpanded ? 'collapse' : 'expand'})
+                                  {focusPrefix}🤔 Thought {isStatic ? '' : `(Press Enter to ${isExpanded ? 'collapse' : 'expand'})`}
                                 </Text>
                                 {isExpanded && (
-                                  <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'}>
-                                    <Text dimColor>
+                                  <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'} width="100%" flexShrink={1}>
+                                    <Text dimColor wrap="wrap">
                                       {thinkMatch[1].trim().split('\n').slice(0, 15).join('\n')}
                                       {thinkMatch[1].trim().split('\n').length > 15 ? '\n... [Thought Truncated for UI]' : ''}
                                     </Text>
@@ -1205,13 +1194,13 @@ export function App({ agentLoop, wsServer }) {
                             )}
 
                             {cleanContent && (
-                              <Box paddingLeft={2} marginTop={thinkMatch ? 1 : 0}>
+                              <Box paddingLeft={2} marginTop={thinkMatch ? 1 : 0} width="100%" flexShrink={1}>
                                 {imgMatch ? (
                                   <Box borderStyle="single" borderColor="cyan" paddingX={1}>
                                     <Text>🖼️ Attached: {imgMatch[1]}</Text>
                                   </Box>
                                 ) : (
-                                  <Text>{marked.parse(cleanContent.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
+                                  <Text wrap="wrap">{marked.parse(cleanContent.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
                                 )}
                               </Box>
                             )}
@@ -1221,13 +1210,13 @@ export function App({ agentLoop, wsServer }) {
 
                       if (msg.type === 'tool_call') {
                         return (
-                          <Box key={sIdx} flexDirection="column" marginBottom={1}>
-                            <Text color={isFocused ? 'cyan' : 'blue'}>
+                          <Box key={sIdx} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
+                            <Text color={isFocused ? 'cyan' : 'blue'} wrap="wrap">
                               {focusPrefix}▶ Executed {msg.toolName} {isExpanded ? '' : JSON.stringify(msg.args || {}).substring(0, 40) + '...'}
                             </Text>
                             {isExpanded && (
-                              <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'}>
-                                <Text dimColor>{JSON.stringify(msg.args || {}, null, 2)}</Text>
+                              <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'} width="100%" flexShrink={1}>
+                                <Text dimColor wrap="wrap">{JSON.stringify(msg.args || {}, null, 2)}</Text>
                               </Box>
                             )}
                           </Box>
@@ -1241,13 +1230,13 @@ export function App({ agentLoop, wsServer }) {
                           ? lines.slice(0, 20).join('\n') + '\n\n... [Result Truncated for UI]' 
                           : resultStr;
                         return (
-                          <Box key={sIdx} flexDirection="column" marginBottom={1}>
-                            <Text color={isFocused ? 'cyan' : 'green'}>
+                          <Box key={sIdx} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
+                            <Text color={isFocused ? 'cyan' : 'green'} wrap="wrap">
                               {focusPrefix}↙ Result {isExpanded ? '' : (resultStr.substring(0, 40).replace(/\n/g, ' ') + '...')}
                             </Text>
                             {isExpanded && (
-                              <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'}>
-                                <Text dimColor>{truncatedStr}</Text>
+                              <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'} width="100%" flexShrink={1}>
+                                <Text dimColor wrap="wrap">{truncatedStr}</Text>
                               </Box>
                             )}
                           </Box>
@@ -1256,9 +1245,9 @@ export function App({ agentLoop, wsServer }) {
 
                       if (msg.role === 'system') {
                         return (
-                          <Box key={sIdx} flexDirection="column" marginBottom={1}>
-                            <Box paddingLeft={2}>
-                              <Text>{marked.parse((msg.content || '').replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
+                          <Box key={sIdx} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
+                            <Box paddingLeft={2} width="100%" flexShrink={1}>
+                              <Text wrap="wrap">{marked.parse((msg.content || '').replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
                             </Box>
                           </Box>
                         );
@@ -1268,21 +1257,25 @@ export function App({ agentLoop, wsServer }) {
                     })}
 
                     {/* Artifacts Summary Box */}
-                    {isLastTurn && !isProcessing && (artifacts.task || artifacts.walkthrough) && (
+                    {isLastTurn && !isProcessingTurn && (artifacts.task || artifacts.walkthrough) && (
                       <Box flexDirection="column" borderStyle="round" borderColor="yellow" padding={1} marginTop={1}>
                         <Text bold color="yellow">📋 Workspace Artifacts Summary</Text>
                         
                         {artifacts.task && (
                           <Box flexDirection="column" marginTop={1}>
                             <Text bold underline color="cyan">task.md</Text>
-                            <Text>{marked.parse(artifacts.task.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
+                            <Box paddingLeft={2}>
+                              <Text dimColor wrap="wrap">{artifacts.task}</Text>
+                            </Box>
                           </Box>
                         )}
                         
                         {artifacts.walkthrough && (
                           <Box flexDirection="column" marginTop={1}>
                             <Text bold underline color="cyan">walkthrough.md</Text>
-                            <Text>{marked.parse(artifacts.walkthrough.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
+                            <Box paddingLeft={2}>
+                              <Text dimColor wrap="wrap">{artifacts.walkthrough}</Text>
+                            </Box>
                           </Box>
                         )}
                       </Box>
@@ -1291,7 +1284,47 @@ export function App({ agentLoop, wsServer }) {
                 )}
               </Box>
             );
-          });
+          };
+
+          const completedTurns = isProcessing ? turns.slice(0, -1) : turns;
+          const activeTurn = isProcessing ? turns[turns.length - 1] : null;
+
+          const staticItems = [{ id: 'app-banner', isBanner: true }, ...completedTurns];
+
+          return (
+            <>
+              {staticItems.length > 0 && (
+                <Static items={staticItems}>
+                  {(item) => {
+                    if (item.isBanner) {
+                      return (
+                        <Box key="banner" flexDirection="column" marginBottom={1} width="100%">
+                          <Box borderStyle="round" borderColor="blue" paddingX={2} paddingY={0} width="100%" flexDirection="column">
+                            <Text bold color="cyan">🤖 Gemini Agent CLI</Text>
+                            <Box flexDirection="row" width="100%">
+                              <Text color="gray">Workspace: <Text color="white">{agentLoop.workspace}</Text></Text>
+                              <Box marginLeft={4}>
+                                <Text color="gray">Port: <Text color="white">{wsServer.port || 7777}</Text></Text>
+                              </Box>
+                            </Box>
+                            <Box flexDirection="row" width="100%">
+                              {agentLoop.githubHandler ? (
+                                <Text color="gray">GitHub: <Text color="white">{agentLoop.githubHandler.poller?.username ? `Connected as @${agentLoop.githubHandler.poller.username}` : 'Enabled (Connecting...)'}</Text></Text>
+                              ) : (
+                                <Text color="gray">GitHub: <Text dimColor>Disabled (No GITHUB_TOKEN)</Text></Text>
+                              )}
+                            </Box>
+                          </Box>
+                        </Box>
+                      );
+                    }
+                    return renderTurn(item, false, false, true);
+                  }}
+                </Static>
+              )}
+              {activeTurn && renderTurn(activeTurn, true, true, false)}
+            </>
+          );
         })()}
       </Box>
       {/* Tool Calls (Expandable) */}
@@ -1326,9 +1359,9 @@ export function App({ agentLoop, wsServer }) {
 
       {/* Diff Request */}
       {diffRequest && (
-        <Box borderStyle="single" borderColor="yellow" padding={1} flexDirection="column">
-          <Text bold color="yellow">⚠️ Diff Approval Required: {diffRequest.filePath}</Text>
-          <Text>Approve this change? (y/n)</Text>
+        <Box borderStyle="single" borderColor="yellow" padding={1} flexDirection="column" width="100%" flexShrink={1}>
+          <Text bold color="yellow" wrap="wrap">⚠️ Diff Approval Required: {diffRequest.filePath}</Text>
+          <Text wrap="wrap">Approve this change? (y/n)</Text>
         </Box>
       )}
 
@@ -1343,15 +1376,30 @@ export function App({ agentLoop, wsServer }) {
 
       {/* Main Input */}
       {!diffRequest && !terminalOpen && !activeMenu && (
-        <Box>
-          <Text bold color={focus === FOCUS_INPUT ? 'white' : 'gray'}>🤖 &gt; </Text>
-          {focus === FOCUS_INPUT ? (
-            <TextInput focus={focus === FOCUS_INPUT} value={input} onChange={setInput} onSubmit={handleSubmit} />
-          ) : (
-            <Text dimColor>{input || 'Press Tab to focus input...'}</Text>
-          )}
+        <Box flexDirection="column" marginTop={1} paddingTop={1} borderTopStyle="single" borderTopColor="gray">
+          {(() => {
+            const hasExtension = wsServer.clients && Array.from(wsServer.clients.values()).some(c => c.type === 'extension');
+            if (!hasExtension) {
+              return (
+                <Box marginBottom={1} flexDirection="column">
+                  <Text color="yellow">⚠️ Chrome Extension is not connected.</Text>
+                  <Text color="dim">💡 Tip: Go to chrome://extensions and refresh the Gemini Agent extension</Text>
+                </Box>
+              );
+            }
+            return null;
+          })()}
+          <Box flexDirection="row">
+            <Text bold color={focus === FOCUS_INPUT ? 'white' : 'gray'}>🤖 &gt; </Text>
+            {focus === FOCUS_INPUT ? (
+              <TextInput focus={focus === FOCUS_INPUT} value={input} onChange={setInput} onSubmit={handleSubmit} />
+            ) : (
+              <Text dimColor>{input || 'Press Tab to focus input...'}</Text>
+            )}
+          </Box>
         </Box>
       )}
+
 
       {/* Interactive Menus */}
       {activeMenu?.type === 'ask_question' && (
@@ -1573,18 +1621,52 @@ export function App({ agentLoop, wsServer }) {
       )}
 
       {/* Fixed Status Bar */}
-      {activeTab === 'agent' && (
-        <Box marginTop={1} paddingX={1} flexDirection="column" width="100%">
-          <Box flexDirection="row" justifyContent="space-between" width="100%">
-            <Text dimColor>[Ctrl+T] Terminal | [Tab] Navigate Logs | [ESC] Focus Input | Context: {history.length}/50</Text>
-            <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} background tasks` : ''}</Text>
-          </Box>
-          <Box flexDirection="row" justifyContent="space-between" width="100%">
-            <Text dimColor>Mode: <Text bold>{agentLoop.topology?.toUpperCase() || 'SINGLE'}</Text> | Model: <Text bold>{agentLoop.modelConfig?.modelTier?.toUpperCase() || 'PRO'}</Text></Text>
-            <Text dimColor>Tokens: <Text color={tokenColor}>~{syncTokenEstimate.toLocaleString()} / {tokenLimit.toLocaleString()} ({tokenPct}%)</Text></Text>
-          </Box>
+      <Box marginTop={1} paddingX={1} flexDirection="column" width="100%" borderTopStyle="single" borderTopColor="gray">
+        <Box flexDirection="row" justifyContent="space-between" width="100%">
+          <Text color="gray">
+            {activeTab === 'agent' ? (
+              <Text>
+                <Text inverse> 🤖 Agent </Text>
+                {' | '}
+                <Text> 📋 GitHub {hasNewGitHubEvent ? '🔴 ' : ''}</Text>
+                {'  '}<Text color="dim">(Press Ctrl+O to switch)</Text>
+              </Text>
+            ) : (
+              <Text>
+                <Text> 🤖 Agent </Text>
+                {' | '}
+                <Text inverse> 📋 GitHub </Text>
+                {'  '}<Text color="dim">(Press Ctrl+O to switch)</Text>
+              </Text>
+            )}
+          </Text>
+          <Text color="gray">
+            {(() => {
+              if (wsServer.clients?.size > 0) {
+                const extClients = Array.from(wsServer.clients.values()).filter(c => c.type === 'extension');
+                let models = [];
+                extClients.forEach(c => { if (c.reportedModels) models.push(...c.reportedModels); });
+                models = [...new Set(models)];
+                return <Text color="green">✅ Ext Connected{models.length > 0 ? ` (Models: ${models.join(', ')})` : ''}</Text>;
+              } else {
+                return <Text color="yellow">⏳ Waiting for Ext</Text>;
+              }
+            })()}
+          </Text>
         </Box>
-      )}
+        {activeTab === 'agent' && (
+          <>
+            <Box flexDirection="row" justifyContent="space-between" width="100%">
+              <Text dimColor>[Ctrl+T] Terminal | [Tab] Navigate Logs | [ESC] Focus Input | Context: {history.length}/50</Text>
+              <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} bg tasks` : ''}</Text>
+            </Box>
+            <Box flexDirection="row" justifyContent="space-between" width="100%">
+              <Text dimColor>Mode: <Text bold>{agentLoop.topology?.toUpperCase() || 'SINGLE'}</Text> | Model: <Text bold>{agentLoop.modelConfig?.modelTier?.toUpperCase() || 'PRO'}</Text></Text>
+              <Text dimColor>Tokens: <Text color={tokenColor}>~{syncTokenEstimate.toLocaleString()} / {tokenLimit.toLocaleString()} ({tokenPct}%)</Text></Text>
+            </Box>
+          </>
+        )}
+      </Box>
     </Box>
   );
 }
