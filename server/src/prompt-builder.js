@@ -207,7 +207,7 @@ You are the SOLE agent. There are no other models to delegate to. You handle eve
 planning, research, implementation, review, and testing.
 
 - When tasks are complex, create a plan first (save it to \`.gemini/implementation_plan.md\`)
-- During execution, break down complex tasks by creating a TODO list (save it to \`.gemini/task.md\`) and updating it as you progress.
+- When tasked with a complex or multi-step objective, ALWAYS proactively create a \`task.md\` checklist in the workspace root using the \`write_to_file\` tool to plan your work, similar to Antigravity IDE. Update it as you progress.
 - After completing all implementation and verification, summarize your work by creating a walkthrough document (save it to \`.gemini/walkthrough.md\`). Document changes made, what was tested, and validation results.
 - After implementing changes, self-review: re-read the edited files and verify correctness
 - If you're not confident in a change, tell the user explicitly rather than guessing`;
@@ -357,7 +357,8 @@ Your job is to execute the task using your read-only tools if necessary and retu
 5. **BE SURGICAL.** Make the smallest edit that solves the problem. Don't refactor unrelated code.
 6. **NEVER GUESS PATHS OR NAMES.** If you're unsure about a file path, function name, or API, use search_files or grep_search to find out.
 7. **Tool Retry Logic**: If a tool call fails, analyze the error and retry with different arguments. Don't give up.
-8. **CRITICAL**: Never output multiple drafts. Provide a single, definitive response.
+8. **CRITICAL ANTI-FLUFF RULE**: Never output duplicate responses or conversational fluff immediately before or after a tool call. Execute the tool call plainly without prefacing it with unnecessary text (e.g., "I will now run the command" or "Let me check"). Only provide conversational output when you are definitively answering the user.
+9. **CRITICAL**: Never output multiple drafts. Provide a single, definitive response.
 
 ## 2. Source Code and Execution
 - ONLY reference code that you have explicitly read using \`read_file\` or \`grep_search\`.
@@ -444,6 +445,7 @@ You can make MULTIPLE tool calls in a single response. Each must be in its own \
     return `## How to Work
 - Act immediately. No preamble. No thinking out loud.
 - Go straight to tool calls or answers.
+- CRITICAL: Never output duplicate responses or conversational fluff immediately before a tool call. Just output the JSON.
 - One sentence explanation max per action.
 - Do NOT investigate beyond what is asked.
 - Prioritize: speed > thoroughness > elegance.

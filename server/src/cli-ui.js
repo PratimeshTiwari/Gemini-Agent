@@ -16,7 +16,7 @@ export class CliUI {
     this.rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
-      prompt: '🤖 > '
+      prompt: '❯ '
     });
 
     this.spinner = ora();
@@ -192,7 +192,7 @@ export class CliUI {
       const turns = this.agentLoop.conversationHistory.length;
       const modeStr = this.agentLoop.mode === 'plan' ? chalk.yellow('Plan Mode') : chalk.green('Auto Mode');
       const turnsStr = chalk.dim(`[Context: ${turns}/50]`);
-      this.rl.setPrompt(`\n${modeStr} ${turnsStr}\n🤖 > `);
+      this.rl.setPrompt(`\n${modeStr} ${turnsStr}\n❯ `);
     }
   }
 
@@ -209,10 +209,16 @@ export class CliUI {
     const progressBar = chalk.green('█'.repeat(filledBlocks)) + chalk.dim('░'.repeat(emptyBlocks));
     
     let color = usagePercent > 80 ? chalk.red : usagePercent > 50 ? chalk.yellow : chalk.green;
-    
-    console.log(chalk.bold.blue('╭────────────────────────────────────────────────────────────╮'));
-    console.log(chalk.bold.blue('│') + chalk.bold.white('                  🤖 Gemini Agent CLI                     ') + chalk.bold.blue('│'));
-    console.log(chalk.bold.blue('╰────────────────────────────────────────────────────────────╯'));
+    const logo = `
+  ____               _       _     _                    _   
+ / ___| ___ _ __ ___(_)_ __ (_)   / \\   __ _  ___ _ __ | |_ 
+| |  _ / _ \\ '_ \` _ \\ | '_ \\| |  / _ \\ / _\` |/ _ \\ '_ \\| __|
+| |_| |  __/ | | | | | | | | |  / ___ \\ (_| |  __/ | | | |_ 
+ \\____|\\___|_| |_| |_|_|_| |_| /_/   \\_\\__, |\\___|_| |_|\\__|
+                                       |___/                
+    `;
+    console.log(chalk.cyan(logo));
+    console.log(chalk.magenta('                 Developed by Pratimesh Tiwari\n'));
     console.log(chalk.dim('Type /help to see available commands.\n'));
     
     console.log(chalk.bold('Model:') + chalk.cyan('  Google Gemini (Managed in Browser UI)'));

@@ -1,9 +1,21 @@
 import { connectWebSocket } from './socket.js';
 import { sendToServer } from './messaging.js';
 import { getState } from './state.js';
+import { broadcastTabStatus } from './content.js';
 
 // Open side panel on extension icon click
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+
+// Listen for tab removals / updates to keep server informed of active tabs
+chrome.tabs.onRemoved.addListener(() => {
+  broadcastTabStatus();
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete' && tab.url && (tab.url.includes('gemini.google.com') || tab.url.includes('chatgpt.com') || tab.url.includes('claude.ai'))) {
+    broadcastTabStatus();
+  }
+});
 
 // Handle messages from side panel and content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

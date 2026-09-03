@@ -105,6 +105,41 @@
     }
     return success;
   }
+  async function ensureModelTab(targetModel = "gemini") {
+    const targetUrl = MODEL_URLS[targetModel];
+    if (!targetUrl) return null;
+    const tabs = await chrome.tabs.query({ url: targetUrl });
+    if (tabs.length > 0) {
+      return tabs[tabs.length - 1];
+    }
+    console.log(`[Gemini Agent] No ${targetModel} tab found. Auto-reopening in a new tab...`);
+    const openUrl = targetModel === "gemini" ? "https://gemini.google.com/app" : targetModel === "chatgpt" ? "https://chatgpt.com" : targetModel === "claude" ? "https://claude.ai" : targetUrl.replace("/*", "");
+    const newTab = await chrome.tabs.create({ url: openUrl, active: true });
+    await new Promise((resolve) => {
+      let resolved = false;
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }
+      }, 8e3);
+      function listener(tabId, changeInfo) {
+        if (tabId === newTab.id && changeInfo.status === "complete") {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timeout);
+            chrome.tabs.onUpdated.removeListener(listener);
+            resolve();
+          }
+        }
+      }
+      chrome.tabs.onUpdated.addListener(listener);
+    });
+    await new Promise((r) => setTimeout(r, 1500));
+    broadcastTabStatus();
+    return newTab;
+  }
   async function injectPromptIntoModel(payload) {
     const targetModel = payload.targetModel || "gemini";
     const targetUrl = MODEL_URLS[targetModel];
@@ -121,11 +156,22 @@
       await new Promise((r) => setTimeout(r, 4e3));
       success = await trySendToTab(newTab, message, targetModel);
     } else {
-      const tabs = await chrome.tabs.query({ url: targetUrl });
+      let tabs = await chrome.tabs.query({ url: targetUrl });
+      if (tabs.length === 0) {
+        console.log(`[Gemini Agent] No active ${targetModel} tab found. Auto-reopening...`);
+        sendToServer({
+          type: "status",
+          payload: { message: `\u{1F310} Reopening ${targetModel} in a new tab...` }
+        });
+        const newTab = await ensureModelTab(targetModel);
+        if (newTab) {
+          tabs = [newTab];
+        }
+      }
       if (tabs.length === 0) {
         const errorMsg = {
           type: "error",
-          payload: { message: `\u274C No ${targetUrl.replace("https://", "").replace("/*", "")} tab found. Please open one and try again.` }
+          payload: { message: `\u274C Failed to open ${targetModel} tab automatically. Please open https://gemini.google.com/app manually.` }
         };
         broadcastToSidePanel(errorMsg);
         sendToServer(errorMsg);
@@ -149,7 +195,11 @@
     const targetModel = payload.targetModel || "gemini";
     const targetUrl = MODEL_URLS[targetModel];
     if (!targetUrl) return;
-    const tabs = await chrome.tabs.query({ url: targetUrl });
+    let tabs = await chrome.tabs.query({ url: targetUrl });
+    if (tabs.length === 0) {
+      const newTab = await ensureModelTab(targetModel);
+      if (newTab) tabs = [newTab];
+    }
     if (tabs.length === 0) return;
     for (let i = tabs.length - 1; i >= 0; i--) {
       try {
@@ -280,6 +330,14 @@
 
   // src/background/main.js
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  chrome.tabs.onRemoved.addListener(() => {
+    broadcastTabStatus();
+  });
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status === "complete" && tab.url && (tab.url.includes("gemini.google.com") || tab.url.includes("chatgpt.com") || tab.url.includes("claude.ai"))) {
+      broadcastTabStatus();
+    }
+  });
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       const { type, payload } = message;

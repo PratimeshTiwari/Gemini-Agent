@@ -722,7 +722,11 @@ export class AgentLoop {
         if (call.name === 'edit_file' || call.name === 'create_file' || call.name === 'run_command') {
           needsApproval = true;
           // Exception: Creating/Editing Markdown files (like plans) is harmless and shouldn't block
-          if ((call.name === 'create_file' || call.name === 'edit_file') && call.args.path.endsWith('.md')) {
+          if ((call.name === 'create_file' || call.name === 'edit_file') && call.args.path && call.args.path.endsWith('.md')) {
+            needsApproval = false;
+          }
+          // Exception: Safe, read-only commands should not block
+          if (call.name === 'run_command' && risk.level === 'safe') {
             needsApproval = false;
           }
         }
