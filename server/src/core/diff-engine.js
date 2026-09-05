@@ -6,6 +6,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, copyFileSync } from 'fs';
+import { backupsDir } from './paths.js';
 import { resolve, dirname, relative } from 'path';
 import { createPatch, applyPatch, structuredPatch } from 'diff';
 import { randomUUID } from 'crypto';
@@ -15,7 +16,7 @@ export class DiffEngine {
     this.workspace = workspace;
     this.pendingDiffs = new Map(); // id -> { diff, filePath, edits, status }
     this.appliedDiffs = [];        // Stack for undo
-    this.backupDir = resolve(workspace, '.gemini-agent', 'backups');
+    this.backupDir = backupsDir(workspace);
   }
 
   /**

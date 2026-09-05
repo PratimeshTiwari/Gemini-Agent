@@ -1,11 +1,18 @@
 node_modules/
 .env
 .DS_Store
-.gemini/
 coverage/
 dist/
 build/
 *.log
 *.zip
-.agent-github-plans/
+*.vsix.bak
+
+# Agent runtime state (per-workspace). Everything the agent writes lives here.
+.agent/
+
+# Legacy state dirs, migrated into .agent/ on startup. Kept ignored so old
+# checkouts don't re-commit them.
+.gemini/
 .gemini-agent/
+.agent-github-plans/

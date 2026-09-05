@@ -1,6 +1,6 @@
 import chokidar from 'chokidar';
 import path from 'path';
-import { AgentLoop } from '../agent-loop.js';
+import { AgentLoop } from '../core/agent-loop.js';
 
 /**
  * FileWatcher
@@ -27,7 +27,7 @@ export class FileWatcher {
         /node_modules/,
         /dist/,
         /build/,
-        /\.gemini-agent/
+        /\.agent[\\/]/
       ],
       persistent: true,
       ignoreInitial: true,

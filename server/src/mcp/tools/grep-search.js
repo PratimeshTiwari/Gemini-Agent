@@ -6,6 +6,7 @@
  */
 
 import { execFile } from 'child_process';
+import { AGENT_DIR } from '../../core/paths.js';
 import { promisify } from 'util';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { resolve, relative, extname } from 'path';
@@ -119,7 +120,7 @@ async function nodeSearch(pattern, workspace, { isRegex, includes, maxResults })
 
       // Skip common non-searchable dirs
       if (entry.isDirectory()) {
-        if (['node_modules', '.git', '.gemini-agent', 'dist', 'build', '.next'].includes(entry.name)) {
+        if (['node_modules', '.git', AGENT_DIR, 'dist', 'build', '.next'].includes(entry.name)) {
           continue;
         }
         walk(fullPath);

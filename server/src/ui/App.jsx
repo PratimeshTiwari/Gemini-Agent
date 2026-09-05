@@ -7,13 +7,123 @@ import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import crypto from 'crypto';
 import SelectInput from 'ink-select-input';
+import { useOnClick } from '@ink-tools/ink-mouse';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import figlet from 'figlet';
+import * as paths from '../core/paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Clamp arbitrary tool output for terminal display.
+ *
+ * Ink can only redraw the dynamic region if it fits the viewport, so output is
+ * capped by BOTH line count and total characters — long single lines wrap into
+ * many rows and are the real cause of tearing.
+ */
+/**
+ * A Box that responds to mouse clicks.
+ *
+ * Exists as a component because `useOnClick` is a hook: it cannot be called
+ * from inside the .map() callbacks that render the expandable rows.
+ */
+function Clickable({ onClick, children, ...boxProps }) {
+  const ref = React.useRef(null);
+  useOnClick(ref, onClick);
+  return (
+    <Box ref={ref} {...boxProps}>
+      {children}
+    </Box>
+  );
+}
+
+/**
+ * One-line description of a tool result, for the collapsed transcript row.
+ * Falls back to a hard-clamped snippet for tools without a specific shape.
+ */
+/** Collapse any value to a single line of at most `max` characters. */
+function oneLine(value, max = 60) {
+  const text = String(typeof value === 'string' ? value : JSON.stringify(value ?? {}))
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function summarizeResult(toolName, result) {
+  const plural = (n, word, many) => `${n} ${n === 1 ? word : many || word + 's'}`;
+  try {
+    const r = result;
+    switch (toolName) {
+      case 'list_directory': {
+        // { path, children, totalFiles, totalDirs }
+        if (typeof r?.totalFiles === 'number' || typeof r?.totalDirs === 'number') {
+          const parts = [];
+          if (r.totalDirs) parts.push(plural(r.totalDirs, 'dir'));
+          if (r.totalFiles) parts.push(plural(r.totalFiles, 'file'));
+          if (parts.length) return parts.join(', ');
+        }
+        if (Array.isArray(r?.children)) return plural(r.children.length, 'entry', 'entries');
+        break;
+      }
+      case 'read_file':
+        // { path, totalLines, size, content }
+        if (typeof r?.totalLines === 'number') {
+          return `${plural(r.totalLines, 'line')}${r.size ? ` · ${r.size}` : ''}`;
+        }
+        break;
+      case 'grep_search':
+      case 'search_files': {
+        // { pattern, matchCount, matches } | { query, count, files }
+        const n = r?.matchCount ?? r?.count ?? (Array.isArray(r?.matches) ? r.matches.length : null)
+          ?? (Array.isArray(r?.files) ? r.files.length : null) ?? (Array.isArray(r?.results) ? r.results.length : null);
+        if (typeof n === 'number') return plural(n, 'match', 'matches');
+        break;
+      }
+      case 'run_command':
+      case 'run_background': {
+        const out = String(typeof r === 'string' ? r : r?.stdout || r?.output || '').trim();
+        if (out) return oneLine(out.split('\n')[0]);
+        break;
+      }
+      case 'edit_file':
+      case 'create_file': {
+        // { diffId, filePath, hunkCount, status }
+        if (r?.filePath) {
+          const name = String(r.filePath).split('/').pop();
+          return r.hunkCount ? `${plural(r.hunkCount, 'hunk')} in ${name}` : name;
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  } catch {
+    /* fall through to the generic snippet */
+  }
+  // Generic fallback: compact, single line. clampForDisplay is not usable here —
+  // it appends a newline marker, which would break the row.
+  return oneLine(result);
+}
+
+function clampForDisplay(value, maxLines = 15, maxChars = 1200) {
+  let text = typeof value === 'string' ? value : JSON.stringify(value ?? {}, null, 2);
+  if (typeof text !== 'string') return '';
+
+  let clipped = false;
+  const lines = text.split('\n');
+  if (lines.length > maxLines) {
+    text = lines.slice(0, maxLines).join('\n');
+    clipped = true;
+  }
+  if (text.length > maxChars) {
+    text = text.slice(0, maxChars);
+    clipped = true;
+  }
+  return clipped ? `${text}\n... [truncated]` : text;
+}
 
 marked.use(markedTerminal({
   tab: 2,
@@ -23,6 +133,31 @@ marked.use(markedTerminal({
     style: { head: ['cyan'] }
   }
 }));
+
+/** Slash commands offered by the palette. Keep in sync with the /help output. */
+const SLASH_COMMANDS = [
+  { name: 'help', desc: 'Show all available commands' },
+  { name: 'mode', desc: 'Change agent topology (Single, Duo, Swarm)' },
+  { name: 'model', desc: 'Switch model tier (Flash, Flash Thinking, Pro)' },
+  { name: 'allowlist', desc: 'Manage auto-approved/blocked command rules' },
+  { name: 'config', desc: 'Configure models for specific roles' },
+  { name: 'plan', desc: 'Plan Mode — every edit needs approval' },
+  { name: 'auto', desc: 'Auto Mode — safe edits apply automatically' },
+  { name: 'workspace', desc: 'Change the active workspace' },
+  { name: 'memory', desc: 'View current agent memory context' },
+  { name: 'context', desc: 'Show current context window usage' },
+  { name: 'compact', desc: 'Compact history to save tokens' },
+  { name: 'clear', desc: 'Clear local history' },
+  { name: 'new', desc: 'Start a new chat session' },
+  { name: 'undo', desc: 'Undo the last step/action' },
+  { name: 'init-skills', desc: 'Create workspace rules (.agent/rules.md)' },
+  { name: 'github', desc: 'Run GitHub commands (e.g. /github refresh)' },
+  { name: 'image', desc: 'Attach an image (e.g. /image path/to/img.png)' },
+  { name: 'paste-image', desc: 'Attach image from clipboard (macOS)' },
+  { name: 'agent-dir', desc: 'Open the agent data directory' },
+  { name: 'restart', desc: 'Restart the server' },
+  { name: 'exit', desc: 'Quit the agent' },
+];
 
 const FOCUS_CHAT = 'chat';
 const FOCUS_INPUT = 'input';
@@ -133,16 +268,11 @@ export function App({ agentLoop, wsServer }) {
   const [agentNameAscii, setAgentNameAscii] = useState(() => {
     let name = 'Gemini Agent';
     try {
-      const customNamePath = path.join(agentLoop.workspace, 'setAgentName.json');
-      if (fs.existsSync(customNamePath)) {
-        const custom = JSON.parse(fs.readFileSync(customNamePath, 'utf8'));
-        if (custom.agentName) name = `${custom.agentName} Agent`;
-      } else {
-        const configPath = path.join(agentLoop.workspace, '.gemini', 'config.json');
-        if (fs.existsSync(configPath)) {
-          const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-          if (config.agent_name) name = `${config.agent_name} Agent`;
-        }
+      const configPath = paths.configPath(agentLoop.workspace);
+      if (fs.existsSync(configPath)) {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        const custom = config.agentName || config.agent_name;
+        if (custom) name = `${custom} Agent`;
       }
     } catch (e) {}
     try {
@@ -155,16 +285,11 @@ export function App({ agentLoop, wsServer }) {
   useEffect(() => {
     let name = 'Gemini Agent';
     try {
-      const customNamePath = path.join(agentLoop.workspace, 'setAgentName.json');
-      if (fs.existsSync(customNamePath)) {
-        const custom = JSON.parse(fs.readFileSync(customNamePath, 'utf8'));
-        if (custom.agentName) name = `${custom.agentName} Agent`;
-      } else {
-        const configPath = path.join(agentLoop.workspace, '.gemini', 'config.json');
-        if (fs.existsSync(configPath)) {
-          const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-          if (config.agent_name) name = `${config.agent_name} Agent`;
-        }
+      const configPath = paths.configPath(agentLoop.workspace);
+      if (fs.existsSync(configPath)) {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        const custom = config.agentName || config.agent_name;
+        if (custom) name = `${custom} Agent`;
       }
     } catch (e) {}
     figlet.text(name, { font: 'Standard' }, (err, data) => {
@@ -209,6 +334,13 @@ export function App({ agentLoop, wsServer }) {
   // UI State
   const [focus, setFocus] = useState(FOCUS_INPUT);
   const [expandedLogIds, setExpandedLogIds] = useState(new Set());
+  // Bumping this remounts <Static>. Ink commits Static output permanently and
+  // never repaints it, so shrinking the item list (/clear, /new, compaction)
+  // would otherwise leave the old transcript stranded on screen.
+  const [staticEpoch, setStaticEpoch] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+  const [slashIdx, setSlashIdx] = useState(0);
+  const [mode, setMode] = useState(agentLoop.mode || 'plan');
   const [expandedComments, setExpandedComments] = useState(new Set());
   const [selectedToolIdx, setSelectedToolIdx] = useState(-1);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -234,6 +366,55 @@ export function App({ agentLoop, wsServer }) {
   const [loadingPrComments, setLoadingPrComments] = useState(false);
 
   const { stdout } = useStdout();
+
+  /**
+   * Discard everything already painted, including Ink's committed <Static>
+   * output and the terminal scrollback, so a cleared session really is clear.
+   */
+  // The palette is open whenever the input is a bare "/word" with no argument yet.
+  const slashQuery = focus === FOCUS_INPUT && /^\/[a-z-]*$/i.test(input) ? input.slice(1).toLowerCase() : null;
+  const slashMatches = slashQuery === null
+    ? []
+    : SLASH_COMMANDS.filter((c) => c.name.startsWith(slashQuery)).slice(0, 8);
+  const slashOpen = slashMatches.length > 0;
+  const slashSelected = Math.min(slashIdx, Math.max(0, slashMatches.length - 1));
+
+  const cycleMode = React.useCallback(() => {
+    const next = (agentLoop.mode || 'plan') === 'plan' ? 'auto' : 'plan';
+    agentLoop.mode = next;
+    setMode(next);
+  }, [agentLoop]);
+
+  // Drives the "(12s · ↑ 1.2k tokens)" counter. One timer, one small state
+  // update per second — it does not re-render the transcript rows.
+  useEffect(() => {
+    if (!isProcessing) {
+      setElapsed(0);
+      return undefined;
+    }
+    const startedAt = Date.now();
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [isProcessing]);
+
+  const toggleExpanded = React.useCallback((id) => {
+    setExpandedLogIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const resetScreen = React.useCallback(() => {
+    try {
+      // 2J clears the screen, 3J drops scrollback, H homes the cursor.
+      (stdout || process.stdout).write('\x1b[2J\x1b[3J\x1b[H');
+    } catch {
+      /* non-TTY: nothing painted to discard */
+    }
+    setStaticEpoch((n) => n + 1);
+  }, [stdout]);
   const [terminalHeight, setTerminalHeight] = useState(stdout ? stdout.rows : process.stdout.rows);
 
   useEffect(() => {
@@ -289,14 +470,19 @@ export function App({ agentLoop, wsServer }) {
 
 
   useEffect(() => {
+    // /plan and /auto mutate agentLoop.mode directly, so mirror it back.
+    if (agentLoop.mode !== mode) setMode(agentLoop.mode);
+  }, [history, isProcessing, agentLoop.mode, mode]);
+
+  useEffect(() => {
     if (!isProcessing) {
       if (planReviewReady) {
         setActiveMenu({ type: 'plan_review' });
         setPlanReviewReady(false);
         setFocus(FOCUS_INPUT);
         try {
-          const implPlanPath = path.join(agentLoop.workspace, '.gemini', 'implementation_plan.md');
-          const simplePlanPath = path.join(agentLoop.workspace, '.gemini', 'plan.md');
+          const implPlanPath = paths.artifactPath(agentLoop.workspace, 'implementation_plan.md');
+          const simplePlanPath = paths.artifactPath(agentLoop.workspace, 'plan.md');
           const planPath = fs.existsSync(implPlanPath) ? implPlanPath : simplePlanPath;
           
           exec(`"${agentLoop.editor || 'code'}" "${planPath}" || open "${planPath}" || xdg-open "${planPath}"`);
@@ -306,22 +492,15 @@ export function App({ agentLoop, wsServer }) {
       if (walkthroughReady) {
         setWalkthroughReady(false);
         try {
-          const walkRoot = path.join(agentLoop.workspace, '.gemini', 'walkthrough.md');
-          const walkFallback = path.join(agentLoop.workspace, 'walkthrough.md');
-          const walkPath = fs.existsSync(walkRoot) ? walkRoot : walkFallback;
+          const walkPath = paths.artifactPath(agentLoop.workspace, 'walkthrough.md');
           
           exec(`"${agentLoop.editor || 'code'}" "${walkPath}" || open "${walkPath}" || xdg-open "${walkPath}"`);
         } catch (e) {}
       }
 
       try {
-        const taskRoot = path.resolve(agentLoop.workspace, '.gemini/task.md');
-        const taskFallback = path.resolve(agentLoop.workspace, 'task.md');
-        const taskPath = fs.existsSync(taskRoot) ? taskRoot : taskFallback;
-        
-        const walkRoot = path.resolve(agentLoop.workspace, '.gemini/walkthrough.md');
-        const walkFallback = path.resolve(agentLoop.workspace, 'walkthrough.md');
-        const walkPath = fs.existsSync(walkRoot) ? walkRoot : walkFallback;
+        const taskPath = paths.artifactPath(agentLoop.workspace, 'task.md');
+        const walkPath = paths.artifactPath(agentLoop.workspace, 'walkthrough.md');
 
         let taskContent = null;
         let walkContent = null;
@@ -492,7 +671,6 @@ export function App({ agentLoop, wsServer }) {
             '  /model            - Switch model tier (Flash, Flash Thinking, Pro)',
             '  /allowlist        - Manage auto-approved/blocked command rules',
             '  /config           - Configure models for specific roles',
-            '  /localllm         - Toggle local LLM engine',
             '  /plan             - Switch to Plan Mode (requires approval for edits)',
             '  /auto             - Switch to Auto Mode (auto-applies safe edits)',
             '',
@@ -504,7 +682,7 @@ export function App({ agentLoop, wsServer }) {
             '  /clear            - Clear local history',
             '  /new              - Start a new chat session',
             '  /undo             - Undo the last step/action',
-            '  /init-skills      - Create workspace rules (.gemini/rules.md)',
+            '  /init-skills      - Create workspace rules (.agent/rules.md)',
             '',
             '### 🛠️ System & Tools',
             '  /github           - Run GitHub specific commands (e.g., /github refresh)',
@@ -543,6 +721,7 @@ export function App({ agentLoop, wsServer }) {
       if (command === 'clear') {
         agentLoop.conversationHistory = [];
         setHistory([]);
+        resetScreen();
         setIsProcessing(false);
         return;
       }
@@ -552,6 +731,7 @@ export function App({ agentLoop, wsServer }) {
         agentLoop.promptBuilder.resetPromptState();
         agentLoop.sessionStore.clear();
         setHistory([]);
+        resetScreen();
         wsServer.broadcast('extension', { type: 'new_chat', payload: {} });
         setHistory([{ role: 'assistant', content: '✨ Starting a new chat in Gemini...', isLocal: true }]);
         setIsProcessing(false);
@@ -576,12 +756,6 @@ export function App({ agentLoop, wsServer }) {
         return;
       }
 
-      if (command === 'localllm') {
-        setActiveMenu({ type: 'localllm' });
-        setIsProcessing(false);
-        return;
-      }
-
       if (command === 'github' && args.length === 0) {
         setActiveMenu({ type: 'github' });
         setIsProcessing(false);
@@ -591,10 +765,8 @@ export function App({ agentLoop, wsServer }) {
       if (command === 'init-skills') {
         const { resolve } = await import('path');
         const { existsSync, mkdirSync, writeFileSync } = await import('fs');
-        const geminiDir = resolve(agentLoop.workspace, '.gemini');
-        const rulesPath = resolve(geminiDir, 'rules.md');
-        
-        if (!existsSync(geminiDir)) mkdirSync(geminiDir, { recursive: true });
+        const rulesPath = paths.rulesPath(agentLoop.workspace);
+        paths.ensureParent(rulesPath);
         
         let msg = '';
         if (!existsSync(rulesPath)) {
@@ -626,9 +798,7 @@ export function App({ agentLoop, wsServer }) {
               setHistory(prev => [...prev, { role: 'assistant', content: '⚠️ No image found in clipboard.' }]);
               setIsProcessing(false); return;
             }
-            const tmpDir = resolve(agentLoop.workspace, '.gemini-agent');
-            if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
-            finalFilePath = resolve(tmpDir, 'clipboard-image.png');
+            finalFilePath = resolve(paths.ensureDir(paths.tmpDir(agentLoop.workspace)), 'clipboard-image.png');
             execSync(`osascript -e 'set theFile to (open for access POSIX file "${finalFilePath}" with write permission)\n try\n write (the clipboard as «class PNGf») to theFile\n end try\n close access theFile'`, { timeout: 10000 });
             ext = '.png';
           } catch (e) {
@@ -666,7 +836,7 @@ export function App({ agentLoop, wsServer }) {
       }
 
       // Handle standard agent loop commands
-      const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'model', 'allowlist', 'localllm', 'github'];
+      const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'model', 'allowlist', 'github'];
       if (validAgentCommands.includes(command)) {
         const result = await agentLoop.handleSlashCommand(command, args);
         
@@ -782,8 +952,8 @@ export function App({ agentLoop, wsServer }) {
 
   useInput((char, key) => {
     if (diffRequest) {
-      if (char === 'y') handleDiffResponse('accept');
-      if (char === 'n') handleDiffResponse('reject');
+      // Deliberately inert: the diff is answered through the SelectInput below,
+      // so a stray keystroke can never approve or reject an edit.
       return;
     }
 
@@ -937,6 +1107,35 @@ export function App({ agentLoop, wsServer }) {
     }
 
     // Toggle Focus between Input and Chat (Tool Logs)
+    // Shift+Tab cycles Plan <-> Auto, like Claude Code. Checked before the
+    // plain Tab handler, which would otherwise swallow it.
+    if (key.tab && key.shift) {
+      cycleMode();
+      return;
+    }
+
+    // While the slash palette is open it owns navigation and completion.
+    if (slashOpen) {
+      if (key.upArrow) {
+        setSlashIdx(Math.max(0, slashSelected - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setSlashIdx(Math.min(slashMatches.length - 1, slashSelected + 1));
+        return;
+      }
+      if (key.tab) {
+        setInput(`/${slashMatches[slashSelected].name} `);
+        setSlashIdx(0);
+        return;
+      }
+      if (key.escape) {
+        setInput('');
+        setSlashIdx(0);
+        return;
+      }
+    }
+
     if (key.tab) {
       setFocus(f => {
         const nextFocus = f === FOCUS_INPUT ? FOCUS_CHAT : FOCUS_INPUT;
@@ -1031,7 +1230,7 @@ export function App({ agentLoop, wsServer }) {
     // Check if docker sandbox is enabled
     let useSandbox = false;
     try {
-      const configPath = path.join(agentLoop.workspace, '.gemini', 'config.json');
+      const configPath = paths.configPath(agentLoop.workspace);
       if (fs.existsSync(configPath)) {
         const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         if (config.useDockerSandbox) useSandbox = true;
@@ -1067,7 +1266,7 @@ export function App({ agentLoop, wsServer }) {
     if (activeMenu?.type === 'plan_review') {
       approvalInterval = setInterval(() => {
         try {
-          const approvalPath = path.join(agentLoop.workspace, '.gemini', 'plan_approval.json');
+          const approvalPath = paths.planApprovalPath(agentLoop.workspace);
           if (fs.existsSync(approvalPath)) {
             const data = JSON.parse(fs.readFileSync(approvalPath, 'utf8'));
             fs.unlinkSync(approvalPath); // Delete it immediately
@@ -1245,7 +1444,7 @@ export function App({ agentLoop, wsServer }) {
                       
                       process.env.GITHUB_TOKEN = token;
                       
-                      const { GitHubEventHandler } = await import('../github/GitHubEventHandler.js');
+                      const { GitHubEventHandler } = await import('../github/github-event-handler.js');
                       const handler = new GitHubEventHandler({
                         token,
                         workspace: agentLoop.workspace,
@@ -1353,27 +1552,21 @@ export function App({ agentLoop, wsServer }) {
 
           const renderBanner = () => (
             <Box key="banner" flexDirection="column" marginBottom={1} width="100%">
-              <Box borderStyle="round" borderColor="dim" flexDirection="column" paddingX={2} paddingY={0} width="100%" alignItems="center">
-                <Box flexDirection="column" alignItems="center">
-                  <Gradient name="mind">
-                    <Text>{agentNameAscii}</Text>
-                  </Gradient>
-                  <Box marginBottom={1}><Text color="magenta">Developed by Pratimesh Tiwari</Text></Box>
-                </Box>
-                
-                <Box flexDirection="column" width="100%">
-                  <Text color="gray">Workspace: <Text color="white">{agentLoop.workspace}</Text></Text>
-                  <Text color="gray">GitHub: <Text color="white">{agentLoop.githubHandler?.poller?.username ? `Connected as @${agentLoop.githubHandler.poller.username}` : 'Not Connected'}</Text></Text>
-                  <Text color="gray">Models: <Text color="white">{(() => {
-                    const topology = agentLoop.topology || 'single';
-                    const activeRoles = ['main'];
-                    if (topology === 'duo' || topology === 'swarm') activeRoles.push('reviewer');
-                    if (topology === 'swarm') activeRoles.push('reasoner');
-                    return [...new Set(activeRoles.map(r => agentLoop.modelConfig?.[r]).filter(Boolean))].join(', ') || 'gemini';
-                  })()}</Text></Text>
-                  <Text color="gray">Extension: <Text color={extensionConnected ? 'green' : 'yellow'}>{extensionConnected ? '🟢 Connected' : '⚠️ Open a Gemini tab in Chrome'}</Text></Text>
-                </Box>
-              </Box>
+              <Gradient name="mind">
+                <Text>{agentNameAscii}</Text>
+              </Gradient>
+              <Text dimColor>
+                {agentLoop.workspace}
+                {'  ·  '}
+                {(() => {
+                  const topology = agentLoop.topology || 'single';
+                  const roles = ['main'];
+                  if (topology === 'duo' || topology === 'swarm') roles.push('reviewer');
+                  if (topology === 'swarm') roles.push('reasoner');
+                  return [...new Set(roles.map((r) => agentLoop.modelConfig?.[r]).filter(Boolean))].join(', ') || 'gemini';
+                })()}
+                {agentLoop.githubHandler?.poller?.username ? `  ·  @${agentLoop.githubHandler.poller.username}` : ''}
+              </Text>
             </Box>
           );
 
@@ -1398,35 +1591,6 @@ export function App({ agentLoop, wsServer }) {
                 {turn.steps.length > 0 && (
                   <Box flexDirection="column" width="100%" flexShrink={1}>
                     {(() => {
-                      const actions = [];
-                      const finalMessages = [];
-                      
-                      turn.steps.forEach((msg, sIdx) => {
-                        if (msg.role === 'assistant' || msg.role === 'agent') {
-                          const thinkMatch = msg.content.match(/<think>([\s\S]*?)<\/think>/);
-                          let cleanContent = msg.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-                          const imgMatch = cleanContent.match(/🖼️ Image attached: (.*?\.png|.*?\.jpg|.*?\.jpeg|.*?\.webp)/);
-                          
-                          if (imgMatch) {
-                            cleanContent = cleanContent.replace(imgMatch[0], '').trim();
-                            actions.push({ type: 'image', content: imgMatch[1], msg });
-                          }
-                          
-                          if (thinkMatch) {
-                            actions.push({ type: 'think', content: thinkMatch[1].trim(), msg });
-                          }
-                          if (cleanContent) {
-                            finalMessages.push({ type: 'text', content: cleanContent, msg });
-                          }
-                        } else if (msg.type === 'tool_call') {
-                          actions.push({ type: 'tool_call', msg });
-                        } else if (msg.type === 'tool_result') {
-                          actions.push({ type: 'tool_result', msg });
-                        } else if (msg.role === 'system') {
-                          actions.push({ type: 'system', msg });
-                        }
-                      });
-
                       const isFocused = !isStatic && focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.id === `turn_${turn.id}`;
                       const isExpanded = isStatic || expandedLogIds.has(`turn_${turn.id}`) || (isLastTurn && isProcessingTurn);
                       const focusPrefix = isFocused ? <Text color="cyan">❯ </Text> : <Text>  </Text>;
@@ -1435,60 +1599,97 @@ export function App({ agentLoop, wsServer }) {
                         <Box flexDirection="column" width="100%" flexShrink={1}>
                           {actions.length > 0 && (
                             <Box flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
-                              <Text color={isFocused ? 'cyan' : 'gray'}>
-                                {focusPrefix}
-                                {isExpanded ? '▼' : '▶'} Worked for {isLastTurn && isProcessingTurn ? <Text color="cyan"><Spinner type="dots" /> {status}</Text> : <Text>{duration}s</Text>}
-                              </Text>
+                              <Clickable onClick={() => toggleExpanded(`turn_${turn.id}`)}>
+                                <Text color={isFocused ? 'cyan' : 'gray'}>
+                                  {focusPrefix}
+                                  {isExpanded ? '▼' : '▶'} Worked for {isLastTurn && isProcessingTurn ? <Text color="cyan"><Spinner type="dots" /> {status}</Text> : <Text>{duration}s</Text>}
+                                </Text>
+                              </Clickable>
                               
                               {isExpanded && (
                                 <Box flexDirection="column" paddingLeft={1} borderLeftStyle="single" borderLeftColor="dim" marginLeft={2} marginTop={1} width="100%" flexShrink={1}>
-                                  {actions.map((act, idx) => {
-                                    if (act.type === 'tool_call') {
-                                      const argsStr = JSON.stringify(act.msg.args || {});
-                                      const shortArgs = argsStr.length > 60 ? argsStr.substring(0, 60) + '...' : argsStr;
+                                  {(() => {
+                                    // Static turns are painted once and never repainted, so they
+                                    // may be any height. A live turn must stay inside the viewport.
+                                    const liveBudget = Math.max(3, Math.floor((terminalHeight - 16) / 3));
+                                    const hidden = isStatic ? 0 : Math.max(0, actions.length - liveBudget);
+                                    return hidden > 0 ? (
+                                      <Text dimColor>  … {hidden} earlier step{hidden === 1 ? '' : 's'} hidden — they appear in full once the turn finishes</Text>
+                                    ) : null;
+                                  })()}
+                                  {(isStatic
+                                    ? actions
+                                    : actions.slice(Math.max(0, actions.length - Math.max(3, Math.floor((terminalHeight - 16) / 3))))
+                                  ).map((act, idx) => {
+                                    // Paired tool_call + tool_result: one collapsed row.
+                                    if (act.type === 'tool') {
+                                      const open = expandedLogIds.has(act.id);
+                                      const mark = act.success === false ? '✗' : '⏺';
+                                      const markColor = act.success === false ? 'red' : 'green';
                                       return (
-                                        <Text key={idx} color={isFocused ? 'cyan' : 'gray'}>
-                                          {isFocused ? '❯ ' : '  '}▶ <Text bold>Executed</Text> {act.msg.toolName} <Text dimColor>{shortArgs}</Text>
-                                        </Text>
+                                        <Box key={act.id} flexDirection="column" width="100%" flexShrink={1}>
+                                          <Clickable onClick={() => toggleExpanded(act.id)} flexDirection="row">
+                                            <Text color={markColor}>{'  ' + mark + ' '}</Text>
+                                            <Text bold color={isFocused ? 'cyan' : 'gray'}>{act.toolName}</Text>
+                                            <Text dimColor> · {summarizeResult(act.toolName, act.result)}</Text>
+                                          </Clickable>
+                                          {open && (
+                                            <Box flexDirection="column" paddingLeft={4} marginY={1} width="100%" flexShrink={1}>
+                                              <Text dimColor wrap="wrap">{clampForDisplay(act.result, 20)}</Text>
+                                            </Box>
+                                          )}
+                                        </Box>
                                       );
                                     }
+                                    // A result with no matching call (rare, but possible mid-stream).
                                     if (act.type === 'tool_result') {
-                                      const resultStr = typeof act.msg.result === 'string' ? act.msg.result : JSON.stringify(act.msg.result || {});
-                                      const shortResult = resultStr.length > 60 ? resultStr.substring(0, 60) + '...' : resultStr;
-                                      const resStr = typeof act.msg.result === 'string' ? act.msg.result : JSON.stringify(act.msg.result, null, 2);
-                                      const lines = resStr.split('\n');
-                                      const truncatedStr = lines.length > 15 ? lines.slice(0, 15).join('\n') + '\n... [Truncated]' : resStr;
+                                      const open = expandedLogIds.has(act.id);
                                       return (
-                                        <Box key={idx} flexDirection="column" marginY={0} width="100%" flexShrink={1}>
-                                          <Text color="gray">
-                                            {'    '}✔ <Text bold>Result</Text> <Text dimColor>{shortResult}</Text>
-                                          </Text>
-                                          <Box flexDirection="column" paddingLeft={4} marginY={1} width="100%" flexShrink={1}>
-                                            <Box borderStyle="round" borderColor="dim" paddingX={1} width="100%" flexShrink={1}>
-                                              <Text dimColor wrap="wrap">{truncatedStr}</Text>
+                                        <Box key={act.id} flexDirection="column" width="100%" flexShrink={1}>
+                                          <Clickable onClick={() => toggleExpanded(act.id)} flexDirection="row">
+                                            <Text color="green">{'  ⏺ '}</Text>
+                                            <Text dimColor>{oneLine(act.result)}</Text>
+                                          </Clickable>
+                                          {open && (
+                                            <Box flexDirection="column" paddingLeft={4} marginY={1} width="100%" flexShrink={1}>
+                                              <Text dimColor wrap="wrap">{clampForDisplay(act.result, 20)}</Text>
                                             </Box>
-                                          </Box>
+                                          )}
                                         </Box>
                                       );
                                     }
                                     if (act.type === 'think') {
-                                      const lines = act.content.split('\n');
-                                      const truncatedStr = lines.length > 10 ? lines.slice(0, 10).join('\n') + '\n... [Truncated]' : act.content;
+                                      const open = expandedLogIds.has(act.id);
+                                      const lineCount = act.content.split('\n').length;
                                       return (
-                                        <Box key={idx} marginY={1} width="100%" flexShrink={1}>
-                                          <Text dimColor wrap="wrap">∙ {truncatedStr}</Text>
+                                        <Box key={act.id} flexDirection="column" width="100%" flexShrink={1}>
+                                          <Clickable onClick={() => toggleExpanded(act.id)}>
+                                            <Text dimColor>{'  ✻ Thinking… '}({lineCount} line{lineCount === 1 ? '' : 's'})</Text>
+                                          </Clickable>
+                                          {open && (
+                                            <Box paddingLeft={4} marginY={1} width="100%" flexShrink={1}>
+                                              <Text dimColor wrap="wrap">{act.content}</Text>
+                                            </Box>
+                                          )}
+                                        </Box>
+                                      );
+                                    }
+                                    if (act.type === 'command_output') {
+                                      return (
+                                        <Box key={act.id} marginY={0} width="100%" flexShrink={1}>
+                                          <Text dimColor wrap="wrap">{clampForDisplay(act.content, 6, 400)}</Text>
                                         </Box>
                                       );
                                     }
                                     if (act.type === 'system') {
                                       return (
-                                        <Box key={idx} marginY={1} width="100%" flexShrink={1}>
-                                          <Text dimColor wrap="wrap">{act.msg.content}</Text>
+                                        <Box key={act.id} marginY={0} width="100%" flexShrink={1}>
+                                          <Text dimColor wrap="wrap">{act.content ?? act.msg?.content}</Text>
                                         </Box>
                                       );
                                     }
                                     if (act.type === 'image') {
-                                      return <Text key={idx} dimColor>∙ Attached Image: {act.content}</Text>;
+                                      return <Text key={act.id} dimColor>{'  ∙ Attached image: '}{act.content}</Text>;
                                     }
                                     return null;
                                   })}
@@ -1504,13 +1705,11 @@ export function App({ agentLoop, wsServer }) {
                               ? rawParsed.substring(0, revealedLength)
                               : rawParsed;
                             return (
-                              <Box key={idx} borderStyle={fm.msg.isLocal ? undefined : 'round'} borderColor="blue" paddingX={fm.msg.isLocal ? 0 : 1} marginTop={actions.length > 0 ? 1 : 0} marginBottom={1} width="100%" flexShrink={1} flexDirection="column">
-                                {!fm.msg.isLocal && (
-                                  <Box borderBottomStyle="single" borderBottomColor="blue" paddingBottom={0} marginBottom={1} width="100%">
-                                    <Text bold color="blue">Gemini</Text>
-                                  </Box>
-                                )}
-                                <Text wrap="wrap">{displayText}{isLastFinalMsg && !isStatic && revealedLength < Infinity ? <Text color="cyan">▋</Text> : null}</Text>
+                              <Box key={idx} flexDirection="row" marginTop={actions.length > 0 ? 1 : 0} marginBottom={1} width="100%" flexShrink={1}>
+                                {!fm.msg.isLocal && <Text color="green">● </Text>}
+                                <Box flexGrow={1} flexShrink={1}>
+                                  <Text wrap="wrap">{displayText}{isLastFinalMsg && !isStatic && revealedLength < Infinity ? <Text color="cyan">▋</Text> : null}</Text>
+                                </Box>
                               </Box>
                             );
                           })}
@@ -1555,7 +1754,7 @@ export function App({ agentLoop, wsServer }) {
             <>
               {!showBannerInStatic && renderBanner()}
               {staticItems.length > 0 && (
-                <Static items={staticItems}>
+                <Static key={staticEpoch} items={staticItems}>
                   {(item) => {
                     if (item.isBanner) return renderBanner();
                     return renderTurn(item, false, false, true);
@@ -1573,24 +1772,24 @@ export function App({ agentLoop, wsServer }) {
       {/* Tool Calls (Expandable) */}
       {activeToolCalls.length > 0 && (
         <Box flexDirection="column" marginBottom={1} borderStyle="single" borderColor="dim" padding={1}>
-          <Text dimColor bold>⚙️ Tool Executions (Tab to focus, Enter to expand)</Text>
+          <Text dimColor bold>⚙️ Tool Executions (click, or Tab to focus + Enter)</Text>
           {activeToolCalls.map((call, idx) => {
             const isFocused = focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.call === call;
             const isExpanded = expandedLogIds.has(call.id);
             
             return (
               <Box key={call.id} flexDirection="column" marginLeft={1}>
-                <Text color={isFocused ? 'cyan' : 'gray'}>
-                  {isFocused ? '▶ ' : '  '}
-                  {isExpanded ? '▼' : '▶'} {call.name} {call.success === false ? '❌' : (call.result ? '✅' : '⏳')}
-                </Text>
+                <Clickable onClick={() => toggleExpanded(call.id)}>
+                  <Text color={isFocused ? 'cyan' : 'gray'}>
+                    {isFocused ? '▶ ' : '  '}
+                    {isExpanded ? '▼' : '▶'} {call.name} {call.success === false ? '❌' : (call.result ? '✅' : '⏳')}
+                  </Text>
+                </Clickable>
                 
                 {isExpanded && call.result && (
                   <Box marginLeft={4} borderStyle="single" borderColor="dim" padding={1}>
                     <Text dimColor>
-                      {typeof call.result === 'string' 
-                        ? (call.result.split('\n').length > 20 ? call.result.split('\n').slice(0, 20).join('\n') + '\n\n... [Result Truncated]' : call.result)
-                        : (JSON.stringify(call.result, null, 2).split('\n').length > 20 ? JSON.stringify(call.result, null, 2).split('\n').slice(0, 20).join('\n') + '\n\n... [Result Truncated]' : JSON.stringify(call.result, null, 2))}
+                      {clampForDisplay(call.result, 20)}
                     </Text>
                   </Box>
                 )}
@@ -1604,7 +1803,24 @@ export function App({ agentLoop, wsServer }) {
       {diffRequest && (
         <Box borderStyle="single" borderColor="yellow" padding={1} flexDirection="column" width="100%" flexShrink={1}>
           <Text bold color="yellow" wrap="wrap">⚠️ Diff Approval Required: {diffRequest.filePath}</Text>
-          <Text wrap="wrap">Approve this change? (y/n)</Text>
+          {diffRequest.hunks?.length > 0 && (
+            <Text dimColor wrap="wrap">
+              {diffRequest.hunks.length} hunk{diffRequest.hunks.length === 1 ? '' : 's'}
+              {diffRequest.riskReason ? ` — ${diffRequest.riskReason}` : ''}
+            </Text>
+          )}
+          <Box marginTop={1}>
+            <SelectInput
+              items={[
+                { label: 'Approve — apply this change', value: 'accept' },
+                { label: 'Reject — discard it', value: 'reject' },
+              ]}
+              onSelect={(item) => {
+                handleDiffResponse(item.value);
+                setFocus(FOCUS_INPUT);
+              }}
+            />
+          </Box>
         </Box>
       )}
 
@@ -1613,6 +1829,11 @@ export function App({ agentLoop, wsServer }) {
         <Box flexDirection="column" marginBottom={1}>
           <Text color="cyan">
             <Spinner type="dots" /> {isToolRunningRef.current ? status : (thinkingDisplayText || status)}
+            <Text dimColor>
+              {' ('}{elapsed}s
+              {syncTokenEstimate > 0 ? ` · ↑ ${syncTokenEstimate >= 1000 ? `${(syncTokenEstimate / 1000).toFixed(1)}k` : syncTokenEstimate} tokens` : ''}
+              {')'}
+            </Text>
           </Text>
           {isThinkingTooLong && (
             <Text color="yellow">  (Taking a while... ensure Chrome is not minimized!)</Text>
@@ -1622,27 +1843,70 @@ export function App({ agentLoop, wsServer }) {
 
       {/* Main Input */}
       {!diffRequest && !terminalOpen && !activeMenu && (
-        <Box flexDirection="column" marginTop={1} paddingTop={1} borderTopStyle="single" borderTopColor="gray">
-          {(() => {
-            const hasExtension = wsServer.clients && Array.from(wsServer.clients.values()).some(c => c.type === 'extension');
-            if (!hasExtension) {
-              return (
-                <Box marginBottom={1} flexDirection="column">
-                  <Text color="yellow">⚠️ Extension not connected — Ensure a Gemini tab is open in Chrome</Text>
-                  <Text color="dim">💡 Tip: Open gemini.google.com/app and check the extension is enabled</Text>
-                </Box>
-              );
-            }
-            return null;
-          })()}
-          <Box flexDirection="row">
-            <Text bold color={focus === FOCUS_INPUT ? 'cyan' : 'gray'}>❯ </Text>
+        <Box flexDirection="column" marginTop={1}>
+          {!extensionConnected && (
+            <Box marginBottom={1}>
+              <Text color="yellow">⚠️ Open a Gemini tab in Chrome — the extension is not connected</Text>
+            </Box>
+          )}
+          {slashOpen && (
+            <Box flexDirection="column" marginBottom={1} paddingX={1}>
+              {slashMatches.map((cmd, idx) => (
+                <Clickable
+                  key={cmd.name}
+                  onClick={() => {
+                    setInput('');
+                    setSlashIdx(0);
+                    handleSubmit(`/${cmd.name}`);
+                  }}
+                  flexDirection="row"
+                >
+                  <Text color={idx === slashSelected ? 'cyan' : 'gray'} bold={idx === slashSelected}>
+                    {(idx === slashSelected ? '❯ ' : '  ') + `/${cmd.name}`.padEnd(16)}
+                  </Text>
+                  <Text dimColor>{cmd.desc}</Text>
+                </Clickable>
+              ))}
+            </Box>
+          )}
+          <Clickable
+            onClick={() => setFocus(FOCUS_INPUT)}
+            flexDirection="row"
+            borderStyle="round"
+            borderColor={focus === FOCUS_INPUT ? 'cyan' : 'gray'}
+            paddingX={1}
+            width="100%"
+          >
+            <Text bold color={focus === FOCUS_INPUT ? 'cyan' : 'gray'}>{'> '}</Text>
             {focus === FOCUS_INPUT ? (
-              <TextInput focus={focus === FOCUS_INPUT} value={input} onChange={setInput} onSubmit={handleSubmit} />
+              <TextInput
+                focus={focus === FOCUS_INPUT}
+                value={input}
+                onChange={(v) => {
+                  setInput(v);
+                  setSlashIdx(0);
+                }}
+                onSubmit={(value) => {
+                  if (slashOpen) {
+                    const picked = `/${slashMatches[slashSelected].name}`;
+                    setInput('');
+                    setSlashIdx(0);
+                    handleSubmit(picked);
+                    return;
+                  }
+                  handleSubmit(value);
+                }}
+                placeholder="Ask anything, or / for commands"
+              />
             ) : (
-              <Text dimColor>{input || 'Press Tab to focus input...'}</Text>
+              <Text dimColor>{input || 'Press Tab to focus input…'}</Text>
             )}
-          </Box>
+          </Clickable>
+          <Clickable onClick={cycleMode} paddingX={1}>
+            <Text color={mode === 'auto' ? 'green' : 'yellow'}>
+              ▶▶ {mode} mode on <Text dimColor>(shift+tab to cycle)</Text>
+            </Text>
+          </Clickable>
         </Box>
       )}
 
@@ -1758,24 +2022,6 @@ export function App({ agentLoop, wsServer }) {
         </Box>
       )}
 
-      {activeMenu?.type === 'localllm' && (
-        <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-          <Text bold color="cyan">Toggle Local LLM Engine (node-llama-cpp):</Text>
-          <SelectInput
-            items={[
-              { label: `Enable Local LLM${agentLoop.modelConfig?.useLocalLlm ? '  ← (Current)' : ''}`, value: 'on' },
-              { label: `Disable Local LLM (Cloud Only)${!agentLoop.modelConfig?.useLocalLlm ? '  ← (Current)' : ''}`, value: 'off' }
-            ]}
-            onSelect={async (item) => {
-              setActiveMenu(null);
-              await agentLoop.handleSlashCommand('localllm', [item.value]);
-              setHistory([...agentLoop.conversationHistory]);
-              setFocus(FOCUS_INPUT);
-            }}
-          />
-        </Box>
-      )}
-      
       {activeMenu?.type === 'config_role' && (
         <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
           <Text bold color="cyan">Select Role to Configure:</Text>

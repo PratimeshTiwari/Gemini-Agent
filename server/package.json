@@ -10,10 +10,9 @@
   "scripts": {
     "start": "tsx src/index.js --workspace ../",
     "dev": "tsx --watch src/index.js --workspace ../",
-    "test": "node --test src/**/*.test.js"
+    "test": "node --test \"src/**/*.test.js\""
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.2.0",
     "@ink-tools/ink-mouse": "^2.1.0",
     "@inquirer/prompts": "^8.6.0",
     "acorn": "^8.18.0",
@@ -30,10 +29,8 @@
     "madge": "^8.0.0",
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0",
-    "node-llama-cpp": "^3.20.0",
     "ora": "^9.4.1",
     "react": "^19.2.8",
-    "web-tree-sitter": "^0.26.12",
     "ws": "^8.18.0",
     "zod": "^3.24.0"
   },

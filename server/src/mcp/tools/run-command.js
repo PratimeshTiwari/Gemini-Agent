@@ -6,6 +6,7 @@
  */
 
 import { exec } from 'child_process';
+import { configPath as configPathFor } from '../../core/paths.js';
 import { resolve } from 'path';
 
 const DEFAULT_TIMEOUT = 30000; // 30 seconds
@@ -30,7 +31,7 @@ export async function runCommand(args, context) {
   try {
     const fs = await import('fs');
     const path = await import('path');
-    const configPath = path.join(workspace, '.gemini', 'config.json');
+    const configPath = configPathFor(workspace);
     if (fs.existsSync(configPath)) {
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       if (config.useDockerSandbox) useSandbox = true;

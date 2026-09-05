@@ -9,10 +9,11 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import * as paths from './paths.js';
 import { z } from 'zod';
-import { SessionStore } from './storage/SessionStore.js';
-import { ContextManager } from './context/ContextManager.js';
-import { MemoryManager } from './context/MemoryManager.js';
+import { SessionStore } from '../storage/session-store.js';
+import { ContextManager } from '../context/context-manager.js';
+import { MemoryManager } from '../context/memory-manager.js';
 
 
 // Regex to extract tool calls from Gemini's response (handles json code blocks)
@@ -49,8 +50,7 @@ export class AgentLoop {
       reviewer: 'claude',
       reasoner: 'chatgpt',
       reasoningEffort: 'high',
-      modelTier: 'pro',
-      useLocalLlm: false
+      modelTier: 'pro'
     };
     
     this.commandRules = {
@@ -58,6 +58,9 @@ export class AgentLoop {
       allow: [],
       block: []
     };
+
+    // Extra folders whose .md files are injected as repo context each session.
+    this.contextFolders = [];
     
     this._loadConfig();
     this.conversationHistory = this.sessionStore.loadHistory();
@@ -317,6 +320,12 @@ export class AgentLoop {
           timestamp: Date.now(),
         });
       }
+
+      // Unblock _executeToolCalls, which is awaiting the user's decision.
+      if (this.pendingDiffResolve) {
+        this.pendingDiffResolve({ action, result });
+        this.pendingDiffResolve = null;
+      }
     } catch (err) {
       if (this.callbacks) {
         this.callbacks.sendToPanel({
@@ -325,6 +334,11 @@ export class AgentLoop {
           payload: { message: `Diff error: ${err.message}` },
           timestamp: Date.now(),
         });
+      }
+
+      if (this.pendingDiffResolve) {
+        this.pendingDiffResolve({ action: 'reject', error: err.message });
+        this.pendingDiffResolve = null;
       }
     }
   }
@@ -394,8 +408,57 @@ export class AgentLoop {
         this.promptBuilder.resetPromptState();
         return { message: '🧹 Conversation history cleared.' };
 
-      case 'context':
-        return await this._getContextInfo();
+      case 'context': {
+        const action = (args?.[0] || '').toLowerCase();
+        const target = args?.slice(1).join(' ').trim();
+
+        if (action === 'add') {
+          if (!target) return { message: 'Usage: `/context add <folder>` (relative to the workspace, or absolute)' };
+          const abs = path.isAbsolute(target) ? target : path.resolve(this.workspace, target);
+          if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+            return { message: `❌ Not a folder: ${abs}` };
+          }
+          const rel = path.relative(this.workspace, abs) || '.';
+          const stored = rel.startsWith('..') ? abs : rel;
+          if (this.contextFolders.includes(stored)) {
+            return { message: `Already a context folder: **${stored}**` };
+          }
+          this.contextFolders.push(stored);
+          this._saveConfig();
+          this.promptBuilder?.resetPromptState?.();
+          return { message: `✅ Added context folder: **${stored}**\nIts \`.md\` files are injected on the next turn.` };
+        }
+
+        if (action === 'remove' || action === 'rm') {
+          if (!target) return { message: 'Usage: `/context remove <folder>`' };
+          const before = this.contextFolders.length;
+          this.contextFolders = this.contextFolders.filter((f) => f !== target);
+          if (this.contextFolders.length === before) {
+            return { message: `Not a context folder: **${target}**\nCurrent: ${this.contextFolders.join(', ') || '(none)'}` };
+          }
+          this._saveConfig();
+          this.promptBuilder?.resetPromptState?.();
+          return { message: `🗑️ Removed context folder: **${target}**` };
+        }
+
+        if (action === 'list') {
+          if (this.contextFolders.length === 0) {
+            return { message: 'No context folders configured.\nAdd one with `/context add <folder>`.' };
+          }
+          const lines = this.contextFolders.map((f) => {
+            const abs = path.isAbsolute(f) ? f : path.resolve(this.workspace, f);
+            const n = fs.existsSync(abs) ? this._countContextFiles(abs) : 0;
+            return `  • ${f} ${fs.existsSync(abs) ? `(${n} .md file${n === 1 ? '' : 's'})` : '(missing)'}`;
+          });
+          return { message: `**Context folders:**\n${lines.join('\n')}` };
+        }
+
+        const info = await this._getContextInfo();
+        const folderNote = this.contextFolders.length
+          ? `\n\n**Context folders:** ${this.contextFolders.join(', ')}`
+          : '\n\nNo context folders configured — add one with `/context add <folder>`.';
+        return { ...info, message: `${info.message}${folderNote}\n_Commands: /context add|remove|list_` };
+      }
 
       case 'compact': {
         const focus = args?.join(' ') || '';
@@ -495,15 +558,6 @@ export class AgentLoop {
         msg += '\n\n**Commands:**\n  `/allowlist enable` or `/allowlist disable`\n  `/allowlist remove <command>`\n  `/allowlist clear`';
         return { message: msg };
       }
-      
-      case 'localllm': {
-        if (args?.[0] && ['on', 'off'].includes(args[0].toLowerCase())) {
-          this.modelConfig.useLocalLlm = args[0].toLowerCase() === 'on';
-          this._saveConfig();
-          return { message: `💻 Local LLM Engine: **${this.modelConfig.useLocalLlm ? 'ENABLED' : 'DISABLED'}**` };
-        }
-        return { message: `💻 Local LLM Engine is currently: **${this.modelConfig.useLocalLlm ? 'ENABLED' : 'DISABLED'}**\nUsage: \`/localllm <on|off>\`` };
-      }
 
       case 'github': {
         if (!this.githubHandler) {
@@ -545,7 +599,7 @@ export class AgentLoop {
           }
 
           case 'clear-state': {
-            const stateFile = path.resolve(this.workspace, '.gemini-agent/github-state.json');
+            const stateFile = paths.githubStatePath(this.workspace);
             if (fs.existsSync(stateFile)) {
               fs.unlinkSync(stateFile);
             }
@@ -630,30 +684,28 @@ export class AgentLoop {
   }
 
   _loadConfig() {
-    const configPath = path.join(this.workspace, '.gemini', 'config.json');
+    const configPath = paths.configPath(this.workspace);
     if (fs.existsSync(configPath)) {
       try {
         const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         if (data.topology) this.topology = data.topology;
         if (data.modelConfig) this.modelConfig = { ...this.modelConfig, ...data.modelConfig };
         if (data.commandRules) this.commandRules = { ...this.commandRules, ...data.commandRules };
+        if (Array.isArray(data.contextFolders)) this.contextFolders = data.contextFolders;
       } catch (err) {
-        console.warn('⚠️ Failed to load .gemini/config.json:', err.message);
+        console.warn(`⚠️ Failed to load ${paths.AGENT_DIR}/config.json:`, err.message);
       }
     }
   }
 
   _saveConfig() {
-    const geminiDir = path.join(this.workspace, '.gemini');
-    if (!fs.existsSync(geminiDir)) {
-      fs.mkdirSync(geminiDir, { recursive: true });
-    }
-    const configPath = path.join(geminiDir, 'config.json');
+    const configPath = paths.ensureParent(paths.configPath(this.workspace));
     try {
       fs.writeFileSync(configPath, JSON.stringify({
         topology: this.topology,
         modelConfig: this.modelConfig,
-        commandRules: this.commandRules
+        commandRules: this.commandRules,
+        contextFolders: this.contextFolders
       }, null, 2));
     } catch (err) {
       console.warn('⚠️ Failed to save config:', err.message);
@@ -796,38 +848,6 @@ export class AgentLoop {
         const targetModel = this.modelConfig[role] || 'gemini'; // default to gemini for subagents if not set
         
         result = await this._runSubAgentSession(role, call.args.prompt || call.args.query, targetModel);
-      } else if (call.name === 'ask_local_subagent') {
-        this.callbacks.sendToPanel({
-          id: randomUUID(),
-          type: 'status',
-          payload: { message: `Running Local Model...` },
-          timestamp: Date.now(),
-        });
-        
-        try {
-          if (!this.modelConfig.useLocalLlm) {
-            throw new Error("Local LLMs are currently DISABLED. Use `/localllm on` to enable them.");
-          }
-          
-          if (!this.localLLM) {
-            this.callbacks.sendToPanel({ id: randomUUID(), type: 'status', payload: { message: 'Initializing Local LLM Engine...' }, timestamp: Date.now() });
-            const { LocalLLM } = await import('./local-llm.js');
-            this.localLLM = new LocalLLM();
-          }
-
-          const model = call.args.model || 'qwen';
-          const answer = await this.localLLM.generate(call.args.prompt, model, (progress) => {
-            this.callbacks.sendToPanel({
-              id: randomUUID(),
-              type: 'status',
-              payload: { message: progress },
-              timestamp: Date.now(),
-            });
-          });
-          result = { success: true, result: answer };
-        } catch (err) {
-          result = { success: false, error: err.message };
-        }
       } else if (call.name === 'manage_memory') {
         if (call.args.action === 'add') {
           const success = this.memoryManager.addMemory(call.args.fact);
@@ -909,15 +929,31 @@ export class AgentLoop {
             timestamp: Date.now(),
           });
         } else {
-          // Request approval
-          this.callbacks.requestDiffApproval({
-            diffId: diffResult.diffId,
-            filePath: diffResult.filePath,
-            patch: diffResult.patch,
-            hunks: diffResult.hunks,
-            riskLevel: risk.level,
-            riskReason: risk.reason,
+          // Request approval and WAIT. Without this the loop used to hand Gemini a
+          // "waiting for approval" result and immediately continue, so the model
+          // replied as if the edit were already under review while the prompt was
+          // still on screen — and the user's answer went to chat, not the diff.
+          const decision = typeof this.callbacks?.requestDiffApproval !== 'function'
+            ? { action: 'reject' } // no UI wired: never block forever
+            : await new Promise((resolve) => {
+            this.pendingDiffResolve = resolve;
+            this.callbacks.requestDiffApproval({
+              diffId: diffResult.diffId,
+              filePath: diffResult.filePath,
+              patch: diffResult.patch,
+              hunks: diffResult.hunks,
+              riskLevel: risk.level,
+              riskReason: risk.reason,
+            });
           });
+
+          const outcome = decision.action === 'accept'
+            ? { success: true, result: `✅ User APPROVED the edit. ${diffResult.filePath} has been written to disk.` }
+            : { success: false, error: `User REJECTED the edit to ${diffResult.filePath}. Do not retry the same edit — ask what they want changed.` };
+
+          // Replace the "pending approval" payload so the model is told what
+          // actually happened, and is not fed the whole patch back.
+          toolResults[i] = { name: call.name, result: outcome.result || outcome.error };
         }
       }
       })();
@@ -1251,9 +1287,26 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
     return { success: true, result: `## 🧠 AI Context Analysis\n\n${finalOutput}`, turns: turnCount };
   }
 
+  /** Count .md files under a context folder (recursive, bounded). */
+  _countContextFiles(dir, depth = 0) {
+    if (depth > 3) return 0;
+    let n = 0;
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) n += this._countContextFiles(full, depth + 1);
+        else if (entry.name.endsWith('.md')) n += 1;
+      }
+    } catch {
+      /* unreadable folder */
+    }
+    return n;
+  }
+
   async _getContextInfo() {
     const historyTokenEstimate = this.contextManager 
-      ? import('./context/TokenCounter.js').then(m => m.TokenCounter.estimateHistoryTokens(this.conversationHistory)) 
+      ? import('../context/token-counter.js').then(m => m.TokenCounter.estimateHistoryTokens(this.conversationHistory)) 
       : 0; // Token counting is now offloaded, but we can do a rough fallback:
     
     // For synchronous stats, we'll just require TokenCounter directly since it's ES module, 

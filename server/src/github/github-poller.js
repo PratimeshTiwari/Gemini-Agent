@@ -6,7 +6,7 @@
  * - Failed GitHub Actions workflow runs on those PRs
  *
  * Uses a watermark (last-seen timestamp) to avoid re-processing old comments.
- * State is persisted to disk in .gemini-agent/github-state.json.
+ * State is persisted to disk in .agent/state/github.json.
  */
 
 import { EventEmitter } from 'events';

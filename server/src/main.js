@@ -15,17 +15,19 @@
  */
 
 import { resolve, dirname } from 'path';
+import { homeDir, ensureDir } from './core/paths.js';
+import { runMigrations } from './core/migrate.js';
 import { existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { WebSocketServer } from './websocket-server.js';
-import { GitHubEventHandler } from './github/GitHubEventHandler.js';
+import { WebSocketServer } from './bridge/websocket-server.js';
+import { GitHubEventHandler } from './github/github-event-handler.js';
 import { MCPServer } from './mcp/mcp-server.js';
-import { AgentLoop } from './agent-loop.js';
-import { PromptBuilder } from './prompt-builder.js';
-import { DiffEngine } from './diff-engine.js';
-import { RiskClassifier } from './risk-classifier.js';
-import { FileWatcher } from './watcher/FileWatcher.js';
-import { TaskManager } from './TaskManager.js';
+import { AgentLoop } from './core/agent-loop.js';
+import { PromptBuilder } from './core/prompt-builder.js';
+import { DiffEngine } from './core/diff-engine.js';
+import { RiskClassifier } from './core/risk-classifier.js';
+import { FileWatcher } from './watcher/file-watcher.js';
+import { TaskManager } from './core/task-manager.js';
 
 // ── Parse CLI Arguments ──────────────────────────────────────────────
 function parseArgs() {
@@ -101,23 +103,16 @@ Options:
 
 Environment:
   EDITOR                   Default editor command (fallback: 'code')
-  GEMINI_AGENT_HOME        Config directory (default: ~/.gemini-agent)
+  GEMINI_AGENT_HOME        Agent home directory (default: ~/.agent)
   GITHUB_TOKEN             GitHub PAT for PR comment watching (required for --github)
 `);
 }
 
 // ── Ensure Config Directory ──────────────────────────────────────────
 function ensureConfigDir() {
-  const home = process.env.GEMINI_AGENT_HOME || resolve(process.env.HOME, '.gemini-agent');
-  const dirs = [
-    home,
-    resolve(home, 'sessions'),
-    resolve(home, 'backups'),
-  ];
-  for (const dir of dirs) {
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
+  const home = homeDir();
+  for (const dir of [home, resolve(home, 'workspaces')]) {
+    ensureDir(dir);
   }
   return home;
 }
@@ -125,6 +120,11 @@ function ensureConfigDir() {
 // ── Main ─────────────────────────────────────────────────────────────
 async function main() {
   const config = parseArgs();
+  // Fold any pre-.agent state (.gemini, .gemini-agent, .agent-github-plans and
+  // the old ~/.gemini-agent home) into .agent/. Must run BEFORE ensureConfigDir,
+  // which would otherwise create the home directory the migration wants to fill.
+  runMigrations(config.workspace);
+
   const configHome = ensureConfigDir();
   
   // Verify workspace exists
@@ -147,7 +147,7 @@ async function main() {
   const taskManager = new TaskManager(config.workspace);
   
   // Initialize WorkspaceIndexer for Background RAG
-  const { WorkspaceIndexer } = await import('./context/WorkspaceIndexer.js');
+  const { WorkspaceIndexer } = await import('./context/workspace-indexer.js');
   const workspaceIndexer = new WorkspaceIndexer(config.workspace);
   // Start building the index asynchronously in the background
   workspaceIndexer.buildIndex();
@@ -275,7 +275,7 @@ async function main() {
   }
 
   // Start CLI UI
-  const { CliUI } = await import('./cli-ui.jsx');
+  const { CliUI } = await import('./ui/cli-ui.jsx');
   const cli = new CliUI(agentLoop, wsServer);
   cli.start();
 

@@ -45,7 +45,10 @@ export class WebSocketServer {
         payload: msg,
         timestamp: Date.now(),
       }),
-      requestDiffApproval: () => {}, // No-op for background tasks
+      // Background tasks have no one to ask. Reject rather than hang the loop
+      // (the agent now awaits this decision) and rather than write unapproved edits.
+      requestDiffApproval: (diff) =>
+        this.agentLoop.handleDiffResponse(randomUUID(), { diffId: diff?.diffId, action: 'reject' }),
     };
     this.agentLoop.setBackgroundCallbacks(backgroundCallbacks);
   }

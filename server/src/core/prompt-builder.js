@@ -12,7 +12,8 @@
  */
 
 import path from 'path';
-import { readFileSync, existsSync } from 'fs';
+import * as paths from './paths.js';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 import os from 'os';
 import { resolve, relative } from 'path';
 
@@ -177,15 +178,16 @@ Model tier: ${modelTier}
 
     // Load workspace context summary if it exists
     let contextSummary = '';
-    const repoName = path.basename(this.workspace);
-    const localContextPath = path.join(this.workspace, '.gemini', 'context', 'summary.md');
-    const globalContextPath = path.join(os.homedir(), '.gemini', 'context', repoName, 'summary.md');
+    const localContextPath = paths.contextSummaryPath(this.workspace);
+    const globalContextPath = paths.globalContextPath(this.workspace);
     
     if (existsSync(localContextPath)) {
       contextSummary = `\n<workspace_context_summary>\n${readFileSync(localContextPath, 'utf8')}\n</workspace_context_summary>\n`;
     } else if (existsSync(globalContextPath)) {
       contextSummary = `\n<workspace_context_summary>\n${readFileSync(globalContextPath, 'utf8')}\n</workspace_context_summary>\n`;
     }
+
+    contextSummary += this._loadContextFolders();
 
     const combined = `
 ${selfAwareness}
@@ -206,9 +208,9 @@ ${reasoningInstructions}
 You are the SOLE agent. There are no other models to delegate to. You handle everything yourself:
 planning, research, implementation, review, and testing.
 
-- When tasks are complex, create a plan first (save it to \`.gemini/implementation_plan.md\`)
-- When tasked with a complex or multi-step objective, ALWAYS proactively create a \`task.md\` checklist in the workspace root using the \`write_to_file\` tool to plan your work, similar to Antigravity IDE. Update it as you progress.
-- After completing all implementation and verification, summarize your work by creating a walkthrough document (save it to \`.gemini/walkthrough.md\`). Document changes made, what was tested, and validation results.
+- When tasks are complex, create a plan first (save it to \`.agent/artifacts/implementation_plan.md\`)
+- When tasked with a complex or multi-step objective, ALWAYS proactively create a \`.agent/artifacts/task.md\` checklist using the \`write_to_file\` tool to plan your work, similar to Antigravity IDE. Update it as you progress.
+- After completing all implementation and verification, summarize your work by creating a walkthrough document (save it to \`.agent/artifacts/walkthrough.md\`). Document changes made, what was tested, and validation results.
 - After implementing changes, self-review: re-read the edited files and verify correctness
 - If you're not confident in a change, tell the user explicitly rather than guessing`;
 
@@ -368,7 +370,7 @@ Your job is to execute the task using your read-only tools if necessary and retu
 ## 3. Documentation & Context Maintenance
 - **Routing**: If provided a \`<workspace_context_summary>\`, use it as an index. If a user asks about a specific flow, check this summary to see which \`.md\` file contains the details, then use \`read_file\` to read that specific file before acting.
 - **Self-Correction & Auto-Learning (Agentic RAG)**: If the user states that a documented flow is wrong, you MUST: (1) Ask clarifying questions if the claim is vague. (2) Verify the claim by reading the actual source code. (3) Use \`edit_file\` to correct the context \`.md\` file so it matches reality. (4) Once verified against the codebase, use the \`manage_memory\` tool to store this verified fact in your long-term Agentic RAG memory so you don't make the same mistake twice.
-- **Mistakes Log**: If you make a logic error, append a note to \`.gemini/agent_mistakes.md\`. Before writing to this log, ensure the correction is a VERIFIED FACT backed by code.
+- **Mistakes Log**: If you make a logic error, append a note to \`.agent/mistakes.md\`. Before writing to this log, ensure the correction is a VERIFIED FACT backed by code.
 
 ${modelTier === 'pro' ? `## 4. Communication
 - Be exceptionally concise. Skip greetings and filler.
@@ -662,7 +664,7 @@ Do NOT proceed past assumptions silently. They are blockers.`;
 ## semantic_search — Conceptual code search. Args: query (string), topK? (number)
 ## get_editor_state — Get current editor state. No args.
 ## ask_subagent — Delegate to Gemini subagent. Args: prompt (string)
-${modelConfig.useLocalLlm ? '## ask_local_subagent — Delegate to local model. Args: prompt (string), model ("qwen"|"llama")\n' : ''}`;
+`;
     } else {
       // Full tool definitions for Pro/Flash-thinking
       tools += `## ask_question
@@ -762,16 +764,6 @@ Delegate a task to a generic parallel Gemini subagent. It will run in the backgr
 Parameters:
   - prompt (string, required): The task for the subagent.
 `;
-
-      if (modelConfig.useLocalLlm) {
-        tools += `
-## ask_local_subagent
-Delegate a task to the completely local on-device subagent model. Uses Metal GPU acceleration. Fast, private, but less capable than Gemini. Perfect for summarization, log analysis, regex creation, or simple formatting.
-Parameters:
-  - prompt (string, required): The task for the local subagent.
-  - model (string, required): Must be either "qwen" (Qwen2.5-1.5B) or "llama" (Llama-3.2-3B).
-`;
-      }
     }
 
     if (topology === 'duo' || topology === 'swarm') {
@@ -865,11 +857,78 @@ ${tier === 'pro' ? '- Follow the 4-phase protocol: Investigate → Analyze → I
     return null;
   }
 
+  /**
+   * Read the folders registered with `/context add`.
+   *
+   * Every .md file under them is injected as repo context. Bounded hard: this
+   * lands in the system prompt on turn 0 and every Nth turn, so an unbounded
+   * folder would blow the context window (and trip Gemini's repetition filter).
+   */
+  _loadContextFolders() {
+    const MAX_TOTAL = 24000; // characters across all files
+    const MAX_FILES = 40;
+
+    let folders = [];
+    try {
+      const cfg = JSON.parse(readFileSync(paths.configPath(this.workspace), 'utf8'));
+      folders = Array.isArray(cfg.contextFolders) ? cfg.contextFolders : [];
+    } catch {
+      return '';
+    }
+    if (folders.length === 0) return '';
+
+    const collected = [];
+    let total = 0;
+    let truncated = false;
+
+    const walk = (dir, depth) => {
+      if (depth > 3 || collected.length >= MAX_FILES || total >= MAX_TOTAL) return;
+      let entries;
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (collected.length >= MAX_FILES || total >= MAX_TOTAL) {
+          truncated = true;
+          return;
+        }
+        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full, depth + 1);
+        } else if (entry.name.endsWith('.md')) {
+          try {
+            let body = readFileSync(full, 'utf8');
+            if (total + body.length > MAX_TOTAL) {
+              body = body.slice(0, Math.max(0, MAX_TOTAL - total));
+              truncated = true;
+            }
+            total += body.length;
+            collected.push(`### ${path.relative(this.workspace, full) || entry.name}\n${body}`);
+          } catch {
+            /* skip unreadable file */
+          }
+        }
+      }
+    };
+
+    for (const folder of folders) {
+      const abs = path.isAbsolute(folder) ? folder : path.resolve(this.workspace, folder);
+      if (existsSync(abs)) walk(abs, 0);
+    }
+
+    if (collected.length === 0) return '';
+    const note = truncated ? '\n_(context truncated to fit the window)_' : '';
+    return `\n<repo_context>\n${collected.join('\n\n')}${note}\n</repo_context>\n`;
+  }
+
   _loadWorkspaceRules() {
     try {
-      const rulesPath = resolve(this.workspace, '.gemini/rules.md');
-      if (existsSync(rulesPath)) {
-        return readFileSync(rulesPath, 'utf-8');
+      const rulesFile = paths.rulesPath(this.workspace);
+      if (existsSync(rulesFile)) {
+        return readFileSync(rulesFile, 'utf-8');
       }
     } catch (e) {
       // ignore

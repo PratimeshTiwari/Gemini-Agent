@@ -4,7 +4,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { CommentClassifier } from './CommentClassifier.js';
+import { CommentClassifier } from './comment-classifier.js';
 
 const classifier = new CommentClassifier();
 

@@ -12,14 +12,15 @@
  */
 
 import { EventEmitter } from 'events';
+import { logPath, ensureParent } from '../core/paths.js';
 import { execSync } from 'child_process';
 import { unlinkSync } from 'fs';
 import { appendFileSync } from 'fs';
 import { join } from 'path';
-import { GitHubPoller } from './GitHubPoller.js';
-import { CommentClassifier } from './CommentClassifier.js';
-import { CILogParser } from './CILogParser.js';
-import { PlanGenerator } from './PlanGenerator.js';
+import { GitHubPoller } from './github-poller.js';
+import { CommentClassifier } from './comment-classifier.js';
+import { CILogParser } from './ci-log-parser.js';
+import { PlanGenerator } from './plan-generator.js';
 import { resolveGitHubConfig } from './github-config.js';
 import { GITHUB_REVIEW_PROMPT } from './github-review-prompt.js';
 
@@ -248,10 +249,10 @@ CRITICAL: Do NOT run \`git checkout\` or switch branches. The user may have unsa
         if (response.success) {
           aiAnalysis = response.result;
         } else {
-          appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `[analyzeComment] Failed: ${response.error}\n`);
+          appendFileSync(ensureParent(logPath(this.agentLoop.workspace)), `[analyzeComment] Failed: ${response.error}\n`);
         }
       } catch (e) {
-        appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `[analyzeComment] Exception: ${e.stack}\n`);
+        appendFileSync(ensureParent(logPath(this.agentLoop.workspace)), `[analyzeComment] Exception: ${e.stack}\n`);
       }
     }
 

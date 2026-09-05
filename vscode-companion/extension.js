@@ -2,6 +2,9 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 
+// Must match AGENT_DIR in server/src/core/paths.js
+const AGENT_DIR = '.agent';
+
 function activate(context) {
     let timeout;
     
@@ -13,13 +16,13 @@ function activate(context) {
         if (!workspaceFolders || workspaceFolders.length === 0) return;
 
         const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const geminiDir = path.join(workspaceRoot, '.gemini-agent');
-        
-        if (!fs.existsSync(geminiDir)) {
-            try { fs.mkdirSync(geminiDir); } catch(e) {}
+        const stateDir = path.join(workspaceRoot, AGENT_DIR, 'state');
+
+        if (!fs.existsSync(stateDir)) {
+            try { fs.mkdirSync(stateDir, { recursive: true }); } catch(e) {}
         }
 
-        const stateFile = path.join(geminiDir, 'editor_state.json');
+        const stateFile = path.join(stateDir, 'editor.json');
         const document = editor.document;
         const selection = editor.selection;
         
@@ -83,7 +86,7 @@ function activate(context) {
 
     context.subscriptions.push(
         vscode.languages.registerCodeLensProvider(
-            { language: 'markdown', scheme: 'file', pattern: '**/{implementation_plan,plan}.md' },
+            { language: 'markdown', scheme: 'file', pattern: `**/${AGENT_DIR}/artifacts/{implementation_plan,plan}.md` },
             new PlanApprovalCodeLensProvider()
         )
     );
@@ -93,13 +96,13 @@ function activate(context) {
         if (!workspaceFolders || workspaceFolders.length === 0) return;
 
         const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const geminiDir = path.join(workspaceRoot, '.gemini');
-        
-        if (!fs.existsSync(geminiDir)) {
-            try { fs.mkdirSync(geminiDir); } catch(e) {}
+        const stateDir = path.join(workspaceRoot, AGENT_DIR, 'state');
+
+        if (!fs.existsSync(stateDir)) {
+            try { fs.mkdirSync(stateDir, { recursive: true }); } catch(e) {}
         }
 
-        const approvalFile = path.join(geminiDir, 'plan_approval.json');
+        const approvalFile = path.join(stateDir, 'plan-approval.json');
         try {
             fs.writeFileSync(approvalFile, JSON.stringify({ status, timestamp: Date.now() }));
             vscode.window.showInformationMessage(`Plan ${status === 'accept' ? 'Approved' : 'Rejected'}! You can return to the terminal.`);

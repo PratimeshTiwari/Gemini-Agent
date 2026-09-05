@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import { AGENT_DIR } from '../core/paths.js';
 import path from 'path';
 import madge from 'madge';
 import chalk from 'chalk';
@@ -136,7 +137,7 @@ export class WorkspaceIndexer {
     for (const entry of entries) {
       const res = path.resolve(dir, entry.name);
       if (entry.isDirectory()) {
-        if (!['node_modules', '.git', 'dist', 'build', '.gemini-agent'].includes(entry.name) && !entry.name.startsWith('.')) {
+        if (!['node_modules', '.git', 'dist', 'build', AGENT_DIR].includes(entry.name) && !entry.name.startsWith('.')) {
           files.push(...await this._getAllFiles(res));
         }
       } else {
