@@ -6,7 +6,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 import { existsSync, rmSync, readFileSync, mkdirSync } from 'fs';
 import { resolve } from 'path';
-import { PlanGenerator } from './PlanGenerator.js';
+import { PlanGenerator } from './plan-generator.js';
 
 const TEST_WORKSPACE = resolve(import.meta.dirname, '../../.test-workspace');
 const PLAN_DIR = '.agent-github-plans';

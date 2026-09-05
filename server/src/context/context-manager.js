@@ -1,5 +1,5 @@
-import { TokenCounter } from './TokenCounter.js';
-import { WorkspaceSummarizer } from './WorkspaceSummarizer.js';
+import { TokenCounter } from './token-counter.js';
+import { WorkspaceSummarizer } from './workspace-summarizer.js';
 
 /**
  * ContextManager

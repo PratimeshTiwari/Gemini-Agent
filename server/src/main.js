@@ -17,15 +17,15 @@
 import { resolve, dirname } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { WebSocketServer } from './websocket-server.js';
-import { GitHubEventHandler } from './github/GitHubEventHandler.js';
+import { WebSocketServer } from './bridge/websocket-server.js';
+import { GitHubEventHandler } from './github/github-event-handler.js';
 import { MCPServer } from './mcp/mcp-server.js';
-import { AgentLoop } from './agent-loop.js';
-import { PromptBuilder } from './prompt-builder.js';
-import { DiffEngine } from './diff-engine.js';
-import { RiskClassifier } from './risk-classifier.js';
-import { FileWatcher } from './watcher/FileWatcher.js';
-import { TaskManager } from './TaskManager.js';
+import { AgentLoop } from './core/agent-loop.js';
+import { PromptBuilder } from './core/prompt-builder.js';
+import { DiffEngine } from './core/diff-engine.js';
+import { RiskClassifier } from './core/risk-classifier.js';
+import { FileWatcher } from './watcher/file-watcher.js';
+import { TaskManager } from './core/task-manager.js';
 
 // ── Parse CLI Arguments ──────────────────────────────────────────────
 function parseArgs() {
@@ -147,7 +147,7 @@ async function main() {
   const taskManager = new TaskManager(config.workspace);
   
   // Initialize WorkspaceIndexer for Background RAG
-  const { WorkspaceIndexer } = await import('./context/WorkspaceIndexer.js');
+  const { WorkspaceIndexer } = await import('./context/workspace-indexer.js');
   const workspaceIndexer = new WorkspaceIndexer(config.workspace);
   // Start building the index asynchronously in the background
   workspaceIndexer.buildIndex();
@@ -275,7 +275,7 @@ async function main() {
   }
 
   // Start CLI UI
-  const { CliUI } = await import('./cli-ui.jsx');
+  const { CliUI } = await import('./ui/cli-ui.jsx');
   const cli = new CliUI(agentLoop, wsServer);
   cli.start();
 

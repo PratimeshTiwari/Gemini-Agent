@@ -10,7 +10,7 @@
   "scripts": {
     "start": "tsx src/index.js --workspace ../",
     "dev": "tsx --watch src/index.js --workspace ../",
-    "test": "node --test src/**/*.test.js"
+    "test": "node --test \"src/**/*.test.js\""
   },
   "dependencies": {
     "@inquirer/prompts": "^8.6.0",

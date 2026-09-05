@@ -10,9 +10,9 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
-import { SessionStore } from './storage/SessionStore.js';
-import { ContextManager } from './context/ContextManager.js';
-import { MemoryManager } from './context/MemoryManager.js';
+import { SessionStore } from '../storage/session-store.js';
+import { ContextManager } from '../context/context-manager.js';
+import { MemoryManager } from '../context/memory-manager.js';
 
 
 // Regex to extract tool calls from Gemini's response (handles json code blocks)
@@ -811,7 +811,7 @@ export class AgentLoop {
           
           if (!this.localLLM) {
             this.callbacks.sendToPanel({ id: randomUUID(), type: 'status', payload: { message: 'Initializing Local LLM Engine...' }, timestamp: Date.now() });
-            const { LocalLLM } = await import('./local-llm.js');
+            const { LocalLLM } = await import('../local-llm.js');
             this.localLLM = new LocalLLM();
           }
 
@@ -1253,7 +1253,7 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
 
   async _getContextInfo() {
     const historyTokenEstimate = this.contextManager 
-      ? import('./context/TokenCounter.js').then(m => m.TokenCounter.estimateHistoryTokens(this.conversationHistory)) 
+      ? import('../context/token-counter.js').then(m => m.TokenCounter.estimateHistoryTokens(this.conversationHistory)) 
       : 0; // Token counting is now offloaded, but we can do a rough fallback:
     
     // For synchronous stats, we'll just require TokenCounter directly since it's ES module, 

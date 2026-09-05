@@ -1,6 +1,6 @@
 import React from 'react';
 import { render } from 'ink';
-import { App } from './ui/App.jsx';
+import { App } from './App.jsx';
 
 export class CliUI {
   constructor(agentLoop, wsServer) {

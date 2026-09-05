@@ -1245,7 +1245,7 @@ export function App({ agentLoop, wsServer }) {
                       
                       process.env.GITHUB_TOKEN = token;
                       
-                      const { GitHubEventHandler } = await import('../github/GitHubEventHandler.js');
+                      const { GitHubEventHandler } = await import('../github/github-event-handler.js');
                       const handler = new GitHubEventHandler({
                         token,
                         workspace: agentLoop.workspace,

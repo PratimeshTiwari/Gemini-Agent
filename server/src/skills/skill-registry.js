@@ -10,7 +10,7 @@ export class SkillRegistry {
 
   /**
    * Register a new skill.
-   * @param {import('./Skill').Skill} skill
+   * @param {import('./skill.js').Skill} skill
    */
   register(skill) {
     if (this.skills.has(skill.name)) {
