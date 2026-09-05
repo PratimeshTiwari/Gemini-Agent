@@ -13,6 +13,7 @@
     "test": "node --test \"src/**/*.test.js\""
   },
   "dependencies": {
+    "@ink-tools/ink-mouse": "^2.1.0",
     "@inquirer/prompts": "^8.6.0",
     "acorn": "^8.18.0",
     "chalk": "^6.0.0",
