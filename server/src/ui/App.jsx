@@ -3,11 +3,15 @@ import { Box, Text, useInput, useApp, useStdout, Static } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import Gradient from 'ink-gradient';
-import { marked } from 'marked';
-import { markedTerminal } from 'marked-terminal';
 import crypto from 'crypto';
 import SelectInput from 'ink-select-input';
-import { useOnClick, useMouseTracking } from './mouse.jsx';
+import { useMouseTracking } from './mouse.jsx';
+import { Clickable } from './components/Clickable.jsx';
+import { GithubTab } from './components/GithubTab.jsx';
+import { Menus, DiffApproval } from './components/Menus.jsx';
+import { marked, oneLine, summarizeResult, clampForDisplay } from './format.js';
+import { SLASH_COMMANDS, FOCUS_CHAT, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES } from './constants.js';
+import { groupTurns, collectFocusableItems, parseTurnActions } from './transcript.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -17,249 +21,6 @@ import * as paths from '../core/paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/**
- * Clamp arbitrary tool output for terminal display.
- *
- * Ink can only redraw the dynamic region if it fits the viewport, so output is
- * capped by BOTH line count and total characters — long single lines wrap into
- * many rows and are the real cause of tearing.
- */
-/**
- * A Box that responds to mouse clicks.
- *
- * Exists as a component because `useOnClick` is a hook: it cannot be called
- * from inside the .map() callbacks that render the expandable rows.
- */
-function Clickable({ onClick, children, ...boxProps }) {
-  const ref = React.useRef(null);
-  useOnClick(ref, onClick);
-  return (
-    <Box ref={ref} {...boxProps}>
-      {children}
-    </Box>
-  );
-}
-
-/**
- * One-line description of a tool result, for the collapsed transcript row.
- * Falls back to a hard-clamped snippet for tools without a specific shape.
- */
-/** Collapse any value to a single line of at most `max` characters. */
-function oneLine(value, max = 60) {
-  const text = String(typeof value === 'string' ? value : JSON.stringify(value ?? {}))
-    .replace(/\s+/g, ' ')
-    .trim();
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
-
-function summarizeResult(toolName, result) {
-  const plural = (n, word, many) => `${n} ${n === 1 ? word : many || word + 's'}`;
-  try {
-    const r = result;
-    switch (toolName) {
-      case 'list_directory': {
-        // { path, children, totalFiles, totalDirs }
-        if (typeof r?.totalFiles === 'number' || typeof r?.totalDirs === 'number') {
-          const parts = [];
-          if (r.totalDirs) parts.push(plural(r.totalDirs, 'dir'));
-          if (r.totalFiles) parts.push(plural(r.totalFiles, 'file'));
-          if (parts.length) return parts.join(', ');
-        }
-        if (Array.isArray(r?.children)) return plural(r.children.length, 'entry', 'entries');
-        break;
-      }
-      case 'read_file':
-        // { path, totalLines, size, content }
-        if (typeof r?.totalLines === 'number') {
-          return `${plural(r.totalLines, 'line')}${r.size ? ` · ${r.size}` : ''}`;
-        }
-        break;
-      case 'grep_search':
-      case 'search_files': {
-        // { pattern, matchCount, matches } | { query, count, files }
-        const n = r?.matchCount ?? r?.count ?? (Array.isArray(r?.matches) ? r.matches.length : null)
-          ?? (Array.isArray(r?.files) ? r.files.length : null) ?? (Array.isArray(r?.results) ? r.results.length : null);
-        if (typeof n === 'number') return plural(n, 'match', 'matches');
-        break;
-      }
-      case 'run_command':
-      case 'run_background': {
-        const out = String(typeof r === 'string' ? r : r?.stdout || r?.output || '').trim();
-        if (out) return oneLine(out.split('\n')[0]);
-        break;
-      }
-      case 'edit_file':
-      case 'create_file': {
-        // { diffId, filePath, hunkCount, status }
-        if (r?.filePath) {
-          const name = String(r.filePath).split('/').pop();
-          return r.hunkCount ? `${plural(r.hunkCount, 'hunk')} in ${name}` : name;
-        }
-        break;
-      }
-      default:
-        break;
-    }
-  } catch {
-    /* fall through to the generic snippet */
-  }
-  // Generic fallback: compact, single line. clampForDisplay is not usable here —
-  // it appends a newline marker, which would break the row.
-  return oneLine(result);
-}
-
-function clampForDisplay(value, maxLines = 15, maxChars = 1200) {
-  let text = typeof value === 'string' ? value : JSON.stringify(value ?? {}, null, 2);
-  if (typeof text !== 'string') return '';
-
-  let clipped = false;
-  const lines = text.split('\n');
-  if (lines.length > maxLines) {
-    text = lines.slice(0, maxLines).join('\n');
-    clipped = true;
-  }
-  if (text.length > maxChars) {
-    text = text.slice(0, maxChars);
-    clipped = true;
-  }
-  return clipped ? `${text}\n... [truncated]` : text;
-}
-
-marked.use(markedTerminal({
-  tab: 2,
-  width: 100,
-  showSectionPrefix: false,
-  tableOptions: {
-    style: { head: ['cyan'] }
-  }
-}));
-
-/** Slash commands offered by the palette. Keep in sync with the /help output. */
-const SLASH_COMMANDS = [
-  { name: 'help', desc: 'Show all available commands' },
-  { name: 'mode', desc: 'Change agent topology (Single, Duo, Swarm)' },
-  { name: 'model', desc: 'Switch model tier (Flash, Flash Thinking, Pro)' },
-  { name: 'allowlist', desc: 'Manage auto-approved/blocked command rules' },
-  { name: 'config', desc: 'Configure models for specific roles' },
-  { name: 'plan', desc: 'Plan Mode — every edit needs approval' },
-  { name: 'auto', desc: 'Auto Mode — safe edits apply automatically' },
-  { name: 'workspace', desc: 'Change the active workspace' },
-  { name: 'memory', desc: 'View current agent memory context' },
-  { name: 'context', desc: 'Show current context window usage' },
-  { name: 'compact', desc: 'Compact history to save tokens' },
-  { name: 'clear', desc: 'Clear local history' },
-  { name: 'new', desc: 'Start a new chat session' },
-  { name: 'undo', desc: 'Undo the last step/action' },
-  { name: 'init-skills', desc: 'Create workspace rules (.agent/rules.md)' },
-  { name: 'github', desc: 'Run GitHub commands (e.g. /github refresh)' },
-  { name: 'image', desc: 'Attach an image (e.g. /image path/to/img.png)' },
-  { name: 'paste-image', desc: 'Attach image from clipboard (macOS)' },
-  { name: 'mouse', desc: 'Toggle mouse tracking (clickable rows)' },
-  { name: 'agent-dir', desc: 'Open the agent data directory' },
-  { name: 'restart', desc: 'Restart the server' },
-  { name: 'exit', desc: 'Quit the agent' },
-];
-
-const FOCUS_CHAT = 'chat';
-const FOCUS_INPUT = 'input';
-const FOCUS_TERMINAL = 'terminal';
-
-const THINKING_MESSAGES = [
-  'Thinking...',
-  'Gemining...',
-  'Vibing...',
-  'Analyzing syntax...',
-  'Consulting the AI elders...',
-  'Pondering the orb...',
-  'Brewing code...',
-  'Synthesizing logic...',
-];
-
-function parseTurnActions(turn) {
-  const actions = [];
-  const finalMessages = [];
-
-  for (let sIdx = 0; sIdx < turn.steps.length; sIdx++) {
-    const msg = turn.steps[sIdx];
-
-    if (msg.role === 'assistant' || msg.role === 'agent') {
-      const thinkMatch = msg.content.match(/<think>([\s\S]*?)<\/think>/);
-      let cleanContent = msg.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-      const imgMatch = cleanContent.match(/🖼️ Image attached: (.*?\.png|.*?\.jpg|.*?\.jpeg|.*?\.webp)/);
-
-      if (imgMatch) {
-        cleanContent = cleanContent.replace(imgMatch[0], '').trim();
-        actions.push({
-          type: 'image',
-          id: `turn_${turn.id}_act_${sIdx}`,
-          content: imgMatch[1],
-          msg
-        });
-      }
-
-      if (thinkMatch) {
-        actions.push({
-          type: 'think',
-          id: `turn_${turn.id}_act_${sIdx}`,
-          content: thinkMatch[1].trim(),
-          msg
-        });
-      }
-
-      if (cleanContent) {
-        finalMessages.push({
-          type: 'text',
-          content: cleanContent,
-          msg
-        });
-      }
-    } else if (msg.type === 'tool_call') {
-      const nextMsg = turn.steps[sIdx + 1];
-      let result = null;
-      let success = null;
-      if (nextMsg && nextMsg.type === 'tool_result') {
-        result = nextMsg.result;
-        success = nextMsg.success;
-        sIdx++; // Group tool_result with tool_call into one action
-      }
-      actions.push({
-        type: 'tool',
-        id: `turn_${turn.id}_act_${sIdx}`,
-        toolName: msg.toolName || msg.name,
-        args: msg.args,
-        result,
-        success,
-        msg
-      });
-    } else if (msg.type === 'tool_result') {
-      actions.push({
-        type: 'tool_result',
-        id: `turn_${turn.id}_act_${sIdx}`,
-        result: msg.result,
-        success: msg.success,
-        msg
-      });
-    } else if (msg.role === 'system') {
-      if (msg.type === 'command_output') {
-        actions.push({
-          type: 'command_output',
-          id: `turn_${turn.id}_act_${sIdx}`,
-          content: msg.content,
-          msg
-        });
-      } else {
-        actions.push({
-          type: 'system',
-          id: `turn_${turn.id}_act_${sIdx}`,
-          content: msg.content,
-          msg
-        });
-      }
-    }
-  }
-
-  return { actions, finalMessages };
-}
 
 export function App({ agentLoop, wsServer }) {
   const { exit } = useApp();
@@ -430,46 +191,18 @@ export function App({ agentLoop, wsServer }) {
   const [newAvoidWord, setNewAvoidWord] = useState("");
   const [githubSetupToken, setGithubSetupToken] = useState('');
 
-  // 1. Group history into turns
-  const turns = [];
-  let currentTurn = null;
-  let turnId = 0;
-  history.forEach((msg, i) => {
-    msg._globalIdx = i;
-    if (msg.role === 'user') {
-      if (currentTurn) turns.push(currentTurn);
-      currentTurn = { id: turnId++, userMsg: msg, steps: [], startTime: msg.timestamp || Date.now(), endTime: msg.timestamp || Date.now() };
-    } else if (currentTurn) {
-      currentTurn.steps.push(msg);
-      currentTurn.endTime = msg.timestamp || currentTurn.endTime;
-    } else {
-      currentTurn = { id: turnId++, userMsg: null, steps: [msg], startTime: msg.timestamp || Date.now(), endTime: msg.timestamp || Date.now() };
-    }
-  });
-  if (currentTurn) turns.push(currentTurn);
+  const turns = groupTurns(history);
 
   const INTERACTIVE_COUNT = 1;
   const staticTurns = turns.slice(0, Math.max(0, turns.length - INTERACTIVE_COUNT));
   const interactiveTurns = turns.slice(Math.max(0, turns.length - INTERACTIVE_COUNT));
 
-  // 2. Compute dense array of ALL focusable items for UI navigation
-  const focusableItems = [];
-  interactiveTurns.forEach(turn => {
-    const hasActions = turn.steps.some(m => m.type === 'tool_call' || m.type === 'tool_result' || m.role === 'system' || (m.role === 'assistant' && m.content.includes('<think>')));
-    if (hasActions) {
-      focusableItems.push({ type: 'turn_actions', id: `turn_${turn.id}`, turnId: turn.id, turn });
-    }
-  });
-
-  activeToolCalls.forEach((call, idx) => {
-    focusableItems.push({ type: 'activeCall', sourceIdx: idx, id: call.id, call });
-  });
+  const focusableItems = collectFocusableItems(interactiveTurns, activeToolCalls);
 
   // Ensure selected tool index is within bounds of all focusable items
   const clampedSelectedToolIdx = Math.min(selectedToolIdx, Math.max(0, focusableItems.length - 1));
 
   // Sliding window logic removed, relying on interactiveTurns instead.
-
 
 
   useEffect(() => {
@@ -1321,249 +1054,28 @@ export function App({ agentLoop, wsServer }) {
     <Box flexDirection="column" width="100%" height={activeTab === 'github' ? terminalHeight : undefined} overflow="hidden">
 
       {activeTab === 'github' && (
-        <Box flexDirection="column" flexGrow={1} borderStyle="single" borderColor="cyan" padding={1}>
-          <Text bold color="cyan">📋 GitHub PR Dashboard</Text>
-          
-          
-          {githubView === "avoid_words" && (
-            <Box flexDirection="column" marginTop={1}>
-              <Text bold color="yellow">🚫 Avoid Words Editor</Text>
-              <Text color="gray">These words indicate that a comment is noise (e.g. LGTM, +1) and should not be analyzed by the AI.</Text>
-              
-              <Box flexDirection="column" marginY={1} borderStyle="single" borderColor="gray" padding={1}>
-                {avoidWords.map((word, i) => (
-                  <Text key={i}>• {word}</Text>
-                ))}
-                {avoidWords.length === 0 && <Text dimColor>No avoid words configured.</Text>}
-              </Box>
-              
-              <Box>
-                <Text bold color="green">Add Word: </Text>
-                <TextInput
-                  focus={githubView === "avoid_words"}
-                  value={newAvoidWord}
-                  onChange={setNewAvoidWord}
-                  onSubmit={(val) => {
-                    if (!val.trim()) return;
-                    const updated = [...avoidWords, val.trim()];
-                    setAvoidWords(updated);
-                    setNewAvoidWord("");
-                    
-                    if (agentLoop.githubHandler) {
-                      agentLoop.githubHandler.config.avoidWords = updated;
-                      agentLoop.modelConfig = agentLoop.modelConfig || {};
-                      agentLoop.modelConfig.githubAvoidWords = updated;
-                      agentLoop._saveConfig();
-                    }
-                  }}
-                />
-              </Box>
-              <Text dimColor marginTop={1}>[Enter] to add | [ESC] to return to Dashboard</Text>
-            </Box>
-          )}
-
-
-
-          {githubView === "pr_explorer" && (
-            <Box flexDirection="column" marginTop={1}>
-              <Text bold color="magenta">🧭 PR Explorer</Text>
-              
-              {explorerMode === "prs" && (
-                <Box flexDirection="column" marginY={1}>
-                  <Text color="gray">Select a PR to view comments:</Text>
-                  {loadingPrs ? (
-                    <Text dimColor><Spinner type="dots" /> Loading PRs...</Text>
-                  ) : prList.length === 0 ? (
-                    <Box marginY={1}>
-                      <Text dimColor>No open PRs found.</Text>
-                    </Box>
-                  ) : null}
-                  {prList.map((pr, i) => (
-                    <Text key={i} color={i === selectedPrIdx ? "white" : "gray"}>
-                      {i === selectedPrIdx ? "❯ " : "  "}[{pr.repo.name}] #{pr.number} {pr.title}
-                    </Text>
-                  ))}
-                </Box>
-              )}
-              
-              {explorerMode === "comments" && (
-                <Box flexDirection="column" marginY={1}>
-                  <Box marginBottom={1}>
-                    <Text bold color="cyan">PR #{prList[selectedPrIdx]?.number}</Text>
-                    <Text color="gray"> — </Text>
-                    <Text color="white">{prList[selectedPrIdx]?.title}</Text>
-                  </Box>
-                  <Text color="gray" dimColor>↵ Enter to dispatch to AI Agent  ·  ESC to go back</Text>
-                  <Box flexDirection="column" marginTop={1}>
-                    {loadingPrComments ? (
-                      <Text dimColor><Spinner type="dots" /> Loading comments...</Text>
-                    ) : prComments.length === 0 ? (
-                      <Text dimColor>No comments found for this PR.</Text>
-                    ) : null}
-                    {prComments.map((c, i) => {
-                      const isSelected = i === selectedPrCommentIdx;
-                      const date = c.created_at ? new Date(c.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
-                      const typeTag = c.type === 'review_comment' ? '[review]' : '[comment]';
-                      return (
-                        <Box key={i} flexDirection="column" marginBottom={1} borderStyle={isSelected ? 'single' : undefined} borderColor={isSelected ? 'cyan' : undefined} paddingX={isSelected ? 1 : 0}>
-                          <Box flexDirection="row">
-                            <Text color={isSelected ? 'cyan' : 'yellow'} bold>{isSelected ? '❯ ' : '  '}@{c.author}</Text>
-                            <Text color="gray"> {typeTag}</Text>
-                            {date ? <Text color="gray" dimColor>  {date}</Text> : null}
-                            {c.path ? <Text color="magenta" dimColor>  📄 {c.path}</Text> : null}
-                          </Box>
-                          <Box marginLeft={isSelected ? 0 : 2}>
-                            <Text color={isSelected ? 'white' : 'gray'} wrap="wrap">
-                              {c.body.replace(/\n/g, ' ').substring(0, 100)}{c.body.length > 100 ? '...' : ''}
-                            </Text>
-                          </Box>
-                        </Box>
-                      );
-                    })}
-                  </Box>
-                </Box>
-              )}
-              
-              <Text dimColor marginTop={1}>[↑/↓] Navigate | [Enter] Select | [ESC] Back</Text>
-            </Box>
-          )}
-
-          {githubView === "activity" && (
-            <Box flexDirection="column" marginTop={1}>
-
-          {!agentLoop.githubHandler ? (
-            <Box flexDirection="column" marginTop={1}>
-              <Text color="yellow" bold>⚠️ GitHub Setup Pending</Text>
-              <Text>The GitHub PR integration is currently disabled because the <Text bold>GITHUB_TOKEN</Text> environment variable is not set.</Text>
-              <Text></Text>
-              <Text>To enable PR comment and CI failure watching:</Text>
-              <Text>1. Go to <Text color="blue" underline>https://github.com/settings/tokens/new</Text> and generate a token with `repo` scope.</Text>
-              <Text>2. Paste it below to automatically save it to your ~/.zshrc and start the integration.</Text>
-              <Text></Text>
-              <Box>
-                <Text bold color="green">Token: </Text>
-                <TextInput 
-                  focus={activeTab === 'github' && !agentLoop.githubHandler}
-                  value={githubSetupToken}
-                  onChange={setGithubSetupToken}
-                  onSubmit={async (val) => {
-                    const token = val.trim();
-                    if (!token) return;
-                    try {
-                      // Validate token first
-                      const res = await fetch('https://api.github.com/user', {
-                        headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'Gemini-Agent' }
-                      });
-                      if (!res.ok) {
-                        console.error(`❌ Invalid token: GitHub API returned ${res.status}`);
-                        setGithubSetupToken('');
-                        return;
-                      }
-
-                      // Save to .gemini/config.json
-                      agentLoop.modelConfig = agentLoop.modelConfig || {};
-                      agentLoop.modelConfig.githubToken = token;
-                      agentLoop._saveConfig(); // Fixed method name
-                      
-                      process.env.GITHUB_TOKEN = token;
-                      
-                      const { GitHubEventHandler } = await import('../github/github-event-handler.js');
-                      const handler = new GitHubEventHandler({
-                        token,
-                        workspace: agentLoop.workspace,
-                        configOverrides: { enableCIWatch: true }
-                      });
-                      
-                      handler.on('status', ({ message }) => console.log(`  [GitHub] ${message}`));
-                      handler.on('error', ({ message }) => console.error(`  [GitHub] ❌ ${message}`));
-                      handler.on('notification', ({ message }) => console.log(`  [GitHub] ${message}`));
-                      
-                      agentLoop.githubHandler = handler;
-                      wsServer.githubHandler = handler;
-                      if (typeof wsServer._wireGitHubEvents === 'function') {
-                        wsServer._wireGitHubEvents();
-                      }
-                      handler.start().catch(err => console.error(err));
-                      
-                      setGithubSetupToken('');
-                    } catch (e) {
-                      console.error("Failed to setup token:", e);
-                    }
-                  }}
-                />
-              </Box>
-              <Text></Text>
-              <Text dimColor>Press [Ctrl+O] to return to the Agent tab.</Text>
-            </Box>
-          ) : (
-            <Box borderStyle="round" borderColor="cyan" padding={1} flexDirection="column" width="100%" flexShrink={1}>
-              <Box flexDirection="row" marginBottom={1}>
-                <Text bold color="cyan">📋 GitHub PR Dashboard</Text>
-              </Box>
-              <Box flexDirection="row" marginBottom={1} justifyContent="space-between">
-                <Text>Status: {agentLoop.githubHandler?.getStatus()?.prsWatched || 0} PRs Watched | CI Watch: <Text color="green" bold>{agentLoop.githubHandler?.config?.enableCIWatch ? 'ON' : 'OFF'}</Text></Text>
-                <Text dimColor>Last poll: {agentLoop.githubHandler?.getStatus()?.lastPollTime || 'Never'}</Text>
-              </Box>
-
-              {agentLoop.githubHandler?._currentAnalysis && (
-                <Box borderStyle="round" borderColor="yellow" paddingX={2} marginBottom={1} flexDirection="column">
-                  <Text color="yellow" bold>
-                    <Text>🔄 Analyzing comment by @{agentLoop.githubHandler._currentAnalysis.author} on PR #{agentLoop.githubHandler._currentAnalysis.prNumber}...</Text>
-                  </Text>
-                  <Text dimColor>Please wait while the AI generates a plan. Queue size: {agentLoop.githubHandler?._commentQueue?.length || 0}</Text>
-                </Box>
-              )}
-              <Box borderStyle="single" borderColor="gray" flexDirection="column" flexGrow={1} padding={1}>
-                <Text bold marginBottom={1}>── Recent Activity ───────────────────────</Text>
-                {githubActivity.length === 0 ? (
-                  <Text dimColor>No activity yet. Waiting for PR comments or CI runs...</Text>
-                ) : (
-                  githubActivity.slice().reverse().map((activity, i) => {
-                    if (activity.type === 'github_plan_generated') {
-                      const visiblePlans = githubActivity.slice().reverse().filter(a => a.type === 'github_plan_generated').slice(0, 10);
-                      const isSelected = activity.id === selectedPlanId || (selectedPlanId === null && visiblePlans[0]?.id === activity.id);
-                      const isExpanded = expandedComments.has(activity.id);
-                      let snippet = '';
-                      if (activity.payload.comment && activity.payload.comment.body) {
-                        snippet = activity.payload.comment.body;
-                        if (!isExpanded) {
-                          const lines = snippet.split('\n');
-                          snippet = lines.slice(0, 2).join('\n') + (lines.length > 2 || snippet.length > 100 ? '...' : '');
-                          if (snippet.length > 100) snippet = snippet.substring(0, 100) + '...';
-                        }
-                      }
-                      return (
-                        <Box key={activity.id} flexDirection="column" marginBottom={1}>
-                          <Text color={isSelected ? 'cyan' : 'white'}>{isSelected ? '❯ ' : '  '}📝 PR #{activity.payload.prNumber} — AI Plan Generated</Text>
-                          <Text dimColor marginLeft={4}>Category: {activity.payload.category}</Text>
-                          {snippet && (
-                            <Box marginLeft={4} flexDirection="column">
-                              <Text dimColor>💬 {snippet}</Text>
-                            </Box>
-                          )}
-                          <Text dimColor marginLeft={4}>→ {activity.payload.filePath.split('/').slice(-2).join('/')}</Text>
-                        </Box>
-                      );
-                    } else if (activity.type === 'github_notification') {
-                      return (
-                        <Box key={activity.id} flexDirection="column" marginBottom={1}>
-                          <Text>  ℹ️ {activity.payload.message}</Text>
-                        </Box>
-                      );
-                    }
-                    return null;
-                  }).filter(Boolean).slice(0, 10)
-                )}
-              </Box>
-
-              <Box marginTop={1}>
-                <Text dimColor>[↑/↓] Navigate  [Space] Expand Comment  [Enter] Open Plan  [A] Avoid Words  [P] PR Explorer  [R] Refresh  [Ctrl+O] Agent</Text>
-              </Box>
-            </Box>
-          )}
-          </Box>
-          )}
-        </Box>
+        <GithubTab
+          activeTab={activeTab}
+          agentLoop={agentLoop}
+          wsServer={wsServer}
+          avoidWords={avoidWords}
+          setAvoidWords={setAvoidWords}
+          newAvoidWord={newAvoidWord}
+          setNewAvoidWord={setNewAvoidWord}
+          githubSetupToken={githubSetupToken}
+          setGithubSetupToken={setGithubSetupToken}
+          githubView={githubView}
+          expandedComments={expandedComments}
+          explorerMode={explorerMode}
+          githubActivity={githubActivity}
+          loadingPrs={loadingPrs}
+          loadingPrComments={loadingPrComments}
+          prList={prList}
+          prComments={prComments}
+          selectedPlanId={selectedPlanId}
+          selectedPrIdx={selectedPrIdx}
+          selectedPrCommentIdx={selectedPrCommentIdx}
+        />
       )}
 
       {activeTab === 'agent' && (
@@ -1824,29 +1336,11 @@ export function App({ agentLoop, wsServer }) {
       )}
 
       {/* Diff Request */}
-      {diffRequest && (
-        <Box borderStyle="single" borderColor="yellow" padding={1} flexDirection="column" width="100%" flexShrink={1}>
-          <Text bold color="yellow" wrap="wrap">⚠️ Diff Approval Required: {diffRequest.filePath}</Text>
-          {diffRequest.hunks?.length > 0 && (
-            <Text dimColor wrap="wrap">
-              {diffRequest.hunks.length} hunk{diffRequest.hunks.length === 1 ? '' : 's'}
-              {diffRequest.riskReason ? ` — ${diffRequest.riskReason}` : ''}
-            </Text>
-          )}
-          <Box marginTop={1}>
-            <SelectInput
-              items={[
-                { label: 'Approve — apply this change', value: 'accept' },
-                { label: 'Reject — discard it', value: 'reject' },
-              ]}
-              onSelect={(item) => {
-                handleDiffResponse(item.value);
-                setFocus(FOCUS_INPUT);
-              }}
-            />
-          </Box>
-        </Box>
-      )}
+      <DiffApproval
+        diffRequest={diffRequest}
+        handleDiffResponse={handleDiffResponse}
+        setFocus={setFocus}
+      />
 
       {/* Status Spinner */}
       {isProcessing && !diffRequest && (
@@ -1936,188 +1430,16 @@ export function App({ agentLoop, wsServer }) {
 
 
       {/* Interactive Menus */}
-      {activeMenu?.type === 'ask_question' && (
-        <Box flexDirection="column" borderStyle="single" borderColor="blue" padding={1}>
-          <Text bold color="cyan">❓ {activeMenu.payload.question}</Text>
-          <SelectInput
-            items={activeMenu.payload.options.map(o => ({ label: o, value: o }))}
-            onSelect={(item) => {
-              setActiveMenu(null);
-              agentLoop.answerQuestion(item.value);
-              setHistory(prev => [...prev, { role: 'system', content: `[System: You answered: ${item.value}]` }]);
-              setFocus(FOCUS_INPUT);
-            }}
-          />
-        </Box>
-      )}
-
-      {activeMenu?.type === 'command_approval' && (
-        <Box flexDirection="column" borderStyle="single" borderColor={activeMenu.payload.riskLevel === 'critical' ? 'red' : 'yellow'} padding={1}>
-          <Text bold color={activeMenu.payload.riskLevel === 'critical' ? 'red' : 'yellow'}>
-            ⚠️ Command Execution Request ({activeMenu.payload.riskLevel.toUpperCase()})
-          </Text>
-          <Text>Command: <Text bold>{activeMenu.payload.command}</Text></Text>
-          <Text>Directory: {activeMenu.payload.cwd}</Text>
-          <Text>Reason: {activeMenu.payload.riskReason}</Text>
-          <SelectInput
-            items={[
-              { label: 'Allow Command Once', value: 'allow_once' },
-              { label: 'Allow Always (Add to Allowlist)', value: 'allow_always' },
-              { label: 'Reject Command', value: 'reject' },
-              { label: 'Reject Always (Add to Blocklist)', value: 'reject_always' }
-            ]}
-            onSelect={(item) => {
-              setActiveMenu(null);
-              agentLoop.answerCommandApproval(item.value, activeMenu.payload.command);
-              
-              let statusMsg = '';
-              if (item.value === 'allow_once') statusMsg = 'allowed once';
-              if (item.value === 'allow_always') statusMsg = 'allowed always (added to allowlist)';
-              if (item.value === 'reject') statusMsg = 'rejected';
-              if (item.value === 'reject_always') statusMsg = 'rejected always (added to blocklist)';
-              
-              setHistory(prev => [...prev, { role: 'system', content: `[System: You ${statusMsg} the command: ${activeMenu.payload.command}]` }]);
-              setFocus(FOCUS_INPUT);
-            }}
-          />
-        </Box>
-      )}
-
-      {activeMenu?.type === 'plan_review' && (
-        <Box flexDirection="column" borderStyle="single" borderColor="magenta" padding={1}>
-          <Text bold color="magenta">📝 Implementation Plan Ready for Review</Text>
-          <Text>The agent has created an implementation_plan.md artifact.</Text>
-          <SelectInput
-            items={[
-              { label: 'Proceed with Implementation Plan', value: 'accept' },
-              { label: 'Reject', value: 'reject' },
-              { label: 'Provide Custom Feedback (Chat)', value: 'custom' }
-            ]}
-            onSelect={(item) => {
-              setActiveMenu(null);
-              if (item.value === 'accept') {
-                handleSubmit('I have reviewed the implementation plan and approve it. Please proceed with the execution phase.');
-              } else if (item.value === 'reject') {
-                handleSubmit('I reject the implementation plan. Please wait for my feedback.');
-              } else {
-                setFocus(FOCUS_INPUT);
-              }
-            }}
-          />
-        </Box>
-      )}
-
-      {activeMenu?.type === 'mode' && (
-        <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-          <Text bold color="cyan">Select Agent Topology Mode:</Text>
-          <SelectInput
-            items={[
-              { label: `Single (Gemini only)${agentLoop.topology === 'single' ? '  ← (Current)' : ''}`, value: 'single' },
-              { label: `Duo (Gemini + Reviewer)${agentLoop.topology === 'duo' ? '  ← (Current)' : ''}`, value: 'duo' },
-              { label: `Swarm (Gemini + Reasoner + Reviewer)${agentLoop.topology === 'swarm' ? '  ← (Current)' : ''}`, value: 'swarm' }
-            ]}
-            onSelect={async (item) => {
-              setActiveMenu(null);
-              await agentLoop.handleSlashCommand('mode', [item.value]);
-              setHistory([...agentLoop.conversationHistory]);
-              setFocus(FOCUS_INPUT);
-            }}
-          />
-        </Box>
-      )}
-
-      {activeMenu?.type === 'model' && (
-        <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-          <Text bold color="cyan">Select Model Tier:</Text>
-          <Text dimColor>  Tip: Also switch the model in your Gemini browser tab</Text>
-          <SelectInput
-            items={[
-              { label: `⚡ Flash (Fast, minimal reasoning)${agentLoop.modelConfig?.modelTier === 'flash' ? '  ← (Current)' : ''}`, value: 'flash' },
-              { label: `🧠 Flash Thinking (Moderate reasoning)${agentLoop.modelConfig?.modelTier === 'flash-thinking' ? '  ← (Current)' : ''}`, value: 'flash-thinking' },
-              { label: `🔬 Pro (Deep principal-engineer reasoning)${agentLoop.modelConfig?.modelTier === 'pro' ? '  ← (Current)' : ''}`, value: 'pro' }
-            ]}
-            onSelect={async (item) => {
-              setActiveMenu(null);
-              await agentLoop.handleSlashCommand('model', [item.value]);
-              setHistory([...agentLoop.conversationHistory]);
-              setFocus(FOCUS_INPUT);
-            }}
-          />
-        </Box>
-      )}
-
-      {activeMenu?.type === 'config_role' && (
-        <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-          <Text bold color="cyan">Select Role to Configure:</Text>
-          <SelectInput
-            items={[
-              { label: 'View Current Config', value: 'view' },
-              { label: 'Main Agent', value: 'main' },
-              { label: 'Reviewer Subagent', value: 'reviewer' },
-              { label: 'Reasoner Subagent', value: 'reasoner' }
-            ]}
-            onSelect={async (item) => {
-              if (item.value === 'view') {
-                setActiveMenu(null);
-                await agentLoop.handleSlashCommand('config', []);
-                setHistory([...agentLoop.conversationHistory]);
-                setFocus(FOCUS_INPUT);
-              } else {
-                setActiveMenu({ type: 'config_model', role: item.value });
-              }
-            }}
-          />
-        </Box>
-      )}
-
-      {activeMenu?.type === 'config_model' && (
-        <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-          <Text bold color="cyan">Select Model for {activeMenu.role}:</Text>
-          <SelectInput
-            items={[
-              { label: 'Google Gemini', value: 'gemini' },
-              { label: 'ChatGPT', value: 'chatgpt' },
-              { label: 'Claude', value: 'claude' }
-            ]}
-            onSelect={async (item) => {
-              const role = activeMenu.role;
-              setActiveMenu(null);
-              await agentLoop.handleSlashCommand('config', [role, item.value]);
-              setHistory([...agentLoop.conversationHistory]);
-              setFocus(FOCUS_INPUT);
-            }}
-          />
-        </Box>
-      )}
-
-      {activeMenu?.type === 'github' && (
-        <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-          <Text bold color="cyan">📋 GitHub Integration Menu</Text>
-          <SelectInput
-            items={[
-              { label: 'Refresh PR Activity Now', value: 'refresh' },
-              { label: `CI Failure Watch [Currently: ${agentLoop.githubHandler?.config?.enableCIWatch ? 'ON' : 'OFF'}]`, value: 'ci-watch' },
-              { label: 'Clear Poller State & Rescan', value: 'clear-state' },
-              { label: 'Open PR Dashboard (Ctrl+O)', value: 'dashboard' },
-              { label: 'Remove/Update GitHub Token', value: 'remove-token' },
-            ]}
-            onSelect={(item) => {
-              setActiveMenu(null);
-              if (item.value === 'dashboard') {
-                setActiveTab('github');
-                setFocus(FOCUS_CHAT);
-              } else if (item.value === 'ci-watch') {
-                const current = agentLoop.githubHandler?.config?.enableCIWatch;
-                handleSubmit(`/github ci-watch ${current ? 'off' : 'on'}`);
-              } else if (item.value === 'remove-token') {
-                handleSubmit('/github remove-token');
-              } else {
-                handleSubmit(`/github ${item.value}`);
-              }
-            }}
-          />
-        </Box>
-      )}
+      <Menus
+        activeMenu={activeMenu}
+        setActiveMenu={setActiveMenu}
+        agentLoop={agentLoop}
+        handleSubmit={handleSubmit}
+        mode={mode}
+        setActiveTab={setActiveTab}
+        setFocus={setFocus}
+        setHistory={setHistory}
+      />
 
       {/* Agent Terminal Bottom Sheet */}
       {terminalOpen && (
