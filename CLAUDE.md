@@ -43,11 +43,11 @@ as a test, including `main.js`, which starts the WebSocket server and hangs fore
 glob is what makes the script work under `sh` (which has no globstar and would otherwise silently
 skip `src/core/risk-classifier.test.js`).
 
-**Expected state: 34 tests, 10 pass, 24 fail.** The 24 failures are pre-existing and behavioural,
-not structural: `plan-generator.test.js` reads `<ws>/.agent/github-pr-plans/PR-42.md` while
-`plan-generator.js` writes `<ws>/<outputDir>/PR-42/<file>`, and `comment-classifier.js`
-mis-classifies its own fixtures. Fixing them means deciding whether the test or the implementation
-is right. Treat 34/10/24 as the invariant any refactor must preserve.
+**Expected state: all tests pass.** They used to be 34/10/24 red: the tests described designs
+the code had replaced — `plan-generator` writes one file per comment under `PR-<n>/` rather than
+one `PR-<n>.md` per PR, and `comment-classifier` stopped categorising by keyword once the AI
+took that over. Both test files were rewritten against the shipped behaviour, so a failure now is
+a real regression.
 
 There is no lint script; `.eslintrc.json` (eslint:recommended) and `.prettierrc`
 (100 cols, single quotes, trailing commas) exist for editor integration.
