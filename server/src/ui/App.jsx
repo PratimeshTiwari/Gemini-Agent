@@ -1,17 +1,23 @@
-import React, { useState, useEffect, useReducer, useRef } from 'react';
-import { Box, Text, useInput, useApp, useStdout, Static } from 'ink';
+import React, { useState, useEffect, useRef } from 'react';
+import { Box, Text, useApp, useStdout, Static } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import Gradient from 'ink-gradient';
 import crypto from 'crypto';
-import SelectInput from 'ink-select-input';
 import { useMouseTracking } from './mouse.jsx';
 import { Clickable } from './components/Clickable.jsx';
 import { GithubTab } from './components/GithubTab.jsx';
 import { Menus, DiffApproval } from './components/Menus.jsx';
+import { Banner } from './components/Banner.jsx';
+import { TranscriptTurn } from './components/TranscriptTurn.jsx';
+import { AgentTerminal } from './components/AgentTerminal.jsx';
+import { InputBar } from './components/InputBar.jsx';
 import { marked, oneLine, summarizeResult, clampForDisplay } from './format.js';
 import { SLASH_COMMANDS, FOCUS_CHAT, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES } from './constants.js';
 import { groupTurns, collectFocusableItems, parseTurnActions } from './transcript.js';
+import { useKeyBindings } from './hooks/use-key-bindings.js';
+import { handleSlashCommand } from './hooks/use-slash-commands.js';
+import { buildAgentCallbacks } from './hooks/use-agent-callbacks.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -385,230 +391,16 @@ export function App({ agentLoop, wsServer }) {
     setActiveToolCalls([]);
     
     if (query.startsWith('/')) {
-      const parts = query.slice(1).split(/\s+/);
-      const command = parts[0].toLowerCase();
-      const args = parts.slice(1);
-
-      if (command === 'shortcuts' || command === 'help') {
-        const shortcutsMessage = {
-          role: 'assistant',
-          isLocal: true,
-          content: [
-            '### ⌨️ UI & Navigation',
-            '  [Tab]             - Toggle focus between Chat Input and Tool Executions',
-            '  [Up/Down]         - Navigate between tool executions or CLI tabs',
-            '  [Enter]           - Expand/Minimize raw output of tools, or Open GitHub Plan',
-            '  [Ctrl+T]          - Toggle the Agent Terminal at the bottom of the screen',
-            '  [Ctrl+O]          - Toggle between Agent Chat and GitHub PR Dashboard',
-            "  :stop             - Immediately cancel the agent's current generation",
-            '',
-            '### 🧠 AI & LLM Settings',
-            '  /mode             - Change agent topology (Single, Duo, Swarm)',
-            '  /model            - Switch model tier (Flash, Flash Thinking, Pro)',
-            '  /allowlist        - Manage auto-approved/blocked command rules',
-            '  /config           - Configure models for specific roles',
-            '  /plan             - Switch to Plan Mode (requires approval for edits)',
-            '  /auto             - Switch to Auto Mode (auto-applies safe edits)',
-            '',
-            '### 📁 Workspace & Context',
-            '  /workspace <path> - Change the active workspace',
-            '  /memory           - View current agent memory context',
-            '  /context          - Show current context window usage',
-            '  /compact          - Compact history to save tokens',
-            '  /clear            - Clear local history',
-            '  /new              - Start a new chat session',
-            '  /undo             - Undo the last step/action',
-            '  /init-skills      - Create workspace rules (.agent/rules.md)',
-            '',
-            '### 🛠️ System & Tools',
-            '  /github           - Run GitHub specific commands (e.g., /github refresh)',
-            '  /image            - Attach an image (e.g., /image path/to/img.png)',
-            '  /paste-image      - Attach image directly from clipboard (macOS only)',
-            '  /mouse            - Toggle mouse tracking (clickable rows)',
-            '  /agent-dir        - Open the agent data directory',
-            '  /restart          - Restart the server',
-            '  /exit             - Quit the agent'
-          ].join('\n')
-        };
-        setHistory(prev => [...prev, { role: 'user', content: query }, shortcutsMessage]);
-        setIsProcessing(false);
-        return;
-      }
-
-      if (command === 'exit') {
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '👋 Goodbye! Agent shutting down.', isLocal: true }]);
-        setIsProcessing(false);
-        setTimeout(() => process.exit(0), 100);
-        return;
-      }
-
-      if (command === 'restart') {
-        const indexPath = path.resolve(__dirname, '..', 'index.js');
-        const now = new Date();
-        try {
-          fs.utimesSync(indexPath, now, now);
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '🔄 Restarting server...', isLocal: true }]);
-        } catch (err) {
-          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '❌ Failed to restart server: ' + err.message, isLocal: true }]);
-        }
-        setIsProcessing(false);
-        return;
-      }
-
-      if (command === 'clear') {
-        agentLoop.conversationHistory = [];
-        setHistory([]);
-        resetScreen();
-        setIsProcessing(false);
-        return;
-      }
-
-      if (command === 'new') {
-        agentLoop.conversationHistory = [];
-        agentLoop.promptBuilder.resetPromptState();
-        agentLoop.sessionStore.clear();
-        setHistory([]);
-        resetScreen();
-        wsServer.broadcast('extension', { type: 'new_chat', payload: {} });
-        setHistory([{ role: 'assistant', content: '✨ Starting a new chat in Gemini...', isLocal: true }]);
-        setIsProcessing(false);
-        return;
-      }
-
-      if (command === 'mode') {
-        setActiveMenu({ type: 'mode' });
-        setIsProcessing(false);
-        return;
-      }
-
-      if (command === 'config') {
-        setActiveMenu({ type: 'config_role' });
-        setIsProcessing(false);
-        return;
-      }
-
-      if (command === 'model') {
-        setActiveMenu({ type: 'model' });
-        setIsProcessing(false);
-        return;
-      }
-
-      if (command === 'github' && args.length === 0) {
-        setActiveMenu({ type: 'github' });
-        setIsProcessing(false);
-        return;
-      }
-
-      if (command === 'init-skills') {
-        const { resolve } = await import('path');
-        const { existsSync, mkdirSync, writeFileSync } = await import('fs');
-        const rulesPath = paths.rulesPath(agentLoop.workspace);
-        paths.ensureParent(rulesPath);
-        
-        let msg = '';
-        if (!existsSync(rulesPath)) {
-          writeFileSync(rulesPath, `# Workspace Rules\n\nAdd any custom instructions, architectural rules, or context specific to this project here.\n`, 'utf-8');
-          msg = `✅ Created workspace memory at: ${rulesPath}\nEdit this file to teach the agent custom skills!`;
-        } else {
-          msg = `⚠️ Workspace rules already exist at: ${rulesPath}`;
-        }
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: msg, isLocal: true }]);
-        setIsProcessing(false);
-        return;
-      }
-
-      if (command === 'image' || command === 'paste-image') {
-        let finalFilePath = '';
-        let ext = '';
-        if (command === 'paste-image') {
-          if (process.platform !== 'darwin') {
-             setHistory(prev => [...prev, { role: 'assistant', content: '⚠️ Clipboard image paste is only supported on macOS.' }]);
-             setIsProcessing(false); return;
-          }
-          const { execSync } = await import('child_process');
-          const { resolve } = await import('path');
-          const { existsSync, mkdirSync } = await import('fs');
-          
-          try {
-            const clipboardCheck = execSync(`osascript -e 'clipboard info'`, { encoding: 'utf-8', timeout: 5000 }).trim();
-            if (!clipboardCheck.includes('«class PNGf»') && !clipboardCheck.includes('«class TIFF»') && !clipboardCheck.includes('JPEG')) {
-              setHistory(prev => [...prev, { role: 'assistant', content: '⚠️ No image found in clipboard.' }]);
-              setIsProcessing(false); return;
-            }
-            finalFilePath = resolve(paths.ensureDir(paths.tmpDir(agentLoop.workspace)), 'clipboard-image.png');
-            execSync(`osascript -e 'set theFile to (open for access POSIX file "${finalFilePath}" with write permission)\n try\n write (the clipboard as «class PNGf») to theFile\n end try\n close access theFile'`, { timeout: 10000 });
-            ext = '.png';
-          } catch (e) {
-            setHistory(prev => [...prev, { role: 'assistant', content: `❌ Failed to paste image: ${e.message}` }]);
-            setIsProcessing(false); return;
-          }
-        } else {
-          const { resolve, extname } = await import('path');
-          const { existsSync } = await import('fs');
-          finalFilePath = resolve(agentLoop.workspace, args.join(' '));
-          if (!existsSync(finalFilePath)) {
-             setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ File not found: ${finalFilePath}` }]);
-             setIsProcessing(false); return;
-          }
-          ext = extname(finalFilePath).toLowerCase();
-        }
-
-        try {
-          const { readFileSync } = await import('fs');
-          const imageBuffer = readFileSync(finalFilePath);
-          const mimeTypes = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp' };
-          const mime = mimeTypes[ext] || 'image/png';
-          setPendingImage({
-            base64: imageBuffer.toString('base64'),
-            mime,
-            path: finalFilePath,
-            sizeKB: Math.round(imageBuffer.length / 1024)
-          });
-          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `🖼️ Image attached: ${finalFilePath} (${Math.round(imageBuffer.length / 1024)}KB)\nType your prompt and the image will be included.` }]);
-        } catch (e) {
-          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ Error reading image: ${e.message}` }]);
-        }
-        setIsProcessing(false);
-        return;
-      }
-
-      if (command === 'mouse') {
-        const arg = (args[0] || '').toLowerCase();
-        let msg;
-        if (!mouseTracking.supported) {
-          msg = '⚠️ This terminal does not report mouse events.';
-        } else if (arg === 'on' || (arg === '' && !mouseTracking.enabled)) {
-          mouseTracking.enable();
-          msg = '🖱️ Mouse tracking **on** — click tool rows, slash commands and menus.\n\n'
-            + 'The terminal hands the mouse to the app while this is on: drag-select needs '
-            + 'Option/Shift held, and the wheel no longer scrolls scrollback. `/mouse off` gives them back.';
-        } else {
-          mouseTracking.disable();
-          msg = '🖱️ Mouse tracking **off** — text selection and scrollback are back.';
-        }
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: msg, isLocal: true }]);
-        setIsProcessing(false);
-        return;
-      }
-
-      // Handle standard agent loop commands
-      const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'model', 'allowlist', 'github'];
-      if (validAgentCommands.includes(command)) {
-        const result = await agentLoop.handleSlashCommand(command, args);
-        
-        if (command === 'clear' || command === 'undo' || command === 'compact') {
-          const newHistory = [...agentLoop.conversationHistory];
-          if (result && result.message) {
-            newHistory.push({ role: 'assistant', content: result.message });
-          }
-          setHistory(newHistory);
-        } else if (result && result.message) {
-          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: result.message }]);
-        }
-      } else {
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ Unrecognized command: \`/${command}\`\nType \`/help\` to see the list of available commands.` }]);
-      }
-      setIsProcessing(false);
+      await handleSlashCommand(query, {
+        agentLoop,
+        wsServer,
+        resetScreen,
+        setActiveMenu,
+        setHistory,
+        setIsProcessing,
+        setPendingImage,
+        mouseTracking,
+      });
       return;
     }
 
@@ -621,81 +413,20 @@ export function App({ agentLoop, wsServer }) {
     // Optimistically update the UI so the user sees their prompt immediately
     setHistory(prev => [...prev, { role: 'user', content: query }]);
 
-    const callbacks = {
-      sendToPanel: (msg) => {
-        wsServer.broadcast('extension', msg);
-        if (msg.type === 'agent_response') {
-          setHistory([...agentLoop.conversationHistory]);
-          setIsProcessing(false);
-          setActiveToolCalls([]);
-        } else if (msg.type === 'ask_question') {
-          setActiveMenu({ type: 'ask_question', payload: msg.payload });
-          setFocus(FOCUS_INPUT);
-        } else if (msg.type === 'request_command_approval') {
-          setActiveMenu({ type: 'command_approval', payload: msg.payload });
-          setFocus(FOCUS_INPUT);
-        } else if (msg.type === 'status') {
-          setStatus(msg.payload.message || 'Processing...');
-          isToolRunningRef.current = false;
-        } else if (msg.type === 'tool_call') {
-          setStatus(`Running ${msg.payload.name}...`);
-          isToolRunningRef.current = true;
-          setActiveToolCalls(prev => [...prev, { id: Date.now().toString(), type: 'call', name: msg.payload.name, args: msg.payload.args }]);
-        } else if (msg.type === 'tool_result') {
-          setActiveToolCalls(prev => {
-            const updated = [...prev];
-            const last = updated[updated.length - 1];
-            if (last) {
-              last.result = msg.payload.result;
-              last.success = msg.payload.success;
-              
-              if (last.success && (last.name === 'create_file' || last.name === 'edit_file' || last.name === 'write_to_file')) {
-                const pathArg = last.args?.path || last.args?.TargetFile;
-                if (pathArg && (pathArg.endsWith('implementation_plan.md') || pathArg.endsWith('plan.md')) && agentLoop.mode === 'plan') {
-                  setPlanReviewReady(true);
-                }
-                if (pathArg && pathArg.endsWith('walkthrough.md')) {
-                  setWalkthroughReady(true);
-                }
-              }
-            }
-            return updated;
-          });
-        } else if (msg.type === 'response_stream') {
-          // Intentionally do NOT update status here to prevent UI tearing and scroll glitches
-          // caused by re-rendering the entire history component 50+ times per second.
-          // This also allows the 'Thinking...' messages to continue cycling during generation!
-        }
-      },
-      injectPrompt: (msg) => {
-        const success = wsServer.broadcast('extension', {
-          id: crypto.randomUUID(),
-          type: 'inject_prompt',
-          payload: msg,
-          timestamp: Date.now(),
-        });
-        
-        if (!success) {
-          try {
-            const startUrl = 'https://gemini.google.com/app';
-            if (process.platform === 'darwin') exec(`open "${startUrl}"`);
-            else if (process.platform === 'win32') exec(`start "" "${startUrl}"`);
-            else exec(`xdg-open "${startUrl}"`);
-          } catch (e) {}
-
-          agentLoop.isProcessing = false;
-          setIsProcessing(false);
-          setHistory(prev => [
-            ...prev, 
-            { role: 'assistant', content: '⚠️ **Gemini Extension Reconnecting...**\n\nAutomatically launched `https://gemini.google.com/app` in your browser. Once the tab opens, please submit your prompt again.' }
-          ]);
-        }
-      },
-      requestDiffApproval: (diff) => {
-        setDiffRequest(diff);
-        setIsProcessing(false);
-      }
-    };
+    const callbacks = buildAgentCallbacks({
+      agentLoop,
+      isToolRunningRef,
+      setActiveMenu,
+      setActiveToolCalls,
+      setDiffRequest,
+      setFocus,
+      setHistory,
+      setIsProcessing,
+      setPlanReviewReady,
+      setStatus,
+      setWalkthroughReady,
+      wsServer,
+    });
 
     await agentLoop.handleUserMessage(messageContent, callbacks);
   };
@@ -706,316 +437,50 @@ export function App({ agentLoop, wsServer }) {
     setDiffRequest(null);
   };
 
-  useInput((char, key) => {
-    if (diffRequest) {
-      // Deliberately inert: the diff is answered through the SelectInput below,
-      // so a stray keystroke can never approve or reject an edit.
-      return;
-    }
-
-    // Toggle Tabs (Ctrl+O)
-    if (key.ctrl && char === 'o') {
-      setActiveTab(prev => {
-        const next = prev === 'agent' ? 'github' : 'agent';
-        if (next === 'github') setHasNewGitHubEvent(false);
-        return next;
-      });
-      return;
-    }
-
-    if (activeTab === 'github') {
-      if (!agentLoop.githubHandler) {
-        return; // Skip 'r' and navigation keys when on setup screen
-      }
-
-      if (char === 'r' || char === 'R') {
-        handleSubmit('/github refresh');
-        return;
-      }
-      
-      if (char === 'a' || char === 'A') {
-        setGithubView(prev => prev === 'avoid_words' ? 'activity' : 'avoid_words');
-        return;
-      }
-
-      if (char === 'p' || char === 'P') {
-        const willOpen = githubView !== 'pr_explorer';
-        setGithubView(willOpen ? 'pr_explorer' : 'activity');
-        
-        // If we are opening the explorer, fetch fresh PRs
-        if (willOpen) {
-          setLoadingPrs(true);
-          try {
-            if (agentLoop?.githubHandler?.fetchAllOpenPRs) {
-              agentLoop.githubHandler.fetchAllOpenPRs()
-                .then(prs => {
-                  setPrList(prs || []);
-                  setSelectedPrIdx(0);
-                })
-                .catch(() => {
-                  setPrList([]);
-                })
-                .finally(() => {
-                  setLoadingPrs(false);
-                });
-            } else {
-              setLoadingPrs(false);
-            }
-          } catch (err) {
-            setLoadingPrs(false);
-          }
-        }
-        return;
-      }
-
-      if (key.escape) {
-        if (githubView === 'pr_explorer' && explorerMode === 'comments') {
-          setExplorerMode('prs');
-          return;
-        }
-        if (githubView !== 'activity') {
-          setGithubView('activity');
-          return;
-        }
-      }
-      
-      if (githubView === 'pr_explorer') {
-        if (explorerMode === 'prs') {
-          if (key.upArrow) setSelectedPrIdx(prev => Math.max(0, prev - 1));
-          if (key.downArrow) setSelectedPrIdx(prev => Math.min(prList.length - 1, prev + 1));
-          if (key.return && prList.length > 0) {
-             const pr = prList[selectedPrIdx];
-             if (pr && agentLoop?.githubHandler?.poller) {
-               setLoadingPrComments(true);
-               setPrComments([]);
-               setExplorerMode('comments');
-               setSelectedPrCommentIdx(0);
-               agentLoop.githubHandler.poller.fetchAllComments(pr)
-                 .then(comments => { setPrComments(comments || []); })
-                 .catch(() => { setPrComments([]); })
-                 .finally(() => { setLoadingPrComments(false); });
-             }
-          }
-        } else if (explorerMode === 'comments') {
-          if (key.upArrow) setSelectedPrCommentIdx(prev => Math.max(0, prev - 1));
-          if (key.downArrow) setSelectedPrCommentIdx(prev => Math.min(prComments.length - 1, prev + 1));
-          if (key.return && prComments.length > 0) {
-             const pr = prList[selectedPrIdx];
-             const comment = prComments[selectedPrCommentIdx];
-             if (agentLoop?.githubHandler?.forceAnalyzeComment && pr && comment) {
-               // Show feedback immediately, run analysis in background
-               setGithubView('activity');
-               agentLoop.githubHandler.forceAnalyzeComment(pr, comment).catch(() => {});
-             } else {
-               setGithubView('activity');
-             }
-          }
-        }
-        return;
-      }
-
-      const visiblePlans = githubActivity.slice().reverse().filter(a => a.type === 'github_plan_generated').slice(0, 10);
-      let currentIdx = visiblePlans.findIndex(p => p.id === selectedPlanId);
-      if (currentIdx === -1 && visiblePlans.length > 0) currentIdx = 0;
-      
-      if (key.upArrow) {
-        if (visiblePlans.length > 0) {
-          const nextIdx = Math.max(0, currentIdx - 1);
-          setSelectedPlanId(visiblePlans[nextIdx].id);
-        }
-        return;
-      }
-      if (key.downArrow) {
-        if (visiblePlans.length > 0) {
-          const nextIdx = Math.min(visiblePlans.length - 1, currentIdx + 1);
-          setSelectedPlanId(visiblePlans[nextIdx].id);
-        }
-        return;
-      }
-      if (key.return) {
-        const item = visiblePlans[currentIdx];
-        if (item && item.payload?.filePath) {
-          try {
-            exec(`"${agentLoop.editor || 'code'}" "${item.payload.filePath}" || open "${item.payload.filePath}" || xdg-open "${item.payload.filePath}"`);
-          } catch(e) {}
-        }
-        return;
-      }
-      if (char === ' ') {
-        const item = visiblePlans[currentIdx];
-        if (item) {
-          setExpandedComments(prev => {
-            const next = new Set(prev);
-            if (next.has(item.id)) next.delete(item.id);
-            else next.add(item.id);
-            return next;
-          });
-        }
-        return;
-      }
-      return; // Skip agent tab hotkeys when on github tab
-    }
-
-    // Ctrl+V for paste-image
-    if (key.ctrl && char === 'v') {
-      handleSubmit('/paste-image');
-      return;
-    }
-
-    // Toggle Focus between Input and Chat (Tool Logs)
-    // Shift+Tab cycles Plan <-> Auto, like Claude Code. Checked before the
-    // plain Tab handler, which would otherwise swallow it.
-    if (key.tab && key.shift) {
-      cycleMode();
-      return;
-    }
-
-    // While the slash palette is open it owns navigation and completion.
-    if (slashOpen) {
-      if (key.upArrow) {
-        setSlashIdx(Math.max(0, slashSelected - 1));
-        return;
-      }
-      if (key.downArrow) {
-        setSlashIdx(Math.min(slashMatches.length - 1, slashSelected + 1));
-        return;
-      }
-      if (key.tab) {
-        setInput(`/${slashMatches[slashSelected].name} `);
-        setSlashIdx(0);
-        return;
-      }
-      if (key.escape) {
-        setInput('');
-        setSlashIdx(0);
-        return;
-      }
-    }
-
-    if (key.tab) {
-      setFocus(f => {
-        const nextFocus = f === FOCUS_INPUT ? FOCUS_CHAT : FOCUS_INPUT;
-        if (nextFocus === FOCUS_CHAT) {
-          setSelectedToolIdx(focusableItems.length - 1);
-        }
-        return nextFocus;
-      });
-      return;
-    }
-
-    // Agent Terminal Shortcut (Ctrl+T)
-    if (key.ctrl && char === 't') {
-      setTerminalOpen(prev => {
-        setFocus(prev ? FOCUS_INPUT : FOCUS_TERMINAL);
-        return !prev;
-      });
-      return;
-    }
-
-    // Escape cancels processing if active, or returns to Input
-    if (key.escape) {
-      if (isProcessing) {
-        handleSubmit(':stop');
-        return;
-      }
-      setTerminalOpen(false);
-      setFocus(FOCUS_INPUT);
-      return;
-    }
-
-    // Input Navigation & History
-    if (focus === FOCUS_INPUT) {
-      if (key.upArrow) {
-        if (inputHistory.length > 0) {
-          const nextIdx = historyIdx === -1 ? inputHistory.length - 1 : Math.max(0, historyIdx - 1);
-          setHistoryIdx(nextIdx);
-          setInput(inputHistory[nextIdx]);
-        }
-        return;
-      }
-      if (key.downArrow) {
-        if (historyIdx !== -1) {
-          const nextIdx = historyIdx + 1;
-          if (nextIdx >= inputHistory.length) {
-            setHistoryIdx(-1);
-            setInput('');
-          } else {
-            setHistoryIdx(nextIdx);
-            setInput(inputHistory[nextIdx]);
-          }
-        }
-        return;
-      }
-    }
-
-    // Chat Navigation (Expand/Collapse Tool Logs)
-    if (focus === FOCUS_CHAT) {
-      // Clamp selected index just in case it got out of bounds
-      const clampedIdx = Math.min(selectedToolIdx, Math.max(0, focusableItems.length - 1));
-      
-      if (key.upArrow) {
-        setSelectedToolIdx(Math.max(0, clampedIdx - 1));
-        return;
-      }
-      if (key.downArrow) {
-        setSelectedToolIdx(Math.min(focusableItems.length - 1, clampedIdx + 1));
-        return;
-      }
-      if (key.return) {
-        const item = focusableItems[clampedIdx];
-        if (item) {
-          setExpandedLogIds(prev => {
-            const next = new Set(prev);
-            if (next.has(item.id)) next.delete(item.id);
-            else next.add(item.id);
-            return next;
-          });
-        }
-        return;
-      }
-    }
+  useKeyBindings({
+    activeTab,
+    agentLoop,
+    cycleMode,
+    diffRequest,
+    explorerMode,
+    focus,
+    focusableItems,
+    githubActivity,
+    githubView,
+    handleSubmit,
+    historyIdx,
+    inputHistory,
+    isProcessing,
+    prComments,
+    prList,
+    selectedPlanId,
+    selectedPrCommentIdx,
+    selectedPrIdx,
+    selectedToolIdx,
+    setActiveTab,
+    setExpandedComments,
+    setExpandedLogIds,
+    setExplorerMode,
+    setFocus,
+    setGithubView,
+    setHasNewGitHubEvent,
+    setHistoryIdx,
+    setInput,
+    setLoadingPrComments,
+    setLoadingPrs,
+    setPrComments,
+    setPrList,
+    setSelectedPlanId,
+    setSelectedPrCommentIdx,
+    setSelectedPrIdx,
+    setSelectedToolIdx,
+    setSlashIdx,
+    setTerminalOpen,
+    slashMatches,
+    slashOpen,
+    slashSelected,
   });
 
-  const submitTerminalCommand = async (cmd) => {
-    if (!cmd.trim()) {
-      setTerminalOpen(false);
-      setFocus(FOCUS_INPUT);
-      return;
-    }
-    
-    // Check if docker sandbox is enabled
-    let useSandbox = false;
-    try {
-      const configPath = paths.configPath(agentLoop.workspace);
-      if (fs.existsSync(configPath)) {
-        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        if (config.useDockerSandbox) useSandbox = true;
-      }
-    } catch(e) {}
-
-    let finalCommand = cmd;
-    if (useSandbox) {
-      const escapedCmd = cmd.replace(/'/g, "'\\''");
-      finalCommand = `docker run --rm -v "${agentLoop.workspace}:/workspace" -w /workspace node:20-alpine sh -c '${escapedCmd}'`;
-    } else {
-      finalCommand = `cd "${agentLoop.workspace}" && ${cmd}`;
-    }
-
-    exec(finalCommand, (err, stdout, stderr) => {
-      let output = stdout || stderr || (err ? err.message : '');
-      if (!output) output = 'Command executed successfully (no output).';
-      
-      setHistory(prev => [
-        ...prev,
-        { role: 'user', content: `$ ${cmd}`, timestamp: Date.now() },
-        { role: 'system', type: 'command_output', content: output.trim(), cmd: cmd, timestamp: Date.now() }
-      ]);
-    });
-
-    setTerminalInput('');
-    setTerminalOpen(false);
-    setFocus(FOCUS_INPUT);
-  };
 
   useEffect(() => {
     let approvalInterval;
@@ -1085,221 +550,58 @@ export function App({ agentLoop, wsServer }) {
         {(() => {
           // Uses the top-level turns/staticTurns/interactiveTurns computed above
 
-          const renderBanner = () => (
-            <Box key="banner" flexDirection="column" marginBottom={1} width="100%">
-              <Gradient name="mind">
-                <Text>{agentNameAscii}</Text>
-              </Gradient>
-              <Text color="magenta">Developed by Pratimesh Tiwari</Text>
-              <Text dimColor>
-                {agentLoop.workspace}
-                {'  ·  '}
-                {(() => {
-                  const topology = agentLoop.topology || 'single';
-                  const roles = ['main'];
-                  if (topology === 'duo' || topology === 'swarm') roles.push('reviewer');
-                  if (topology === 'swarm') roles.push('reasoner');
-                  return [...new Set(roles.map((r) => agentLoop.modelConfig?.[r]).filter(Boolean))].join(', ') || 'gemini';
-                })()}
-                {agentLoop.githubHandler?.poller?.username ? `  ·  github @${agentLoop.githubHandler.poller.username}` : ''}
-              </Text>
-            </Box>
-          );
 
-          const renderTurn = (turn, isLastTurn, isProcessingTurn, isStatic) => {
-            const duration = ((turn.endTime - turn.startTime) / 1000).toFixed(1);
-            const { actions, finalMessages } = parseTurnActions(turn);
-
-            const isTurnHeaderFocused = !isStatic && focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.id === `turn_${turn.id}`;
-            const isTurnActionsExpanded = isStatic || expandedLogIds.has(`turn_${turn.id}`) || (isLastTurn && isProcessingTurn);
-            const turnHeaderPrefix = isTurnHeaderFocused ? <Text color="cyan">❯ </Text> : <Text>  </Text>;
-
-            return (
-              <Box key={turn.id} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
-                {/* User Message */}
-                {turn.userMsg && (
-                  <Box flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
-                    <Text bold wrap="wrap"><Text color="white">❯</Text> {turn.userMsg.content}</Text>
-                  </Box>
-                )}
-
-                {/* Agent Actions Block */}
-                {turn.steps.length > 0 && (
-                  <Box flexDirection="column" width="100%" flexShrink={1}>
-                    {(() => {
-                      const isFocused = !isStatic && focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.id === `turn_${turn.id}`;
-                      const isExpanded = isStatic || expandedLogIds.has(`turn_${turn.id}`) || (isLastTurn && isProcessingTurn);
-                      const focusPrefix = isFocused ? <Text color="cyan">❯ </Text> : <Text>  </Text>;
-
-                      return (
-                        <Box flexDirection="column" width="100%" flexShrink={1}>
-                          {actions.length > 0 && (
-                            <Box flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
-                              <Clickable onClick={() => toggleExpanded(`turn_${turn.id}`)}>
-                                <Text color={isFocused ? 'cyan' : 'gray'}>
-                                  {focusPrefix}
-                                  {isExpanded ? '▼' : '▶'} Worked for {isLastTurn && isProcessingTurn ? <Text color="cyan"><Spinner type="dots" /> {status}</Text> : <Text>{duration}s</Text>}
-                                </Text>
-                              </Clickable>
-                              
-                              {isExpanded && (
-                                <Box flexDirection="column" paddingLeft={1} borderLeftStyle="single" borderLeftColor="dim" marginLeft={2} marginTop={1} width="100%" flexShrink={1}>
-                                  {(() => {
-                                    // Static turns are painted once and never repainted, so they
-                                    // may be any height. A live turn must stay inside the viewport.
-                                    const liveBudget = Math.max(3, Math.floor((terminalHeight - 16) / 3));
-                                    const hidden = isStatic ? 0 : Math.max(0, actions.length - liveBudget);
-                                    return hidden > 0 ? (
-                                      <Text dimColor>  … {hidden} earlier step{hidden === 1 ? '' : 's'} hidden — they appear in full once the turn finishes</Text>
-                                    ) : null;
-                                  })()}
-                                  {(isStatic
-                                    ? actions
-                                    : actions.slice(Math.max(0, actions.length - Math.max(3, Math.floor((terminalHeight - 16) / 3))))
-                                  ).map((act, idx) => {
-                                    // Paired tool_call + tool_result: one collapsed row.
-                                    if (act.type === 'tool') {
-                                      const open = expandedLogIds.has(act.id);
-                                      const mark = act.success === false ? '✗' : '⏺';
-                                      const markColor = act.success === false ? 'red' : 'green';
-                                      return (
-                                        <Box key={act.id} flexDirection="column" width="100%" flexShrink={1}>
-                                          <Clickable onClick={() => toggleExpanded(act.id)} flexDirection="row">
-                                            <Text color={markColor}>{'  ' + mark + ' '}</Text>
-                                            <Text bold color={isFocused ? 'cyan' : 'gray'}>{act.toolName}</Text>
-                                            <Text dimColor> · {summarizeResult(act.toolName, act.result)}</Text>
-                                          </Clickable>
-                                          {open && (
-                                            <Box flexDirection="column" paddingLeft={4} marginY={1} width="100%" flexShrink={1}>
-                                              <Text dimColor wrap="wrap">{clampForDisplay(act.result, 20)}</Text>
-                                            </Box>
-                                          )}
-                                        </Box>
-                                      );
-                                    }
-                                    // A result with no matching call (rare, but possible mid-stream).
-                                    if (act.type === 'tool_result') {
-                                      const open = expandedLogIds.has(act.id);
-                                      return (
-                                        <Box key={act.id} flexDirection="column" width="100%" flexShrink={1}>
-                                          <Clickable onClick={() => toggleExpanded(act.id)} flexDirection="row">
-                                            <Text color="green">{'  ⏺ '}</Text>
-                                            <Text dimColor>{oneLine(act.result)}</Text>
-                                          </Clickable>
-                                          {open && (
-                                            <Box flexDirection="column" paddingLeft={4} marginY={1} width="100%" flexShrink={1}>
-                                              <Text dimColor wrap="wrap">{clampForDisplay(act.result, 20)}</Text>
-                                            </Box>
-                                          )}
-                                        </Box>
-                                      );
-                                    }
-                                    if (act.type === 'think') {
-                                      const open = expandedLogIds.has(act.id);
-                                      const lineCount = act.content.split('\n').length;
-                                      return (
-                                        <Box key={act.id} flexDirection="column" width="100%" flexShrink={1}>
-                                          <Clickable onClick={() => toggleExpanded(act.id)}>
-                                            <Text dimColor>{'  ✻ Thinking… '}({lineCount} line{lineCount === 1 ? '' : 's'})</Text>
-                                          </Clickable>
-                                          {open && (
-                                            <Box paddingLeft={4} marginY={1} width="100%" flexShrink={1}>
-                                              <Text dimColor wrap="wrap">{act.content}</Text>
-                                            </Box>
-                                          )}
-                                        </Box>
-                                      );
-                                    }
-                                    if (act.type === 'command_output') {
-                                      return (
-                                        <Box key={act.id} marginY={0} width="100%" flexShrink={1}>
-                                          <Text dimColor wrap="wrap">{clampForDisplay(act.content, 6, 400)}</Text>
-                                        </Box>
-                                      );
-                                    }
-                                    if (act.type === 'system') {
-                                      return (
-                                        <Box key={act.id} marginY={0} width="100%" flexShrink={1}>
-                                          <Text dimColor wrap="wrap">{act.content ?? act.msg?.content}</Text>
-                                        </Box>
-                                      );
-                                    }
-                                    if (act.type === 'image') {
-                                      return <Text key={act.id} dimColor>{'  ∙ Attached image: '}{act.content}</Text>;
-                                    }
-                                    return null;
-                                  })}
-                                </Box>
-                              )}
-                            </Box>
-                          )}
-                          
-                          {finalMessages.map((fm, idx) => {
-                            const isLastFinalMsg = isLastTurn && !isProcessingTurn && idx === finalMessages.length - 1;
-                            const rawParsed = marked.parse((fm.content || '').replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim();
-                            const displayText = (isLastFinalMsg && !isStatic && revealedLength < Infinity)
-                              ? rawParsed.substring(0, revealedLength)
-                              : rawParsed;
-                            return (
-                              <Box key={idx} flexDirection="row" marginTop={actions.length > 0 ? 1 : 0} marginBottom={1} width="100%" flexShrink={1}>
-                                {!fm.msg.isLocal && <Text color="green">● </Text>}
-                                <Box flexGrow={1} flexShrink={1}>
-                                  <Text wrap="wrap">{displayText}{isLastFinalMsg && !isStatic && revealedLength < Infinity ? <Text color="cyan">▋</Text> : null}</Text>
-                                </Box>
-                              </Box>
-                            );
-                          })}
-                        </Box>
-                      );
-                    })()}
-
-                    {/* Artifacts Summary Box */}
-                    {isLastTurn && !isProcessingTurn && (artifacts.task || artifacts.walkthrough) && (
-                      <Box flexDirection="column" borderStyle="round" borderColor="yellow" padding={1} marginTop={1}>
-                        <Text bold color="yellow">📋 Workspace Artifacts Summary</Text>
-                        
-                        {artifacts.task && (
-                          <Box flexDirection="column" marginTop={1}>
-                            <Text bold underline color="cyan">task.md</Text>
-                            <Box paddingLeft={2}>
-                              <Text dimColor wrap="wrap">{artifacts.task}</Text>
-                            </Box>
-                          </Box>
-                        )}
-                        
-                        {artifacts.walkthrough && (
-                          <Box flexDirection="column" marginTop={1}>
-                            <Text bold underline color="cyan">walkthrough.md</Text>
-                            <Box paddingLeft={2}>
-                              <Text dimColor wrap="wrap">{artifacts.walkthrough}</Text>
-                            </Box>
-                          </Box>
-                        )}
-                      </Box>
-                    )}
-                  </Box>
-                )}
-              </Box>
-            );
-          };
 
           const showBannerInStatic = turns.length > 0;
           const staticItems = showBannerInStatic ? [{ id: 'app-banner', isBanner: true }, ...staticTurns] : staticTurns;
 
           return (
             <>
-              {!showBannerInStatic && renderBanner()}
+              {!showBannerInStatic && <Banner agentLoop={agentLoop} agentNameAscii={agentNameAscii} />}
               {staticItems.length > 0 && (
                 <Static key={staticEpoch} items={staticItems}>
                   {(item) => {
-                    if (item.isBanner) return renderBanner();
-                    return renderTurn(item, false, false, true);
+                    if (item.isBanner) return <Banner agentLoop={agentLoop} agentNameAscii={agentNameAscii} />;
+                    return (
+                      <TranscriptTurn
+                        turn={item}
+                        isLastTurn={false}
+                        isProcessingTurn={false}
+                        isStatic
+                    artifacts={artifacts}
+                    clampedSelectedToolIdx={clampedSelectedToolIdx}
+                    expandedLogIds={expandedLogIds}
+                    focus={focus}
+                    focusableItems={focusableItems}
+                    revealedLength={revealedLength}
+                    status={status}
+                    terminalHeight={terminalHeight}
+                    toggleExpanded={toggleExpanded}
+                      />
+                    );
                   }}
                 </Static>
               )}
               {interactiveTurns.map((turn, idx) => {
                 const isLastTurn = idx === interactiveTurns.length - 1;
-                return renderTurn(turn, isLastTurn, isLastTurn && isProcessing, false);
+                return (
+                  <TranscriptTurn
+                    key={turn.id}
+                    turn={turn}
+                    isLastTurn={isLastTurn}
+                    isProcessingTurn={isLastTurn && isProcessing}
+                    isStatic={false}
+                    artifacts={artifacts}
+                    clampedSelectedToolIdx={clampedSelectedToolIdx}
+                    expandedLogIds={expandedLogIds}
+                    focus={focus}
+                    focusableItems={focusableItems}
+                    revealedLength={revealedLength}
+                    status={status}
+                    terminalHeight={terminalHeight}
+                    toggleExpanded={toggleExpanded}
+                  />
+                );
               })}
             </>
           );
@@ -1342,92 +644,30 @@ export function App({ agentLoop, wsServer }) {
         setFocus={setFocus}
       />
 
-      {/* Status Spinner */}
-      {isProcessing && !diffRequest && (
-        <Box flexDirection="column" marginBottom={1}>
-          <Text color="cyan">
-            <Spinner type="dots" /> {isToolRunningRef.current ? status : (thinkingDisplayText || status)}
-            <Text dimColor>
-              {' ('}{elapsed}s
-              {syncTokenEstimate > 0 ? ` · ↑ ${syncTokenEstimate >= 1000 ? `${(syncTokenEstimate / 1000).toFixed(1)}k` : syncTokenEstimate} tokens` : ''}
-              {')'}
-            </Text>
-          </Text>
-          {isThinkingTooLong && (
-            <Text color="yellow">  (Taking a while... ensure Chrome is not minimized!)</Text>
-          )}
-        </Box>
-      )}
-
-      {/* Main Input */}
-      {!diffRequest && !terminalOpen && !activeMenu && (
-        <Box flexDirection="column" marginTop={1}>
-          {!extensionConnected && (
-            <Box marginBottom={1}>
-              <Text color="yellow">⚠️ Open a Gemini tab in Chrome — the extension is not connected</Text>
-            </Box>
-          )}
-          {slashOpen && (
-            <Box flexDirection="column" marginBottom={1} paddingX={1}>
-              {slashMatches.map((cmd, idx) => (
-                <Clickable
-                  key={cmd.name}
-                  onClick={() => {
-                    setInput('');
-                    setSlashIdx(0);
-                    handleSubmit(`/${cmd.name}`);
-                  }}
-                  flexDirection="row"
-                >
-                  <Text color={idx === slashSelected ? 'cyan' : 'gray'} bold={idx === slashSelected}>
-                    {(idx === slashSelected ? '❯ ' : '  ') + `/${cmd.name}`.padEnd(16)}
-                  </Text>
-                  <Text dimColor>{cmd.desc}</Text>
-                </Clickable>
-              ))}
-            </Box>
-          )}
-          <Clickable
-            onClick={() => setFocus(FOCUS_INPUT)}
-            flexDirection="row"
-            borderStyle="round"
-            borderColor={focus === FOCUS_INPUT ? 'cyan' : 'gray'}
-            paddingX={1}
-            width="100%"
-          >
-            <Text bold color={focus === FOCUS_INPUT ? 'cyan' : 'gray'}>{'> '}</Text>
-            {focus === FOCUS_INPUT ? (
-              <TextInput
-                focus={focus === FOCUS_INPUT}
-                value={input}
-                onChange={(v) => {
-                  setInput(v);
-                  setSlashIdx(0);
-                }}
-                onSubmit={(value) => {
-                  if (slashOpen) {
-                    const picked = `/${slashMatches[slashSelected].name}`;
-                    setInput('');
-                    setSlashIdx(0);
-                    handleSubmit(picked);
-                    return;
-                  }
-                  handleSubmit(value);
-                }}
-                placeholder="Ask anything, or / for commands"
-              />
-            ) : (
-              <Text dimColor>{input || 'Press Tab to focus input…'}</Text>
-            )}
-          </Clickable>
-          <Clickable onClick={cycleMode} paddingX={1}>
-            <Text color={mode === 'auto' ? 'green' : 'yellow'}>
-              ▶▶ {mode} mode on <Text dimColor>(shift+tab to cycle)</Text>
-            </Text>
-          </Clickable>
-        </Box>
-      )}
-
+      <InputBar
+        activeMenu={activeMenu}
+        cycleMode={cycleMode}
+        diffRequest={diffRequest}
+        elapsed={elapsed}
+        extensionConnected={extensionConnected}
+        focus={focus}
+        handleSubmit={handleSubmit}
+        input={input}
+        isProcessing={isProcessing}
+        isThinkingTooLong={isThinkingTooLong}
+        isToolRunningRef={isToolRunningRef}
+        mode={mode}
+        setFocus={setFocus}
+        setInput={setInput}
+        setSlashIdx={setSlashIdx}
+        slashMatches={slashMatches}
+        slashOpen={slashOpen}
+        slashSelected={slashSelected}
+        status={status}
+        syncTokenEstimate={syncTokenEstimate}
+        terminalOpen={terminalOpen}
+        thinkingDisplayText={thinkingDisplayText}
+      />
 
       {/* Interactive Menus */}
       <Menus
@@ -1442,19 +682,17 @@ export function App({ agentLoop, wsServer }) {
       />
 
       {/* Agent Terminal Bottom Sheet */}
-      {terminalOpen && (
-        <Box borderStyle="single" borderColor="green" padding={1} flexDirection="column" width="100%">
-          <Text bold color="green">💻 Agent Terminal (Press ESC to close)</Text>
-          <Box>
-            <Text bold color="green">$ </Text>
-            {focus === FOCUS_TERMINAL ? (
-              <TextInput focus={focus === FOCUS_TERMINAL} value={terminalInput} onChange={setTerminalInput} onSubmit={submitTerminalCommand} />
-            ) : (
-              <Text>{terminalInput}</Text>
-            )}
-          </Box>
-        </Box>
-      )}
+      {/* Agent Terminal Bottom Sheet */}
+      <AgentTerminal
+        terminalOpen={terminalOpen}
+        terminalInput={terminalInput}
+        setTerminalInput={setTerminalInput}
+        setTerminalOpen={setTerminalOpen}
+        setHistory={setHistory}
+        setFocus={setFocus}
+        focus={focus}
+        agentLoop={agentLoop}
+      />
       </>
       )}
 
@@ -1473,7 +711,7 @@ export function App({ agentLoop, wsServer }) {
             </Box>
             <Box flexDirection="row" justifyContent="space-between" width="100%">
               <Text dimColor>
-                [Ctrl+T] Terminal{mouseTracking.enabled ? ' | 🖱 /mouse off to select text' : ''}
+                [Ctrl+T] Terminal{mouseTracking.enabled ? ' | 🖱 /mouse off' : ''}
               </Text>
               <Box flexDirection="row">
                 <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} bg tasks  ` : ''}</Text>
@@ -1494,7 +732,7 @@ export function App({ agentLoop, wsServer }) {
             </Box>
             <Box flexDirection="row" justifyContent="space-between" width="100%">
               <Text dimColor>
-                [Ctrl+T] Terminal{mouseTracking.enabled ? ' | 🖱 /mouse off to select text' : ''}
+                [Ctrl+T] Terminal{mouseTracking.enabled ? ' | 🖱 /mouse off' : ''}
               </Text>
               <Box flexDirection="row">
                 <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} bg tasks  ` : ''}</Text>
