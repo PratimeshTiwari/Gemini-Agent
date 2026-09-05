@@ -7,7 +7,7 @@ import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import crypto from 'crypto';
 import SelectInput from 'ink-select-input';
-import { useOnClick } from '@ink-tools/ink-mouse';
+import { useOnClick, useMouseTracking } from './mouse.jsx';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -154,6 +154,7 @@ const SLASH_COMMANDS = [
   { name: 'github', desc: 'Run GitHub commands (e.g. /github refresh)' },
   { name: 'image', desc: 'Attach an image (e.g. /image path/to/img.png)' },
   { name: 'paste-image', desc: 'Attach image from clipboard (macOS)' },
+  { name: 'mouse', desc: 'Toggle mouse tracking (clickable rows)' },
   { name: 'agent-dir', desc: 'Open the agent data directory' },
   { name: 'restart', desc: 'Restart the server' },
   { name: 'exit', desc: 'Quit the agent' },
@@ -378,6 +379,8 @@ export function App({ agentLoop, wsServer }) {
     : SLASH_COMMANDS.filter((c) => c.name.startsWith(slashQuery)).slice(0, 8);
   const slashOpen = slashMatches.length > 0;
   const slashSelected = Math.min(slashIdx, Math.max(0, slashMatches.length - 1));
+
+  const mouseTracking = useMouseTracking();
 
   const cycleMode = React.useCallback(() => {
     const next = (agentLoop.mode || 'plan') === 'plan' ? 'auto' : 'plan';
@@ -688,6 +691,7 @@ export function App({ agentLoop, wsServer }) {
             '  /github           - Run GitHub specific commands (e.g., /github refresh)',
             '  /image            - Attach an image (e.g., /image path/to/img.png)',
             '  /paste-image      - Attach image directly from clipboard (macOS only)',
+            '  /mouse            - Toggle mouse tracking (clickable rows)',
             '  /agent-dir        - Open the agent data directory',
             '  /restart          - Restart the server',
             '  /exit             - Quit the agent'
@@ -831,6 +835,25 @@ export function App({ agentLoop, wsServer }) {
         } catch (e) {
           setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ Error reading image: ${e.message}` }]);
         }
+        setIsProcessing(false);
+        return;
+      }
+
+      if (command === 'mouse') {
+        const arg = (args[0] || '').toLowerCase();
+        let msg;
+        if (!mouseTracking.supported) {
+          msg = '⚠️ This terminal does not report mouse events.';
+        } else if (arg === 'on' || (arg === '' && !mouseTracking.enabled)) {
+          mouseTracking.enable();
+          msg = '🖱️ Mouse tracking **on** — click tool rows, slash commands and menus.\n\n'
+            + 'The terminal hands the mouse to the app while this is on: drag-select needs '
+            + 'Option/Shift held, and the wheel no longer scrolls scrollback. `/mouse off` gives them back.';
+        } else {
+          mouseTracking.disable();
+          msg = '🖱️ Mouse tracking **off** — text selection and scrollback are back.';
+        }
+        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: msg, isLocal: true }]);
         setIsProcessing(false);
         return;
       }
@@ -1555,6 +1578,7 @@ export function App({ agentLoop, wsServer }) {
               <Gradient name="mind">
                 <Text>{agentNameAscii}</Text>
               </Gradient>
+              <Text color="magenta">Developed by Pratimesh Tiwari</Text>
               <Text dimColor>
                 {agentLoop.workspace}
                 {'  ·  '}
@@ -1565,7 +1589,7 @@ export function App({ agentLoop, wsServer }) {
                   if (topology === 'swarm') roles.push('reasoner');
                   return [...new Set(roles.map((r) => agentLoop.modelConfig?.[r]).filter(Boolean))].join(', ') || 'gemini';
                 })()}
-                {agentLoop.githubHandler?.poller?.username ? `  ·  @${agentLoop.githubHandler.poller.username}` : ''}
+                {agentLoop.githubHandler?.poller?.username ? `  ·  github @${agentLoop.githubHandler.poller.username}` : ''}
               </Text>
             </Box>
           );
@@ -2127,7 +2151,7 @@ export function App({ agentLoop, wsServer }) {
             </Box>
             <Box flexDirection="row" justifyContent="space-between" width="100%">
               <Text dimColor>
-                [Ctrl+T] Terminal
+                [Ctrl+T] Terminal{mouseTracking.enabled ? ' | 🖱 /mouse off to select text' : ''}
               </Text>
               <Box flexDirection="row">
                 <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} bg tasks  ` : ''}</Text>
@@ -2148,7 +2172,7 @@ export function App({ agentLoop, wsServer }) {
             </Box>
             <Box flexDirection="row" justifyContent="space-between" width="100%">
               <Text dimColor>
-                [Ctrl+T] Terminal
+                [Ctrl+T] Terminal{mouseTracking.enabled ? ' | 🖱 /mouse off to select text' : ''}
               </Text>
               <Box flexDirection="row">
                 <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} bg tasks  ` : ''}</Text>
