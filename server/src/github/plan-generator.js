@@ -21,7 +21,6 @@ export class PlanGenerator {
   constructor(workspace, outputDir = REL_PLANS_DIR) {
     this.workspace = workspace;
     this.outputDir = resolve(workspace, outputDir);
-    this._ensureDir();
   }
 
   /**
@@ -432,9 +431,4 @@ export class PlanGenerator {
     return items;
   }
 
-  _ensureDir() {
-    if (!existsSync(this.outputDir)) {
-      mkdirSync(this.outputDir, { recursive: true });
-    }
-  }
 }
