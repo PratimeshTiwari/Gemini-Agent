@@ -58,6 +58,9 @@ export class AgentLoop {
       allow: [],
       block: []
     };
+
+    // Extra folders whose .md files are injected as repo context each session.
+    this.contextFolders = [];
     
     this._loadConfig();
     this.conversationHistory = this.sessionStore.loadHistory();
@@ -405,8 +408,57 @@ export class AgentLoop {
         this.promptBuilder.resetPromptState();
         return { message: '🧹 Conversation history cleared.' };
 
-      case 'context':
-        return await this._getContextInfo();
+      case 'context': {
+        const action = (args?.[0] || '').toLowerCase();
+        const target = args?.slice(1).join(' ').trim();
+
+        if (action === 'add') {
+          if (!target) return { message: 'Usage: `/context add <folder>` (relative to the workspace, or absolute)' };
+          const abs = path.isAbsolute(target) ? target : path.resolve(this.workspace, target);
+          if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+            return { message: `❌ Not a folder: ${abs}` };
+          }
+          const rel = path.relative(this.workspace, abs) || '.';
+          const stored = rel.startsWith('..') ? abs : rel;
+          if (this.contextFolders.includes(stored)) {
+            return { message: `Already a context folder: **${stored}**` };
+          }
+          this.contextFolders.push(stored);
+          this._saveConfig();
+          this.promptBuilder?.resetPromptState?.();
+          return { message: `✅ Added context folder: **${stored}**\nIts \`.md\` files are injected on the next turn.` };
+        }
+
+        if (action === 'remove' || action === 'rm') {
+          if (!target) return { message: 'Usage: `/context remove <folder>`' };
+          const before = this.contextFolders.length;
+          this.contextFolders = this.contextFolders.filter((f) => f !== target);
+          if (this.contextFolders.length === before) {
+            return { message: `Not a context folder: **${target}**\nCurrent: ${this.contextFolders.join(', ') || '(none)'}` };
+          }
+          this._saveConfig();
+          this.promptBuilder?.resetPromptState?.();
+          return { message: `🗑️ Removed context folder: **${target}**` };
+        }
+
+        if (action === 'list') {
+          if (this.contextFolders.length === 0) {
+            return { message: 'No context folders configured.\nAdd one with `/context add <folder>`.' };
+          }
+          const lines = this.contextFolders.map((f) => {
+            const abs = path.isAbsolute(f) ? f : path.resolve(this.workspace, f);
+            const n = fs.existsSync(abs) ? this._countContextFiles(abs) : 0;
+            return `  • ${f} ${fs.existsSync(abs) ? `(${n} .md file${n === 1 ? '' : 's'})` : '(missing)'}`;
+          });
+          return { message: `**Context folders:**\n${lines.join('\n')}` };
+        }
+
+        const info = await this._getContextInfo();
+        const folderNote = this.contextFolders.length
+          ? `\n\n**Context folders:** ${this.contextFolders.join(', ')}`
+          : '\n\nNo context folders configured — add one with `/context add <folder>`.';
+        return { ...info, message: `${info.message}${folderNote}\n_Commands: /context add|remove|list_` };
+      }
 
       case 'compact': {
         const focus = args?.join(' ') || '';
@@ -1233,6 +1285,23 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
     // Return only the final consolidated plan (last clean output)
     const finalOutput = lastCleanContent || '(No plan generated)';
     return { success: true, result: `## 🧠 AI Context Analysis\n\n${finalOutput}`, turns: turnCount };
+  }
+
+  /** Count .md files under a context folder (recursive, bounded). */
+  _countContextFiles(dir, depth = 0) {
+    if (depth > 3) return 0;
+    let n = 0;
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) n += this._countContextFiles(full, depth + 1);
+        else if (entry.name.endsWith('.md')) n += 1;
+      }
+    } catch {
+      /* unreadable folder */
+    }
+    return n;
   }
 
   async _getContextInfo() {

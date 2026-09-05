@@ -12,7 +12,8 @@
  */
 
 import path from 'path';
-import { readFileSync, existsSync } from 'fs';
+import * as paths from './paths.js';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 import os from 'os';
 import { resolve, relative } from 'path';
 
@@ -185,6 +186,8 @@ Model tier: ${modelTier}
     } else if (existsSync(globalContextPath)) {
       contextSummary = `\n<workspace_context_summary>\n${readFileSync(globalContextPath, 'utf8')}\n</workspace_context_summary>\n`;
     }
+
+    contextSummary += this._loadContextFolders();
 
     const combined = `
 ${selfAwareness}
@@ -852,6 +855,73 @@ ${tier === 'pro' ? '- Follow the 4-phase protocol: Investigate → Analyze → I
       }
     }
     return null;
+  }
+
+  /**
+   * Read the folders registered with `/context add`.
+   *
+   * Every .md file under them is injected as repo context. Bounded hard: this
+   * lands in the system prompt on turn 0 and every Nth turn, so an unbounded
+   * folder would blow the context window (and trip Gemini's repetition filter).
+   */
+  _loadContextFolders() {
+    const MAX_TOTAL = 24000; // characters across all files
+    const MAX_FILES = 40;
+
+    let folders = [];
+    try {
+      const cfg = JSON.parse(readFileSync(paths.configPath(this.workspace), 'utf8'));
+      folders = Array.isArray(cfg.contextFolders) ? cfg.contextFolders : [];
+    } catch {
+      return '';
+    }
+    if (folders.length === 0) return '';
+
+    const collected = [];
+    let total = 0;
+    let truncated = false;
+
+    const walk = (dir, depth) => {
+      if (depth > 3 || collected.length >= MAX_FILES || total >= MAX_TOTAL) return;
+      let entries;
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (collected.length >= MAX_FILES || total >= MAX_TOTAL) {
+          truncated = true;
+          return;
+        }
+        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full, depth + 1);
+        } else if (entry.name.endsWith('.md')) {
+          try {
+            let body = readFileSync(full, 'utf8');
+            if (total + body.length > MAX_TOTAL) {
+              body = body.slice(0, Math.max(0, MAX_TOTAL - total));
+              truncated = true;
+            }
+            total += body.length;
+            collected.push(`### ${path.relative(this.workspace, full) || entry.name}\n${body}`);
+          } catch {
+            /* skip unreadable file */
+          }
+        }
+      }
+    };
+
+    for (const folder of folders) {
+      const abs = path.isAbsolute(folder) ? folder : path.resolve(this.workspace, folder);
+      if (existsSync(abs)) walk(abs, 0);
+    }
+
+    if (collected.length === 0) return '';
+    const note = truncated ? '\n_(context truncated to fit the window)_' : '';
+    return `\n<repo_context>\n${collected.join('\n\n')}${note}\n</repo_context>\n`;
   }
 
   _loadWorkspaceRules() {
