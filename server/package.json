@@ -28,7 +28,6 @@
     "madge": "^8.0.0",
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0",
-    "node-llama-cpp": "^3.20.0",
     "ora": "^9.4.1",
     "react": "^19.2.8",
     "ws": "^8.18.0",

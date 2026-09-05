@@ -492,7 +492,6 @@ export function App({ agentLoop, wsServer }) {
             '  /model            - Switch model tier (Flash, Flash Thinking, Pro)',
             '  /allowlist        - Manage auto-approved/blocked command rules',
             '  /config           - Configure models for specific roles',
-            '  /localllm         - Toggle local LLM engine',
             '  /plan             - Switch to Plan Mode (requires approval for edits)',
             '  /auto             - Switch to Auto Mode (auto-applies safe edits)',
             '',
@@ -572,12 +571,6 @@ export function App({ agentLoop, wsServer }) {
 
       if (command === 'model') {
         setActiveMenu({ type: 'model' });
-        setIsProcessing(false);
-        return;
-      }
-
-      if (command === 'localllm') {
-        setActiveMenu({ type: 'localllm' });
         setIsProcessing(false);
         return;
       }
@@ -666,7 +659,7 @@ export function App({ agentLoop, wsServer }) {
       }
 
       // Handle standard agent loop commands
-      const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'model', 'allowlist', 'localllm', 'github'];
+      const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'model', 'allowlist', 'github'];
       if (validAgentCommands.includes(command)) {
         const result = await agentLoop.handleSlashCommand(command, args);
         
@@ -1758,24 +1751,6 @@ export function App({ agentLoop, wsServer }) {
         </Box>
       )}
 
-      {activeMenu?.type === 'localllm' && (
-        <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-          <Text bold color="cyan">Toggle Local LLM Engine (node-llama-cpp):</Text>
-          <SelectInput
-            items={[
-              { label: `Enable Local LLM${agentLoop.modelConfig?.useLocalLlm ? '  ← (Current)' : ''}`, value: 'on' },
-              { label: `Disable Local LLM (Cloud Only)${!agentLoop.modelConfig?.useLocalLlm ? '  ← (Current)' : ''}`, value: 'off' }
-            ]}
-            onSelect={async (item) => {
-              setActiveMenu(null);
-              await agentLoop.handleSlashCommand('localllm', [item.value]);
-              setHistory([...agentLoop.conversationHistory]);
-              setFocus(FOCUS_INPUT);
-            }}
-          />
-        </Box>
-      )}
-      
       {activeMenu?.type === 'config_role' && (
         <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
           <Text bold color="cyan">Select Role to Configure:</Text>

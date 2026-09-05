@@ -662,7 +662,7 @@ Do NOT proceed past assumptions silently. They are blockers.`;
 ## semantic_search — Conceptual code search. Args: query (string), topK? (number)
 ## get_editor_state — Get current editor state. No args.
 ## ask_subagent — Delegate to Gemini subagent. Args: prompt (string)
-${modelConfig.useLocalLlm ? '## ask_local_subagent — Delegate to local model. Args: prompt (string), model ("qwen"|"llama")\n' : ''}`;
+`;
     } else {
       // Full tool definitions for Pro/Flash-thinking
       tools += `## ask_question
@@ -762,16 +762,6 @@ Delegate a task to a generic parallel Gemini subagent. It will run in the backgr
 Parameters:
   - prompt (string, required): The task for the subagent.
 `;
-
-      if (modelConfig.useLocalLlm) {
-        tools += `
-## ask_local_subagent
-Delegate a task to the completely local on-device subagent model. Uses Metal GPU acceleration. Fast, private, but less capable than Gemini. Perfect for summarization, log analysis, regex creation, or simple formatting.
-Parameters:
-  - prompt (string, required): The task for the local subagent.
-  - model (string, required): Must be either "qwen" (Qwen2.5-1.5B) or "llama" (Llama-3.2-3B).
-`;
-      }
     }
 
     if (topology === 'duo' || topology === 'swarm') {

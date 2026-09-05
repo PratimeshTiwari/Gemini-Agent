@@ -49,8 +49,7 @@ export class AgentLoop {
       reviewer: 'claude',
       reasoner: 'chatgpt',
       reasoningEffort: 'high',
-      modelTier: 'pro',
-      useLocalLlm: false
+      modelTier: 'pro'
     };
     
     this.commandRules = {
@@ -495,15 +494,6 @@ export class AgentLoop {
         msg += '\n\n**Commands:**\n  `/allowlist enable` or `/allowlist disable`\n  `/allowlist remove <command>`\n  `/allowlist clear`';
         return { message: msg };
       }
-      
-      case 'localllm': {
-        if (args?.[0] && ['on', 'off'].includes(args[0].toLowerCase())) {
-          this.modelConfig.useLocalLlm = args[0].toLowerCase() === 'on';
-          this._saveConfig();
-          return { message: `💻 Local LLM Engine: **${this.modelConfig.useLocalLlm ? 'ENABLED' : 'DISABLED'}**` };
-        }
-        return { message: `💻 Local LLM Engine is currently: **${this.modelConfig.useLocalLlm ? 'ENABLED' : 'DISABLED'}**\nUsage: \`/localllm <on|off>\`` };
-      }
 
       case 'github': {
         if (!this.githubHandler) {
@@ -796,38 +786,6 @@ export class AgentLoop {
         const targetModel = this.modelConfig[role] || 'gemini'; // default to gemini for subagents if not set
         
         result = await this._runSubAgentSession(role, call.args.prompt || call.args.query, targetModel);
-      } else if (call.name === 'ask_local_subagent') {
-        this.callbacks.sendToPanel({
-          id: randomUUID(),
-          type: 'status',
-          payload: { message: `Running Local Model...` },
-          timestamp: Date.now(),
-        });
-        
-        try {
-          if (!this.modelConfig.useLocalLlm) {
-            throw new Error("Local LLMs are currently DISABLED. Use `/localllm on` to enable them.");
-          }
-          
-          if (!this.localLLM) {
-            this.callbacks.sendToPanel({ id: randomUUID(), type: 'status', payload: { message: 'Initializing Local LLM Engine...' }, timestamp: Date.now() });
-            const { LocalLLM } = await import('../local-llm.js');
-            this.localLLM = new LocalLLM();
-          }
-
-          const model = call.args.model || 'qwen';
-          const answer = await this.localLLM.generate(call.args.prompt, model, (progress) => {
-            this.callbacks.sendToPanel({
-              id: randomUUID(),
-              type: 'status',
-              payload: { message: progress },
-              timestamp: Date.now(),
-            });
-          });
-          result = { success: true, result: answer };
-        } catch (err) {
-          result = { success: false, error: err.message };
-        }
       } else if (call.name === 'manage_memory') {
         if (call.args.action === 'add') {
           const success = this.memoryManager.addMemory(call.args.fact);

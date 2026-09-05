@@ -22,7 +22,6 @@ A powerful, Claude Code-style autonomous coding agent that runs locally and conn
   - `🔬 Pro`: Full principal-engineer protocol with mandatory chain-of-thought, task classification, and anti-hallucination guardrails.
 - **GitHub PR Agent**: Integrates deeply with your PR workflows. Features a rigorous 4-phase investigation protocol, task classification, and structured outputs for reviewing PRs autonomously.
 - **Interactive CLI UI**: An elegant, terminal-based interface with real-time streaming output, unified diff approvals, long-running process monitors, and a high-performance virtual "sliding window" to gracefully handle infinite scroll history without terminal tearing.
-- **Local LLM Engine Integration**: An optional, lazy-loaded local inference engine (via `node-llama-cpp`) that can be toggled on the fly, keeping the core server incredibly lightweight while allowing users with powerful hardware to fallback to local execution.
 ## 🚀 How to Setup
 
 ### 1. Prerequisites
@@ -72,4 +71,3 @@ Once the agent is running, you can use built-in slash commands to manage your se
 - Type `/config` to configure which web models (Gemini, Claude, ChatGPT) act as your primary, reasoner, and reviewer agents.
 - Type `/model <flash|flash-thinking|pro>` to dynamically adjust the cognitive effort and prompt complexity (optimizing for the model you select in your browser tab).
 - Type `/allowlist` to view and manage your auto-approved and auto-rejected command rules.
-- Type `/localllm <on|off>` to hot-swap between cloud-based web bridges and your local hardware engine.
