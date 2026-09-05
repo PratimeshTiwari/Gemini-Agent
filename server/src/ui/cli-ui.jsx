@@ -61,7 +61,14 @@ export class CliUI {
       <MouseProvider>
         <App agentLoop={this.agentLoop} wsServer={this.wsServer} />
       </MouseProvider>,
-      { stdin: inkStdin },
+      {
+        stdin: inkStdin,
+        // Terminals report Shift+Enter as a plain Enter unless the kitty
+        // keyboard protocol is negotiated. Ink's auto mode asks (CSI ? u) and
+        // only enables it if the terminal answers, so terminals that don't
+        // support it are unaffected — they can still send Esc+Enter instead.
+        kittyKeyboard: { mode: 'auto', flags: ['disambiguateEscapeCodes'] },
+      },
     );
 
     // Optional: await waitUntilExit() if we wanted to block,

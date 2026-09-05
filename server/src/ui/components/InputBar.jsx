@@ -25,6 +25,7 @@ export function InputBar({
   isThinkingTooLong,
   isToolRunningRef,
   mode,
+  newlineRef,
   setFocus,
   setInput,
   setSlashIdx,
@@ -101,14 +102,24 @@ export function InputBar({
                   setSlashIdx(0);
                 }}
                 onSubmit={(value) => {
-                  if (slashOpen) {
-                    const picked = `/${slashMatches[slashSelected].name}`;
-                    setInput('');
-                    setSlashIdx(0);
-                    handleSubmit(picked);
-                    return;
-                  }
-                  handleSubmit(value);
+                  // TextInput's own useInput is registered before ours (child
+                  // effects run first), so it calls this before the key bindings
+                  // have seen the keystroke. Defer a tick to find out whether
+                  // that Enter was really a Shift+Enter asking for a newline.
+                  setTimeout(() => {
+                    if (newlineRef.current) {
+                      newlineRef.current = false;
+                      return;
+                    }
+                    if (slashOpen) {
+                      const picked = `/${slashMatches[slashSelected].name}`;
+                      setInput('');
+                      setSlashIdx(0);
+                      handleSubmit(picked);
+                      return;
+                    }
+                    handleSubmit(value);
+                  }, 0);
                 }}
                 placeholder="Ask anything, or / for commands"
               />

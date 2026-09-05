@@ -2,6 +2,7 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
+import { Clickable } from './Clickable.jsx';
 
 /**
  * The GitHub PR dashboard (Ctrl+O).
@@ -30,7 +31,11 @@ export function GithubTab({
   prComments,
   selectedPlanId,
   selectedPrIdx,
+  setSelectedPrIdx,
   selectedPrCommentIdx,
+  setSelectedPrCommentIdx,
+  setSelectedPlanId,
+  setExpandedComments,
 }) {
   return (
         <Box flexDirection="column" flexGrow={1} borderStyle="single" borderColor="cyan" padding={1}>
@@ -90,9 +95,11 @@ export function GithubTab({
                     </Box>
                   ) : null}
                   {prList.map((pr, i) => (
-                    <Text key={i} color={i === selectedPrIdx ? "white" : "gray"}>
-                      {i === selectedPrIdx ? "❯ " : "  "}[{pr.repo.name}] #{pr.number} {pr.title}
-                    </Text>
+                    <Clickable key={i} onClick={() => setSelectedPrIdx(i)}>
+                      <Text color={i === selectedPrIdx ? "white" : "gray"}>
+                        {i === selectedPrIdx ? "❯ " : "  "}[{pr.repo.name}] #{pr.number} {pr.title}
+                      </Text>
+                    </Clickable>
                   ))}
                 </Box>
               )}
@@ -116,7 +123,7 @@ export function GithubTab({
                       const date = c.created_at ? new Date(c.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
                       const typeTag = c.type === 'review_comment' ? '[review]' : '[comment]';
                       return (
-                        <Box key={i} flexDirection="column" marginBottom={1} borderStyle={isSelected ? 'single' : undefined} borderColor={isSelected ? 'cyan' : undefined} paddingX={isSelected ? 1 : 0}>
+                        <Clickable key={i} onClick={() => setSelectedPrCommentIdx(i)} flexDirection="column" marginBottom={1} borderStyle={isSelected ? 'single' : undefined} borderColor={isSelected ? 'cyan' : undefined} paddingX={isSelected ? 1 : 0}>
                           <Box flexDirection="row">
                             <Text color={isSelected ? 'cyan' : 'yellow'} bold>{isSelected ? '❯ ' : '  '}@{c.author}</Text>
                             <Text color="gray"> {typeTag}</Text>
@@ -128,7 +135,7 @@ export function GithubTab({
                               {c.body.replace(/\n/g, ' ').substring(0, 100)}{c.body.length > 100 ? '...' : ''}
                             </Text>
                           </Box>
-                        </Box>
+                        </Clickable>
                       );
                     })}
                   </Box>
@@ -244,7 +251,20 @@ export function GithubTab({
                         }
                       }
                       return (
-                        <Box key={activity.id} flexDirection="column" marginBottom={1}>
+                        <Clickable
+                          key={activity.id}
+                          onClick={() => {
+                            setSelectedPlanId(activity.id);
+                            setExpandedComments((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(activity.id)) next.delete(activity.id);
+                              else next.add(activity.id);
+                              return next;
+                            });
+                          }}
+                          flexDirection="column"
+                          marginBottom={1}
+                        >
                           <Text color={isSelected ? 'cyan' : 'white'}>{isSelected ? '❯ ' : '  '}📝 PR #{activity.payload.prNumber} — AI Plan Generated</Text>
                           <Text dimColor marginLeft={4}>Category: {activity.payload.category}</Text>
                           {snippet && (
@@ -253,7 +273,7 @@ export function GithubTab({
                             </Box>
                           )}
                           <Text dimColor marginLeft={4}>→ {activity.payload.filePath.split('/').slice(-2).join('/')}</Text>
-                        </Box>
+                        </Clickable>
                       );
                     } else if (activity.type === 'github_notification') {
                       return (

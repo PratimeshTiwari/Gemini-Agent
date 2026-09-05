@@ -23,6 +23,7 @@ export function useKeyBindings({
   historyIdx,
   inputHistory,
   isProcessing,
+  newlineRef,
   prComments,
   prList,
   selectedPlanId,
@@ -56,6 +57,16 @@ export function useKeyBindings({
     if (diffRequest) {
       // Deliberately inert: the diff is answered through the SelectInput below,
       // so a stray keystroke can never approve or reject an edit.
+      return;
+    }
+
+    // Shift+Enter inserts a newline instead of submitting. Terminals only
+    // report the modifier under the kitty keyboard protocol, which Ink
+    // negotiates in cli-ui; Esc+Enter (\x1b\r) is the fallback terminals are
+    // commonly configured to send, and reaches us as meta+return.
+    if (key.return && (key.shift || key.meta)) {
+      newlineRef.current = true;
+      setInput((value) => `${value}\n`);
       return;
     }
 

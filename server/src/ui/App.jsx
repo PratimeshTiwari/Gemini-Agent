@@ -120,6 +120,9 @@ export function App({ agentLoop, wsServer }) {
   const [artifacts, setArtifacts] = useState({ task: null, walkthrough: null });
   const [inputHistory, setInputHistory] = useState([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
+  // Set by the key bindings when Enter carried a modifier, read by InputBar's
+  // deferred submit. A ref because the two run in the same event dispatch.
+  const newlineRef = useRef(false);
   const [activeTab, setActiveTab] = useState('agent'); // 'agent' | 'github'
   const [githubActivity, setGithubActivity] = useState([]);
   const [selectedPlanId, setSelectedPlanId] = useState(null);
@@ -451,6 +454,7 @@ export function App({ agentLoop, wsServer }) {
     historyIdx,
     inputHistory,
     isProcessing,
+    newlineRef,
     prComments,
     prList,
     selectedPlanId,
@@ -539,7 +543,11 @@ export function App({ agentLoop, wsServer }) {
           prComments={prComments}
           selectedPlanId={selectedPlanId}
           selectedPrIdx={selectedPrIdx}
+          setSelectedPrIdx={setSelectedPrIdx}
           selectedPrCommentIdx={selectedPrCommentIdx}
+          setSelectedPrCommentIdx={setSelectedPrCommentIdx}
+          setSelectedPlanId={setSelectedPlanId}
+          setExpandedComments={setExpandedComments}
         />
       )}
 
@@ -657,6 +665,7 @@ export function App({ agentLoop, wsServer }) {
         isThinkingTooLong={isThinkingTooLong}
         isToolRunningRef={isToolRunningRef}
         mode={mode}
+        newlineRef={newlineRef}
         setFocus={setFocus}
         setInput={setInput}
         setSlashIdx={setSlashIdx}
@@ -701,10 +710,12 @@ export function App({ agentLoop, wsServer }) {
         {activeTab === 'agent' ? (
           <>
             <Box flexDirection="row" justifyContent="space-between" width="100%">
-              <Text>
-                {isProcessing ? <Text color="yellow"><Spinner type="dots" /> Agent</Text> : <Text color={extensionConnected ? 'cyan' : 'yellow'} bold> {extensionConnected ? '🟢' : '🟡'} Agent</Text>}
-                <Text dimColor> | GitHub {hasNewGitHubEvent ? '🔴 ' : ''}(Ctrl+O) </Text>
-              </Text>
+              <Clickable onClick={() => { setActiveTab('github'); setHasNewGitHubEvent(false); }}>
+                <Text>
+                  {isProcessing ? <Text color="yellow"><Spinner type="dots" /> Agent</Text> : <Text color={extensionConnected ? 'cyan' : 'yellow'} bold> {extensionConnected ? '🟢' : '🟡'} Agent</Text>}
+                  <Text dimColor> | GitHub {hasNewGitHubEvent ? '🔴 ' : ''}(Ctrl+O) </Text>
+                </Text>
+              </Clickable>
               <Text dimColor>
                 Model: <Text bold>{agentLoop.modelConfig?.modelTier?.toUpperCase() || 'PRO'}</Text> | Tokens: <Text color={tokenColor}>~{syncTokenEstimate.toLocaleString()} / {tokenLimit.toLocaleString()} ({tokenPct}%)</Text>
               </Text>
@@ -722,10 +733,12 @@ export function App({ agentLoop, wsServer }) {
         ) : (
           <>
             <Box flexDirection="row" justifyContent="space-between" width="100%">
-              <Text>
-                <Text dimColor> Agent (Ctrl+O) | </Text>
-                <Text color="cyan" bold> 🐙 GitHub</Text>
-              </Text>
+              <Clickable onClick={() => { setActiveTab('agent'); }}>
+                <Text>
+                  <Text dimColor> Agent (Ctrl+O) | </Text>
+                  <Text color="cyan" bold> 🐙 GitHub</Text>
+                </Text>
+              </Clickable>
               <Text dimColor>
                 Viewing: <Text bold>{hasNewGitHubEvent ? 'NEW ACTIVITY' : 'IDLE'}</Text>
               </Text>
