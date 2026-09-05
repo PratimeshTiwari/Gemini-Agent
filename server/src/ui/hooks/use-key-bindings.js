@@ -1,6 +1,6 @@
 import { useInput } from 'ink';
 import { exec } from 'child_process';
-import { FOCUS_CHAT, FOCUS_INPUT, FOCUS_TERMINAL } from '../constants.js';
+import { FOCUS_INPUT, FOCUS_TERMINAL } from '../constants.js';
 
 /**
  * Every keystroke the app answers outside a text field.
@@ -8,6 +8,11 @@ import { FOCUS_CHAT, FOCUS_INPUT, FOCUS_TERMINAL } from '../constants.js';
  * Order matters here and is load-bearing: a pending diff swallows everything,
  * the GitHub tab claims its own letters before the agent hotkeys see them, and
  * Shift+Tab is checked ahead of plain Tab, which would otherwise eat it.
+ *
+ * There is no selection model in the transcript — rows are opened by clicking
+ * them, with Ctrl+E as the way in when the mouse isn't available (`/mouse off`,
+ * tmux without mouse mode, a bare ssh session). That keeps ↑/↓ meaning one
+ * thing: input history.
  */
 export function useKeyBindings({
   activeTab,
@@ -16,20 +21,19 @@ export function useKeyBindings({
   diffRequest,
   explorerMode,
   focus,
-  focusableItems,
   githubActivity,
   githubView,
   handleSubmit,
   historyIdx,
   inputHistory,
   isProcessing,
+  latestTurnId,
   newlineRef,
   prComments,
   prList,
   selectedPlanId,
   selectedPrCommentIdx,
   selectedPrIdx,
-  selectedToolIdx,
   setActiveTab,
   setExpandedComments,
   setExpandedLogIds,
@@ -46,7 +50,6 @@ export function useKeyBindings({
   setSelectedPlanId,
   setSelectedPrCommentIdx,
   setSelectedPrIdx,
-  setSelectedToolIdx,
   setSlashIdx,
   setTerminalOpen,
   slashMatches,
@@ -249,17 +252,6 @@ export function useKeyBindings({
       }
     }
 
-    if (key.tab) {
-      setFocus(f => {
-        const nextFocus = f === FOCUS_INPUT ? FOCUS_CHAT : FOCUS_INPUT;
-        if (nextFocus === FOCUS_CHAT) {
-          setSelectedToolIdx(focusableItems.length - 1);
-        }
-        return nextFocus;
-      });
-      return;
-    }
-
     // Agent Terminal Shortcut (Ctrl+T)
     if (key.ctrl && char === 't') {
       setTerminalOpen(prev => {
@@ -280,8 +272,8 @@ export function useKeyBindings({
       return;
     }
 
-    // Input Navigation & History
-    if (focus === FOCUS_INPUT) {
+    // Input history
+    {
       if (key.upArrow) {
         if (inputHistory.length > 0) {
           const nextIdx = historyIdx === -1 ? inputHistory.length - 1 : Math.max(0, historyIdx - 1);
@@ -305,31 +297,19 @@ export function useKeyBindings({
       }
     }
 
-    // Chat Navigation (Expand/Collapse Tool Logs)
-    if (focus === FOCUS_CHAT) {
-      // Clamp selected index just in case it got out of bounds
-      const clampedIdx = Math.min(selectedToolIdx, Math.max(0, focusableItems.length - 1));
-      
-      if (key.upArrow) {
-        setSelectedToolIdx(Math.max(0, clampedIdx - 1));
-        return;
+    // Keyboard way into the latest turn's actions, for when clicking isn't
+    // available. Only the live turn can open at all — <Static> never repaints.
+    if (key.ctrl && char === 'e') {
+      if (latestTurnId !== null) {
+        setExpandedLogIds(prev => {
+          const next = new Set(prev);
+          const id = `turn_${latestTurnId}`;
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
       }
-      if (key.downArrow) {
-        setSelectedToolIdx(Math.min(focusableItems.length - 1, clampedIdx + 1));
-        return;
-      }
-      if (key.return) {
-        const item = focusableItems[clampedIdx];
-        if (item) {
-          setExpandedLogIds(prev => {
-            const next = new Set(prev);
-            if (next.has(item.id)) next.delete(item.id);
-            else next.add(item.id);
-            return next;
-          });
-        }
-        return;
-      }
+      return;
     }
   });
 }

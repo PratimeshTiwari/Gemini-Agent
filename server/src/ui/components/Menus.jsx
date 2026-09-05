@@ -2,7 +2,7 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import SelectInput from 'ink-select-input';
 import { Clickable } from './Clickable.jsx';
-import { FOCUS_CHAT, FOCUS_INPUT } from '../constants.js';
+import { FOCUS_INPUT } from '../constants.js';
 
 /**
  * Every modal the agent can raise: questions, command approval, plan review,
@@ -193,7 +193,7 @@ export function Menus({
                 setActiveMenu(null);
                 if (item.value === 'dashboard') {
                   setActiveTab('github');
-                  setFocus(FOCUS_CHAT);
+                  setFocus(FOCUS_INPUT);
                 } else if (item.value === 'ci-watch') {
                   const current = agentLoop.githubHandler?.config?.enableCIWatch;
                   handleSubmit(`/github ci-watch ${current ? 'off' : 'on'}`);

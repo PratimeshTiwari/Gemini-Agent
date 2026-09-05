@@ -4,7 +4,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { groupTurns, collectFocusableItems, parseTurnActions } from './transcript.js';
+import { groupTurns, parseTurnActions } from './transcript.js';
 
 describe('groupTurns', () => {
   it('starts a turn at each user message and attaches what follows', () => {
@@ -30,28 +30,6 @@ describe('groupTurns', () => {
     const history = [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }];
     groupTurns(history);
     assert.deepStrictEqual(history.map(m => m._globalIdx), [0, 1]);
-  });
-});
-
-describe('collectFocusableItems', () => {
-  it('offers a turn only when it has actions to expand', () => {
-    const withTool = { id: 1, steps: [{ type: 'tool_call', toolName: 'read_file' }] };
-    const proseOnly = { id: 2, steps: [{ role: 'assistant', content: 'just text' }] };
-
-    const items = collectFocusableItems([withTool, proseOnly], []);
-    assert.deepStrictEqual(items.map(i => i.id), ['turn_1']);
-  });
-
-  it('counts a thinking block as an action', () => {
-    const turn = { id: 3, steps: [{ role: 'assistant', content: '<think>hmm</think>' }] };
-    assert.strictEqual(collectFocusableItems([turn], []).length, 1);
-  });
-
-  it('appends in-flight tool calls after the turns', () => {
-    const turn = { id: 1, steps: [{ type: 'tool_call' }] };
-    const items = collectFocusableItems([turn], [{ id: 'call-1' }]);
-    assert.deepStrictEqual(items.map(i => i.type), ['turn_actions', 'activeCall']);
-    assert.strictEqual(items[1].sourceIdx, 0);
   });
 });
 

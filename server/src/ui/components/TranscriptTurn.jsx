@@ -2,7 +2,6 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import Spinner from 'ink-spinner';
 import { Clickable } from './Clickable.jsx';
-import { FOCUS_CHAT } from '../constants.js';
 import { marked, oneLine, summarizeResult, clampForDisplay } from '../format.js';
 import { parseTurnActions } from '../transcript.js';
 
@@ -11,8 +10,9 @@ import { parseTurnActions } from '../transcript.js';
  * and the agent's reply.
  *
  * `isStatic` marks a turn Ink has already committed through <Static>. Committed
- * output is never repainted, so those turns render fully expanded and ignore
- * focus — there is no way to change them after the fact.
+ * output is never repainted, so a past turn freezes as its one-line summary and
+ * loses its toggle: there is no way to open it after the fact, and drawing an
+ * arrow that cannot be clicked would only promise otherwise.
  */
 export function TranscriptTurn({
   turn,
@@ -20,10 +20,7 @@ export function TranscriptTurn({
   isProcessingTurn,
   isStatic,
   artifacts,
-  clampedSelectedToolIdx,
   expandedLogIds,
-  focus,
-  focusableItems,
   revealedLength,
   status,
   terminalHeight,
@@ -32,9 +29,6 @@ export function TranscriptTurn({
       const duration = ((turn.endTime - turn.startTime) / 1000).toFixed(1);
       const { actions, finalMessages } = parseTurnActions(turn);
 
-      const isTurnHeaderFocused = !isStatic && focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.id === `turn_${turn.id}`;
-      const isTurnActionsExpanded = isStatic || expandedLogIds.has(`turn_${turn.id}`) || (isLastTurn && isProcessingTurn);
-      const turnHeaderPrefix = isTurnHeaderFocused ? <Text color="cyan">❯ </Text> : <Text>  </Text>;
 
       return (
         <Box key={turn.id} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
@@ -49,36 +43,37 @@ export function TranscriptTurn({
           {turn.steps.length > 0 && (
             <Box flexDirection="column" width="100%" flexShrink={1}>
               {(() => {
-                const isFocused = !isStatic && focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.id === `turn_${turn.id}`;
-                const isExpanded = isStatic || expandedLogIds.has(`turn_${turn.id}`) || (isLastTurn && isProcessingTurn);
-                const focusPrefix = isFocused ? <Text color="cyan">❯ </Text> : <Text>  </Text>;
+                // A committed turn cannot repaint, so it stays collapsed. A live one
+                // opens while it works, so you can watch it, and keeps whatever you
+                // last clicked once it settles.
+                const isExpanded = !isStatic
+                  && (expandedLogIds.has(`turn_${turn.id}`) || (isLastTurn && isProcessingTurn));
+                // Ink can only repaint what fits on screen, so a long run shows
+                // its most recent steps rather than all of them.
+                const liveBudget = Math.max(3, Math.floor((terminalHeight - 16) / 3));
+                const hiddenCount = Math.max(0, actions.length - liveBudget);
 
                 return (
                   <Box flexDirection="column" width="100%" flexShrink={1}>
                     {actions.length > 0 && (
                       <Box flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
                         <Clickable onClick={() => toggleExpanded(`turn_${turn.id}`)}>
-                          <Text color={isFocused ? 'cyan' : 'gray'}>
-                            {focusPrefix}
-                            {isExpanded ? '▼' : '▶'} Worked for {isLastTurn && isProcessingTurn ? <Text color="cyan"><Spinner type="dots" /> {status}</Text> : <Text>{duration}s</Text>}
+                          <Text color="gray">
+                            {'  '}
+                            {isStatic ? '' : `${isExpanded ? '▼' : '▶'} `}
+                            Worked for {isLastTurn && isProcessingTurn
+                              ? <Text color="cyan"><Spinner type="dots" /> {status}</Text>
+                              : <Text>{duration}s</Text>}
+                            <Text dimColor> · {actions.length} action{actions.length === 1 ? '' : 's'}</Text>
                           </Text>
                         </Clickable>
                         
                         {isExpanded && (
-                          <Box flexDirection="column" paddingLeft={1} borderLeftStyle="single" borderLeftColor="dim" marginLeft={2} marginTop={1} width="100%" flexShrink={1}>
-                            {(() => {
-                              // Static turns are painted once and never repainted, so they
-                              // may be any height. A live turn must stay inside the viewport.
-                              const liveBudget = Math.max(3, Math.floor((terminalHeight - 16) / 3));
-                              const hidden = isStatic ? 0 : Math.max(0, actions.length - liveBudget);
-                              return hidden > 0 ? (
-                                <Text dimColor>  … {hidden} earlier step{hidden === 1 ? '' : 's'} hidden — they appear in full once the turn finishes</Text>
-                              ) : null;
-                            })()}
-                            {(isStatic
-                              ? actions
-                              : actions.slice(Math.max(0, actions.length - Math.max(3, Math.floor((terminalHeight - 16) / 3))))
-                            ).map((act, idx) => {
+                          <Box flexDirection="column" marginLeft={2} width="100%" flexShrink={1}>
+                            {hiddenCount > 0 && (
+                              <Text dimColor>  … {hiddenCount} earlier step{hiddenCount === 1 ? '' : 's'} hidden — the run is taller than the viewport</Text>
+                            )}
+                            {actions.slice(actions.length - liveBudget).map((act, idx) => {
                               // Paired tool_call + tool_result: one collapsed row.
                               if (act.type === 'tool') {
                                 const open = expandedLogIds.has(act.id);
@@ -88,7 +83,7 @@ export function TranscriptTurn({
                                   <Box key={act.id} flexDirection="column" width="100%" flexShrink={1}>
                                     <Clickable onClick={() => toggleExpanded(act.id)} flexDirection="row">
                                       <Text color={markColor}>{'  ' + mark + ' '}</Text>
-                                      <Text bold color={isFocused ? 'cyan' : 'gray'}>{act.toolName}</Text>
+                                      <Text bold color="gray">{act.toolName}</Text>
                                       <Text dimColor> · {summarizeResult(act.toolName, act.result)}</Text>
                                     </Clickable>
                                     {open && (

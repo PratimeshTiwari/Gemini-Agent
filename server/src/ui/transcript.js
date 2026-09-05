@@ -30,24 +30,6 @@ export function groupTurns(history) {
   return turns;
 }
 
-/** Dense list of everything ↑/↓ can land on, in screen order. */
-export function collectFocusableItems(interactiveTurns, activeToolCalls) {
-  const focusableItems = [];
-
-  interactiveTurns.forEach(turn => {
-    const hasActions = turn.steps.some(m => m.type === 'tool_call' || m.type === 'tool_result' || m.role === 'system' || (m.role === 'assistant' && m.content.includes('<think>')));
-    if (hasActions) {
-      focusableItems.push({ type: 'turn_actions', id: `turn_${turn.id}`, turnId: turn.id, turn });
-    }
-  });
-
-  activeToolCalls.forEach((call, idx) => {
-    focusableItems.push({ type: 'activeCall', sourceIdx: idx, id: call.id, call });
-  });
-
-  return focusableItems;
-}
-
 export function parseTurnActions(turn) {
   const actions = [];
   const finalMessages = [];

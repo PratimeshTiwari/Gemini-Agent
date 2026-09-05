@@ -13,8 +13,8 @@ import { TranscriptTurn } from './components/TranscriptTurn.jsx';
 import { AgentTerminal } from './components/AgentTerminal.jsx';
 import { InputBar } from './components/InputBar.jsx';
 import { marked, oneLine, summarizeResult, clampForDisplay } from './format.js';
-import { SLASH_COMMANDS, FOCUS_CHAT, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES } from './constants.js';
-import { groupTurns, collectFocusableItems, parseTurnActions } from './transcript.js';
+import { SLASH_COMMANDS, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES } from './constants.js';
+import { groupTurns, parseTurnActions } from './transcript.js';
 import { useKeyBindings } from './hooks/use-key-bindings.js';
 import { handleSlashCommand } from './hooks/use-slash-commands.js';
 import { buildAgentCallbacks } from './hooks/use-agent-callbacks.js';
@@ -110,7 +110,6 @@ export function App({ agentLoop, wsServer }) {
   const [slashIdx, setSlashIdx] = useState(0);
   const [mode, setMode] = useState(agentLoop.mode || 'plan');
   const [expandedComments, setExpandedComments] = useState(new Set());
-  const [selectedToolIdx, setSelectedToolIdx] = useState(-1);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalInput, setTerminalInput] = useState('');
   const [pendingImage, setPendingImage] = useState(null);
@@ -206,10 +205,9 @@ export function App({ agentLoop, wsServer }) {
   const staticTurns = turns.slice(0, Math.max(0, turns.length - INTERACTIVE_COUNT));
   const interactiveTurns = turns.slice(Math.max(0, turns.length - INTERACTIVE_COUNT));
 
-  const focusableItems = collectFocusableItems(interactiveTurns, activeToolCalls);
 
-  // Ensure selected tool index is within bounds of all focusable items
-  const clampedSelectedToolIdx = Math.min(selectedToolIdx, Math.max(0, focusableItems.length - 1));
+  // Only the live turn can be opened; Ctrl+E addresses it directly.
+  const latestTurnId = interactiveTurns.length > 0 ? interactiveTurns[interactiveTurns.length - 1].id : null;
 
   // Sliding window logic removed, relying on interactiveTurns instead.
 
@@ -447,20 +445,19 @@ export function App({ agentLoop, wsServer }) {
     diffRequest,
     explorerMode,
     focus,
-    focusableItems,
     githubActivity,
     githubView,
     handleSubmit,
     historyIdx,
     inputHistory,
     isProcessing,
+    latestTurnId,
     newlineRef,
     prComments,
     prList,
     selectedPlanId,
     selectedPrCommentIdx,
     selectedPrIdx,
-    selectedToolIdx,
     setActiveTab,
     setExpandedComments,
     setExpandedLogIds,
@@ -477,7 +474,6 @@ export function App({ agentLoop, wsServer }) {
     setSelectedPlanId,
     setSelectedPrCommentIdx,
     setSelectedPrIdx,
-    setSelectedToolIdx,
     setSlashIdx,
     setTerminalOpen,
     slashMatches,
@@ -577,10 +573,7 @@ export function App({ agentLoop, wsServer }) {
                         isProcessingTurn={false}
                         isStatic
                     artifacts={artifacts}
-                    clampedSelectedToolIdx={clampedSelectedToolIdx}
                     expandedLogIds={expandedLogIds}
-                    focus={focus}
-                    focusableItems={focusableItems}
                     revealedLength={revealedLength}
                     status={status}
                     terminalHeight={terminalHeight}
@@ -600,10 +593,7 @@ export function App({ agentLoop, wsServer }) {
                     isProcessingTurn={isLastTurn && isProcessing}
                     isStatic={false}
                     artifacts={artifacts}
-                    clampedSelectedToolIdx={clampedSelectedToolIdx}
                     expandedLogIds={expandedLogIds}
-                    focus={focus}
-                    focusableItems={focusableItems}
                     revealedLength={revealedLength}
                     status={status}
                     terminalHeight={terminalHeight}
@@ -618,17 +608,15 @@ export function App({ agentLoop, wsServer }) {
       {/* Tool Calls (Expandable) */}
       {activeToolCalls.length > 0 && (
         <Box flexDirection="column" marginBottom={1} borderStyle="single" borderColor="dim" padding={1}>
-          <Text dimColor bold>⚙️ Tool Executions (click, or Tab to focus + Enter)</Text>
+          <Text dimColor bold>⚙️ Tool Executions (click to expand)</Text>
           {activeToolCalls.map((call, idx) => {
-            const isFocused = focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.call === call;
             const isExpanded = expandedLogIds.has(call.id);
             
             return (
               <Box key={call.id} flexDirection="column" marginLeft={1}>
                 <Clickable onClick={() => toggleExpanded(call.id)}>
-                  <Text color={isFocused ? 'cyan' : 'gray'}>
-                    {isFocused ? '▶ ' : '  '}
-                    {isExpanded ? '▼' : '▶'} {call.name} {call.success === false ? '❌' : (call.result ? '✅' : '⏳')}
+                  <Text color="gray">
+                    {'  '}{isExpanded ? '▼' : '▶'} {call.name} {call.success === false ? '❌' : (call.result ? '✅' : '⏳')}
                   </Text>
                 </Clickable>
                 
@@ -726,7 +714,7 @@ export function App({ agentLoop, wsServer }) {
               </Text>
               <Box flexDirection="row">
                 <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} bg tasks  ` : ''}</Text>
-                <Text dimColor>{focus === FOCUS_CHAT ? '[Tab] Input | [↑/↓] Nav | [↵] Toggle' : '[Tab] Nav Logs'} | Context: {history.length}/50</Text>
+                <Text dimColor>[Ctrl+E] Expand | Context: {history.length}/50</Text>
               </Box>
             </Box>
           </>
@@ -749,7 +737,7 @@ export function App({ agentLoop, wsServer }) {
               </Text>
               <Box flexDirection="row">
                 <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} bg tasks  ` : ''}</Text>
-                <Text dimColor>[Tab] Nav Logs | Context: {history.length}/50</Text>
+                <Text dimColor>Context: {history.length}/50</Text>
               </Box>
             </Box>
           </>

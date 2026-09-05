@@ -194,6 +194,11 @@ not limitations to route around:
   behind explicit dependency lists; the `<Static>` element, `staticEpoch` and the streaming
   path stayed in `App.jsx` deliberately, and adding memoization to the transcript rows is how
   the scroll glitches came back the last two times.
+- **The transcript has no keyboard selection.** Rows are opened by clicking them, with Ctrl+E
+  as the way in when the mouse isn't there (`/mouse off`, tmux without mouse mode, bare ssh).
+  There is no FOCUS_CHAT and no selected-row index, so ↑/↓ always mean input history. A turn
+  committed to `<Static>` freezes as its one-line summary and drops its toggle arrow, because
+  Ink cannot repaint it — an arrow there would promise something the renderer can't do.
 - **Ink never reads the real stdin.** `cli-ui.jsx` pipes `process.stdin` through
   `stdin-filter.js` into a PassThrough and hands *that* to `render()`, because Ink has no mouse
   parser: a tracked terminal's reports reach `parse-keypress`, fail to match, and get typed into

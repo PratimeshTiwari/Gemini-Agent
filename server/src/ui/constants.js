@@ -28,7 +28,7 @@ const SLASH_COMMANDS = [
   { name: 'exit', desc: 'Quit the agent' },
 ];
 
-export const FOCUS_CHAT = 'chat';
+/** Where typed input goes. There is no transcript focus: rows are clicked. */
 export const FOCUS_INPUT = 'input';
 export const FOCUS_TERMINAL = 'terminal';
 
