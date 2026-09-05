@@ -25,22 +25,28 @@ const MOTION_TRACKING_OFF = '\x1b[?1003l';
 const MouseContext = createContext(null);
 
 /**
- * How far down the screen Ink's frame starts, in rows.
+ * How far down the screen Ink's frame might start, in rows, best guess first.
  *
- * Any registered element can reach the root by walking parents, and the root's
- * height is the frame height. Returns 0 until something is registered, which is
- * also the correct answer for a frame that fills the screen.
+ * Mouse coordinates are screen rows; yoga's are rows within Ink's own frame,
+ * which starts at 1. Everything <Static> has committed scrolls above that
+ * frame, so the two only coincide before anything has been printed. Once the
+ * transcript outgrows the screen — the normal case — the frame sits flush with
+ * the bottom, and the gap is the terminal height minus the frame height.
+ *
+ * Any registered element reaches the root by walking parents, and the root's
+ * height is the frame height.
  */
-function frameOffsetY(handlers) {
-  for (const entry of handlers.values()) {
+function candidateOffsets(entries) {
+  for (const entry of entries) {
     let node = entry.ref?.current;
     if (!node) continue;
     while (node.parentNode) node = node.parentNode;
     const height = getElementDimensions(node)?.height;
     if (!height) continue;
-    return Math.max(0, (process.stdout.rows || height) - height);
+    const bottomAnchored = Math.max(0, (process.stdout.rows || height) - height);
+    return bottomAnchored > 0 ? [bottomAnchored, 0] : [0];
   }
-  return 0;
+  return [0];
 }
 
 export function MouseProvider({ children, autoEnable = true }) {
@@ -63,16 +69,21 @@ export function MouseProvider({ children, autoEnable = true }) {
     });
 
     const dispatch = (type) => (event) => {
-      // Mouse coordinates are screen rows; yoga's are rows within Ink's own
-      // frame, which starts at 1. Everything <Static> has committed scrolls
-      // above that frame, so the two only line up if nothing was ever printed.
-      // Once the transcript is longer than the screen — the normal case — the
-      // frame sits flush with the bottom, so the gap is height minus height.
-      const offsetY = frameOffsetY(handlersRef.current);
-      for (const entry of handlersRef.current.values()) {
-        if (entry.type !== type) continue;
-        const rect = getBoundingClientRect(entry.ref?.current);
-        if (rect && isPointInRect(event.x, event.y - offsetY, rect)) entry.handler(event);
+      const entries = [...handlersRef.current.values()].filter((e) => e.type === type);
+      // Try the bottom-anchored offset first, then no offset at all. Which one
+      // is right depends on whether the transcript has outgrown the screen yet,
+      // and an element's own bounds are a better test of that than arithmetic:
+      // whichever offset actually lands on something is the one in effect.
+      for (const offsetY of candidateOffsets(entries)) {
+        let hit = false;
+        for (const entry of entries) {
+          const rect = getBoundingClientRect(entry.ref?.current);
+          if (rect && isPointInRect(event.x, event.y - offsetY, rect)) {
+            entry.handler(event);
+            hit = true;
+          }
+        }
+        if (hit) return;
       }
     };
     const onClick = dispatch('click');

@@ -66,7 +66,15 @@ server/src/
 ├── github/           # PR agent: poller, comment-classifier, ci-log-parser, plan-generator
 ├── mcp/              # mcp-server.js + tools/
 ├── skills/  storage/  watcher/
-└── ui/               # App.jsx (Ink/React), cli-ui.jsx
+└── ui/               # the terminal front-end
+    ├── cli-ui.jsx    # render(): builds the filtered stdin, mounts MouseProvider
+    ├── App.jsx       # state, effects, layout — everything else is a module
+    ├── mouse.jsx     # click/wheel hit-testing over raw stdin
+    ├── stdin-filter.js  # strips mouse reports before Ink's key parser sees them
+    ├── format.js  constants.js  transcript.js     # pure, tested
+    ├── hooks/        # use-key-bindings, use-slash-commands, use-agent-callbacks
+    └── components/   # Banner, TranscriptTurn, GithubTab, Menus, InputBar,
+                      #   AgentTerminal, Clickable
 ```
 
 Modules are kebab-case; React components keep PascalCase (`ui/App.jsx`). Tests are colocated
@@ -180,10 +188,20 @@ not limitations to route around:
 
 - **`server/src/index.js` is the bin and does nothing but re-spawn `main.js` under `tsx`** —
   the sources contain JSX, so plain `node src/main.js` fails.
-- `App.jsx` is ~1900 lines and performance-sensitive: it avoids re-rendering during streaming
-  to prevent terminal tearing, and uses raw ANSI (`\x1b[1m`) in places because
-  `marked-terminal` mangles inline markdown inside list items. Splitting it is a real project —
-  the two most recent UI commits were both scroll-glitch fixes.
+- `App.jsx` is performance-sensitive: it avoids re-rendering during streaming to prevent
+  terminal tearing, and uses raw ANSI (`\x1b[1m`) in places because `marked-terminal` mangles
+  inline markdown inside list items. It was split into `ui/` modules by moving blocks verbatim
+  behind explicit dependency lists; the `<Static>` element, `staticEpoch` and the streaming
+  path stayed in `App.jsx` deliberately, and adding memoization to the transcript rows is how
+  the scroll glitches came back the last two times.
+- **Ink never reads the real stdin.** `cli-ui.jsx` pipes `process.stdin` through
+  `stdin-filter.js` into a PassThrough and hands *that* to `render()`, because Ink has no mouse
+  parser: a tracked terminal's reports reach `parse-keypress`, fail to match, and get typed into
+  the prompt as literal text. The mouse layer reads the raw fd instead. Anything else that emits
+  a terminal query (a cursor-position report, say) has to be stripped there too, or it lands in
+  the input line. Raw mode belongs to Ink alone — `mouse.jsx` passes xterm-mouse an inert
+  `setRawMode`, since its disable() would otherwise drop the tty back into line mode and Enter
+  would stop submitting.
 - Running the CLI without a TTY fails with Ink's "Raw mode is not supported". That is the
   harness, not a bug — use `script -q /dev/null <cmd>` to test under a pty.
 - Content-script DOM selectors break when the chat sites change; `extractLatestResponse` must
