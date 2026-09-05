@@ -2,7 +2,7 @@
  * Plan Generator
  *
  * Generates structured .md plan files from classified GitHub PR comments
- * and CI failure reports. Output goes to {workspace}/.agent-github-plans/
+ * and CI failure reports. Output goes to {workspace}/.agent/github-pr-plans/
  *
  * File naming: PR-{number}.md
  * If multiple actionable comments exist on the same PR, they're appended
@@ -10,14 +10,15 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs';
+import { REL_PLANS_DIR } from '../core/paths.js';
 import { resolve, join } from 'path';
 
 export class PlanGenerator {
   /**
    * @param {string} workspace - Workspace root directory
-   * @param {string} outputDir - Relative dir name (default: .agent-github-plans)
+   * @param {string} outputDir - Relative dir name (default: .agent/github-pr-plans)
    */
-  constructor(workspace, outputDir = '.agent-github-plans') {
+  constructor(workspace, outputDir = REL_PLANS_DIR) {
     this.workspace = workspace;
     this.outputDir = resolve(workspace, outputDir);
     this._ensureDir();

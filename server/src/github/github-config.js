@@ -5,14 +5,16 @@
  * All values can be overridden via environment variables or CLI flags.
  */
 
+import { REL_PLANS_DIR, REL_GITHUB_STATE } from '../core/paths.js';
+
 export const GITHUB_CONFIG = {
   // ── Polling ──────────────────────────────────────────────────────
   pollIntervalMs: 60_000,           // 1 minute default
   maxPRsToWatch: 50,                // Max open PRs to monitor
 
   // ── Output ───────────────────────────────────────────────────────
-  planOutputDir: '.agent-github-plans',  // Relative to workspace root
-  stateFile: '.gemini-agent/github-state.json',
+  planOutputDir: REL_PLANS_DIR,  // Relative to workspace root
+  stateFile: REL_GITHUB_STATE,
 
   // ── Filtering ────────────────────────────────────────────────────
   repos: [],                        // Empty = auto-discover all repos where user authored PRs

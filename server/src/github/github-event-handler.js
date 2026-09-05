@@ -12,6 +12,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { logPath, ensureParent } from '../core/paths.js';
 import { execSync } from 'child_process';
 import { unlinkSync } from 'fs';
 import { appendFileSync } from 'fs';
@@ -248,10 +249,10 @@ CRITICAL: Do NOT run \`git checkout\` or switch branches. The user may have unsa
         if (response.success) {
           aiAnalysis = response.result;
         } else {
-          appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `[analyzeComment] Failed: ${response.error}\n`);
+          appendFileSync(ensureParent(logPath(this.agentLoop.workspace)), `[analyzeComment] Failed: ${response.error}\n`);
         }
       } catch (e) {
-        appendFileSync(join(this.agentLoop.workspace, 'agent.log'), `[analyzeComment] Exception: ${e.stack}\n`);
+        appendFileSync(ensureParent(logPath(this.agentLoop.workspace)), `[analyzeComment] Exception: ${e.stack}\n`);
       }
     }
 

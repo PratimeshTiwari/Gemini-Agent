@@ -9,6 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import * as paths from './paths.js';
 import { z } from 'zod';
 import { SessionStore } from '../storage/session-store.js';
 import { ContextManager } from '../context/context-manager.js';
@@ -535,7 +536,7 @@ export class AgentLoop {
           }
 
           case 'clear-state': {
-            const stateFile = path.resolve(this.workspace, '.gemini-agent/github-state.json');
+            const stateFile = paths.githubStatePath(this.workspace);
             if (fs.existsSync(stateFile)) {
               fs.unlinkSync(stateFile);
             }
@@ -620,30 +621,28 @@ export class AgentLoop {
   }
 
   _loadConfig() {
-    const configPath = path.join(this.workspace, '.gemini', 'config.json');
+    const configPath = paths.configPath(this.workspace);
     if (fs.existsSync(configPath)) {
       try {
         const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         if (data.topology) this.topology = data.topology;
         if (data.modelConfig) this.modelConfig = { ...this.modelConfig, ...data.modelConfig };
         if (data.commandRules) this.commandRules = { ...this.commandRules, ...data.commandRules };
+        if (Array.isArray(data.contextFolders)) this.contextFolders = data.contextFolders;
       } catch (err) {
-        console.warn('⚠️ Failed to load .gemini/config.json:', err.message);
+        console.warn(`⚠️ Failed to load ${paths.AGENT_DIR}/config.json:`, err.message);
       }
     }
   }
 
   _saveConfig() {
-    const geminiDir = path.join(this.workspace, '.gemini');
-    if (!fs.existsSync(geminiDir)) {
-      fs.mkdirSync(geminiDir, { recursive: true });
-    }
-    const configPath = path.join(geminiDir, 'config.json');
+    const configPath = paths.ensureParent(paths.configPath(this.workspace));
     try {
       fs.writeFileSync(configPath, JSON.stringify({
         topology: this.topology,
         modelConfig: this.modelConfig,
-        commandRules: this.commandRules
+        commandRules: this.commandRules,
+        contextFolders: this.contextFolders
       }, null, 2));
     } catch (err) {
       console.warn('⚠️ Failed to save config:', err.message);

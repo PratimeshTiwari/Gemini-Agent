@@ -177,9 +177,8 @@ Model tier: ${modelTier}
 
     // Load workspace context summary if it exists
     let contextSummary = '';
-    const repoName = path.basename(this.workspace);
-    const localContextPath = path.join(this.workspace, '.gemini', 'context', 'summary.md');
-    const globalContextPath = path.join(os.homedir(), '.gemini', 'context', repoName, 'summary.md');
+    const localContextPath = paths.contextSummaryPath(this.workspace);
+    const globalContextPath = paths.globalContextPath(this.workspace);
     
     if (existsSync(localContextPath)) {
       contextSummary = `\n<workspace_context_summary>\n${readFileSync(localContextPath, 'utf8')}\n</workspace_context_summary>\n`;
@@ -206,9 +205,9 @@ ${reasoningInstructions}
 You are the SOLE agent. There are no other models to delegate to. You handle everything yourself:
 planning, research, implementation, review, and testing.
 
-- When tasks are complex, create a plan first (save it to \`.gemini/implementation_plan.md\`)
-- When tasked with a complex or multi-step objective, ALWAYS proactively create a \`task.md\` checklist in the workspace root using the \`write_to_file\` tool to plan your work, similar to Antigravity IDE. Update it as you progress.
-- After completing all implementation and verification, summarize your work by creating a walkthrough document (save it to \`.gemini/walkthrough.md\`). Document changes made, what was tested, and validation results.
+- When tasks are complex, create a plan first (save it to \`.agent/artifacts/implementation_plan.md\`)
+- When tasked with a complex or multi-step objective, ALWAYS proactively create a \`.agent/artifacts/task.md\` checklist using the \`write_to_file\` tool to plan your work, similar to Antigravity IDE. Update it as you progress.
+- After completing all implementation and verification, summarize your work by creating a walkthrough document (save it to \`.agent/artifacts/walkthrough.md\`). Document changes made, what was tested, and validation results.
 - After implementing changes, self-review: re-read the edited files and verify correctness
 - If you're not confident in a change, tell the user explicitly rather than guessing`;
 
@@ -368,7 +367,7 @@ Your job is to execute the task using your read-only tools if necessary and retu
 ## 3. Documentation & Context Maintenance
 - **Routing**: If provided a \`<workspace_context_summary>\`, use it as an index. If a user asks about a specific flow, check this summary to see which \`.md\` file contains the details, then use \`read_file\` to read that specific file before acting.
 - **Self-Correction & Auto-Learning (Agentic RAG)**: If the user states that a documented flow is wrong, you MUST: (1) Ask clarifying questions if the claim is vague. (2) Verify the claim by reading the actual source code. (3) Use \`edit_file\` to correct the context \`.md\` file so it matches reality. (4) Once verified against the codebase, use the \`manage_memory\` tool to store this verified fact in your long-term Agentic RAG memory so you don't make the same mistake twice.
-- **Mistakes Log**: If you make a logic error, append a note to \`.gemini/agent_mistakes.md\`. Before writing to this log, ensure the correction is a VERIFIED FACT backed by code.
+- **Mistakes Log**: If you make a logic error, append a note to \`.agent/mistakes.md\`. Before writing to this log, ensure the correction is a VERIFIED FACT backed by code.
 
 ${modelTier === 'pro' ? `## 4. Communication
 - Be exceptionally concise. Skip greetings and filler.
@@ -857,9 +856,9 @@ ${tier === 'pro' ? '- Follow the 4-phase protocol: Investigate → Analyze → I
 
   _loadWorkspaceRules() {
     try {
-      const rulesPath = resolve(this.workspace, '.gemini/rules.md');
-      if (existsSync(rulesPath)) {
-        return readFileSync(rulesPath, 'utf-8');
+      const rulesFile = paths.rulesPath(this.workspace);
+      if (existsSync(rulesFile)) {
+        return readFileSync(rulesFile, 'utf-8');
       }
     } catch (e) {
       // ignore

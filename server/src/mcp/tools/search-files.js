@@ -5,6 +5,7 @@
  */
 
 import fg from 'fast-glob';
+import { AGENT_DIR } from '../../core/paths.js';
 import { relative } from 'path';
 
 /**
@@ -57,7 +58,7 @@ export async function searchFiles(args, context) {
   const files = await fg('**/*', {
     cwd: workspace,
     dot: false,
-    ignore: ['node_modules/**', '.git/**', '.gemini-agent/**'],
+    ignore: ['node_modules/**', '.git/**', `${AGENT_DIR}/**`],
     onlyFiles: true,
     absolute: false,
   });

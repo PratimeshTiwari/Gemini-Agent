@@ -12,6 +12,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import figlet from 'figlet';
+import * as paths from '../core/paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -133,16 +134,11 @@ export function App({ agentLoop, wsServer }) {
   const [agentNameAscii, setAgentNameAscii] = useState(() => {
     let name = 'Gemini Agent';
     try {
-      const customNamePath = path.join(agentLoop.workspace, 'setAgentName.json');
-      if (fs.existsSync(customNamePath)) {
-        const custom = JSON.parse(fs.readFileSync(customNamePath, 'utf8'));
-        if (custom.agentName) name = `${custom.agentName} Agent`;
-      } else {
-        const configPath = path.join(agentLoop.workspace, '.gemini', 'config.json');
-        if (fs.existsSync(configPath)) {
-          const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-          if (config.agent_name) name = `${config.agent_name} Agent`;
-        }
+      const configPath = paths.configPath(agentLoop.workspace);
+      if (fs.existsSync(configPath)) {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        const custom = config.agentName || config.agent_name;
+        if (custom) name = `${custom} Agent`;
       }
     } catch (e) {}
     try {
@@ -155,16 +151,11 @@ export function App({ agentLoop, wsServer }) {
   useEffect(() => {
     let name = 'Gemini Agent';
     try {
-      const customNamePath = path.join(agentLoop.workspace, 'setAgentName.json');
-      if (fs.existsSync(customNamePath)) {
-        const custom = JSON.parse(fs.readFileSync(customNamePath, 'utf8'));
-        if (custom.agentName) name = `${custom.agentName} Agent`;
-      } else {
-        const configPath = path.join(agentLoop.workspace, '.gemini', 'config.json');
-        if (fs.existsSync(configPath)) {
-          const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-          if (config.agent_name) name = `${config.agent_name} Agent`;
-        }
+      const configPath = paths.configPath(agentLoop.workspace);
+      if (fs.existsSync(configPath)) {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        const custom = config.agentName || config.agent_name;
+        if (custom) name = `${custom} Agent`;
       }
     } catch (e) {}
     figlet.text(name, { font: 'Standard' }, (err, data) => {
@@ -295,8 +286,8 @@ export function App({ agentLoop, wsServer }) {
         setPlanReviewReady(false);
         setFocus(FOCUS_INPUT);
         try {
-          const implPlanPath = path.join(agentLoop.workspace, '.gemini', 'implementation_plan.md');
-          const simplePlanPath = path.join(agentLoop.workspace, '.gemini', 'plan.md');
+          const implPlanPath = paths.artifactPath(agentLoop.workspace, 'implementation_plan.md');
+          const simplePlanPath = paths.artifactPath(agentLoop.workspace, 'plan.md');
           const planPath = fs.existsSync(implPlanPath) ? implPlanPath : simplePlanPath;
           
           exec(`"${agentLoop.editor || 'code'}" "${planPath}" || open "${planPath}" || xdg-open "${planPath}"`);
@@ -306,22 +297,15 @@ export function App({ agentLoop, wsServer }) {
       if (walkthroughReady) {
         setWalkthroughReady(false);
         try {
-          const walkRoot = path.join(agentLoop.workspace, '.gemini', 'walkthrough.md');
-          const walkFallback = path.join(agentLoop.workspace, 'walkthrough.md');
-          const walkPath = fs.existsSync(walkRoot) ? walkRoot : walkFallback;
+          const walkPath = paths.artifactPath(agentLoop.workspace, 'walkthrough.md');
           
           exec(`"${agentLoop.editor || 'code'}" "${walkPath}" || open "${walkPath}" || xdg-open "${walkPath}"`);
         } catch (e) {}
       }
 
       try {
-        const taskRoot = path.resolve(agentLoop.workspace, '.gemini/task.md');
-        const taskFallback = path.resolve(agentLoop.workspace, 'task.md');
-        const taskPath = fs.existsSync(taskRoot) ? taskRoot : taskFallback;
-        
-        const walkRoot = path.resolve(agentLoop.workspace, '.gemini/walkthrough.md');
-        const walkFallback = path.resolve(agentLoop.workspace, 'walkthrough.md');
-        const walkPath = fs.existsSync(walkRoot) ? walkRoot : walkFallback;
+        const taskPath = paths.artifactPath(agentLoop.workspace, 'task.md');
+        const walkPath = paths.artifactPath(agentLoop.workspace, 'walkthrough.md');
 
         let taskContent = null;
         let walkContent = null;
@@ -503,7 +487,7 @@ export function App({ agentLoop, wsServer }) {
             '  /clear            - Clear local history',
             '  /new              - Start a new chat session',
             '  /undo             - Undo the last step/action',
-            '  /init-skills      - Create workspace rules (.gemini/rules.md)',
+            '  /init-skills      - Create workspace rules (.agent/rules.md)',
             '',
             '### 🛠️ System & Tools',
             '  /github           - Run GitHub specific commands (e.g., /github refresh)',
@@ -584,10 +568,8 @@ export function App({ agentLoop, wsServer }) {
       if (command === 'init-skills') {
         const { resolve } = await import('path');
         const { existsSync, mkdirSync, writeFileSync } = await import('fs');
-        const geminiDir = resolve(agentLoop.workspace, '.gemini');
-        const rulesPath = resolve(geminiDir, 'rules.md');
-        
-        if (!existsSync(geminiDir)) mkdirSync(geminiDir, { recursive: true });
+        const rulesPath = paths.rulesPath(agentLoop.workspace);
+        paths.ensureParent(rulesPath);
         
         let msg = '';
         if (!existsSync(rulesPath)) {
@@ -619,9 +601,7 @@ export function App({ agentLoop, wsServer }) {
               setHistory(prev => [...prev, { role: 'assistant', content: '⚠️ No image found in clipboard.' }]);
               setIsProcessing(false); return;
             }
-            const tmpDir = resolve(agentLoop.workspace, '.gemini-agent');
-            if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
-            finalFilePath = resolve(tmpDir, 'clipboard-image.png');
+            finalFilePath = resolve(paths.ensureDir(paths.tmpDir(agentLoop.workspace)), 'clipboard-image.png');
             execSync(`osascript -e 'set theFile to (open for access POSIX file "${finalFilePath}" with write permission)\n try\n write (the clipboard as «class PNGf») to theFile\n end try\n close access theFile'`, { timeout: 10000 });
             ext = '.png';
           } catch (e) {
@@ -1024,7 +1004,7 @@ export function App({ agentLoop, wsServer }) {
     // Check if docker sandbox is enabled
     let useSandbox = false;
     try {
-      const configPath = path.join(agentLoop.workspace, '.gemini', 'config.json');
+      const configPath = paths.configPath(agentLoop.workspace);
       if (fs.existsSync(configPath)) {
         const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         if (config.useDockerSandbox) useSandbox = true;
@@ -1060,7 +1040,7 @@ export function App({ agentLoop, wsServer }) {
     if (activeMenu?.type === 'plan_review') {
       approvalInterval = setInterval(() => {
         try {
-          const approvalPath = path.join(agentLoop.workspace, '.gemini', 'plan_approval.json');
+          const approvalPath = paths.planApprovalPath(agentLoop.workspace);
           if (fs.existsSync(approvalPath)) {
             const data = JSON.parse(fs.readFileSync(approvalPath, 'utf8'));
             fs.unlinkSync(approvalPath); // Delete it immediately

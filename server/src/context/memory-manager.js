@@ -1,14 +1,15 @@
 import { join } from 'path';
+import { agentDir, memoryPath } from '../core/paths.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 
 /**
- * Manages long-term memory persisted in .gemini/memory.json
+ * Manages long-term memory persisted in .agent/memory.json
  */
 export class MemoryManager {
   constructor(workspacePath) {
     this.workspacePath = workspacePath;
-    this.memoryDir = join(workspacePath, '.gemini');
-    this.memoryFile = join(this.memoryDir, 'memory.json');
+    this.memoryDir = agentDir(workspacePath);
+    this.memoryFile = memoryPath(workspacePath);
     this.memoryEnabled = true; // User preference toggle
     this._ensureDir();
   }
@@ -18,7 +19,7 @@ export class MemoryManager {
       try {
         mkdirSync(this.memoryDir, { recursive: true });
       } catch (err) {
-        console.error('Failed to create .gemini directory:', err);
+        console.error('Failed to create .agent directory:', err);
       }
     }
   }

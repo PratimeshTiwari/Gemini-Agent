@@ -15,6 +15,8 @@
  */
 
 import { resolve, dirname } from 'path';
+import { homeDir, ensureDir } from './core/paths.js';
+import { runMigrations } from './core/migrate.js';
 import { existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from './bridge/websocket-server.js';
@@ -101,23 +103,16 @@ Options:
 
 Environment:
   EDITOR                   Default editor command (fallback: 'code')
-  GEMINI_AGENT_HOME        Config directory (default: ~/.gemini-agent)
+  GEMINI_AGENT_HOME        Agent home directory (default: ~/.agent)
   GITHUB_TOKEN             GitHub PAT for PR comment watching (required for --github)
 `);
 }
 
 // ── Ensure Config Directory ──────────────────────────────────────────
 function ensureConfigDir() {
-  const home = process.env.GEMINI_AGENT_HOME || resolve(process.env.HOME, '.gemini-agent');
-  const dirs = [
-    home,
-    resolve(home, 'sessions'),
-    resolve(home, 'backups'),
-  ];
-  for (const dir of dirs) {
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
+  const home = homeDir();
+  for (const dir of [home, resolve(home, 'workspaces')]) {
+    ensureDir(dir);
   }
   return home;
 }
@@ -125,6 +120,11 @@ function ensureConfigDir() {
 // ── Main ─────────────────────────────────────────────────────────────
 async function main() {
   const config = parseArgs();
+  // Fold any pre-.agent state (.gemini, .gemini-agent, .agent-github-plans and
+  // the old ~/.gemini-agent home) into .agent/. Must run BEFORE ensureConfigDir,
+  // which would otherwise create the home directory the migration wants to fill.
+  runMigrations(config.workspace);
+
   const configHome = ensureConfigDir();
   
   // Verify workspace exists

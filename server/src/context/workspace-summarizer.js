@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { AGENT_DIR } from '../core/paths.js';
 import path from 'path';
 
 /**
@@ -10,7 +11,7 @@ import path from 'path';
 export class WorkspaceSummarizer {
   constructor(workspacePath) {
     this.workspacePath = workspacePath;
-    this.ignoreList = new Set(['node_modules', '.git', '.gemini', 'dist', 'build', 'coverage']);
+    this.ignoreList = new Set(['node_modules', '.git', AGENT_DIR, 'dist', 'build', 'coverage']);
   }
 
   /**

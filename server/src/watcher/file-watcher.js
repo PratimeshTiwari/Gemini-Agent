@@ -27,7 +27,7 @@ export class FileWatcher {
         /node_modules/,
         /dist/,
         /build/,
-        /\.gemini-agent/
+        /\.agent[\\/]/
       ],
       persistent: true,
       ignoreInitial: true,

@@ -6,6 +6,7 @@
  */
 
 import fs from 'fs';
+import { configPath as configPathFor } from './paths.js';
 import path from 'path';
 
 // Files that are always considered high-risk to modify
@@ -183,7 +184,7 @@ export class RiskClassifier {
   _isAllowedGlobal(cmdStr) {
     if (!this.workspacePath) return false;
     
-    const configPath = path.join(this.workspacePath, '.gemini', 'config.json');
+    const configPath = configPathFor(this.workspacePath);
     
     if (fs.existsSync(configPath)) {
       try {

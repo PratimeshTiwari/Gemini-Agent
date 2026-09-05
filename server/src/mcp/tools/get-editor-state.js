@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import { editorStatePath } from '../../core/paths.js';
 import path from 'path';
 
 export default {
@@ -10,7 +11,7 @@ export default {
     required: []
   },
   async execute(args, context) {
-    const stateFile = path.join(context.workspaceIndexer ? context.workspaceIndexer.workspaceRoot : process.cwd(), '.gemini-agent', 'editor_state.json');
+    const stateFile = editorStatePath(context.workspaceIndexer ? context.workspaceIndexer.workspaceRoot : process.cwd());
     
     try {
       const content = await fs.readFile(stateFile, 'utf-8');

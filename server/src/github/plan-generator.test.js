@@ -9,7 +9,7 @@ import { resolve } from 'path';
 import { PlanGenerator } from './plan-generator.js';
 
 const TEST_WORKSPACE = resolve(import.meta.dirname, '../../.test-workspace');
-const PLAN_DIR = '.agent-github-plans';
+const PLAN_DIR = '.agent/github-pr-plans';
 
 describe('PlanGenerator', () => {
   let generator;
