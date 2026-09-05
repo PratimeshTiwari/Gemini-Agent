@@ -50,7 +50,7 @@ To enable Editor State Awareness (so the agent knows your cursor position and ac
 1. Open VS Code.
 2. Go to the Extensions panel (`Cmd+Shift+X`).
 3. Click the `...` menu at the top right and select **Install from VSIX...**
-4. Select the `vscode-companion/gemini-agent-companion-1.0.0.vsix` file from this repository.
+4. Select the `vscode-companion/gemini-agent-companion-1.1.0.vsix` file from this repository.
 
 ### 5. Running the Agent
 1. Open your terminal and navigate to the project directory you want the agent to work on.
@@ -71,3 +71,31 @@ Once the agent is running, you can use built-in slash commands to manage your se
 - Type `/config` to configure which web models (Gemini, Claude, ChatGPT) act as your primary, reasoner, and reviewer agents.
 - Type `/model <flash|flash-thinking|pro>` to dynamically adjust the cognitive effort and prompt complexity (optimizing for the model you select in your browser tab).
 - Type `/allowlist` to view and manage your auto-approved and auto-rejected command rules.
+
+## 📂 Where the agent keeps its files
+
+Everything the agent writes into a workspace lives in one directory, `.agent/`:
+
+```
+<your project>/.agent/
+├── config.json        # topology, model roles, command allowlist, agent name
+├── memory.json        # long-term memory (/memory)
+├── rules.md           # your custom workspace instructions (/init-skills)
+├── artifacts/         # task.md, plan.md, walkthrough.md — written for you to read
+├── state/             # editor.json, github.json, plan-approval.json
+├── backups/           # file backups powering /undo
+├── context/summary.md # background RAG index
+├── github-pr-plans/   # GitHub PR agent output
+├── sessions/          # conversation history (local copy)
+└── logs/agent.log
+```
+
+Your conversation history is saved **twice**: once next to the project in
+`.agent/sessions/`, and once in `~/.agent/workspaces/<project>-<hash>/`. The second
+copy means a clean checkout or a deleted `.agent/` folder doesn't lose your history —
+whichever copy has more turns wins on startup and rebuilds the other. Override the
+home location with `GEMINI_AGENT_HOME`.
+
+Earlier versions spread this across `.gemini/`, `.gemini-agent/` and
+`.agent-github-plans/`. The agent migrates those into `.agent/` automatically the
+first time it starts in a workspace, and prints a one-line summary when it does.
