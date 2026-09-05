@@ -243,26 +243,41 @@ async function main() {
     }
   }
 
-  // Start CLI UI
-  const { CliUI } = await import('./cli-ui.jsx');
-  const cli = new CliUI(agentLoop, wsServer);
-  cli.start();
-
   // Automatically open Gemini Web in the default browser to wake up the extension
   try {
     const { exec } = await import('child_process');
     const startUrl = 'https://gemini.google.com/app';
 
     if (process.platform === 'darwin') {
-      exec(`open ${startUrl}`);
+      exec(`open "${startUrl}"`);
     } else if (process.platform === 'win32') {
-      exec(`start ${startUrl}`);
+      exec(`start "" "${startUrl}"`);
     } else {
-      exec(`xdg-open ${startUrl}`);
+      exec(`xdg-open "${startUrl}"`);
     }
   } catch (err) {
     console.error('Failed to open browser automatically:', err);
   }
+
+  // Allow a brief moment for the extension WebSocket to connect
+  const hasExt = () => wsServer.clients && Array.from(wsServer.clients.values()).some(c => c.type === 'extension');
+  if (!hasExt()) {
+    await new Promise(resolve => {
+      const timeout = setTimeout(resolve, 1500);
+      const interval = setInterval(() => {
+        if (hasExt()) {
+          clearInterval(interval);
+          clearTimeout(timeout);
+          resolve();
+        }
+      }, 50);
+    });
+  }
+
+  // Start CLI UI
+  const { CliUI } = await import('./cli-ui.jsx');
+  const cli = new CliUI(agentLoop, wsServer);
+  cli.start();
 
   // Graceful shutdown
   const shutdown = async () => {

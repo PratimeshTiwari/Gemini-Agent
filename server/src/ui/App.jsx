@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useReducer } from 'react';
+import React, { useState, useEffect, useReducer, useRef } from 'react';
 import { Box, Text, useInput, useApp, useStdout, Static } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
+import Gradient from 'ink-gradient';
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 import crypto from 'crypto';
@@ -10,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
+import figlet from 'figlet';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -37,11 +39,139 @@ const THINKING_MESSAGES = [
   'Synthesizing logic...',
 ];
 
+function parseTurnActions(turn) {
+  const actions = [];
+  const finalMessages = [];
+
+  for (let sIdx = 0; sIdx < turn.steps.length; sIdx++) {
+    const msg = turn.steps[sIdx];
+
+    if (msg.role === 'assistant' || msg.role === 'agent') {
+      const thinkMatch = msg.content.match(/<think>([\s\S]*?)<\/think>/);
+      let cleanContent = msg.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+      const imgMatch = cleanContent.match(/🖼️ Image attached: (.*?\.png|.*?\.jpg|.*?\.jpeg|.*?\.webp)/);
+
+      if (imgMatch) {
+        cleanContent = cleanContent.replace(imgMatch[0], '').trim();
+        actions.push({
+          type: 'image',
+          id: `turn_${turn.id}_act_${sIdx}`,
+          content: imgMatch[1],
+          msg
+        });
+      }
+
+      if (thinkMatch) {
+        actions.push({
+          type: 'think',
+          id: `turn_${turn.id}_act_${sIdx}`,
+          content: thinkMatch[1].trim(),
+          msg
+        });
+      }
+
+      if (cleanContent) {
+        finalMessages.push({
+          type: 'text',
+          content: cleanContent,
+          msg
+        });
+      }
+    } else if (msg.type === 'tool_call') {
+      const nextMsg = turn.steps[sIdx + 1];
+      let result = null;
+      let success = null;
+      if (nextMsg && nextMsg.type === 'tool_result') {
+        result = nextMsg.result;
+        success = nextMsg.success;
+        sIdx++; // Group tool_result with tool_call into one action
+      }
+      actions.push({
+        type: 'tool',
+        id: `turn_${turn.id}_act_${sIdx}`,
+        toolName: msg.toolName || msg.name,
+        args: msg.args,
+        result,
+        success,
+        msg
+      });
+    } else if (msg.type === 'tool_result') {
+      actions.push({
+        type: 'tool_result',
+        id: `turn_${turn.id}_act_${sIdx}`,
+        result: msg.result,
+        success: msg.success,
+        msg
+      });
+    } else if (msg.role === 'system') {
+      if (msg.type === 'command_output') {
+        actions.push({
+          type: 'command_output',
+          id: `turn_${turn.id}_act_${sIdx}`,
+          content: msg.content,
+          msg
+        });
+      } else {
+        actions.push({
+          type: 'system',
+          id: `turn_${turn.id}_act_${sIdx}`,
+          content: msg.content,
+          msg
+        });
+      }
+    }
+  }
+
+  return { actions, finalMessages };
+}
+
 export function App({ agentLoop, wsServer }) {
   const { exit } = useApp();
   const [input, setInput] = useState('');
   const [history, setHistory] = useState([...agentLoop.conversationHistory]);
   const [activeToolCalls, setActiveToolCalls] = useState([]);
+  const [agentNameAscii, setAgentNameAscii] = useState(() => {
+    let name = 'Gemini Agent';
+    try {
+      const customNamePath = path.join(agentLoop.workspace, 'setAgentName.json');
+      if (fs.existsSync(customNamePath)) {
+        const custom = JSON.parse(fs.readFileSync(customNamePath, 'utf8'));
+        if (custom.agentName) name = `${custom.agentName} Agent`;
+      } else {
+        const configPath = path.join(agentLoop.workspace, '.gemini', 'config.json');
+        if (fs.existsSync(configPath)) {
+          const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          if (config.agent_name) name = `${config.agent_name} Agent`;
+        }
+      }
+    } catch (e) {}
+    try {
+      return figlet.textSync(name, { font: 'Standard' }) || name;
+    } catch (e) {
+      return name;
+    }
+  });
+
+  useEffect(() => {
+    let name = 'Gemini Agent';
+    try {
+      const customNamePath = path.join(agentLoop.workspace, 'setAgentName.json');
+      if (fs.existsSync(customNamePath)) {
+        const custom = JSON.parse(fs.readFileSync(customNamePath, 'utf8'));
+        if (custom.agentName) name = `${custom.agentName} Agent`;
+      } else {
+        const configPath = path.join(agentLoop.workspace, '.gemini', 'config.json');
+        if (fs.existsSync(configPath)) {
+          const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          if (config.agent_name) name = `${config.agent_name} Agent`;
+        }
+      }
+    } catch (e) {}
+    figlet.text(name, { font: 'Standard' }, (err, data) => {
+      if (!err && data) setAgentNameAscii(data);
+      else setAgentNameAscii(name);
+    });
+  }, [agentLoop.workspace]);
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [status, setStatus] = useState('');
@@ -49,6 +179,33 @@ export function App({ agentLoop, wsServer }) {
   const [diffRequest, setDiffRequest] = useState(null);
   const [tasks, setTasks] = useState([]);
   
+  // Extension Connection Polling
+  const [extensionConnected, setExtensionConnected] = useState(false);
+  useEffect(() => {
+    if (!wsServer) return;
+    const checkConnection = () => {
+      const connected = wsServer.clients && wsServer.clients.size > 0;
+      setExtensionConnected(connected);
+    };
+    checkConnection();
+    const interval = setInterval(checkConnection, 1000);
+    return () => clearInterval(interval);
+  }, [wsServer]);
+  
+  // Timeout Warning
+  const [isThinkingTooLong, setIsThinkingTooLong] = useState(false);
+  useEffect(() => {
+    let timer;
+    if (isProcessing) {
+      timer = setTimeout(() => {
+        setIsThinkingTooLong(true);
+      }, 10000);
+    } else {
+      setIsThinkingTooLong(false);
+    }
+    return () => clearTimeout(timer);
+  }, [isProcessing]);
+
   // UI State
   const [focus, setFocus] = useState(FOCUS_INPUT);
   const [expandedLogIds, setExpandedLogIds] = useState(new Set());
@@ -73,6 +230,8 @@ export function App({ agentLoop, wsServer }) {
   const [prComments, setPrComments] = useState([]);
   const [selectedPrCommentIdx, setSelectedPrCommentIdx] = useState(0);
   const [explorerMode, setExplorerMode] = useState("prs");
+  const [loadingPrs, setLoadingPrs] = useState(false);
+  const [loadingPrComments, setLoadingPrComments] = useState(false);
 
   const { stdout } = useStdout();
   const [terminalHeight, setTerminalHeight] = useState(stdout ? stdout.rows : process.stdout.rows);
@@ -105,19 +264,17 @@ export function App({ agentLoop, wsServer }) {
   });
   if (currentTurn) turns.push(currentTurn);
 
+  const INTERACTIVE_COUNT = 1;
+  const staticTurns = turns.slice(0, Math.max(0, turns.length - INTERACTIVE_COUNT));
+  const interactiveTurns = turns.slice(Math.max(0, turns.length - INTERACTIVE_COUNT));
+
   // 2. Compute dense array of ALL focusable items for UI navigation
   const focusableItems = [];
-  turns.forEach(turn => {
-    turn.steps.forEach(msg => {
-      let isFocusable = false;
-      if (msg.role === 'assistant' || msg.role === 'agent') isFocusable = true;
-      if (msg.type === 'tool_call' || msg.type === 'tool_result') isFocusable = true;
-      if (msg.role === 'system' && msg.content?.includes('Command Output')) isFocusable = true;
-      
-      if (isFocusable) {
-        focusableItems.push({ type: 'history', sourceIdx: msg._globalIdx, id: msg.timestamp || msg._globalIdx, turnId: turn.id, msg });
-      }
-    });
+  interactiveTurns.forEach(turn => {
+    const hasActions = turn.steps.some(m => m.type === 'tool_call' || m.type === 'tool_result' || m.role === 'system' || (m.role === 'assistant' && m.content.includes('<think>')));
+    if (hasActions) {
+      focusableItems.push({ type: 'turn_actions', id: `turn_${turn.id}`, turnId: turn.id, turn });
+    }
   });
 
   activeToolCalls.forEach((call, idx) => {
@@ -127,19 +284,7 @@ export function App({ agentLoop, wsServer }) {
   // Ensure selected tool index is within bounds of all focusable items
   const clampedSelectedToolIdx = Math.min(selectedToolIdx, Math.max(0, focusableItems.length - 1));
 
-  // 3. Virtual Scrolling: Calculate sliding window based on focused item
-  let focusedTurnId = turns.length > 0 ? turns[turns.length - 1].id : 0;
-  if (focus === FOCUS_CHAT && focusableItems.length > 0) {
-    const focusedItem = focusableItems[clampedSelectedToolIdx];
-    if (focusedItem && focusedItem.turnId !== undefined) {
-      focusedTurnId = focusedItem.turnId;
-    }
-  }
-
-  // Display the focused turn, the one before it, and the one after it (window size of 3)
-  const windowStart = Math.max(0, focusedTurnId - 2);
-  const windowEnd = Math.min(turns.length, focusedTurnId + 1);
-  const visibleTurns = turns.slice(windowStart, windowEnd);
+  // Sliding window logic removed, relying on interactiveTurns instead.
 
 
 
@@ -150,30 +295,22 @@ export function App({ agentLoop, wsServer }) {
         setPlanReviewReady(false);
         setFocus(FOCUS_INPUT);
         try {
-          const cp = require('child_process');
-          const path = require('path');
-          const fs = require('fs');
-          
           const implPlanPath = path.join(agentLoop.workspace, '.gemini', 'implementation_plan.md');
           const simplePlanPath = path.join(agentLoop.workspace, '.gemini', 'plan.md');
           const planPath = fs.existsSync(implPlanPath) ? implPlanPath : simplePlanPath;
           
-          cp.exec(`"${agentLoop.editor || 'code'}" "${planPath}" || open "${planPath}" || xdg-open "${planPath}"`);
+          exec(`"${agentLoop.editor || 'code'}" "${planPath}" || open "${planPath}" || xdg-open "${planPath}"`);
         } catch (e) {}
       }
 
       if (walkthroughReady) {
         setWalkthroughReady(false);
         try {
-          const cp = require('child_process');
-          const path = require('path');
-          const fs = require('fs');
-          
           const walkRoot = path.join(agentLoop.workspace, '.gemini', 'walkthrough.md');
           const walkFallback = path.join(agentLoop.workspace, 'walkthrough.md');
           const walkPath = fs.existsSync(walkRoot) ? walkRoot : walkFallback;
           
-          cp.exec(`"${agentLoop.editor || 'code'}" "${walkPath}" || open "${walkPath}" || xdg-open "${walkPath}"`);
+          exec(`"${agentLoop.editor || 'code'}" "${walkPath}" || open "${walkPath}" || xdg-open "${walkPath}"`);
         } catch (e) {}
       }
 
@@ -198,22 +335,71 @@ export function App({ agentLoop, wsServer }) {
     }
   }, [isProcessing, planReviewReady, walkthroughReady, agentLoop.workspace]);
 
+  // Thinking animation: calm typing pace with pause to read each message
+  const [thinkingDisplayText, setThinkingDisplayText] = useState('');
+  const thinkingIdxRef = useRef(0);
+  const thinkingCharRef = useRef(0);
+  const pauseTicksRef = useRef(0);
+  const isToolRunningRef = useRef(false);
   useEffect(() => {
-    let interval;
-    if (isProcessing && THINKING_MESSAGES.some(msg => status.includes(msg))) {
-       interval = setInterval(() => {
-         setThinkingIndex(i => {
-           const next = (i + 1) % THINKING_MESSAGES.length;
-           // Extract prefix assuming the current message is one of the THINKING_MESSAGES
-           const currentMsg = THINKING_MESSAGES.find(msg => status.includes(msg)) || 'Thinking...';
-           const prefix = status.split(currentMsg)[0] || '';
-           setStatus(`${prefix}${THINKING_MESSAGES[next]}`);
-           return next;
-         });
-       }, 2500); // Slower cycle for more natural reading
+    if (!isProcessing) {
+      setThinkingDisplayText('');
+      thinkingIdxRef.current = 0;
+      thinkingCharRef.current = 0;
+      pauseTicksRef.current = 0;
+      isToolRunningRef.current = false;
+      return;
     }
+    const interval = setInterval(() => {
+      // If a tool is actively running, show that status instead of cycling
+      if (isToolRunningRef.current) return;
+
+      const currentMsg = THINKING_MESSAGES[thinkingIdxRef.current] || 'Thinking...';
+      if (thinkingCharRef.current < currentMsg.length) {
+        thinkingCharRef.current++;
+        setThinkingDisplayText(currentMsg.substring(0, thinkingCharRef.current));
+      } else {
+        // Pause for ~1.5s (20 * 75ms) after typing before advancing so user can read
+        pauseTicksRef.current++;
+        if (pauseTicksRef.current >= 20) {
+          pauseTicksRef.current = 0;
+          thinkingIdxRef.current = (thinkingIdxRef.current + 1) % THINKING_MESSAGES.length;
+          thinkingCharRef.current = 0;
+          setThinkingDisplayText('');
+        }
+      }
+    }, 75);
     return () => clearInterval(interval);
-  }, [isProcessing, status]);
+  }, [isProcessing]);
+
+  // Claude Code-style response typing effect (natural, readable cadence)
+  const [revealedLength, setRevealedLength] = useState(Infinity);
+  const lastRevealedContent = useRef('');
+  useEffect(() => {
+    // When processing ends, check if there's a new response to animate
+    if (!isProcessing && history.length > 0) {
+      const lastMsg = history[history.length - 1];
+      if (lastMsg && (lastMsg.role === 'assistant' || lastMsg.role === 'agent') && !lastMsg.isLocal) {
+        const cleanContent = (lastMsg.content || '').replace(/<think>[\s\S]*?<\/think>/, '').trim();
+        if (cleanContent && cleanContent !== lastRevealedContent.current) {
+          lastRevealedContent.current = cleanContent;
+          setRevealedLength(0);
+          let charPos = 0;
+          // Paced reveal: much faster now
+          const step = cleanContent.length > 1200 ? 15 : (cleanContent.length > 500 ? 8 : 4);
+          const interval = setInterval(() => {
+            charPos = Math.min(charPos + step, cleanContent.length);
+            setRevealedLength(charPos);
+            if (charPos >= cleanContent.length) {
+              clearInterval(interval);
+              setRevealedLength(Infinity);
+            }
+          }, 10);
+          return () => clearInterval(interval);
+        }
+      }
+    }
+  }, [isProcessing, history.length]);
 
   // Poll active background tasks
   useEffect(() => {
@@ -253,18 +439,35 @@ export function App({ agentLoop, wsServer }) {
     setInputHistory(prev => [...prev, query]);
     setHistoryIdx(-1);
     setInput('');
+
+    const cleanQuery = query.trim().toLowerCase();
+    if (cleanQuery === ':stop' || cleanQuery === '/stop') {
+      wsServer.broadcast('extension', { type: 'stop_generation', timestamp: Date.now(), id: Date.now().toString() });
+      agentLoop.isProcessing = false;
+      if (agentLoop.pendingCommandResolve) {
+        agentLoop.pendingCommandResolve({ approved: false });
+        agentLoop.pendingCommandResolve = null;
+      }
+      if (agentLoop.pendingQuestionResolve) {
+        agentLoop.pendingQuestionResolve({ success: false, result: 'Cancelled by user' });
+        agentLoop.pendingQuestionResolve = null;
+      }
+      setActiveToolCalls([]);
+      setDiffRequest(null);
+      setActiveMenu(null);
+      setIsProcessing(false);
+      setStatus('');
+      setHistory(prev => [
+        ...prev, 
+        { role: 'user', content: query }, 
+        { role: 'assistant', content: '🛑 Agent forcefully stopped.', isLocal: true }
+      ]);
+      return;
+    }
+
     setIsProcessing(true);
     setStatus('Thinking...');
     setActiveToolCalls([]);
-    
-    if (query === ':stop') {
-      wsServer.broadcast('extension', { type: 'stop_generation', timestamp: Date.now(), id: Date.now().toString() });
-      agentLoop.isProcessing = false;
-      setDiffRequest(null);
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '🛑 Agent generation stopped.' }]);
-      setIsProcessing(false);
-      return;
-    }
     
     if (query.startsWith('/')) {
       const parts = query.slice(1).split(/\s+/);
@@ -274,23 +477,24 @@ export function App({ agentLoop, wsServer }) {
       if (command === 'shortcuts' || command === 'help') {
         const shortcutsMessage = {
           role: 'assistant',
+          isLocal: true,
           content: [
             '### ⌨️ UI & Navigation',
-            '  [Tab]     - Toggle focus between Chat Input and Tool Executions',
-            '  [Up/Down] - Navigate between tool executions or CLI tabs',
-            '  [Enter]   - Expand/Minimize raw output of tools, or Open GitHub Plan',
-            '  [Ctrl+T]  - Toggle the Agent Terminal at the bottom of the screen',
-            '  [Ctrl+O]  - Toggle between Agent Chat and GitHub PR Dashboard',
-            "  :stop     - Immediately cancel the agent's current generation",
+            '  [Tab]             - Toggle focus between Chat Input and Tool Executions',
+            '  [Up/Down]         - Navigate between tool executions or CLI tabs',
+            '  [Enter]           - Expand/Minimize raw output of tools, or Open GitHub Plan',
+            '  [Ctrl+T]          - Toggle the Agent Terminal at the bottom of the screen',
+            '  [Ctrl+O]          - Toggle between Agent Chat and GitHub PR Dashboard',
+            "  :stop             - Immediately cancel the agent's current generation",
             '',
             '### 🧠 AI & LLM Settings',
-            '  /mode       - Change agent topology (Single, Duo, Swarm)',
-            '  /model      - Switch model tier (Flash, Flash Thinking, Pro)',
-            '  /allowlist  - Manage auto-approved/blocked command rules',
-            '  /config     - Configure models for specific roles',
-            '  /localllm   - Toggle local LLM engine',
-            '  /plan       - Switch to Plan Mode (requires approval for edits)',
-            '  /auto       - Switch to Auto Mode (auto-applies safe edits)',
+            '  /mode             - Change agent topology (Single, Duo, Swarm)',
+            '  /model            - Switch model tier (Flash, Flash Thinking, Pro)',
+            '  /allowlist        - Manage auto-approved/blocked command rules',
+            '  /config           - Configure models for specific roles',
+            '  /localllm         - Toggle local LLM engine',
+            '  /plan             - Switch to Plan Mode (requires approval for edits)',
+            '  /auto             - Switch to Auto Mode (auto-applies safe edits)',
             '',
             '### 📁 Workspace & Context',
             '  /workspace <path> - Change the active workspace',
@@ -303,12 +507,12 @@ export function App({ agentLoop, wsServer }) {
             '  /init-skills      - Create workspace rules (.gemini/rules.md)',
             '',
             '### 🛠️ System & Tools',
-            '  /github     - Run GitHub specific commands (e.g., /github refresh)',
-            '  /image      - Attach an image (e.g., /image path/to/img.png)',
-            '  /paste-image- Attach image directly from clipboard (macOS only)',
-            '  /agent-dir  - Open the agent data directory',
-            '  /restart    - Restart the server',
-            '  /exit       - Quit the agent'
+            '  /github           - Run GitHub specific commands (e.g., /github refresh)',
+            '  /image            - Attach an image (e.g., /image path/to/img.png)',
+            '  /paste-image      - Attach image directly from clipboard (macOS only)',
+            '  /agent-dir        - Open the agent data directory',
+            '  /restart          - Restart the server',
+            '  /exit             - Quit the agent'
           ].join('\n')
         };
         setHistory(prev => [...prev, { role: 'user', content: query }, shortcutsMessage]);
@@ -317,7 +521,7 @@ export function App({ agentLoop, wsServer }) {
       }
 
       if (command === 'exit') {
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '👋 Goodbye! Agent shutting down.' }]);
+        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '👋 Goodbye! Agent shutting down.', isLocal: true }]);
         setIsProcessing(false);
         setTimeout(() => process.exit(0), 100);
         return;
@@ -328,9 +532,9 @@ export function App({ agentLoop, wsServer }) {
         const now = new Date();
         try {
           fs.utimesSync(indexPath, now, now);
-          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '🔄 Restarting server...' }]);
+        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '🔄 Restarting server...', isLocal: true }]);
         } catch (err) {
-          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '❌ Failed to restart server: ' + err.message }]);
+          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '❌ Failed to restart server: ' + err.message, isLocal: true }]);
         }
         setIsProcessing(false);
         return;
@@ -349,7 +553,7 @@ export function App({ agentLoop, wsServer }) {
         agentLoop.sessionStore.clear();
         setHistory([]);
         wsServer.broadcast('extension', { type: 'new_chat', payload: {} });
-        setHistory([{ role: 'assistant', content: '✨ Starting a new chat in Gemini...' }]);
+        setHistory([{ role: 'assistant', content: '✨ Starting a new chat in Gemini...', isLocal: true }]);
         setIsProcessing(false);
         return;
       }
@@ -399,7 +603,7 @@ export function App({ agentLoop, wsServer }) {
         } else {
           msg = `⚠️ Workspace rules already exist at: ${rulesPath}`;
         }
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: msg }]);
+        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: msg, isLocal: true }]);
         setIsProcessing(false);
         return;
       }
@@ -506,8 +710,10 @@ export function App({ agentLoop, wsServer }) {
           setFocus(FOCUS_INPUT);
         } else if (msg.type === 'status') {
           setStatus(msg.payload.message || 'Processing...');
+          isToolRunningRef.current = false;
         } else if (msg.type === 'tool_call') {
           setStatus(`Running ${msg.payload.name}...`);
+          isToolRunningRef.current = true;
           setActiveToolCalls(prev => [...prev, { id: Date.now().toString(), type: 'call', name: msg.payload.name, args: msg.payload.args }]);
         } else if (msg.type === 'tool_result') {
           setActiveToolCalls(prev => {
@@ -544,11 +750,18 @@ export function App({ agentLoop, wsServer }) {
         });
         
         if (!success) {
+          try {
+            const startUrl = 'https://gemini.google.com/app';
+            if (process.platform === 'darwin') exec(`open "${startUrl}"`);
+            else if (process.platform === 'win32') exec(`start "" "${startUrl}"`);
+            else exec(`xdg-open "${startUrl}"`);
+          } catch (e) {}
+
           agentLoop.isProcessing = false;
           setIsProcessing(false);
           setHistory(prev => [
             ...prev, 
-            { role: 'assistant', content: '❌ **CONNECTION ERROR**: Gemini client is not connected!\n\n💡 To fix this:\n1. Close all gemini.google.com tabs and open a fresh one.\n2. If that doesn\'t work, reload the Chrome extension in chrome://extensions and refresh the tab.' }
+            { role: 'assistant', content: '⚠️ **Gemini Extension Reconnecting...**\n\nAutomatically launched `https://gemini.google.com/app` in your browser. Once the tab opens, please submit your prompt again.' }
           ]);
         }
       },
@@ -600,20 +813,30 @@ export function App({ agentLoop, wsServer }) {
       }
 
       if (char === 'p' || char === 'P') {
-        setGithubView(prev => (prev === 'pr_explorer' ? 'activity' : 'pr_explorer'));
+        const willOpen = githubView !== 'pr_explorer';
+        setGithubView(willOpen ? 'pr_explorer' : 'activity');
         
-        // If we are opening the explorer and don't have PRs, fetch them.
-        if (githubView !== 'pr_explorer' && prList.length === 0) {
+        // If we are opening the explorer, fetch fresh PRs
+        if (willOpen) {
+          setLoadingPrs(true);
           try {
             if (agentLoop?.githubHandler?.fetchAllOpenPRs) {
               agentLoop.githubHandler.fetchAllOpenPRs()
-                .then(prs => setPrList(prs))
-                .catch(err => {
-                   // Gracefully handle promise rejection without crashing
+                .then(prs => {
+                  setPrList(prs || []);
+                  setSelectedPrIdx(0);
+                })
+                .catch(() => {
+                  setPrList([]);
+                })
+                .finally(() => {
+                  setLoadingPrs(false);
                 });
+            } else {
+              setLoadingPrs(false);
             }
           } catch (err) {
-             // Gracefully handle synchronous errors without crashing
+            setLoadingPrs(false);
           }
         }
         return;
@@ -637,9 +860,14 @@ export function App({ agentLoop, wsServer }) {
           if (key.return && prList.length > 0) {
              const pr = prList[selectedPrIdx];
              if (pr && agentLoop?.githubHandler?.poller) {
+               setLoadingPrComments(true);
+               setPrComments([]);
+               setExplorerMode('comments');
+               setSelectedPrCommentIdx(0);
                agentLoop.githubHandler.poller.fetchAllComments(pr)
-                 .then(comments => { setPrComments(comments); setExplorerMode('comments'); setSelectedPrCommentIdx(0); })
-                 .catch(err => {});
+                 .then(comments => { setPrComments(comments || []); })
+                 .catch(() => { setPrComments([]); })
+                 .finally(() => { setLoadingPrComments(false); });
              }
           }
         } else if (explorerMode === 'comments') {
@@ -682,8 +910,7 @@ export function App({ agentLoop, wsServer }) {
         const item = visiblePlans[currentIdx];
         if (item && item.payload?.filePath) {
           try {
-            const cp = require('child_process');
-            cp.exec(`"${agentLoop.editor || 'code'}" "${item.payload.filePath}" || open "${item.payload.filePath}" || xdg-open "${item.payload.filePath}"`);
+            exec(`"${agentLoop.editor || 'code'}" "${item.payload.filePath}" || open "${item.payload.filePath}" || xdg-open "${item.payload.filePath}"`);
           } catch(e) {}
         }
         return;
@@ -730,8 +957,12 @@ export function App({ agentLoop, wsServer }) {
       return;
     }
 
-    // Escape returns to Input
+    // Escape cancels processing if active, or returns to Input
     if (key.escape) {
+      if (isProcessing) {
+        handleSubmit(':stop');
+        return;
+      }
       setTerminalOpen(false);
       setFocus(FOCUS_INPUT);
       return;
@@ -769,9 +1000,11 @@ export function App({ agentLoop, wsServer }) {
       
       if (key.upArrow) {
         setSelectedToolIdx(Math.max(0, clampedIdx - 1));
+        return;
       }
       if (key.downArrow) {
         setSelectedToolIdx(Math.min(focusableItems.length - 1, clampedIdx + 1));
+        return;
       }
       if (key.return) {
         const item = focusableItems[clampedIdx];
@@ -783,6 +1016,7 @@ export function App({ agentLoop, wsServer }) {
             return next;
           });
         }
+        return;
       }
     }
   });
@@ -819,7 +1053,7 @@ export function App({ agentLoop, wsServer }) {
       setHistory(prev => [
         ...prev,
         { role: 'user', content: `$ ${cmd}`, timestamp: Date.now() },
-        { role: 'system', content: `**Command Output:**\n\`\`\`\n${output.trim()}\n\`\`\``, timestamp: Date.now() }
+        { role: 'system', type: 'command_output', content: output.trim(), cmd: cmd, timestamp: Date.now() }
       ]);
     });
 
@@ -833,8 +1067,6 @@ export function App({ agentLoop, wsServer }) {
     if (activeMenu?.type === 'plan_review') {
       approvalInterval = setInterval(() => {
         try {
-          const path = require('path');
-          const fs = require('fs');
           const approvalPath = path.join(agentLoop.workspace, '.gemini', 'plan_approval.json');
           if (fs.existsSync(approvalPath)) {
             const data = JSON.parse(fs.readFileSync(approvalPath, 'utf8'));
@@ -917,7 +1149,13 @@ export function App({ agentLoop, wsServer }) {
               {explorerMode === "prs" && (
                 <Box flexDirection="column" marginY={1}>
                   <Text color="gray">Select a PR to view comments:</Text>
-                  {prList.length === 0 && <Text dimColor>Loading PRs...</Text>}
+                  {loadingPrs ? (
+                    <Text dimColor><Spinner type="dots" /> Loading PRs...</Text>
+                  ) : prList.length === 0 ? (
+                    <Box marginY={1}>
+                      <Text dimColor>No open PRs found.</Text>
+                    </Box>
+                  ) : null}
                   {prList.map((pr, i) => (
                     <Text key={i} color={i === selectedPrIdx ? "white" : "gray"}>
                       {i === selectedPrIdx ? "❯ " : "  "}[{pr.repo.name}] #{pr.number} {pr.title}
@@ -935,7 +1173,11 @@ export function App({ agentLoop, wsServer }) {
                   </Box>
                   <Text color="gray" dimColor>↵ Enter to dispatch to AI Agent  ·  ESC to go back</Text>
                   <Box flexDirection="column" marginTop={1}>
-                    {prComments.length === 0 && <Text dimColor>Loading comments...</Text>}
+                    {loadingPrComments ? (
+                      <Text dimColor><Spinner type="dots" /> Loading comments...</Text>
+                    ) : prComments.length === 0 ? (
+                      <Text dimColor>No comments found for this PR.</Text>
+                    ) : null}
                     {prComments.map((c, i) => {
                       const isSelected = i === selectedPrCommentIdx;
                       const date = c.created_at ? new Date(c.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
@@ -1032,9 +1274,12 @@ export function App({ agentLoop, wsServer }) {
               <Text dimColor>Press [Ctrl+O] to return to the Agent tab.</Text>
             </Box>
           ) : (
-            <>
+            <Box borderStyle="round" borderColor="cyan" padding={1} flexDirection="column" width="100%" flexShrink={1}>
+              <Box flexDirection="row" marginBottom={1}>
+                <Text bold color="cyan">📋 GitHub PR Dashboard</Text>
+              </Box>
               <Box flexDirection="row" marginBottom={1} justifyContent="space-between">
-                <Text>Status: {agentLoop.githubHandler?.getStatus()?.prsWatched || 0} PRs Watched | CI Watch: {agentLoop.githubHandler?.config?.enableCIWatch ? '✅ ON' : '⛔ OFF'}</Text>
+                <Text>Status: {agentLoop.githubHandler?.getStatus()?.prsWatched || 0} PRs Watched | CI Watch: <Text color="green" bold>{agentLoop.githubHandler?.config?.enableCIWatch ? 'ON' : 'OFF'}</Text></Text>
                 <Text dimColor>Last poll: {agentLoop.githubHandler?.getStatus()?.lastPollTime || 'Never'}</Text>
               </Box>
 
@@ -1046,7 +1291,6 @@ export function App({ agentLoop, wsServer }) {
                   <Text dimColor>Please wait while the AI generates a plan. Queue size: {agentLoop.githubHandler?._commentQueue?.length || 0}</Text>
                 </Box>
               )}
-              
               <Box borderStyle="single" borderColor="gray" flexDirection="column" flexGrow={1} padding={1}>
                 <Text bold marginBottom={1}>── Recent Activity ───────────────────────</Text>
                 {githubActivity.length === 0 ? (
@@ -1093,7 +1337,7 @@ export function App({ agentLoop, wsServer }) {
               <Box marginTop={1}>
                 <Text dimColor>[↑/↓] Navigate  [Space] Expand Comment  [Enter] Open Plan  [A] Avoid Words  [P] PR Explorer  [R] Refresh  [Ctrl+O] Agent</Text>
               </Box>
-            </>
+            </Box>
           )}
           </Box>
           )}
@@ -1105,156 +1349,174 @@ export function App({ agentLoop, wsServer }) {
           {/* History */}
       <Box flexDirection="column" marginBottom={1}>
         {(() => {
-          // 1. Parse history into Turns
-          const turns = [];
-          let currentTurn = null;
-          let turnId = 0;
+          // Uses the top-level turns/staticTurns/interactiveTurns computed above
 
-          history.forEach((msg, i) => {
-            if (msg.role === 'user') {
-              if (currentTurn) turns.push(currentTurn);
-              currentTurn = {
-                id: turnId++,
-                userMsg: msg,
-                steps: [],
-                startTime: msg.timestamp || Date.now(),
-                endTime: msg.timestamp || Date.now(),
-              };
-            } else if (currentTurn) {
-              msg._globalIdx = i;
-              currentTurn.steps.push(msg);
-              currentTurn.endTime = msg.timestamp || currentTurn.endTime;
-            } else {
-              currentTurn = {
-                id: turnId++,
-                userMsg: null,
-                steps: [{ ...msg, _globalIdx: i }],
-                startTime: msg.timestamp || Date.now(),
-                endTime: msg.timestamp || Date.now(),
-              };
-            }
-          });
-          if (currentTurn) turns.push(currentTurn);
+          const renderBanner = () => (
+            <Box key="banner" flexDirection="column" marginBottom={1} width="100%">
+              <Box borderStyle="round" borderColor="dim" flexDirection="column" paddingX={2} paddingY={0} width="100%" alignItems="center">
+                <Box flexDirection="column" alignItems="center">
+                  <Gradient name="mind">
+                    <Text>{agentNameAscii}</Text>
+                  </Gradient>
+                  <Box marginBottom={1}><Text color="magenta">Developed by Pratimesh Tiwari</Text></Box>
+                </Box>
+                
+                <Box flexDirection="column" width="100%">
+                  <Text color="gray">Workspace: <Text color="white">{agentLoop.workspace}</Text></Text>
+                  <Text color="gray">GitHub: <Text color="white">{agentLoop.githubHandler?.poller?.username ? `Connected as @${agentLoop.githubHandler.poller.username}` : 'Not Connected'}</Text></Text>
+                  <Text color="gray">Models: <Text color="white">{(() => {
+                    const topology = agentLoop.topology || 'single';
+                    const activeRoles = ['main'];
+                    if (topology === 'duo' || topology === 'swarm') activeRoles.push('reviewer');
+                    if (topology === 'swarm') activeRoles.push('reasoner');
+                    return [...new Set(activeRoles.map(r => agentLoop.modelConfig?.[r]).filter(Boolean))].join(', ') || 'gemini';
+                  })()}</Text></Text>
+                  <Text color="gray">Extension: <Text color={extensionConnected ? 'green' : 'yellow'}>{extensionConnected ? '🟢 Connected' : '⚠️ Open a Gemini tab in Chrome'}</Text></Text>
+                </Box>
+              </Box>
+            </Box>
+          );
 
           const renderTurn = (turn, isLastTurn, isProcessingTurn, isStatic) => {
             const duration = ((turn.endTime - turn.startTime) / 1000).toFixed(1);
+            const { actions, finalMessages } = parseTurnActions(turn);
+
+            const isTurnHeaderFocused = !isStatic && focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.id === `turn_${turn.id}`;
+            const isTurnActionsExpanded = isStatic || expandedLogIds.has(`turn_${turn.id}`) || (isLastTurn && isProcessingTurn);
+            const turnHeaderPrefix = isTurnHeaderFocused ? <Text color="cyan">❯ </Text> : <Text>  </Text>;
 
             return (
               <Box key={turn.id} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
                 {/* User Message */}
                 {turn.userMsg && (
                   <Box flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
-                    <Text bold color="green" wrap="wrap">🙋 {turn.userMsg.content}</Text>
+                    <Text bold wrap="wrap"><Text color="white">❯</Text> {turn.userMsg.content}</Text>
                   </Box>
                 )}
 
                 {/* Agent Actions Block */}
                 {turn.steps.length > 0 && (
-                  <Box flexDirection="column" borderStyle="single" borderColor={isLastTurn && isProcessingTurn ? "magenta" : "gray"} paddingX={1} width="100%" flexShrink={1}>
-                    
-                    {/* Header */}
-                    <Box marginBottom={1} width="100%">
-                      <Text color="gray">
-                        {isLastTurn && isProcessingTurn ? (
-                           <Text><Text color="magenta"><Spinner type="dots" /></Text> {status}</Text>
-                        ) : (
-                           <Text>✓ Worked for {duration}s</Text>
-                        )}
-                      </Text>
-                    </Box>
-                    {/* Steps (Accordions) */}
-                    {turn.steps.map((msg, sIdx) => {
-                      // Find if this message is the currently focused item (always false in Static)
-                      const isFocused = !isStatic && focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.msg === msg;
-                      // In Static mode, we auto-expand tool results so they are visible in the scrollback!
-                      const isExpanded = isStatic || expandedLogIds.has(msg.timestamp || msg._globalIdx);
+                  <Box flexDirection="column" width="100%" flexShrink={1}>
+                    {(() => {
+                      const actions = [];
+                      const finalMessages = [];
+                      
+                      turn.steps.forEach((msg, sIdx) => {
+                        if (msg.role === 'assistant' || msg.role === 'agent') {
+                          const thinkMatch = msg.content.match(/<think>([\s\S]*?)<\/think>/);
+                          let cleanContent = msg.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+                          const imgMatch = cleanContent.match(/🖼️ Image attached: (.*?\.png|.*?\.jpg|.*?\.jpeg|.*?\.webp)/);
+                          
+                          if (imgMatch) {
+                            cleanContent = cleanContent.replace(imgMatch[0], '').trim();
+                            actions.push({ type: 'image', content: imgMatch[1], msg });
+                          }
+                          
+                          if (thinkMatch) {
+                            actions.push({ type: 'think', content: thinkMatch[1].trim(), msg });
+                          }
+                          if (cleanContent) {
+                            finalMessages.push({ type: 'text', content: cleanContent, msg });
+                          }
+                        } else if (msg.type === 'tool_call') {
+                          actions.push({ type: 'tool_call', msg });
+                        } else if (msg.type === 'tool_result') {
+                          actions.push({ type: 'tool_result', msg });
+                        } else if (msg.role === 'system') {
+                          actions.push({ type: 'system', msg });
+                        }
+                      });
+
+                      const isFocused = !isStatic && focus === FOCUS_CHAT && focusableItems[clampedSelectedToolIdx]?.id === `turn_${turn.id}`;
+                      const isExpanded = isStatic || expandedLogIds.has(`turn_${turn.id}`) || (isLastTurn && isProcessingTurn);
                       const focusPrefix = isFocused ? <Text color="cyan">❯ </Text> : <Text>  </Text>;
 
-                      if (msg.role === 'assistant' || msg.role === 'agent') {
-                        const thinkMatch = msg.content.match(/<think>([\s\S]*?)<\/think>/);
-                        let cleanContent = msg.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-                        const imgMatch = cleanContent.match(/🖼️ Image attached: (.*?\.png|.*?\.jpg|.*?\.jpeg|.*?\.webp)/);
-
-                        return (
-                          <Box key={sIdx} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
-                            {thinkMatch && (
-                              <Box flexDirection="column" width="100%" flexShrink={1}>
-                                <Text color={isFocused ? 'cyan' : 'gray'}>
-                                  {focusPrefix}🤔 Thought {isStatic ? '' : `(Press Enter to ${isExpanded ? 'collapse' : 'expand'})`}
-                                </Text>
-                                {isExpanded && (
-                                  <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'} width="100%" flexShrink={1}>
-                                    <Text dimColor wrap="wrap">
-                                      {thinkMatch[1].trim().split('\n').slice(0, 15).join('\n')}
-                                      {thinkMatch[1].trim().split('\n').length > 15 ? '\n... [Thought Truncated for UI]' : ''}
-                                    </Text>
-                                  </Box>
-                                )}
-                              </Box>
-                            )}
-
-                            {cleanContent && (
-                              <Box paddingLeft={2} marginTop={thinkMatch ? 1 : 0} width="100%" flexShrink={1}>
-                                {imgMatch ? (
-                                  <Box borderStyle="single" borderColor="cyan" paddingX={1}>
-                                    <Text>🖼️ Attached: {imgMatch[1]}</Text>
-                                  </Box>
-                                ) : (
-                                  <Text wrap="wrap">{marked.parse(cleanContent.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
-                                )}
-                              </Box>
-                            )}
-                          </Box>
-                        );
-                      }
-
-                      if (msg.type === 'tool_call') {
-                        return (
-                          <Box key={sIdx} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
-                            <Text color={isFocused ? 'cyan' : 'blue'} wrap="wrap">
-                              {focusPrefix}▶ Executed {msg.toolName} {isExpanded ? '' : JSON.stringify(msg.args || {}).substring(0, 40) + '...'}
-                            </Text>
-                            {isExpanded && (
-                              <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'} width="100%" flexShrink={1}>
-                                <Text dimColor wrap="wrap">{JSON.stringify(msg.args || {}, null, 2)}</Text>
-                              </Box>
-                            )}
-                          </Box>
-                        );
-                      }
-
-                      if (msg.type === 'tool_result') {
-                        const resultStr = typeof msg.result === 'string' ? msg.result : JSON.stringify(msg.result, null, 2);
-                        const lines = resultStr.split('\n');
-                        const truncatedStr = lines.length > 20 
-                          ? lines.slice(0, 20).join('\n') + '\n\n... [Result Truncated for UI]' 
-                          : resultStr;
-                        return (
-                          <Box key={sIdx} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
-                            <Text color={isFocused ? 'cyan' : 'green'} wrap="wrap">
-                              {focusPrefix}↙ Result {isExpanded ? '' : (resultStr.substring(0, 40).replace(/\n/g, ' ') + '...')}
-                            </Text>
-                            {isExpanded && (
-                              <Box paddingLeft={4} borderStyle="round" borderColor={isFocused ? 'cyan' : 'gray'} width="100%" flexShrink={1}>
-                                <Text dimColor wrap="wrap">{truncatedStr}</Text>
-                              </Box>
-                            )}
-                          </Box>
-                        );
-                      }
-
-                      if (msg.role === 'system') {
-                        return (
-                          <Box key={sIdx} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
-                            <Box paddingLeft={2} width="100%" flexShrink={1}>
-                              <Text wrap="wrap">{marked.parse((msg.content || '').replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim()}</Text>
+                      return (
+                        <Box flexDirection="column" width="100%" flexShrink={1}>
+                          {actions.length > 0 && (
+                            <Box flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
+                              <Text color={isFocused ? 'cyan' : 'gray'}>
+                                {focusPrefix}
+                                {isExpanded ? '▼' : '▶'} Worked for {isLastTurn && isProcessingTurn ? <Text color="cyan"><Spinner type="dots" /> {status}</Text> : <Text>{duration}s</Text>}
+                              </Text>
+                              
+                              {isExpanded && (
+                                <Box flexDirection="column" paddingLeft={1} borderLeftStyle="single" borderLeftColor="dim" marginLeft={2} marginTop={1} width="100%" flexShrink={1}>
+                                  {actions.map((act, idx) => {
+                                    if (act.type === 'tool_call') {
+                                      const argsStr = JSON.stringify(act.msg.args || {});
+                                      const shortArgs = argsStr.length > 60 ? argsStr.substring(0, 60) + '...' : argsStr;
+                                      return (
+                                        <Text key={idx} color={isFocused ? 'cyan' : 'gray'}>
+                                          {isFocused ? '❯ ' : '  '}▶ <Text bold>Executed</Text> {act.msg.toolName} <Text dimColor>{shortArgs}</Text>
+                                        </Text>
+                                      );
+                                    }
+                                    if (act.type === 'tool_result') {
+                                      const resultStr = typeof act.msg.result === 'string' ? act.msg.result : JSON.stringify(act.msg.result || {});
+                                      const shortResult = resultStr.length > 60 ? resultStr.substring(0, 60) + '...' : resultStr;
+                                      const resStr = typeof act.msg.result === 'string' ? act.msg.result : JSON.stringify(act.msg.result, null, 2);
+                                      const lines = resStr.split('\n');
+                                      const truncatedStr = lines.length > 15 ? lines.slice(0, 15).join('\n') + '\n... [Truncated]' : resStr;
+                                      return (
+                                        <Box key={idx} flexDirection="column" marginY={0} width="100%" flexShrink={1}>
+                                          <Text color="gray">
+                                            {'    '}✔ <Text bold>Result</Text> <Text dimColor>{shortResult}</Text>
+                                          </Text>
+                                          <Box flexDirection="column" paddingLeft={4} marginY={1} width="100%" flexShrink={1}>
+                                            <Box borderStyle="round" borderColor="dim" paddingX={1} width="100%" flexShrink={1}>
+                                              <Text dimColor wrap="wrap">{truncatedStr}</Text>
+                                            </Box>
+                                          </Box>
+                                        </Box>
+                                      );
+                                    }
+                                    if (act.type === 'think') {
+                                      const lines = act.content.split('\n');
+                                      const truncatedStr = lines.length > 10 ? lines.slice(0, 10).join('\n') + '\n... [Truncated]' : act.content;
+                                      return (
+                                        <Box key={idx} marginY={1} width="100%" flexShrink={1}>
+                                          <Text dimColor wrap="wrap">∙ {truncatedStr}</Text>
+                                        </Box>
+                                      );
+                                    }
+                                    if (act.type === 'system') {
+                                      return (
+                                        <Box key={idx} marginY={1} width="100%" flexShrink={1}>
+                                          <Text dimColor wrap="wrap">{act.msg.content}</Text>
+                                        </Box>
+                                      );
+                                    }
+                                    if (act.type === 'image') {
+                                      return <Text key={idx} dimColor>∙ Attached Image: {act.content}</Text>;
+                                    }
+                                    return null;
+                                  })}
+                                </Box>
+                              )}
                             </Box>
-                          </Box>
-                        );
-                      }
-
-                      return null;
-                    })}
+                          )}
+                          
+                          {finalMessages.map((fm, idx) => {
+                            const isLastFinalMsg = isLastTurn && !isProcessingTurn && idx === finalMessages.length - 1;
+                            const rawParsed = marked.parse((fm.content || '').replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m').replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m')).trim();
+                            const displayText = (isLastFinalMsg && !isStatic && revealedLength < Infinity)
+                              ? rawParsed.substring(0, revealedLength)
+                              : rawParsed;
+                            return (
+                              <Box key={idx} borderStyle={fm.msg.isLocal ? undefined : 'round'} borderColor="blue" paddingX={fm.msg.isLocal ? 0 : 1} marginTop={actions.length > 0 ? 1 : 0} marginBottom={1} width="100%" flexShrink={1} flexDirection="column">
+                                {!fm.msg.isLocal && (
+                                  <Box borderBottomStyle="single" borderBottomColor="blue" paddingBottom={0} marginBottom={1} width="100%">
+                                    <Text bold color="blue">Gemini</Text>
+                                  </Box>
+                                )}
+                                <Text wrap="wrap">{displayText}{isLastFinalMsg && !isStatic && revealedLength < Infinity ? <Text color="cyan">▋</Text> : null}</Text>
+                              </Box>
+                            );
+                          })}
+                        </Box>
+                      );
+                    })()}
 
                     {/* Artifacts Summary Box */}
                     {isLastTurn && !isProcessingTurn && (artifacts.task || artifacts.walkthrough) && (
@@ -1286,43 +1548,24 @@ export function App({ agentLoop, wsServer }) {
             );
           };
 
-          const completedTurns = isProcessing ? turns.slice(0, -1) : turns;
-          const activeTurn = isProcessing ? turns[turns.length - 1] : null;
-
-          const staticItems = [{ id: 'app-banner', isBanner: true }, ...completedTurns];
+          const showBannerInStatic = turns.length > 0;
+          const staticItems = showBannerInStatic ? [{ id: 'app-banner', isBanner: true }, ...staticTurns] : staticTurns;
 
           return (
             <>
+              {!showBannerInStatic && renderBanner()}
               {staticItems.length > 0 && (
                 <Static items={staticItems}>
                   {(item) => {
-                    if (item.isBanner) {
-                      return (
-                        <Box key="banner" flexDirection="column" marginBottom={1} width="100%">
-                          <Box borderStyle="round" borderColor="blue" paddingX={2} paddingY={0} width="100%" flexDirection="column">
-                            <Text bold color="cyan">🤖 Gemini Agent CLI</Text>
-                            <Box flexDirection="row" width="100%">
-                              <Text color="gray">Workspace: <Text color="white">{agentLoop.workspace}</Text></Text>
-                              <Box marginLeft={4}>
-                                <Text color="gray">Port: <Text color="white">{wsServer.port || 7777}</Text></Text>
-                              </Box>
-                            </Box>
-                            <Box flexDirection="row" width="100%">
-                              {agentLoop.githubHandler ? (
-                                <Text color="gray">GitHub: <Text color="white">{agentLoop.githubHandler.poller?.username ? `Connected as @${agentLoop.githubHandler.poller.username}` : 'Enabled (Connecting...)'}</Text></Text>
-                              ) : (
-                                <Text color="gray">GitHub: <Text dimColor>Disabled (No GITHUB_TOKEN)</Text></Text>
-                              )}
-                            </Box>
-                          </Box>
-                        </Box>
-                      );
-                    }
+                    if (item.isBanner) return renderBanner();
                     return renderTurn(item, false, false, true);
                   }}
                 </Static>
               )}
-              {activeTurn && renderTurn(activeTurn, true, true, false)}
+              {interactiveTurns.map((turn, idx) => {
+                const isLastTurn = idx === interactiveTurns.length - 1;
+                return renderTurn(turn, isLastTurn, isLastTurn && isProcessing, false);
+              })}
             </>
           );
         })()}
@@ -1367,10 +1610,13 @@ export function App({ agentLoop, wsServer }) {
 
       {/* Status Spinner */}
       {isProcessing && !diffRequest && (
-        <Box marginBottom={1}>
+        <Box flexDirection="column" marginBottom={1}>
           <Text color="cyan">
-            <Spinner type="dots" /> {status}
+            <Spinner type="dots" /> {isToolRunningRef.current ? status : (thinkingDisplayText || status)}
           </Text>
+          {isThinkingTooLong && (
+            <Text color="yellow">  (Taking a while... ensure Chrome is not minimized!)</Text>
+          )}
         </Box>
       )}
 
@@ -1382,15 +1628,15 @@ export function App({ agentLoop, wsServer }) {
             if (!hasExtension) {
               return (
                 <Box marginBottom={1} flexDirection="column">
-                  <Text color="yellow">⚠️ Chrome Extension is not connected.</Text>
-                  <Text color="dim">💡 Tip: Go to chrome://extensions and refresh the Gemini Agent extension</Text>
+                  <Text color="yellow">⚠️ Extension not connected — Ensure a Gemini tab is open in Chrome</Text>
+                  <Text color="dim">💡 Tip: Open gemini.google.com/app and check the extension is enabled</Text>
                 </Box>
               );
             }
             return null;
           })()}
           <Box flexDirection="row">
-            <Text bold color={focus === FOCUS_INPUT ? 'white' : 'gray'}>🤖 &gt; </Text>
+            <Text bold color={focus === FOCUS_INPUT ? 'cyan' : 'gray'}>❯ </Text>
             {focus === FOCUS_INPUT ? (
               <TextInput focus={focus === FOCUS_INPUT} value={input} onChange={setInput} onSubmit={handleSubmit} />
             ) : (
@@ -1410,7 +1656,7 @@ export function App({ agentLoop, wsServer }) {
             onSelect={(item) => {
               setActiveMenu(null);
               agentLoop.answerQuestion(item.value);
-              setHistory(prev => [...prev, { role: 'user', content: `(I answered): ${item.value}` }]);
+              setHistory(prev => [...prev, { role: 'system', content: `[System: You answered: ${item.value}]` }]);
               setFocus(FOCUS_INPUT);
             }}
           />
@@ -1442,7 +1688,7 @@ export function App({ agentLoop, wsServer }) {
               if (item.value === 'reject') statusMsg = 'rejected';
               if (item.value === 'reject_always') statusMsg = 'rejected always (added to blocklist)';
               
-              setHistory(prev => [...prev, { role: 'user', content: `(I ${statusMsg} the command: ${activeMenu.payload.command})` }]);
+              setHistory(prev => [...prev, { role: 'system', content: `[System: You ${statusMsg} the command: ${activeMenu.payload.command}]` }]);
               setFocus(FOCUS_INPUT);
             }}
           />
@@ -1622,47 +1868,46 @@ export function App({ agentLoop, wsServer }) {
 
       {/* Fixed Status Bar */}
       <Box marginTop={1} paddingX={1} flexDirection="column" width="100%" borderTopStyle="single" borderTopColor="gray">
-        <Box flexDirection="row" justifyContent="space-between" width="100%">
-          <Text color="gray">
-            {activeTab === 'agent' ? (
-              <Text>
-                <Text inverse> 🤖 Agent </Text>
-                {' | '}
-                <Text> 📋 GitHub {hasNewGitHubEvent ? '🔴 ' : ''}</Text>
-                {'  '}<Text color="dim">(Press Ctrl+O to switch)</Text>
-              </Text>
-            ) : (
-              <Text>
-                <Text> 🤖 Agent </Text>
-                {' | '}
-                <Text inverse> 📋 GitHub </Text>
-                {'  '}<Text color="dim">(Press Ctrl+O to switch)</Text>
-              </Text>
-            )}
-          </Text>
-          <Text color="gray">
-            {(() => {
-              if (wsServer.clients?.size > 0) {
-                const extClients = Array.from(wsServer.clients.values()).filter(c => c.type === 'extension');
-                let models = [];
-                extClients.forEach(c => { if (c.reportedModels) models.push(...c.reportedModels); });
-                models = [...new Set(models)];
-                return <Text color="green">✅ Ext Connected{models.length > 0 ? ` (Models: ${models.join(', ')})` : ''}</Text>;
-              } else {
-                return <Text color="yellow">⏳ Waiting for Ext</Text>;
-              }
-            })()}
-          </Text>
-        </Box>
-        {activeTab === 'agent' && (
+        {activeTab === 'agent' ? (
           <>
             <Box flexDirection="row" justifyContent="space-between" width="100%">
-              <Text dimColor>[Ctrl+T] Terminal | [Tab] Navigate Logs | [ESC] Focus Input | Context: {history.length}/50</Text>
-              <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} bg tasks` : ''}</Text>
+              <Text>
+                {isProcessing ? <Text color="yellow"><Spinner type="dots" /> Agent</Text> : <Text color={extensionConnected ? 'cyan' : 'yellow'} bold> {extensionConnected ? '🟢' : '🟡'} Agent</Text>}
+                <Text dimColor> | GitHub {hasNewGitHubEvent ? '🔴 ' : ''}(Ctrl+O) </Text>
+              </Text>
+              <Text dimColor>
+                Model: <Text bold>{agentLoop.modelConfig?.modelTier?.toUpperCase() || 'PRO'}</Text> | Tokens: <Text color={tokenColor}>~{syncTokenEstimate.toLocaleString()} / {tokenLimit.toLocaleString()} ({tokenPct}%)</Text>
+              </Text>
             </Box>
             <Box flexDirection="row" justifyContent="space-between" width="100%">
-              <Text dimColor>Mode: <Text bold>{agentLoop.topology?.toUpperCase() || 'SINGLE'}</Text> | Model: <Text bold>{agentLoop.modelConfig?.modelTier?.toUpperCase() || 'PRO'}</Text></Text>
-              <Text dimColor>Tokens: <Text color={tokenColor}>~{syncTokenEstimate.toLocaleString()} / {tokenLimit.toLocaleString()} ({tokenPct}%)</Text></Text>
+              <Text dimColor>
+                [Ctrl+T] Terminal
+              </Text>
+              <Box flexDirection="row">
+                <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} bg tasks  ` : ''}</Text>
+                <Text dimColor>{focus === FOCUS_CHAT ? '[Tab] Input | [↑/↓] Nav | [↵] Toggle' : '[Tab] Nav Logs'} | Context: {history.length}/50</Text>
+              </Box>
+            </Box>
+          </>
+        ) : (
+          <>
+            <Box flexDirection="row" justifyContent="space-between" width="100%">
+              <Text>
+                <Text dimColor> Agent (Ctrl+O) | </Text>
+                <Text color="cyan" bold> 🐙 GitHub</Text>
+              </Text>
+              <Text dimColor>
+                Viewing: <Text bold>{hasNewGitHubEvent ? 'NEW ACTIVITY' : 'IDLE'}</Text>
+              </Text>
+            </Box>
+            <Box flexDirection="row" justifyContent="space-between" width="100%">
+              <Text dimColor>
+                [Ctrl+T] Terminal
+              </Text>
+              <Box flexDirection="row">
+                <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} bg tasks  ` : ''}</Text>
+                <Text dimColor>[Tab] Nav Logs | Context: {history.length}/50</Text>
+              </Box>
             </Box>
           </>
         )}
