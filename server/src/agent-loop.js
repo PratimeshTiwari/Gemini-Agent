@@ -872,6 +872,7 @@ export class AgentLoop {
         type: 'tool_result',
         toolName: call.name,
         result: truncatedResult,
+        success: result.success,
         timestamp: Date.now(),
       };
       this.conversationHistory.push(resultTurn);

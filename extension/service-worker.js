@@ -96,13 +96,6 @@
         }
       }
     }
-    if (originalActiveTabId && originalActiveTabId !== tab.id) {
-      try {
-        await chrome.tabs.update(originalActiveTabId, { active: true });
-      } catch (e) {
-        console.warn("Failed to restore original tab:", e);
-      }
-    }
     return success;
   }
   async function ensureModelTab(targetModel = "gemini") {

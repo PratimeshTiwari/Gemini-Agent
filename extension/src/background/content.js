@@ -69,14 +69,7 @@ async function trySendToTab(tab, message, targetModel) {
     }
   }
 
-  // Restore the user's original active tab
-  if (originalActiveTabId && originalActiveTabId !== tab.id) {
-    try {
-      await chrome.tabs.update(originalActiveTabId, { active: true });
-    } catch (e) {
-      console.warn('Failed to restore original tab:', e);
-    }
-  }
+  // Keep the target model tab active to prevent Chrome from throttling background DOM operations
 
   return success;
 }
