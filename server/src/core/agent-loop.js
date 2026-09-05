@@ -317,6 +317,12 @@ export class AgentLoop {
           timestamp: Date.now(),
         });
       }
+
+      // Unblock _executeToolCalls, which is awaiting the user's decision.
+      if (this.pendingDiffResolve) {
+        this.pendingDiffResolve({ action, result });
+        this.pendingDiffResolve = null;
+      }
     } catch (err) {
       if (this.callbacks) {
         this.callbacks.sendToPanel({
@@ -325,6 +331,11 @@ export class AgentLoop {
           payload: { message: `Diff error: ${err.message}` },
           timestamp: Date.now(),
         });
+      }
+
+      if (this.pendingDiffResolve) {
+        this.pendingDiffResolve({ action: 'reject', error: err.message });
+        this.pendingDiffResolve = null;
       }
     }
   }
@@ -866,15 +877,31 @@ export class AgentLoop {
             timestamp: Date.now(),
           });
         } else {
-          // Request approval
-          this.callbacks.requestDiffApproval({
-            diffId: diffResult.diffId,
-            filePath: diffResult.filePath,
-            patch: diffResult.patch,
-            hunks: diffResult.hunks,
-            riskLevel: risk.level,
-            riskReason: risk.reason,
+          // Request approval and WAIT. Without this the loop used to hand Gemini a
+          // "waiting for approval" result and immediately continue, so the model
+          // replied as if the edit were already under review while the prompt was
+          // still on screen — and the user's answer went to chat, not the diff.
+          const decision = typeof this.callbacks?.requestDiffApproval !== 'function'
+            ? { action: 'reject' } // no UI wired: never block forever
+            : await new Promise((resolve) => {
+            this.pendingDiffResolve = resolve;
+            this.callbacks.requestDiffApproval({
+              diffId: diffResult.diffId,
+              filePath: diffResult.filePath,
+              patch: diffResult.patch,
+              hunks: diffResult.hunks,
+              riskLevel: risk.level,
+              riskReason: risk.reason,
+            });
           });
+
+          const outcome = decision.action === 'accept'
+            ? { success: true, result: `✅ User APPROVED the edit. ${diffResult.filePath} has been written to disk.` }
+            : { success: false, error: `User REJECTED the edit to ${diffResult.filePath}. Do not retry the same edit — ask what they want changed.` };
+
+          // Replace the "pending approval" payload so the model is told what
+          // actually happened, and is not fed the whole patch back.
+          toolResults[i] = { name: call.name, result: outcome.result || outcome.error };
         }
       }
       })();

@@ -755,8 +755,8 @@ export function App({ agentLoop, wsServer }) {
 
   useInput((char, key) => {
     if (diffRequest) {
-      if (char === 'y') handleDiffResponse('accept');
-      if (char === 'n') handleDiffResponse('reject');
+      // Deliberately inert: the diff is answered through the SelectInput below,
+      // so a stray keystroke can never approve or reject an edit.
       return;
     }
 
@@ -1577,7 +1577,24 @@ export function App({ agentLoop, wsServer }) {
       {diffRequest && (
         <Box borderStyle="single" borderColor="yellow" padding={1} flexDirection="column" width="100%" flexShrink={1}>
           <Text bold color="yellow" wrap="wrap">⚠️ Diff Approval Required: {diffRequest.filePath}</Text>
-          <Text wrap="wrap">Approve this change? (y/n)</Text>
+          {diffRequest.hunks?.length > 0 && (
+            <Text dimColor wrap="wrap">
+              {diffRequest.hunks.length} hunk{diffRequest.hunks.length === 1 ? '' : 's'}
+              {diffRequest.riskReason ? ` — ${diffRequest.riskReason}` : ''}
+            </Text>
+          )}
+          <Box marginTop={1}>
+            <SelectInput
+              items={[
+                { label: 'Approve — apply this change', value: 'accept' },
+                { label: 'Reject — discard it', value: 'reject' },
+              ]}
+              onSelect={(item) => {
+                handleDiffResponse(item.value);
+                setFocus(FOCUS_INPUT);
+              }}
+            />
+          </Box>
         </Box>
       )}
 
