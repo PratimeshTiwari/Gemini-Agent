@@ -43,11 +43,11 @@ as a test, including `main.js`, which starts the WebSocket server and hangs fore
 glob is what makes the script work under `sh` (which has no globstar and would otherwise silently
 skip `src/core/risk-classifier.test.js`).
 
-**Expected state: 34 tests, 10 pass, 24 fail.** The 24 failures are pre-existing and behavioural,
-not structural: `plan-generator.test.js` reads `<ws>/.agent/github-pr-plans/PR-42.md` while
-`plan-generator.js` writes `<ws>/<outputDir>/PR-42/<file>`, and `comment-classifier.js`
-mis-classifies its own fixtures. Fixing them means deciding whether the test or the implementation
-is right. Treat 34/10/24 as the invariant any refactor must preserve.
+**Expected state: all tests pass.** They used to be 34/10/24 red: the tests described designs
+the code had replaced — `plan-generator` writes one file per comment under `PR-<n>/` rather than
+one `PR-<n>.md` per PR, and `comment-classifier` stopped categorising by keyword once the AI
+took that over. Both test files were rewritten against the shipped behaviour, so a failure now is
+a real regression.
 
 There is no lint script; `.eslintrc.json` (eslint:recommended) and `.prettierrc`
 (100 cols, single quotes, trailing commas) exist for editor integration.
@@ -66,7 +66,15 @@ server/src/
 ├── github/           # PR agent: poller, comment-classifier, ci-log-parser, plan-generator
 ├── mcp/              # mcp-server.js + tools/
 ├── skills/  storage/  watcher/
-└── ui/               # App.jsx (Ink/React), cli-ui.jsx
+└── ui/               # the terminal front-end
+    ├── cli-ui.jsx    # render(): builds the filtered stdin, mounts MouseProvider
+    ├── App.jsx       # state, effects, layout — everything else is a module
+    ├── mouse.jsx     # click/wheel hit-testing over raw stdin
+    ├── stdin-filter.js  # strips mouse reports before Ink's key parser sees them
+    ├── format.js  constants.js  transcript.js     # pure, tested
+    ├── hooks/        # use-key-bindings, use-slash-commands, use-agent-callbacks
+    └── components/   # Banner, TranscriptTurn, GithubTab, Menus, InputBar,
+                      #   AgentTerminal, Clickable
 ```
 
 Modules are kebab-case; React components keep PascalCase (`ui/App.jsx`). Tests are colocated
@@ -180,10 +188,20 @@ not limitations to route around:
 
 - **`server/src/index.js` is the bin and does nothing but re-spawn `main.js` under `tsx`** —
   the sources contain JSX, so plain `node src/main.js` fails.
-- `App.jsx` is ~1900 lines and performance-sensitive: it avoids re-rendering during streaming
-  to prevent terminal tearing, and uses raw ANSI (`\x1b[1m`) in places because
-  `marked-terminal` mangles inline markdown inside list items. Splitting it is a real project —
-  the two most recent UI commits were both scroll-glitch fixes.
+- `App.jsx` is performance-sensitive: it avoids re-rendering during streaming to prevent
+  terminal tearing, and uses raw ANSI (`\x1b[1m`) in places because `marked-terminal` mangles
+  inline markdown inside list items. It was split into `ui/` modules by moving blocks verbatim
+  behind explicit dependency lists; the `<Static>` element, `staticEpoch` and the streaming
+  path stayed in `App.jsx` deliberately, and adding memoization to the transcript rows is how
+  the scroll glitches came back the last two times.
+- **Ink never reads the real stdin.** `cli-ui.jsx` pipes `process.stdin` through
+  `stdin-filter.js` into a PassThrough and hands *that* to `render()`, because Ink has no mouse
+  parser: a tracked terminal's reports reach `parse-keypress`, fail to match, and get typed into
+  the prompt as literal text. The mouse layer reads the raw fd instead. Anything else that emits
+  a terminal query (a cursor-position report, say) has to be stripped there too, or it lands in
+  the input line. Raw mode belongs to Ink alone — `mouse.jsx` passes xterm-mouse an inert
+  `setRawMode`, since its disable() would otherwise drop the tty back into line mode and Enter
+  would stop submitting.
 - Running the CLI without a TTY fails with Ink's "Raw mode is not supported". That is the
   harness, not a bug — use `script -q /dev/null <cmd>` to test under a pty.
 - Content-script DOM selectors break when the chat sites change; `extractLatestResponse` must

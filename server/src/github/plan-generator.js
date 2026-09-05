@@ -207,7 +207,12 @@ export class PlanGenerator {
       }
       lines.push(`- Matched keywords: ${classification.matchedKeywords.join(', ') || 'None'}`);
       if (!comment.path) lines.push('- No specific file referenced in comment');
-      lines.push(`- **Priority**: ${classification.priority === 3 ? 'High — fix immediately' : classification.priority === 2 ? 'Medium — fix before merge' : 'Low'}`);
+      if (classification.priority !== undefined) {
+        const priority = classification.priority === 3
+          ? 'High — fix immediately'
+          : classification.priority === 2 ? 'Medium — fix before merge' : 'Low';
+        lines.push(`- **Priority**: ${priority}`);
+      }
       lines.push('');
 
       // Generate action items based on category
@@ -330,83 +335,6 @@ export class PlanGenerator {
       ci_failure: '🔴',
     };
     return map[category] || '📝';
-  }
-
-  _generateInitialAnalysis(comment, classification) {
-    switch (classification.category) {
-      case 'spec_missing':
-        return [
-          '- Reviewer has identified missing test coverage',
-          `- Matched keywords: ${classification.matchedKeywords.slice(0, 5).join(', ')}`,
-          comment.path ? `- Affected file: \`${comment.path}\`` : '- No specific file referenced in comment',
-          '- **Priority**: Medium — tests should be added before merge',
-        ].join('\n');
-
-      case 'logic_change':
-        return [
-          '- Reviewer is requesting a change to the implementation approach',
-          `- Matched keywords: ${classification.matchedKeywords.slice(0, 5).join(', ')}`,
-          comment.path ? `- Affected file: \`${comment.path}\`` : '- Review the PR diff for context',
-          '- **Priority**: High — logic changes block merge approval',
-        ].join('\n');
-
-      case 'bug_report':
-        return [
-          '- Reviewer has identified a potential bug or regression',
-          `- Matched keywords: ${classification.matchedKeywords.slice(0, 5).join(', ')}`,
-          comment.path ? `- Affected file: \`${comment.path}\`` : '- Investigate the reported behavior',
-          '- **Priority**: High — bugs must be addressed before merge',
-        ].join('\n');
-
-      case 'question':
-        return [
-          '- Reviewer is asking a question — may not require code changes',
-          '- Consider replying with an explanation or adding a code comment',
-          '- **Priority**: Low — clarification may unblock approval',
-        ].join('\n');
-
-      default:
-        return '- Review the comment and determine next steps';
-    }
-  }
-
-  _generateActionItems(classification) {
-    switch (classification.category) {
-      case 'spec_missing':
-        return [
-          '- [ ] Identify the untested code paths',
-          '- [ ] Write unit tests for the identified functions',
-          '- [ ] Run tests locally to verify coverage',
-          '- [ ] Push the test updates to the PR branch',
-        ];
-
-      case 'logic_change':
-        return [
-          '- [ ] Understand the reviewer\'s suggested approach',
-          '- [ ] Evaluate if the change is necessary or if current approach is valid',
-          '- [ ] Implement the logic change if agreed',
-          '- [ ] Update any affected tests',
-          '- [ ] Reply to the reviewer with the changes made',
-        ];
-
-      case 'bug_report':
-        return [
-          '- [ ] Reproduce the reported bug locally',
-          '- [ ] Identify the root cause',
-          '- [ ] Implement the fix',
-          '- [ ] Add a regression test',
-          '- [ ] Push the fix to the PR branch',
-        ];
-
-      case 'question':
-        return [
-          '- [ ] Draft a reply to the reviewer\'s question',
-          '- [ ] Consider adding a code comment for clarity',
-        ];
-
-      default:
-        return ['- [ ] Review and determine next steps'];
-    }
   }
 
   _generateCIActionItems(ciReport) {

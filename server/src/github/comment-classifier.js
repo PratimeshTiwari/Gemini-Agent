@@ -1,96 +1,14 @@
 /**
  * Comment Classifier
  *
- * Categorizes GitHub PR comments into actionable types using
- * keyword matching and heuristics. No LLM needed for Phase 1.
+ * Decides which GitHub PR comments are worth an AI review pass. Categorising
+ * them is the AI's job now (see github-event-handler._analyzeComment), so this
+ * only has to answer "is this worth a turn?".
  *
  * Categories:
- *   - spec_missing    → Tests/specs needed
- *   - logic_change    → Logic refactor requested
- *   - bug_report      → Bug or regression found
- *   - question        → Reviewer asking a question
- *   - noise           → LGTM, bot comments, etc. (skip)
+ *   - noise            → ignored author, empty body, or an avoid word (skip)
+ *   - requires_review  → everything else
  */
-
-const CATEGORY_RULES = [
-  {
-    category: 'spec_missing',
-    label: 'Missing Specs / Tests',
-    keywords: [
-      'spec', 'test', 'tests', 'coverage', 'missing test', 'add test',
-      'unit test', 'integration test', 'test case', 'no tests',
-      'test coverage', 'untested', 'needs testing', 'write tests',
-    ],
-    patterns: [
-      /(?:add|write|missing|need|no)\s+(?:unit\s+)?tests?/i,
-      /test\s+coverage/i,
-      /spec\s+(?:is\s+)?missing/i,
-      /needs?\s+(?:more\s+)?testing/i,
-    ],
-    priority: 2,
-  },
-  {
-    category: 'logic_change',
-    label: 'Logic Change / Improvement',
-    keywords: [
-      'logic', 'refactor', 'change this', 'wrong approach', 'rethink',
-      'shouldn\'t', 'should be', 'instead of', 'better approach',
-      'needs change', 'needs to change', 'incorrect', 'rework',
-      'restructure', 'redesign', 'wrong', 'fix this', 'update this',
-      'modify', 'rewrite', 'simplify', 'optimize', 'improve', 'feature',
-      'add', 'why', 'how', 'issue'
-    ],
-    patterns: [
-      /(?:this|the)\s+logic\s+(?:needs?|should)/i,
-      /(?:change|update|fix|modify|rewrite|improve)\s+(?:this|the)\s+(?:logic|approach|implementation)/i,
-      /(?:should|could|needs?\s+to)\s+(?:be|use)\s+/i,
-      /instead\s+of\s+/i,
-      /wrong\s+(?:approach|way|logic)/i,
-    ],
-    priority: 2,
-  },
-  {
-    category: 'bug_report',
-    label: 'Bug Report',
-    keywords: [
-      'bug', 'broken', 'doesn\'t work', 'regression', 'crash',
-      'error', 'fail', 'failing', 'exception', 'null pointer',
-      'undefined', 'NaN', 'infinite loop', 'race condition',
-      'memory leak', 'not working', 'breaks',
-    ],
-    patterns: [
-      /(?:this|it)\s+(?:is\s+)?(?:broken|buggy|failing)/i,
-      /(?:doesn't|does\s+not|won't|will\s+not)\s+work/i,
-      /(?:causes?|introduces?)\s+(?:a\s+)?(?:bug|regression|crash)/i,
-      /(?:throw|throws|throwing)\s+(?:an?\s+)?(?:error|exception)/i,
-    ],
-    priority: 3,
-  },
-  {
-    category: 'question',
-    label: 'Reviewer Question',
-    keywords: [],
-    patterns: [
-      /\?\s*$/m,           // Ends with question mark
-      /^(?:why|how|what|when|where|can\s+you|could\s+you)\s+/im,
-    ],
-    priority: 1,
-  },
-  {
-    category: 'noise',
-    label: 'Noise (Skip)',
-    keywords: [
-      'lgtm', 'looks good', 'looks great', 'approved', 'shipit',
-      'ship it', '👍', '🚀', '✅', '+1', 'nit:', 'nit ',
-      'nice work', 'great work', 'well done', 'thanks',
-    ],
-    patterns: [
-      /^(?:lgtm|looks?\s+good|approved|\+1|👍|🚀|✅)\s*$/im,
-      /^nit(?:pick)?[\s:]/im,
-    ],
-    priority: 0,
-  },
-];
 
 export class CommentClassifier {
   /**
