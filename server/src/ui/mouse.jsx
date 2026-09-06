@@ -17,36 +17,25 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Mouse } from 'xterm-mouse';
-import { getBoundingClientRect, getElementDimensions, isPointInRect } from '@ink-tools/ink-mouse';
+import { getBoundingClientRect, getElementDimensions } from '@ink-tools/ink-mouse';
+import { BUTTON_TRACKING, frameOffsets, pickTarget } from './hit-test.js';
 
-/** All-motion tracking. `Mouse.enable()` turns it on with no way to opt out. */
-const MOTION_TRACKING_OFF = '\x1b[?1003l';
 
 const MouseContext = createContext(null);
 
 /**
- * How far down the screen Ink's frame might start, in rows, best guess first.
- *
- * Mouse coordinates are screen rows; yoga's are rows within Ink's own frame,
- * which starts at 1. Everything <Static> has committed scrolls above that
- * frame, so the two only coincide before anything has been printed. Once the
- * transcript outgrows the screen — the normal case — the frame sits flush with
- * the bottom, and the gap is the terminal height minus the frame height.
- *
- * Any registered element reaches the root by walking parents, and the root's
- * height is the frame height.
+ * Ink's frame height, found by walking any registered element up to the root.
+ * The offset search in hit-test.js needs it to place the frame on the screen.
  */
-function candidateOffsets(entries) {
+function frameHeight(entries) {
   for (const entry of entries) {
     let node = entry.ref?.current;
     if (!node) continue;
     while (node.parentNode) node = node.parentNode;
     const height = getElementDimensions(node)?.height;
-    if (!height) continue;
-    const bottomAnchored = Math.max(0, (process.stdout.rows || height) - height);
-    return bottomAnchored > 0 ? [bottomAnchored, 0] : [0];
+    if (height) return height;
   }
-  return [0];
+  return 0;
 }
 
 export function MouseProvider({ children, autoEnable = true }) {
@@ -70,20 +59,20 @@ export function MouseProvider({ children, autoEnable = true }) {
 
     const dispatch = (type) => (event) => {
       const entries = [...handlersRef.current.values()].filter((e) => e.type === type);
+      const candidates = entries.map((entry) => ({
+        entry,
+        rect: getBoundingClientRect(entry.ref?.current),
+      }));
       // Try the bottom-anchored offset first, then no offset at all. Which one
       // is right depends on whether the transcript has outgrown the screen yet,
       // and an element's own bounds are a better test of that than arithmetic:
       // whichever offset actually lands on something is the one in effect.
-      for (const offsetY of candidateOffsets(entries)) {
-        let hit = false;
-        for (const entry of entries) {
-          const rect = getBoundingClientRect(entry.ref?.current);
-          if (rect && isPointInRect(event.x, event.y - offsetY, rect)) {
-            entry.handler(event);
-            hit = true;
-          }
+      for (const offsetY of frameOffsets(frameHeight(entries), process.stdout.rows)) {
+        const target = pickTarget(candidates, event.x, event.y - offsetY);
+        if (target) {
+          target.entry.handler(event);
+          return;
         }
-        if (hit) return;
       }
     };
     const onClick = dispatch('click');
@@ -95,7 +84,7 @@ export function MouseProvider({ children, autoEnable = true }) {
     setSupported(true);
     if (autoEnable) {
       mouse.enable();
-      process.stdout.write(MOTION_TRACKING_OFF);
+      process.stdout.write(BUTTON_TRACKING);
       setEnabled(true);
     }
 
@@ -117,9 +106,7 @@ export function MouseProvider({ children, autoEnable = true }) {
     const mouse = mouseRef.current;
     if (!mouse || enabled) return;
     mouse.enable();
-    // Buttons, drag and wheel are enough; all-motion would put a report on the
-    // wire for every cell the pointer crosses.
-    process.stdout.write(MOTION_TRACKING_OFF);
+    process.stdout.write(BUTTON_TRACKING);
     setEnabled(true);
   }, [enabled]);
 
