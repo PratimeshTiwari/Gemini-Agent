@@ -20,7 +20,6 @@ export async function handleSlashCommand(query, {
   setHistory,
   setIsProcessing,
   setPendingImage,
-  mouseTracking,
 }) {
     const parts = query.slice(1).split(/\s+/);
     const command = parts[0].toLowerCase();
@@ -61,7 +60,6 @@ export async function handleSlashCommand(query, {
           '  /github           - Run GitHub specific commands (e.g., /github refresh)',
           '  /image            - Attach an image (e.g., /image path/to/img.png)',
           '  /paste-image      - Attach image directly from clipboard (macOS only)',
-          '  /mouse            - Toggle mouse tracking (clickable rows)',
           '  /agent-dir        - Open the agent data directory',
           '  /restart          - Restart the server',
           '  /exit             - Quit the agent'
@@ -209,27 +207,9 @@ export async function handleSlashCommand(query, {
       return;
     }
 
-    if (command === 'mouse') {
-      const arg = (args[0] || '').toLowerCase();
-      let msg;
-      if (!mouseTracking.supported) {
-        msg = '⚠️ This terminal does not report mouse events.';
-      } else if (arg === 'on' || (arg === '' && !mouseTracking.enabled)) {
-        mouseTracking.enable();
-        msg = '🖱️ Mouse tracking **on** — click tool rows, slash commands and menus.\n\n'
-          + 'The terminal hands the mouse to the app while this is on: drag-select needs '
-          + 'Option/Shift held, and the wheel no longer scrolls scrollback. `/mouse off` gives them back.';
-      } else {
-        mouseTracking.disable();
-        msg = '🖱️ Mouse tracking **off** — text selection and scrollback are back.';
-      }
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: msg, isLocal: true }]);
-      setIsProcessing(false);
-      return;
-    }
 
     // Handle standard agent loop commands
-    const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'model', 'allowlist', 'github'];
+    const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'model', 'reasoning', 'allowlist', 'github'];
     if (validAgentCommands.includes(command)) {
       const result = await agentLoop.handleSlashCommand(command, args);
       

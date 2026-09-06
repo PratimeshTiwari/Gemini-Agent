@@ -4,7 +4,6 @@ import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import Gradient from 'ink-gradient';
 import crypto from 'crypto';
-import { useMouseTracking } from './mouse.jsx';
 import { Clickable } from './components/Clickable.jsx';
 import { GithubTab } from './components/GithubTab.jsx';
 import { Menus, DiffApproval } from './components/Menus.jsx';
@@ -149,7 +148,6 @@ export function App({ agentLoop, wsServer }) {
   const slashOpen = slashMatches.length > 0;
   const slashSelected = Math.min(slashIdx, Math.max(0, slashMatches.length - 1));
 
-  const mouseTracking = useMouseTracking();
 
   const cycleMode = React.useCallback(() => {
     const next = (agentLoop.mode || 'plan') === 'plan' ? 'auto' : 'plan';
@@ -400,7 +398,6 @@ export function App({ agentLoop, wsServer }) {
         setHistory,
         setIsProcessing,
         setPendingImage,
-        mouseTracking,
       });
       return;
     }
@@ -710,7 +707,7 @@ export function App({ agentLoop, wsServer }) {
             </Box>
             <Box flexDirection="row" justifyContent="space-between" width="100%">
               <Text dimColor>
-                [Ctrl+T] Terminal{mouseTracking.enabled ? ' | 🖱 /mouse off' : ''}
+                [Ctrl+T] Terminal
               </Text>
               <Box flexDirection="row">
                 <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} bg tasks  ` : ''}</Text>
@@ -733,7 +730,7 @@ export function App({ agentLoop, wsServer }) {
             </Box>
             <Box flexDirection="row" justifyContent="space-between" width="100%">
               <Text dimColor>
-                [Ctrl+T] Terminal{mouseTracking.enabled ? ' | 🖱 /mouse off' : ''}
+                [Ctrl+T] Terminal
               </Text>
               <Box flexDirection="row">
                 <Text color="yellow">{tasks.filter(t => t.status === 'running').length > 0 ? `${tasks.filter(t => t.status === 'running').length} bg tasks  ` : ''}</Text>
