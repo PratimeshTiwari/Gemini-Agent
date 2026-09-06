@@ -3,6 +3,7 @@ import { Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { Clickable } from './Clickable.jsx';
+import { formatPollTime } from '../format.js';
 
 /**
  * The GitHub PR dashboard (Ctrl+O).
@@ -40,8 +41,7 @@ export function GithubTab({
   return (
         <Box flexDirection="column" flexGrow={1} borderStyle="single" borderColor="cyan" padding={1}>
           <Text bold color="cyan">📋 GitHub PR Dashboard</Text>
-          
-          
+
           {githubView === "avoid_words" && (
             <Box flexDirection="column" marginTop={1}>
               <Text bold color="yellow">🚫 Avoid Words Editor</Text>
@@ -214,13 +214,21 @@ export function GithubTab({
               <Text dimColor>Press [Ctrl+O] to return to the Agent tab.</Text>
             </Box>
           ) : (
-            <Box borderStyle="round" borderColor="cyan" padding={1} flexDirection="column" width="100%" flexShrink={1}>
-              <Box flexDirection="row" marginBottom={1}>
-                <Text bold color="cyan">📋 GitHub PR Dashboard</Text>
-              </Box>
-              <Box flexDirection="row" marginBottom={1} justifyContent="space-between">
-                <Text>Status: {agentLoop.githubHandler?.getStatus()?.prsWatched || 0} PRs Watched | CI Watch: <Text color="green" bold>{agentLoop.githubHandler?.config?.enableCIWatch ? 'ON' : 'OFF'}</Text></Text>
-                <Text dimColor>Last poll: {agentLoop.githubHandler?.getStatus()?.lastPollTime || 'Never'}</Text>
+            <Box flexDirection="column" width="100%" flexShrink={1}>
+              {/* One wrapping line rather than two competing for the same row:
+                  space-between let the right-hand text overlap the left one on
+                  a narrow terminal. */}
+              <Box marginBottom={1}>
+                <Text wrap="wrap">
+                  <Text bold>{agentLoop.githubHandler?.getStatus()?.prsWatched || 0}</Text>
+                  <Text dimColor>
+                    {' '}PR{(agentLoop.githubHandler?.getStatus()?.prsWatched || 0) === 1 ? '' : 's'} watched · CI watch{' '}
+                  </Text>
+                  <Text bold color={agentLoop.githubHandler?.config?.enableCIWatch ? 'green' : 'gray'}>
+                    {agentLoop.githubHandler?.config?.enableCIWatch ? 'on' : 'off'}
+                  </Text>
+                  <Text dimColor> · polled {formatPollTime(agentLoop.githubHandler?.getStatus()?.lastPollTime)}</Text>
+                </Text>
               </Box>
 
               {agentLoop.githubHandler?._currentAnalysis && (
@@ -231,8 +239,8 @@ export function GithubTab({
                   <Text dimColor>Please wait while the AI generates a plan. Queue size: {agentLoop.githubHandler?._commentQueue?.length || 0}</Text>
                 </Box>
               )}
-              <Box borderStyle="single" borderColor="gray" flexDirection="column" flexGrow={1} padding={1}>
-                <Text bold marginBottom={1}>── Recent Activity ───────────────────────</Text>
+              <Box borderStyle="single" borderColor="gray" flexDirection="column" flexGrow={1} paddingX={1}>
+                <Box marginBottom={1}><Text bold>Recent activity</Text></Box>
                 {githubActivity.length === 0 ? (
                   <Text dimColor>No activity yet. Waiting for PR comments or CI runs...</Text>
                 ) : (
@@ -265,14 +273,16 @@ export function GithubTab({
                           flexDirection="column"
                           marginBottom={1}
                         >
-                          <Text color={isSelected ? 'cyan' : 'white'}>{isSelected ? '❯ ' : '  '}📝 PR #{activity.payload.prNumber} — AI Plan Generated</Text>
-                          <Text dimColor marginLeft={4}>Category: {activity.payload.category}</Text>
-                          {snippet && (
-                            <Box marginLeft={4} flexDirection="column">
-                              <Text dimColor>💬 {snippet}</Text>
-                            </Box>
-                          )}
-                          <Text dimColor marginLeft={4}>→ {activity.payload.filePath.split('/').slice(-2).join('/')}</Text>
+                          <Text color={isSelected ? 'cyan' : 'white'} wrap="truncate">
+                            {isSelected ? '❯ ' : '  '}PR #{activity.payload.prNumber} — plan generated
+                          </Text>
+                          <Box marginLeft={4} flexDirection="column">
+                            <Text dimColor>{activity.payload.category}</Text>
+                            {snippet ? <Text dimColor wrap="wrap">💬 {snippet}</Text> : null}
+                            <Text dimColor wrap="truncate-start">
+                              → {activity.payload.filePath.split('/').slice(-2).join('/')}
+                            </Text>
+                          </Box>
                         </Clickable>
                       );
                     } else if (activity.type === 'github_notification') {
@@ -287,8 +297,9 @@ export function GithubTab({
                 )}
               </Box>
 
-              <Box marginTop={1}>
-                <Text dimColor>[↑/↓] Navigate  [Space] Expand Comment  [Enter] Open Plan  [A] Avoid Words  [P] PR Explorer  [R] Refresh  [Ctrl+O] Agent</Text>
+              <Box marginTop={1} flexDirection="column">
+                <Text dimColor wrap="wrap">↑↓ move · space expand · enter open plan</Text>
+                <Text dimColor wrap="wrap">a avoid words · p PR explorer · r refresh · ctrl+o agent</Text>
               </Box>
             </Box>
           )}

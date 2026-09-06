@@ -109,4 +109,22 @@ export function clampForDisplay(value, maxLines = 15, maxChars = 1200) {
   return clipped ? `${text}\n... [truncated]` : text;
 }
 
+/**
+ * A poll timestamp as something a person reads at a glance.
+ *
+ * The dashboard was printing the raw ISO string, which is both unreadable and
+ * wide enough to collide with the status text beside it.
+ */
+export function formatPollTime(value, now = Date.now()) {
+  if (!value) return 'never';
+  const then = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  if (Number.isNaN(then)) return String(value);
+
+  const secondsAgo = Math.max(0, Math.round((now - then) / 1000));
+  if (secondsAgo < 10) return 'just now';
+  if (secondsAgo < 90) return `${secondsAgo}s ago`;
+  if (secondsAgo < 3600) return `${Math.round(secondsAgo / 60)}m ago`;
+  return new Date(then).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
 export { marked };
