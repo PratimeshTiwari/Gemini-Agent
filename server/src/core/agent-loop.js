@@ -9,6 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { looksLikeMultipleDrafts } from './drift-detector.js';
 import * as paths from './paths.js';
 import { z } from 'zod';
 import { SessionStore } from '../storage/session-store.js';
@@ -140,7 +141,6 @@ export class AgentLoop {
       // Build the full prompt
       const prompt = this.promptBuilder.buildPrompt({
         userMessage: content,
-        conversationHistory: this.conversationHistory,
         mode: this.mode,
         topology: this.topology,
         modelConfig: this.modelConfig,
@@ -221,8 +221,17 @@ export class AgentLoop {
       const extracted = this._extractToolCalls(content);
       toolCalls = extracted.toolCalls;
       cleanContent = extracted.cleanContent;
+
+      // The single-response rule no longer rides on every message; it is
+      // re-asserted when the model actually breaks it.
+      if (looksLikeMultipleDrafts(cleanContent)) {
+        this.promptBuilder.noteDrift();
+      }
     } catch (err) {
       console.warn('⚠️ JSON Parse Error. Self-correcting...', err.message);
+      // A tool call the model could not format is the clearest signal its grip
+      // on the instructions has slipped. Bring the reminder forward.
+      this.promptBuilder.noteDrift();
       
       this.callbacks.sendToPanel({
         id: randomUUID(),
@@ -1032,12 +1041,11 @@ export class AgentLoop {
     }
     await Promise.all(executionPromises);
 
-    // Send tool results back to Gemini for continuation
-    const resultPrompts = toolResults.map(tr =>
-      this.promptBuilder.buildToolResultPrompt(tr.name, tr.result)
-    );
-
-    this._sendToGemini(resultPrompts.join('\n\n'), this.callbacks);
+    // Send tool results back to Gemini for continuation. One message, however
+    // many results it carries — the refresh cadence counts messages pushed to
+    // the tab, and a parallel fan-out is still one push.
+    this.promptBuilder.noteMessageSent();
+    this._sendToGemini(this.promptBuilder.buildToolResultBatch(toolResults), this.callbacks);
   }
 
   _extractToolCalls(content) {
