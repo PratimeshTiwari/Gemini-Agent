@@ -19,7 +19,7 @@ npm install                       # installs both workspaces from the root
 npm run start                     # server with workspace pinned to repo root (../)
 npm run dev                       # same, with tsx --watch
 cd server && npm start -- --workspace /path/to/project   # run against another project
-npm link --workspace=server       # exposes the `gemini-agent` bin globally
+npm link --workspace=server       # exposes the `agent` (and `gemini-agent`) bin globally
 
 npm run build --workspace=extension   # esbuild src/background/main.js -> service-worker.js
 cd vscode-companion && vsce package --allow-missing-repository --skip-license

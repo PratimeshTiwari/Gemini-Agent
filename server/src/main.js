@@ -6,12 +6,12 @@
  * Entry point: starts the WebSocket server, initializes MCP tools,
  * and connects the agent loop.
  *
- * Usage:
- *   gemini-agent                    # Uses cwd as workspace root
- *   gemini-agent --workspace /path  # Explicit workspace root
- *   gemini-agent --port 7777        # Custom port (default: 7777)
- *   gemini-agent --continue         # Resume most recent session
- *   gemini-agent --sessions         # List past sessions
+ * Usage (installed as both `agent` and `gemini-agent`):
+ *   agent                    # Uses cwd as workspace root
+ *   agent --workspace /path  # Explicit workspace root
+ *   agent --port 7777        # Custom port (default: 7777)
+ *   agent --continue         # Resume most recent session
+ *   agent --sessions         # List past sessions
  */
 
 import { resolve, dirname } from 'path';
@@ -88,7 +88,7 @@ function printHelp() {
 ║               🤖 Gemini Agent Server                    ║
 ╚══════════════════════════════════════════════════════════╝
 
-Usage: gemini-agent [options]
+Usage: agent [options]          (alias: gemini-agent)
 
 Options:
   --workspace, -w <path>   Set workspace root (default: cwd)

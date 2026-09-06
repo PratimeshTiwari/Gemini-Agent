@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/index.js",
   "bin": {
+    "agent": "./src/index.js",
     "gemini-agent": "./src/index.js"
   },
   "scripts": {

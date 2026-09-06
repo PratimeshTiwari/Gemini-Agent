@@ -34,7 +34,7 @@ A powerful, Claude Code-style autonomous coding agent that runs locally and conn
    ```bash
    npm install
    ```
-3. *(Optional)* To make the `gemini-agent` CLI command globally available from anywhere, link the server package:
+3. *(Optional)* To make the `agent` CLI command globally available from anywhere, link the server package:
    ```bash
    npm link --workspace=server
    ```
@@ -58,7 +58,7 @@ To enable Editor State Awareness (so the agent knows your cursor position and ac
    ```bash
    npm run start
    ```
-   *(If you ran `npm link` earlier, you can simply type `gemini-agent` in any directory).*
+   *(If you ran `npm link` earlier, just type `agent` in any directory — it uses that directory as the workspace.)*
 3. The server will launch and automatically attempt to open your default model's web interface (e.g., `gemini.google.com`) in Chrome.
 4. The Chrome extension will connect to the local server via WebSockets.
 5. You're ready to start coding! Use the terminal UI to interact, approve file diffs, and spawn background tasks.
