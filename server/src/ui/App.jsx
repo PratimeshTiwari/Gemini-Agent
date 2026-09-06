@@ -373,6 +373,7 @@ export function App({ agentLoop, wsServer }) {
     if (cleanQuery === ':stop' || cleanQuery === '/stop') {
       wsServer.broadcast('extension', { type: 'stop_generation', timestamp: Date.now(), id: Date.now().toString() });
       agentLoop.isProcessing = false;
+      agentLoop.abortExtensionWork();
       if (agentLoop.pendingCommandResolve) {
         agentLoop.pendingCommandResolve({ approved: false });
         agentLoop.pendingCommandResolve = null;
