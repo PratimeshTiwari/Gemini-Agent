@@ -181,8 +181,11 @@ export class WebSocketServer {
         break;
 
       case 'error':
-        // Extension reported an error (e.g. failed to inject)
+        // Extension reported an error (e.g. failed to inject). The turn is
+        // dead, so hand the bridge lock back — otherwise every later prompt
+        // queues behind a request that will never be answered.
         this.agentLoop.isProcessing = false;
+        this.agentLoop.abortExtensionWork();
         if (this.agentLoop.callbacks) {
           this.agentLoop.callbacks.sendToPanel(message);
         }

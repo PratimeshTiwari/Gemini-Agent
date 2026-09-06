@@ -93,6 +93,7 @@ export function buildAgentCallbacks({
         } catch (e) {}
 
         agentLoop.isProcessing = false;
+        agentLoop.abortExtensionWork();
         setIsProcessing(false);
         setHistory(prev => [
           ...prev, 

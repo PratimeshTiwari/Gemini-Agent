@@ -17,6 +17,10 @@ import { ContextManager } from '../context/context-manager.js';
 import { MemoryManager } from '../context/memory-manager.js';
 
 
+// Backstop for a prompt the extension never answers. Longer than the content
+// script's own 5-minute cap so its `timedOut` report wins whenever it is alive.
+const EXTENSION_RESPONSE_TIMEOUT = 7 * 60 * 1000;
+
 // Regex to extract tool calls from Gemini's response (handles json code blocks)
 const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n```/gi;
 
@@ -72,6 +76,7 @@ export class AgentLoop {
     this.isProcessing = false;
     this.extensionQueue = [];
     this.isExtensionBusy = false;
+    this.extensionWatchdog = null;
     this.pendingSubagents = new Map(); // Maps requestId -> { resolve, reject }
     this.githubHandler = null; // Set externally after initialization
 
@@ -159,6 +164,7 @@ export class AgentLoop {
         timestamp: Date.now(),
       });
       this.isProcessing = false;
+      this.abortExtensionWork();
     }
   }
 
@@ -172,6 +178,7 @@ export class AgentLoop {
     // background GitHub tasks use _executeSubagent without setting isProcessing.
     if (!this.isProcessing && !isSubagent) {
       console.warn('[Agent Loop] Received Gemini response but agent is no longer processing (likely stopped).');
+      this._releaseExtension();
       return;
     }
 
@@ -186,8 +193,7 @@ export class AgentLoop {
     if (isSubagent) {
       if (complete) {
         this.handleSubagentResponse(requestId, content, payload.subagentUrl);
-        this.isExtensionBusy = false;
-        this._processExtensionQueue();
+        this._releaseExtension();
       }
       return;
     }
@@ -202,15 +208,13 @@ export class AgentLoop {
           timestamp: Date.now(),
         });
         this.isProcessing = false;
-        this.isExtensionBusy = false;
-        this._processExtensionQueue();
+        this._releaseExtension();
       }
       return;
     }
 
     // Request complete
-    this.isExtensionBusy = false;
-    this._processExtensionQueue();
+    this._releaseExtension();
 
     // (Auto-compaction is now handled silently via background subagents, so the old isCompacting logic is removed from here)
 
@@ -804,8 +808,70 @@ export class AgentLoop {
     if (this.isExtensionBusy || this.extensionQueue.length === 0) return;
     this.isExtensionBusy = true;
     const payload = this.extensionQueue.shift();
+    this._armExtensionWatchdog();
     if (this.callbacks && this.callbacks.injectPrompt) {
       this.callbacks.injectPrompt(payload);
+    }
+  }
+
+  /**
+   * One browser tab, one in-flight prompt: `isExtensionBusy` is the lock.
+   * Every path that ends a turn has to hand it back, or the queue wedges for
+   * the rest of the session and later prompts vanish into it silently.
+   */
+  _releaseExtension() {
+    this._clearExtensionWatchdog();
+    this.isExtensionBusy = false;
+    this._processExtensionQueue();
+  }
+
+  /**
+   * Give up on the in-flight request and drop anything queued behind it.
+   * Used when a turn dies rather than completes — an injection error, a
+   * user stop, an exception while building the prompt. The queued prompts
+   * belong to that dead turn, so replaying them would be wrong.
+   */
+  abortExtensionWork() {
+    this._clearExtensionWatchdog();
+    this.extensionQueue.length = 0;
+    this.isExtensionBusy = false;
+    this.pendingGeminiResponse = null;
+  }
+
+  /**
+   * The content script gives up after RESPONSE_MAX_TIMEOUT (5 min) and reports
+   * `timedOut`. This is the backstop for when it never gets the message at all
+   * — an asleep service worker, a tab with no bridge — where nothing would come
+   * back and the CLI would sit on "Thinking..." forever.
+   */
+  _armExtensionWatchdog() {
+    this._clearExtensionWatchdog();
+    this.extensionWatchdog = setTimeout(() => {
+      this.extensionWatchdog = null;
+      if (!this.isExtensionBusy) return;
+      console.warn('[Agent Loop] No response from the extension bridge; releasing it.');
+      this.isProcessing = false;
+      if (this.callbacks) {
+        this.callbacks.sendToPanel({
+          id: randomUUID(),
+          type: 'error',
+          payload: {
+            message:
+              'No response from the browser bridge. Check that the extension is loaded ' +
+              'and a gemini.google.com tab is open, then try again.',
+          },
+          timestamp: Date.now(),
+        });
+      }
+      this.abortExtensionWork();
+    }, EXTENSION_RESPONSE_TIMEOUT);
+    this.extensionWatchdog.unref?.();
+  }
+
+  _clearExtensionWatchdog() {
+    if (this.extensionWatchdog) {
+      clearTimeout(this.extensionWatchdog);
+      this.extensionWatchdog = null;
     }
   }
 
