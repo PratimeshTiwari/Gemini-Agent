@@ -771,7 +771,19 @@ export class AgentLoop {
   _saveConfig() {
     const configPath = paths.ensureParent(paths.configPath(this.workspace));
     try {
+      // Merge over whatever is on disk rather than replacing it. This used to
+      // write a fixed set of four keys, which silently destroyed every other
+      // one — `agentName` is set by hand and only ever read (by the banner), so
+      // the first /model or /reasoning wiped it.
+      let existing = {};
+      try {
+        existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (!existing || typeof existing !== 'object' || Array.isArray(existing)) existing = {};
+      } catch {
+        /* absent or unparseable: start from nothing rather than refuse to save */
+      }
       fs.writeFileSync(configPath, JSON.stringify({
+        ...existing,
         topology: this.topology,
         modelConfig: this.modelConfig,
         commandRules: this.commandRules,
