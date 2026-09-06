@@ -613,15 +613,27 @@ export function App({ agentLoop, wsServer }) {
       {/* Tool Calls (Expandable) */}
       {activeToolCalls.length > 0 && (
         <Box flexDirection="column" marginBottom={1} borderStyle="single" borderColor="dim" padding={1}>
-          <Text dimColor bold>⚙️ Tool Executions (click to expand)</Text>
+          <Text dimColor bold>
+            {activeToolCalls.filter((c) => c.result === undefined).length > 0 ? 'Running' : 'Ran'}
+            {' '}{activeToolCalls.length} tool{activeToolCalls.length === 1 ? '' : 's'}
+            <Text dimColor> · click to expand</Text>
+          </Text>
           {activeToolCalls.map((call, idx) => {
             const isExpanded = expandedLogIds.has(call.id);
             
             return (
               <Box key={call.id} flexDirection="column" marginLeft={1}>
                 <Clickable onClick={() => toggleExpanded(call.id)}>
-                  <Text color="gray">
-                    {'  '}{isExpanded ? '▼' : '▶'} {call.name} {call.success === false ? '❌' : (call.result ? '✅' : '⏳')}
+                  <Text color={call.result === undefined ? 'cyan' : 'gray'}>
+                    {'  '}{isExpanded ? '▼' : '▶'}{' '}
+                    {/* A running call gets a live spinner; a settled one keeps
+                        its mark, so the eye lands on what is still moving. */}
+                    {call.success === false
+                      ? '✖'
+                      : call.result !== undefined
+                        ? '✔'
+                        : <Text color="cyan"><Spinner type="dots" /></Text>}
+                    {' '}{call.name}
                   </Text>
                 </Clickable>
                 
