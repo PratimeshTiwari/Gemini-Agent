@@ -118,6 +118,8 @@ export function App({ agentLoop, wsServer }) {
   const [artifacts, setArtifacts] = useState({ task: null, walkthrough: null });
   const [inputHistory, setInputHistory] = useState([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
+  // Set while the input line holds a recalled history entry rather than typing.
+  const [paletteSuppressed, setPaletteSuppressed] = useState(false);
   // Set by the key bindings when Enter carried a modifier, read by InputBar's
   // deferred submit. A ref because the two run in the same event dispatch.
   const newlineRef = useRef(false);
@@ -140,8 +142,13 @@ export function App({ agentLoop, wsServer }) {
    * Discard everything already painted, including Ink's committed <Static>
    * output and the terminal scrollback, so a cleared session really is clear.
    */
-  // The palette is open whenever the input is a bare "/word" with no argument yet.
-  const slashQuery = focus === FOCUS_INPUT && /^\/[a-z-]*$/i.test(input) ? input.slice(1).toLowerCase() : null;
+  // The palette is open whenever the user has *typed* a bare "/word" with no
+  // argument yet. Recalling one from history does not count: the palette's ↑/↓
+  // handler runs ahead of the history one, so an opened palette would strand
+  // the user with both arrows dead until they cleared the line.
+  const slashQuery = focus === FOCUS_INPUT && !paletteSuppressed && /^\/[a-z-]*$/i.test(input)
+    ? input.slice(1).toLowerCase()
+    : null;
   const slashMatches = slashQuery === null
     ? []
     : SLASH_COMMANDS.filter((c) => c.name.startsWith(slashQuery)).slice(0, 8);
@@ -446,6 +453,7 @@ export function App({ agentLoop, wsServer }) {
     githubView,
     handleSubmit,
     historyIdx,
+    setPaletteSuppressed,
     inputHistory,
     isProcessing,
     latestTurnId,
@@ -638,6 +646,7 @@ export function App({ agentLoop, wsServer }) {
       />
 
       <InputBar
+        setPaletteSuppressed={setPaletteSuppressed}
         activeMenu={activeMenu}
         cycleMode={cycleMode}
         diffRequest={diffRequest}

@@ -10,9 +10,10 @@ import { FOCUS_INPUT, FOCUS_TERMINAL } from '../constants.js';
  * Shift+Tab is checked ahead of plain Tab, which would otherwise eat it.
  *
  * There is no selection model in the transcript — rows are opened by clicking
- * them, with Ctrl+E as the way in when the mouse isn't available (`/mouse off`,
- * tmux without mouse mode, a bare ssh session). That keeps ↑/↓ meaning one
- * thing: input history.
+ * them, with Ctrl+E as the way in when the mouse isn't available (tmux without
+ * mouse mode, a bare ssh session). That keeps ↑/↓ meaning one thing: input
+ * history — which is why recalling a "/command" suppresses the slash palette
+ * rather than handing it these arrows.
  */
 export function useKeyBindings({
   activeTab,
@@ -43,6 +44,7 @@ export function useKeyBindings({
   setHasNewGitHubEvent,
   setHistoryIdx,
   setInput,
+  setPaletteSuppressed,
   setLoadingPrComments,
   setLoadingPrs,
   setPrComments,
@@ -279,6 +281,9 @@ export function useKeyBindings({
           const nextIdx = historyIdx === -1 ? inputHistory.length - 1 : Math.max(0, historyIdx - 1);
           setHistoryIdx(nextIdx);
           setInput(inputHistory[nextIdx]);
+          // A recalled "/command" must not open the palette, which would take
+          // these very arrows over and strand the user mid-scroll.
+          setPaletteSuppressed(true);
         }
         return;
       }
@@ -288,9 +293,11 @@ export function useKeyBindings({
           if (nextIdx >= inputHistory.length) {
             setHistoryIdx(-1);
             setInput('');
+            setPaletteSuppressed(false);
           } else {
             setHistoryIdx(nextIdx);
             setInput(inputHistory[nextIdx]);
+            setPaletteSuppressed(true);
           }
         }
         return;

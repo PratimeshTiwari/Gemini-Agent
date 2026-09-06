@@ -16,6 +16,7 @@ export function InputBar({
   activeMenu,
   cycleMode,
   diffRequest,
+  setPaletteSuppressed,
   elapsed,
   extensionConnected,
   focus,
@@ -100,6 +101,8 @@ export function InputBar({
                 onChange={(v) => {
                   setInput(v);
                   setSlashIdx(0);
+                  // Typing is what opens the palette; history recall is not.
+                  setPaletteSuppressed(false);
                 }}
                 onSubmit={(value) => {
                   // TextInput's own useInput is registered before ours (child
