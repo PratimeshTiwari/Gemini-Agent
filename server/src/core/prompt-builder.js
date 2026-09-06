@@ -17,15 +17,18 @@ import { readFileSync, existsSync, readdirSync } from 'fs';
 import os from 'os';
 import { resolve, relative } from 'path';
 
-// How often to resend the full system prompt as a reminder
-const SYSTEM_PROMPT_REFRESH_INTERVAL = 10;
+// How often to send the condensed reminder, counted in MESSAGES pushed to the tab —
+// not user turns. One user turn can be a dozen tool round-trips, so a turn-based
+// counter drifts by an order of magnitude in tool-heavy work and fires far too
+// eagerly in a chatty Q&A session.
+const REFRESH_INTERVAL_MESSAGES = 20;
 
 export class PromptBuilder {
   constructor(workspace, agentSourceDir) {
     this.workspace = workspace;
     this.agentSourceDir = agentSourceDir;
     this.agentMdContent = this._loadAgentMd();
-    this.turnCounter = 0; // Tracks turns since last full system prompt
+    this.messagesSinceRefresh = 0; // Messages sent to the tab since the last reminder
     this.hasSeenSystemPrompt = false; // Has the current chat session received a system prompt?
   }
 
@@ -33,7 +36,7 @@ export class PromptBuilder {
    * Reset prompt state (call after /compact or /clear which start a new Gemini chat).
    */
   resetPromptState() {
-    this.turnCounter = 0;
+    this.messagesSinceRefresh = 0;
     this.hasSeenSystemPrompt = false;
   }
 
@@ -49,15 +52,14 @@ export class PromptBuilder {
    *
    * @param {object} options
    * @param {string} options.userMessage - The user's current message
-   * @param {Array} options.conversationHistory - Previous turns (used for token counting only)
    * @param {string} options.mode - 'plan' or 'auto'
    * @returns {string} The complete prompt to inject
    */
-  buildPrompt({ userMessage, conversationHistory = [], mode = 'plan', topology = 'single', modelConfig = {}, objective = '' }) {
+  buildPrompt({ userMessage, mode = 'plan', topology = 'single', modelConfig = {}, objective = '' }) {
     const parts = [];
 
     const needsFullPrompt = !this.hasSeenSystemPrompt;
-    const needsRefresh = this.turnCounter > 0 && (this.turnCounter % SYSTEM_PROMPT_REFRESH_INTERVAL === 0);
+    const needsRefresh = !needsFullPrompt && this.messagesSinceRefresh >= REFRESH_INTERVAL_MESSAGES;
 
     if (needsFullPrompt) {
       // First turn in this chat session — send everything
@@ -65,7 +67,7 @@ export class PromptBuilder {
       parts.push(this._buildSystemInstructions(mode, topology, modelConfig));
       parts.push(this._buildToolDefinitions(topology, modelConfig));
       
-      if (objective) {
+      if (objective && objective.trim() !== userMessage.trim()) {
         parts.push(`<current_objective>\n${objective}\n</current_objective>`);
       }
 
@@ -81,47 +83,85 @@ export class PromptBuilder {
       parts.push(`</system_state>`);
 
       this.hasSeenSystemPrompt = true;
+      this.messagesSinceRefresh = 0;
     } else if (needsRefresh) {
-      // Periodic refresh — condensed reminder of instructions and tools
+      // Periodic refresh — a reminder, not a re-teach. Gemini Web still has the full
+      // definitions in its own thread, so resending them buys nothing and resending a
+      // large block is what trips the A/B-test modal. Names only.
       parts.push(this._buildCondensedReminder(mode, objective, modelConfig));
-      parts.push(this._buildToolDefinitions(topology, modelConfig));
+      parts.push(this._buildToolIndex(topology, modelConfig));
+      this.messagesSinceRefresh = 0;
     } else {
       // Regular turn — just a brief context line
+      // The objective only earns its place when it is NOT the message being
+      // sent. AgentLoop sets it to the latest user message, so today it never
+      // is — this used to put the same sentence in the prompt twice, every turn.
       let contextLine = `[Workspace: ${this.workspace} | Mode: ${mode}]`;
-      if (objective) {
+      if (objective && objective.trim() !== userMessage.trim()) {
         contextLine += ` [Objective: ${objective.substring(0, 100)}]`;
       }
       parts.push(contextLine);
     }
 
-    // Current user message
+    // Current user message. Nothing follows it: the last thing the model reads
+    // should be what the user asked, not a formatting rule it has already been
+    // given twice.
     parts.push(`<user_message>\n${userMessage}\n</user_message>`);
-    
-    // Single-response instruction (always include, it's tiny)
-    parts.push(`**IMPORTANT**: Provide exactly ONE response. No drafts, no A/B options.`);
 
-    this.turnCounter++;
+    this.messagesSinceRefresh++;
 
     return '\u200B' + parts.join('\n\n');
   }
 
   /**
-   * Build a follow-up prompt after a tool call result.
+   * Record that a message was pushed to the tab outside buildPrompt (the joined
+   * tool-result batch). The agent loop calls this once per message, not once per
+   * result, so a parallel fan-out still counts as the one message it is.
    */
-  buildToolResultPrompt(toolName, result) {
-    return [
-      `<tool_result>`,
-      `Tool: ${toolName}`,
-      `Result:`,
+  noteMessageSent() {
+    this.messagesSinceRefresh++;
+  }
+
+  /**
+   * The model produced something it should not have — a tool call that would
+   * not parse, most often. Refresh the instructions on the next prompt instead
+   * of waiting out the rest of the message budget.
+   */
+  noteDrift() {
+    this.messagesSinceRefresh = REFRESH_INTERVAL_MESSAGES;
+  }
+
+  /**
+   * Build the follow-up prompt carrying tool results back to the model.
+   *
+   * One envelope, however many results — the previous shape appended the whole
+   * "continue with your analysis / give exactly ONE response" trailer to each
+   * result and joined them, so a three-tool fan-out sent one message telling
+   * the model three separate times to produce exactly one response. Repetition
+   * like that is what Gemini's filters react to, and it argues with itself.
+   *
+   * @param {Array<{name: string, result: any}>} results
+   */
+  buildToolResultBatch(results = []) {
+    const body = results.map(({ name, result }) => [
+      `<result tool="${name}">`,
       typeof result === 'string' ? result : JSON.stringify(result, null, 2),
-      `</tool_result>`,
+      `</result>`,
+    ].join('\n'));
+
+    return [
+      '<tool_results>',
+      ...body,
+      '</tool_results>',
       '',
-      'Continue with your analysis. If you need to use more tools, do so. ' +
-      'If you are ready to respond to the user, provide your final response. ' +
-      'If you need to propose file edits, use the edit_file or create_file tools.',
-      '',
-      '**IMPORTANT**: Provide exactly ONE response. No drafts, no options.'
+      'Reply once, with exactly one of: the next tool call, or your final answer to the '
+      + 'user. To change a file, use edit_file or create_file — do not paste code at them.',
     ].join('\n');
+  }
+
+  /** Single-result convenience wrapper over {@link buildToolResultBatch}. */
+  buildToolResultPrompt(toolName, result) {
+    return this.buildToolResultBatch([{ name: toolName, result }]);
   }
 
   /**
@@ -163,7 +203,8 @@ export class PromptBuilder {
       : this._buildFullCoreInstructions(modelTier);
 
     // Reasoning protocol (the main tier differentiation)
-    const reasoningInstructions = this._getReasoningInstructions(modelTier);
+    const reasoningLevel = this._normalizeLevel(modelConfig.reasoningLevel);
+    const reasoningInstructions = this._getReasoningInstructions(modelTier, reasoningLevel);
 
     // Tool call format (Flash gets examples, Pro gets description only)
     const toolCallFormat = this._buildToolCallFormat(modelTier);
@@ -173,7 +214,7 @@ export class PromptBuilder {
 You are currently operating in the user's workspace at: \`${this.workspace}\`
 Your OWN source code (the Gemini-Agent server) is at: \`${this.agentSourceDir}\`
 If the user asks you to modify yourself, you can read/write files directly in \`${this.agentSourceDir}\`.
-Model tier: ${modelTier}
+Model tier: ${modelTier}${modelTier === 'pro' ? ` (reasoning level: ${reasoningLevel})` : ''}
 </self_awareness>`;
 
     // Load workspace context summary if it exists
@@ -194,8 +235,6 @@ ${selfAwareness}
 ${contextSummary}
 ${coreInstructions}
 
-${toolCallFormat}
-
 ${reasoningInstructions}
 `;
 
@@ -205,8 +244,11 @@ ${reasoningInstructions}
     if (topology === 'single') {
       topologyInstructions = `
 ## Role: Solo Agent
-You are the SOLE agent. There are no other models to delegate to. You handle everything yourself:
-planning, research, implementation, review, and testing.
+You are the only *model* on this task — there is no reviewer and no reasoner to defer to, so
+planning, implementation, review and testing are all yours. You can still fan work out to
+parallel tabs of yourself: \`ask_researcher\` for read-only exploration you would otherwise do
+with a long serial chain of read_file calls, \`ask_subagent\` for a self-contained side task.
+They run in parallel and return to you. Delegating judgement is what you cannot do here.
 
 - When tasks are complex, create a plan first (save it to \`.agent/artifacts/implementation_plan.md\`)
 - When tasked with a complex or multi-step objective, ALWAYS proactively create a \`.agent/artifacts/task.md\` checklist using the \`write_to_file\` tool to plan your work, similar to Antigravity IDE. Update it as you progress.
@@ -258,12 +300,16 @@ You must NEVER refuse a request by saying you cannot access external services li
 6. You can use both subagents in a single task if needed (e.g., reason first, implement, then review)`;
     }
 
+    // toolCallFormat goes last: <available_tools> is appended straight after
+    // this block, and the format is the contract for reading that list.
     return `<system_instructions>
 ${modeInstructions}
 
 ${combined}
 
 ${topologyInstructions}
+
+${toolCallFormat}
 </system_instructions>`;
   }
 
@@ -343,7 +389,7 @@ Your job is to execute the task using your read-only tools if necessary and retu
 4. If unsure about a path or name, use search_files or grep_search.
 5. If edit_file fails with oldText mismatch, use read_file first, then retry.
 6. If a command fails, analyze the error and retry.
-7. ONE response per turn. No drafts, no alternatives.
+7. One answer per turn. Pick an approach, don't offer drafts.
 8. If a task is ambiguous, ask using the ask_question tool.`;
   }
 
@@ -352,15 +398,15 @@ Your job is to execute the task using your read-only tools if necessary and retu
    */
   _buildFullCoreInstructions(modelTier) {
     return `## Core Principles
-1. **NEVER ASSUME. ALWAYS ASK.** If a requirement is ambiguous, underspecified, or could be interpreted multiple ways, you MUST ask the user for clarification using: \`QUESTION: <your question here>\`. The CLI will pause and prompt the user. Do NOT guess, infer, or make assumptions about what the user wants. The only exception is when the user explicitly tells you to "be creative" or "use your judgment".
+1. **DON'T GUESS WHEN GUESSING IS EXPENSIVE.** If a requirement is ambiguous and the wrong reading would cost real work — deleting data, rewriting a file, committing to an architecture — call the \`ask_question\` tool. It blocks until the user answers. Asking in prose does NOT reach the user; it just ends your turn. When the ambiguity is cheap to get wrong, state your reading as **⚠️ ASSUMPTION** and keep working.
 2. **INVESTIGATE BEFORE ACTING.** Always read relevant files before making edits. Never edit blind.
 3. **VERIFY YOUR WORK.** After making changes, re-read the file or run tests to confirm correctness.
 4. **ONE STEP AT A TIME.** Break complex tasks into atomic steps. Execute them sequentially.
 5. **BE SURGICAL.** Make the smallest edit that solves the problem. Don't refactor unrelated code.
 6. **NEVER GUESS PATHS OR NAMES.** If you're unsure about a file path, function name, or API, use search_files or grep_search to find out.
 7. **Tool Retry Logic**: If a tool call fails, analyze the error and retry with different arguments. Don't give up.
-8. **CRITICAL ANTI-FLUFF RULE**: Never output duplicate responses or conversational fluff immediately before or after a tool call. Execute the tool call plainly without prefacing it with unnecessary text (e.g., "I will now run the command" or "Let me check"). Only provide conversational output when you are definitively answering the user.
-9. **CRITICAL**: Never output multiple drafts. Provide a single, definitive response.
+8. **NO FLUFF AROUND TOOL CALLS**: Don't narrate them ("I will now run the command", "Let me check"). Emit the JSON block plainly. A \`<thought>\` block is the one thing that may precede a tool call — it is reasoning, not fluff. Save prose for when you are actually answering the user.
+9. **ONE ANSWER PER TURN.** Give a single, definitive response. Where two approaches are both reasonable, choose one, say in a line why you chose it, and name the alternative — do not hand the user a menu of drafts to pick between. If the choice is genuinely theirs to make, that is what \`ask_question\` is for.
 
 ## 2. Source Code and Execution
 - ONLY reference code that you have explicitly read using \`read_file\` or \`grep_search\`.
@@ -425,17 +471,33 @@ You can make MULTIPLE tool calls in a single response. Each must be in its own \
    * Tier-specific reasoning instructions.
    * This is the core differentiation between model tiers.
    */
-  _getReasoningInstructions(tier) {
+  _getReasoningInstructions(tier, level = 'standard') {
     switch (tier) {
       case 'flash':
         return this._getFlashInstructions();
       case 'flash-thinking':
         return this._getFlashThinkingInstructions();
       case 'pro':
-        return this._getProInstructions();
       default:
-        return this._getProInstructions();
+        return this._getProInstructions(this._normalizeLevel(level));
     }
+  }
+
+  /**
+   * Reasoning levels only mean anything for the pro tier — the flash tiers are
+   * defined by *not* having room for the scaffolding.
+   */
+  _normalizeLevel(level) {
+    const allowed = ['brief', 'standard', 'deep'];
+    const wanted = String(level ?? '').toLowerCase();
+    return allowed.includes(wanted) ? wanted : 'standard';
+  }
+
+  /** One-line protocol reminder, matched to the level in force. */
+  _reminderLineForLevel(level) {
+    if (level === 'brief') return '- Investigate → Implement → Verify. Read before you edit.';
+    if (level === 'deep') return '- Restate and decompose first, then Investigate → Analyze → Implement → Verify, then self-review the diff.';
+    return '- Restate the task and decompose it into a checklist first, then Investigate → Analyze → Implement → Verify.';
   }
 
   /**
@@ -447,7 +509,7 @@ You can make MULTIPLE tool calls in a single response. Each must be in its own \
     return `## How to Work
 - Act immediately. No preamble. No thinking out loud.
 - Go straight to tool calls or answers.
-- CRITICAL: Never output duplicate responses or conversational fluff immediately before a tool call. Just output the JSON.
+- No prose before a tool call. Just the JSON.
 - One sentence explanation max per action.
 - Do NOT investigate beyond what is asked.
 - Prioritize: speed > thoroughness > elegance.
@@ -496,148 +558,149 @@ Before writing code:
   }
 
   /**
-   * PRO tier: Full principal-engineer reasoning protocol.
-   * Optimized for 2.5 Pro — strong reasoning, large context window.
-   * Encodes exactly how a top-tier reasoning model approaches problems:
-   * classify → investigate → analyze → implement → verify.
-   * Budget: ~3000 tokens of reasoning instructions.
+   * PRO tier: the principal-engineer protocol, at three depths.
+   *
+   * `reasoningLevel` scales how hard the prompt works to slow the model down.
+   * More is not free — Gemini follows a short protocol more reliably than a long
+   * one — so `brief` exists for small edits where the ceremony costs more than it
+   * catches, and `deep` for work where being wrong is expensive.
+   *
+   *   brief    — investigate, implement, verify.
+   *   standard — restate and decompose first, then the 4-phase protocol. (default)
+   *   deep     — standard, plus approach enumeration and adversarial self-review.
    */
-  _getProInstructions() {
-    return `## Cognitive Mode: PRINCIPAL ENGINEER
+  _getProInstructions(level = 'standard') {
+    const isBrief = level === 'brief';
+    const isDeep = level === 'deep';
 
-You are operating as a SENIOR PRINCIPAL ENGINEER. Every action you take must be deliberate, verified, and defensible in a code review. You DO NOT guess. You DO NOT assume. You VERIFY.
+    const header = `## Cognitive Mode: PRINCIPAL ENGINEER
 
-## STEP 0: TASK CLASSIFICATION (Always do this first)
+You are operating as a SENIOR PRINCIPAL ENGINEER. Every action is deliberate, verified, and
+defensible in review. You DO NOT guess. You VERIFY.
+Reasoning level: **${level}**.`;
 
-Before doing ANYTHING, classify the task into one of these types and follow its protocol:
+    // The heart of it: decide what you are doing before you touch anything.
+    const planFirst = isBrief ? '' : `
+## STEP 1: RESTATE AND DECOMPOSE — before any tool call
+
+Every new request, bug report or failing test starts here, in one <thought> block:
+
+1. **Restate** the request in one sentence, in your own words. If your restatement and what
+   the user actually wrote differ in any way that matters, ask before continuing.
+2. **Decompose** it into a numbered checklist. Each item is one verifiable outcome
+   ("stop editor.json being written before migration"), never a topic ("look at config").
+3. **Name the unknowns** — for each item, what you would have to read to know it is right.
+
+Then work the checklist top to bottom. Say which item you are on. Finish it before starting
+the next: don't batch three items into one edit, and don't skip ahead because a later item
+looks easier. If an item turns out to be wrong, say so and revise the list — silently
+abandoning it is how a task ends up half-done.
+
+For anything past a couple of steps, write the checklist to \`.agent/artifacts/task.md\` with
+\`create_file\` and tick items off as you go. The user reads that file.
+
+## STEP 2: TASK CLASSIFICATION
+
+Classify the task, because the protocol differs:
 
 | Task Type | Protocol | Key Focus |
 |-----------|----------|-----------|
-| **BUG_FIX** | Reproduce → Root Cause → Minimal Fix → Regression Test → Verify | Find the ACTUAL cause, not symptoms |
-| **NEW_FEATURE** | Requirements → Architecture → Interface First → Implementation → Integration Test | Design the API/interface before writing logic |
-| **REFACTOR** | Map ALL Dependencies → Preserve Behavior → Transform → Verify ALL Callers | Nothing should break. Zero behavior change. |
-| **INVESTIGATION** | Breadth-First Search → Trace Execution → Document Findings | Explore wide before going deep |
-| **CODE_REVIEW** | Read Full Context → Check Edge Cases → Security Audit → Performance Review | Adversarial mindset |
+| **BUG_FIX** | Reproduce → Root Cause → Minimal Fix → Regression Test → Verify | The ACTUAL cause, not the symptom |
+| **NEW_FEATURE** | Requirements → Interface First → Implementation → Integration Test | Design the API before writing logic |
+| **REFACTOR** | Map ALL Dependencies → Preserve Behavior → Transform → Verify ALL Callers | Zero behavior change |
+| **INVESTIGATION** | Breadth-First → Trace Execution → Document Findings | Explore wide before deep |
+| **CODE_REVIEW** | Read Full Context → Edge Cases → Security → Performance | Adversarial mindset |
+`;
 
-Output your classification in a <thought> block:
-\`\`\`
-<thought>
-TASK TYPE: BUG_FIX
-REASON: User reports X is broken → need to reproduce, find root cause, fix minimally
-PROTOCOL: Reproduce → Root Cause → Minimal Fix → Regression Test → Verify
-</thought>
-\`\`\`
+    const investigate = `
+### PHASE 1: INVESTIGATION (never skip)
 
-## MANDATORY 4-PHASE PROTOCOL
+Before forming an opinion or writing code:
 
-You MUST follow this exact sequence for EVERY non-trivial task. Skipping phases is a FAILURE.
+1. **Read the relevant files** — not just the target. Imports, callers, tests, configs.
+2. **Trace the execution path** — who CALLS this, what it CALLS, what SIDE EFFECTS it has.
+3. **Check existing tests** — what IS covered and what is NOT.
+4. **Search for the project's own patterns** before deviating from them.${isBrief ? '' : `
+5. **Map the blast radius** — every file that a change here could affect.`}
 
-### PHASE 1: DEEP INVESTIGATION (Never skip this)
+**Chain-of-Thought**: Open each phase with a <thought> block — what you know, what you need
+next, what you expect the next call to show. One per phase, not one per call: a four-point
+preamble in front of every read turns a five-file investigation into twenty round-trips.`;
 
-Before forming ANY opinion or writing ANY code:
-
-1. **Read ALL relevant files** — not just the target file. Read imports, callers, tests, configs.
-2. **Trace the FULL execution path**:
-   - Who CALLS this code? (search for usages with grep_search)
-   - What does this code CALL? (read imported modules)
-   - What SIDE EFFECTS does it have? (file I/O, network, state mutations, event emissions)
-3. **Examine existing tests** — search for test/spec files related to the target. Understand what IS tested and what IS NOT.
-4. **Search for related patterns** — grep for similar implementations in the codebase. Understand the project's conventions before deviating.
-5. **Check for documentation** — README, AGENT.md, inline comments, JSDoc, type annotations.
-6. **Map the blast radius** — list every file/module that could be affected by a change.
-
-**Chain-of-Thought Enforcement**: Before EVERY tool call, output a <thought> block explaining:
-1. What you know so far
-2. What you need to learn next
-3. Why THIS specific tool call is the right next step
-4. What you expect to find
-
-Output your investigation findings:
-\`\`\`
-<thought>
-INVESTIGATION FINDINGS:
-- Target file: X (read ✓)
-- Callers found: A.js:45, B.js:120 (read ✓)
-- Test file: X.test.js exists (read ✓) — covers Y but NOT Z
-- Related patterns: found similar logic in C.js:80
-- Documentation: AGENT.md mentions constraint about X
-- Blast radius: A.js, B.js, config.json
-</thought>
-\`\`\`
-
+    const analyse = isBrief ? '' : (isDeep ? `
 ### PHASE 2: CRITICAL ANALYSIS
 
-After investigation, analyze in a <thought> block:
+In a <thought> block:
 
-1. **Root Cause** — What EXACTLY is the problem? (Not symptoms — the actual cause)
-2. **Approach Enumeration** — List 2-4 possible approaches. For EACH:
-   - How it works (1-2 sentences)
-   - Pros (performance, readability, maintainability)
-   - Cons (complexity, risk, backwards compatibility)
-   - Edge cases it handles / doesn't handle
-3. **Recommendation** — Pick the BEST approach (not the easiest). Justify WHY.
-4. **Risk Assessment** — What could go wrong?
-   - Null/undefined inputs, empty collections
-   - Concurrent access / race conditions
-   - Large inputs / performance at scale
-   - Unicode / special characters
-   - Error propagation across module boundaries
-5. **Security Check** — Any injection, auth bypass, data leak, or path traversal risks?
+1. **Root cause** — what EXACTLY is wrong. Not the symptom.
+2. **Approach enumeration** — 2-4 options. For each: how it works, pros, cons, and the edge
+   cases it does and does not handle.
+3. **Recommendation** — pick the best, not the easiest, and justify it in one line.
+4. **Risk assessment** — null/empty inputs, concurrency, scale, unicode, error propagation
+   across module boundaries.
+5. **Security** — injection, auth bypass, data leak, path traversal.` : `
+### PHASE 2: ANALYSIS
 
-### PHASE 3: SURGICAL IMPLEMENTATION
+In a <thought> block: the root cause (not the symptom), the approach you have chosen and why,
+and what could go wrong with it — empty inputs, concurrent access, scale, error propagation.`);
 
-Now — and ONLY now — implement:
+    const implement = `
+### PHASE ${isBrief ? '2' : '3'}: SURGICAL IMPLEMENTATION
 
-1. Make the SMALLEST change that solves the problem correctly
-2. Handle ALL error cases explicitly — no empty catch blocks, no swallowed errors
-3. Add input validation where the function boundary is public/exposed
-4. Preserve existing behavior for all unchanged code paths
-5. Add comments ONLY for non-obvious logic ("why", not "what")
-6. If you MUST make an assumption, mark it: **⚠️ ASSUMPTION**: [what you assumed] — explain what changes if wrong
+1. The SMALLEST change that solves the problem correctly.
+2. Handle every error case explicitly — no empty catch blocks, no swallowed errors.
+3. Preserve behavior on all unchanged paths.
+4. Comment only non-obvious logic ("why", not "what").
+5. Mark any assumption you must make: **⚠️ ASSUMPTION**: [what] — and what changes if wrong.`;
 
-### PHASE 4: VERIFICATION (Never skip this)
+    const verify = `
+### PHASE ${isBrief ? '3' : '4'}: VERIFICATION (never skip)
 
-After implementing:
+1. **Re-read the edited file** — confirm the edit landed as intended.
+2. **Run the tests** if they exist.
+3. **Re-check the callers** you found in Phase 1. Does your change break them?
+4. **Name the gaps** — any path you introduced that nothing covers.${isDeep ? `
+5. **Adversarial self-review** — read the diff as a hostile reviewer. What would you flag?
+   Say it out loud rather than hoping nobody looks.` : ''}`;
 
-1. **Re-read the edited file** — use read_file to confirm the edit applied correctly
-2. **Run existing tests** — if test files exist, run them to check for regressions
-3. **Identify gaps** — list any untested code paths you introduced
-4. **Regression check** — re-examine the callers you found in Phase 1. Does your change break them?
-5. **Self-review** — read your changes as if you were a hostile code reviewer. What would you flag?
+    const guardrails = `
+## ANTI-HALLUCINATION GUARDRAILS (non-negotiable)
 
-## ANTI-HALLUCINATION GUARDRAILS (Non-Negotiable)
+- **Never reference a file you have not read this session.** If you say "X contains Y", you
+  read it with read_file.
+- **Never assume a function signature** — grep for the definition.
+- **Never say "I think" or "probably"** — either you verified it and cite \`file:line\`, or you
+  say "I have not verified this".
+- **If two sources contradict, flag it**: "⚠️ CONTRADICTION: A says X, B says Y".
+- **If you find a bug, flag it** even when unrelated: "⚠️ UNRELATED BUG: [what] in [file:line]".
+- **If you see a security issue, stop and say so**: "🔴 SECURITY: [what]".`;
 
-- **NEVER reference a file you haven't read in this session** — if you say "file X contains Y", you must have read it with read_file
-- **NEVER assume a function signature** — grep for the definition or read the source
-- **NEVER say "I think" or "probably"** — either you VERIFIED it (cite the file:line) or say "I have not verified this"
-- **If you say "this function does X", cite the exact line**: e.g., "parseConfig() (src/config.js:42) returns a Map<string, any>"
-- **If two sources contradict, FLAG IT** — "⚠️ CONTRADICTION: file A says X but file B says Y"
-- **NEVER make assumptions about file contents** — ALWAYS read_file first. Every single time.
-- **NEVER skip error handling** — every catch block must DO something meaningful
-- **NEVER guess at APIs or function signatures** — read the source or grep for the definition
+    const assumptions = isDeep ? `
 
-## BEHAVIORAL RULES
+## ASSUMPTION LEDGER
 
-- **If you find a bug during investigation, FLAG IT** — even if unrelated: "⚠️ UNRELATED BUG: [description] in [file:line]"
-- **If you see a security issue, STOP** — flag immediately: "🔴 SECURITY ISSUE: [description]"
-- **Question requirements that seem wrong** — don't blindly implement bad designs
-- **If uncertain about ANYTHING, say so** — "I am not confident about X because I have not verified Y"
-
-## ASSUMPTION TRACKING
-
-Any time you rely on unverified information, you MUST:
-1. Mark it: **⚠️ ASSUMPTION**
-2. State what you assumed
-3. State what changes if wrong
-4. Collect all assumptions in a final section:
+Collect every **⚠️ ASSUMPTION** you relied on into a closing section, each with what changes if
+it is wrong:
 
 \`\`\`
-## ⚠️ Assumptions (Clear These Before Proceeding)
-1. **Assumed**: \`validateToken()\` returns a boolean. If it returns a Promise<boolean>, the fix needs to be async.
-2. **Assumed**: The \`users\` table has a unique index on \`email\`. If not, the upsert logic will create duplicates.
+## ⚠️ Assumptions
+1. **Assumed**: \`validateToken()\` returns a boolean. If it returns a Promise<boolean>, the fix must be async.
 \`\`\`
 
-Do NOT proceed past assumptions silently. They are blockers.`;
+Never proceed past an assumption *silently* — but stating one and continuing is normal work.
+Stop and call \`ask_question\` only when being wrong would cost real effort to undo.` : '';
+
+    return [
+      header,
+      planFirst,
+      `\n## ${isBrief ? '3-PHASE' : 'MANDATORY 4-PHASE'} PROTOCOL`,
+      investigate,
+      analyse,
+      implement,
+      verify,
+      guardrails,
+      assumptions,
+    ].filter(Boolean).join('\n');
   }
 
   _buildToolDefinitions(topology = 'single', modelConfig = {}) {
@@ -649,7 +712,7 @@ Do NOT proceed past assumptions silently. They are blockers.`;
 
     if (isFlash) {
       // Compact tool definitions for Flash — names + key params only
-      tools += `## ask_question — Ask user a multiple-choice question. Args: question (string), options (string[])
+      tools += `## ask_question — Ask the user to choose. Blocks until they answer. Args: question (string), options (string[], 2-4 concrete choices), header (string, 2-3 word topic). Several at once: questions ([{question, options, header}], max 4)
 ## search_files — Find files by name. Args: query (string)
 ## grep_search — Search text across files. Args: pattern (string), isRegex? (bool), includes? (string[])
 ## read_file — Read a file. Args: path (string), startLine? (number), endLine? (number)
@@ -664,14 +727,44 @@ Do NOT proceed past assumptions silently. They are blockers.`;
 ## semantic_search — Conceptual code search. Args: query (string), topK? (number)
 ## get_editor_state — Get current editor state. No args.
 ## ask_subagent — Delegate to Gemini subagent. Args: prompt (string)
+## ask_researcher — Delegate read-only codebase exploration. Args: prompt (string)
 `;
     } else {
       // Full tool definitions for Pro/Flash-thinking
       tools += `## ask_question
-Ask the user a question with a list of multiple-choice options. Execution blocks until the user answers.
-Parameters:
-  - question (string, required): The question to ask
-  - options (array of strings, required): Multiple-choice options
+Put a decision to the user. Execution blocks until they answer, so this is the ONLY way to reach
+them mid-task — a question written in prose is not a question, it just ends your turn.
+
+Ask when the answer changes what you build and you cannot settle it from the code: which of two
+designs they want, which of several files they meant, whether a destructive step is intended.
+Do NOT ask what you could find out yourself with read_file or grep_search, and do NOT ask for
+permission to continue — that is what plan mode and the approval prompts are for.
+
+Write options the user can choose between without reading your mind: each one a concrete course
+of action ("Rewrite the parser to stream"), never a bare yes/no restatement of the question. Two
+to four is the useful range. The user can always type an answer you didn't list, or dismiss the
+question — if they dismiss it, pick the most reasonable reading, say which assumption you made,
+and carry on.
+
+If you have more than one thing to settle, ask them ALL IN ONE CALL via \`questions\`. Asking
+them one at a time costs a full round trip each and makes the user answer, wait, answer again.
+
+Parameters — one question:
+  - question (string, required): The decision, in one sentence
+  - options (array of strings, required): 2-4 concrete choices
+  - header (string, optional): 2-3 words naming the topic, shown as the prompt's title
+
+Parameters — several at once (preferred whenever you have more than one):
+  - questions (array, max 4): [{ question, options, header }] — same fields as above.
+    The user answers them in sequence and you get every answer back in a single result.
+
+Example:
+\`\`\`json
+{"name": "ask_question", "args": {"questions": [
+  {"header": "Storage", "question": "Where should the cache live?", "options": ["In .agent/cache", "In the system temp dir"]},
+  {"header": "Eviction", "question": "How should it be bounded?", "options": ["By age", "By total size"]}
+]}}
+\`\`\`
 
 ## search_files
 Search for files by name or path pattern using fuzzy matching.
@@ -763,6 +856,13 @@ Parameters: None
 Delegate a task to a generic parallel Gemini subagent. It will run in the background and return the result.
 Parameters:
   - prompt (string, required): The task for the subagent.
+
+## ask_researcher
+Delegate codebase exploration to a read-only researcher subagent — tracing a dependency, finding where
+something is implemented, gathering context across many files. Runs in parallel and returns findings with
+file paths and line numbers. Use it instead of a long serial chain of your own read_file calls.
+Parameters:
+  - prompt (string, required): What to find, and where you have already looked.
 `;
     }
 
@@ -791,6 +891,21 @@ Parameters:
   }
 
   /**
+   * Names-only tool list for the periodic reminder.
+   *
+   * Derived from the full definitions rather than a second hand-kept list, so the
+   * two cannot drift. The chat thread still holds the real schemas from turn 0.
+   */
+  _buildToolIndex(topology = 'single', modelConfig = {}) {
+    const defs = this._buildToolDefinitions(topology, modelConfig);
+    const names = [...defs.matchAll(/^## ([a-z_]+)/gm)].map(m => m[1]);
+    return `<available_tools>
+${names.join(', ')}
+Full parameter schemas were given earlier in this chat — scroll back to them rather than inventing arguments.
+</available_tools>`;
+  }
+
+  /**
    * Build a condensed reminder of the system instructions.
    * Much smaller than the full prompt — just the essential rules and tool format.
    */
@@ -802,7 +917,7 @@ Parameters:
       // Ultra-short reminder for Flash
       return `<system_reminder>
 Mode: ${modeStr}. Workspace: \`${this.workspace}\`${objective ? ` | Goal: ${objective.substring(0, 80)}` : ''}
-Rules: Use tools (read_file, edit_file, etc). JSON blocks: \`\`\`json {"name":..., "args":...} \`\`\`. One response. No drafts.
+Rules: Use tools (read_file, edit_file, etc). JSON blocks: \`\`\`json {"name":..., "args":...} \`\`\`
 </system_reminder>`;
     }
 
@@ -817,32 +932,8 @@ Quick rules:
 - Tool call format: \`\`\`json {"name": "tool_name", "args": {...}} \`\`\`
 - If a requirement is ambiguous, use the \`ask_question\` tool. Do not just ask textually.
 - Guardrails: If edit_file fails with oldText mismatch, immediately use read_file to get the exact lines.
-- ONE response per turn. No drafts.
-${tier === 'pro' ? '- Follow the 4-phase protocol: Investigate → Analyze → Implement → Verify. Use <thought> blocks.' : '- Think step by step. Be concise but thorough.'}
+${tier === 'pro' ? this._reminderLineForLevel(this._normalizeLevel(modelConfig.reasoningLevel)) : '- Think step by step. Be concise but thorough.'}
 </system_reminder>`;
-  }
-
-  _buildConversationHistory(history) {
-    const formatted = history.map(turn => {
-      const prefix = turn.role === 'user' ? 'User' : turn.role === 'agent' ? 'Agent' : 'System';
-
-      if (turn.type === 'tool_call') {
-        return `[Agent → Tool] ${turn.toolName}(${JSON.stringify(turn.args).substring(0, 200)})`;
-      }
-      if (turn.type === 'tool_result') {
-        const resultStr = typeof turn.result === 'string'
-          ? turn.result.substring(0, 500)
-          : JSON.stringify(turn.result).substring(0, 500);
-        return `[Tool → Agent] ${turn.toolName}: ${resultStr}${resultStr.length >= 500 ? '...' : ''}`;
-      }
-      if (turn.type === 'compaction_summary') {
-        return `[Context Summary]\n${turn.content}`;
-      }
-
-      return `[${prefix}]: ${turn.content}`;
-    });
-
-    return `<conversation_history>\n${formatted.join('\n\n')}\n</conversation_history>`;
   }
 
   _loadAgentMd() {

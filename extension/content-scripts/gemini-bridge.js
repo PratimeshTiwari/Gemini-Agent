@@ -373,10 +373,10 @@ function startResponseObserver() {
     // These dialogs block the UI and prevent completion
     const abTestTitle = document.querySelector('h2, .title');
     if (abTestTitle && abTestTitle.textContent.toLowerCase().includes('which response is more helpful')) {
-      const choiceBtn = document.querySelector('button:has-text("Choice A"), button:has-text("Choice 1"), .choice-a, [aria-label*="Choice A" i]');
-      
-      // Fallback for :has-text which isn't standard CSS
-      let btnToClick = choiceBtn;
+      // `:has-text()` is Playwright syntax, not CSS. querySelector threw a
+      // SyntaxError on it, which aborted this whole block before the text search
+      // below could run — so the dialog was never actually dismissed.
+      let btnToClick = document.querySelector('.choice-a, [aria-label*="Choice A" i], [aria-label*="Choice 1" i]');
       if (!btnToClick) {
         const buttons = Array.from(document.querySelectorAll('button'));
         btnToClick = buttons.find(b => b.textContent.includes('Choice A') || b.textContent.includes('Choice 1'));

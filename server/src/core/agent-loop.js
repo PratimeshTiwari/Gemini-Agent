@@ -9,6 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
+import { looksLikeMultipleDrafts } from './drift-detector.js';
 import * as paths from './paths.js';
 import { z } from 'zod';
 import { SessionStore } from '../storage/session-store.js';
@@ -50,7 +51,8 @@ export class AgentLoop {
       reviewer: 'claude',
       reasoner: 'chatgpt',
       reasoningEffort: 'high',
-      modelTier: 'pro'
+      modelTier: 'pro',
+      reasoningLevel: 'standard' // 'brief' | 'standard' | 'deep' — pro tier only
     };
     
     this.commandRules = {
@@ -139,7 +141,6 @@ export class AgentLoop {
       // Build the full prompt
       const prompt = this.promptBuilder.buildPrompt({
         userMessage: content,
-        conversationHistory: this.conversationHistory,
         mode: this.mode,
         topology: this.topology,
         modelConfig: this.modelConfig,
@@ -220,8 +221,17 @@ export class AgentLoop {
       const extracted = this._extractToolCalls(content);
       toolCalls = extracted.toolCalls;
       cleanContent = extracted.cleanContent;
+
+      // The single-response rule no longer rides on every message; it is
+      // re-asserted when the model actually breaks it.
+      if (looksLikeMultipleDrafts(cleanContent)) {
+        this.promptBuilder.noteDrift();
+      }
     } catch (err) {
       console.warn('⚠️ JSON Parse Error. Self-correcting...', err.message);
+      // A tool call the model could not format is the clearest signal its grip
+      // on the instructions has slipped. Bring the reminder forward.
+      this.promptBuilder.noteDrift();
       
       this.callbacks.sendToPanel({
         id: randomUUID(),
@@ -529,6 +539,29 @@ export class AgentLoop {
         return { message: `🤖 Current model tier: **${current.toUpperCase()}**\n\nAvailable tiers:\n  ⚡ \`/model flash\` — Ultra-fast, minimal reasoning (use with Flash)\n  🧠 \`/model flash-thinking\` — Moderate reasoning (use with Flash Thinking)\n  🔬 \`/model pro\` — Full principal-engineer protocol (use with Pro)` };
       }
 
+      case 'reasoning': {
+        const levels = {
+          brief: { label: '🏃 Brief', blurb: 'Investigate → Implement → Verify. For small, well-understood edits.' },
+          standard: { label: '🪜 Standard', blurb: 'Restate and decompose into a checklist first, then the 4-phase protocol.' },
+          deep: { label: '🔭 Deep', blurb: 'Standard, plus approach enumeration, risk analysis and an adversarial self-review.' },
+        };
+        const wanted = args?.[0]?.toLowerCase();
+        if (wanted && levels[wanted]) {
+          this.modelConfig.reasoningLevel = wanted;
+          this._saveConfig();
+          this.promptBuilder.resetPromptState();
+          const tierNote = (this.modelConfig.modelTier || 'pro') === 'pro'
+            ? ''
+            : `\n\n⚠️ You are on the ${(this.modelConfig.modelTier || 'pro').toUpperCase()} tier, where reasoning levels do nothing. Switch with \`/model pro\`.`;
+          return { message: `${levels[wanted].label} reasoning\n\n${levels[wanted].blurb}${tierNote}` };
+        }
+        const now = this.modelConfig.reasoningLevel || 'standard';
+        const list = Object.entries(levels)
+          .map(([key, v]) => `  ${v.label} \`/reasoning ${key}\`${key === now ? '  ← current' : ''}\n      ${v.blurb}`)
+          .join('\n');
+        return { message: `🧭 Reasoning level: **${now.toUpperCase()}** (pro tier only)\n\n${list}` };
+      }
+
       case 'allowlist': {
         if (args?.[0] === 'clear') {
           this.commandRules.allow = [];
@@ -560,11 +593,22 @@ export class AgentLoop {
       }
 
       case 'github': {
+        const subCommand = args?.[0]?.toLowerCase();
+
+        if (subCommand === 'remove-token') {
+          delete process.env.GITHUB_TOKEN;
+          this.modelConfig.githubToken = '';
+          this._saveConfig();
+          if (this.githubHandler) {
+            this.githubHandler.stop();
+            this.githubHandler = null;
+          }
+          return { message: '🗑️ GitHub token removed. Set GITHUB_TOKEN and restart to reconnect.' };
+        }
+
         if (!this.githubHandler) {
           return { message: '⚠️ GitHub Agent not initialized. Set GITHUB_TOKEN env var and restart.' };
         }
-
-        const subCommand = args?.[0]?.toLowerCase();
 
         switch (subCommand) {
           case 'plans': {
@@ -610,17 +654,6 @@ export class AgentLoop {
             return { message: '🗑️ GitHub Poller state cleared! Rescanning...' };
           }
 
-          case 'remove-token': {
-            delete process.env.GITHUB_TOKEN;
-            this.modelConfig.githubToken = '';
-            this._saveConfig();
-            if (this.githubHandler) {
-              this.githubHandler.stop();
-              this.githubHandler = null;
-            }
-            return { message: '🗑️ GitHub Token removed. Integration disabled.' };
-          }
-
           case 'stats': {
             if (!this.githubHandler) {
               return { message: 'GitHub integration is currently disabled. Please setup your token first.' };
@@ -659,9 +692,46 @@ export class AgentLoop {
 
   // ── Private Methods ──────────────────────────────────────────────
 
+  /**
+   * @param {string|Array<{question: string, answer: string}>} answer - a bare
+   *   answer, or one entry per question when the model asked a batch.
+   */
   answerQuestion(answer) {
+    if (!this.pendingQuestionResolve) return;
+
+    let result;
+    if (Array.isArray(answer)) {
+      // Echo the questions back beside the answers: the model asked them
+      // several turns of tool output ago and pairing them up itself is exactly
+      // the kind of bookkeeping it gets wrong.
+      result = answer.length === 1
+        ? `User answered: ${answer[0].answer}`
+        : ['The user answered all of your questions:', ...answer.map(
+            (entry, i) => `${i + 1}. ${entry.question}\n   → ${entry.answer}`,
+          )].join('\n');
+    } else {
+      result = `User answered: ${answer}`;
+    }
+
+    this.pendingQuestionResolve({ success: true, result });
+    this.pendingQuestionResolve = null;
+  }
+
+  /**
+   * The user dismissed the question instead of answering it.
+   *
+   * This has to resolve, not reject and not do nothing: `ask_question` awaits
+   * `pendingQuestionResolve`, so leaving it pending hangs the turn with no way
+   * back. Telling the model to proceed on a stated assumption is the only
+   * answer that keeps the loop moving.
+   */
+  cancelQuestion() {
     if (this.pendingQuestionResolve) {
-      this.pendingQuestionResolve({ success: true, result: `User answered: ${answer}` });
+      this.pendingQuestionResolve({
+        success: true,
+        result: 'The user dismissed the question without answering. Do not ask it again. '
+          + 'Choose the most reasonable interpretation, state it explicitly as an assumption, and continue.',
+      });
       this.pendingQuestionResolve = null;
     }
   }
@@ -701,7 +771,19 @@ export class AgentLoop {
   _saveConfig() {
     const configPath = paths.ensureParent(paths.configPath(this.workspace));
     try {
+      // Merge over whatever is on disk rather than replacing it. This used to
+      // write a fixed set of four keys, which silently destroyed every other
+      // one — `agentName` is set by hand and only ever read (by the banner), so
+      // the first /model or /reasoning wiped it.
+      let existing = {};
+      try {
+        existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (!existing || typeof existing !== 'object' || Array.isArray(existing)) existing = {};
+      } catch {
+        /* absent or unparseable: start from nothing rather than refuse to save */
+      }
       fs.writeFileSync(configPath, JSON.stringify({
+        ...existing,
         topology: this.topology,
         modelConfig: this.modelConfig,
         commandRules: this.commandRules,
@@ -839,7 +921,12 @@ export class AgentLoop {
           this.callbacks.sendToPanel({
             id: randomUUID(),
             type: 'ask_question',
-            payload: { question: call.args.question, options: call.args.options },
+            payload: {
+              question: call.args.question,
+              options: call.args.options,
+              header: call.args.header,
+              questions: call.args.questions,
+            },
             timestamp: Date.now(),
           });
         });
@@ -966,12 +1053,11 @@ export class AgentLoop {
     }
     await Promise.all(executionPromises);
 
-    // Send tool results back to Gemini for continuation
-    const resultPrompts = toolResults.map(tr =>
-      this.promptBuilder.buildToolResultPrompt(tr.name, tr.result)
-    );
-
-    this._sendToGemini(resultPrompts.join('\n\n'), this.callbacks);
+    // Send tool results back to Gemini for continuation. One message, however
+    // many results it carries — the refresh cadence counts messages pushed to
+    // the tab, and a parallel fan-out is still one push.
+    this.promptBuilder.noteMessageSent();
+    this._sendToGemini(this.promptBuilder.buildToolResultBatch(toolResults), this.callbacks);
   }
 
   _extractToolCalls(content) {

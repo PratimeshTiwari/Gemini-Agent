@@ -5,8 +5,9 @@
  * applies changes atomically with backup support, and provides undo.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, copyFileSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, copyFileSync, readdirSync, unlinkSync } from 'fs';
 import { backupsDir } from './paths.js';
+import { planBackupPruning } from './backup-pruner.js';
 import { resolve, dirname, relative } from 'path';
 import { createPatch, applyPatch, structuredPatch } from 'diff';
 import { randomUUID } from 'crypto';
@@ -271,6 +272,30 @@ export class DiffEngine {
       mkdirSync(backupDir, { recursive: true });
     }
     writeFileSync(backupPath, content, 'utf-8');
+    this._pruneBackups(backupDir);
+  }
+
+  /**
+   * Drop surplus backups for the files in one directory.
+   *
+   * Best-effort by design: a workspace whose backup dir is read-only, or being
+   * cleaned by something else, should not fail the edit that triggered this.
+   */
+  _pruneBackups(dir) {
+    try {
+      const names = readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name);
+      for (const name of planBackupPruning(names)) {
+        try {
+          unlinkSync(resolve(dir, name));
+        } catch {
+          /* already gone, or not ours to remove */
+        }
+      }
+    } catch {
+      /* unreadable directory: the backup itself still landed */
+    }
   }
 
   _writeFileAtomic(absPath, content) {
