@@ -14,6 +14,10 @@ const WS_URL = 'ws://localhost:7777';
 const RESPONSE_IDLE_TIMEOUT = 15000; // 15s of no new text = response complete
 const RESPONSE_ACTIVITY_TIMEOUT = 60000; // 60s of no new text during streaming = consider done
 const RESPONSE_MAX_TIMEOUT = 300000; // 5 min absolute max (safety net)
+// Every completion path below needs `lastResponseText` to be non-empty, so a
+// scrape that matches nothing used to sit here for the full 5 minutes with no
+// signal at all. Give up much sooner when there is still nothing to report.
+const NO_RESPONSE_TIMEOUT = 45000;
 const RECONNECT_BASE = 1000;
 
 // ── Anti-Throttling Hack ─────────────────────────────────────────────
@@ -106,6 +110,7 @@ let responseStartTime = 0;
 let lastActivityTime = 0;
 let activityCheckTimer = null;
 let currentRequestData = null;
+let sawGenerating = false;
 
 // ── DOM Helpers ─────────────────────────────────────────────────────
 
@@ -313,6 +318,7 @@ function startResponseObserver() {
   lastResponseText = '';
   responseStartTime = Date.now();
   lastActivityTime = Date.now();
+  sawGenerating = false;
 
   let lastStreamedText = '';
   let streamingUpdateTimer = null;
@@ -400,6 +406,7 @@ function startResponseObserver() {
       const style = window.getComputedStyle(stopBtn);
       isGenerating = rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     }
+    if (isGenerating) sawGenerating = true;
 
     // If Gemini has stopped generating (no stop button) AND we have some text, it's done!
     // We add a tiny 1-second silence buffer to ensure the DOM is fully settled.
@@ -407,6 +414,20 @@ function startResponseObserver() {
       console.log('[Gemini Bridge] Generation finished (Stop button disappeared + 1s settled)');
       clearInterval(streamingUpdateTimer);
       onResponseComplete(lastResponseText);
+      return;
+    }
+
+    // Nothing scraped at all. Waiting out the 5-minute cap tells the user
+    // nothing they can act on, so report what actually broke instead.
+    if (!lastResponseText && totalElapsed >= NO_RESPONSE_TIMEOUT) {
+      const diagnosis = describeScrapeFailure(isGenerating);
+      console.warn(`[Gemini Bridge] ${diagnosis}`);
+      clearInterval(streamingUpdateTimer);
+      stopResponseObserver();
+      chrome.runtime.sendMessage({
+        type: 'gemini_response',
+        payload: { content: diagnosis, complete: false, timedOut: true },
+      });
       return;
     }
 
@@ -433,6 +454,37 @@ function startResponseObserver() {
       onResponseComplete(lastResponseText);
     }
   }, 2000);
+}
+
+/**
+ * Say which half of the bridge broke, so the failure names its own cause
+ * instead of arriving as a blank timeout. Gemini's DOM changes regularly and
+ * the selector tables above are the first thing to go stale.
+ */
+function describeScrapeFailure(isGenerating) {
+  if (isGenerating) {
+    return (
+      '[Gemini is still generating but no response text could be read. ' +
+      'SELECTORS.responseMessage in gemini-bridge.js no longer matches the page.]'
+    );
+  }
+
+  if (sawGenerating) {
+    const counts = SELECTORS.responseMessage
+      .map((sel) => `${sel} -> ${document.querySelectorAll(sel).length}`)
+      .join(', ');
+    return (
+      '[Gemini finished replying but no response text could be read. ' +
+      `SELECTORS.responseMessage matched nothing: ${counts}]`
+    );
+  }
+
+  const hasInput = !!findElement(SELECTORS.inputField);
+  const hasSendButton = !!findElement(SELECTORS.sendButton);
+  return (
+    '[Gemini never started replying — the prompt probably was not submitted. ' +
+    `input field found: ${hasInput}, send button found: ${hasSendButton}.]`
+  );
 }
 
 function stopResponseObserver() {
