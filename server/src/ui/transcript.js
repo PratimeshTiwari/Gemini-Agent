@@ -40,7 +40,11 @@ export function parseTurnActions(turn) {
     if (msg.role === 'assistant' || msg.role === 'agent') {
       const thinkMatch = msg.content.match(/<think>([\s\S]*?)<\/think>/);
       let cleanContent = msg.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-      const imgMatch = cleanContent.match(/🖼️ Image attached: (.*?\.png|.*?\.jpg|.*?\.jpeg|.*?\.webp)/);
+      // The trailing "(128KB)" that /image writes has to be part of the match,
+      // not left behind: the whole match is what gets cut out of the prose.
+      const imgMatch = cleanContent.match(
+        /🖼️ Image attached: (.*?\.(?:png|jpe?g|webp))(?:\s*\(\s*\d+\s*KB\s*\))?/i,
+      );
 
       if (imgMatch) {
         cleanContent = cleanContent.replace(imgMatch[0], '').trim();

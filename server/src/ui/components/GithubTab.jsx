@@ -156,7 +156,7 @@ export function GithubTab({
               <Text></Text>
               <Text>To enable PR comment and CI failure watching:</Text>
               <Text>1. Go to <Text color="blue" underline>https://github.com/settings/tokens/new</Text> and generate a token with `repo` scope.</Text>
-              <Text>2. Paste it below to automatically save it to your ~/.zshrc and start the integration.</Text>
+              <Text>2. Paste it below. It is stored in this workspace's <Text bold>.agent/config.json</Text> and the integration starts immediately.</Text>
               <Text></Text>
               <Box>
                 <Text bold color="green">Token: </Text>
@@ -178,11 +178,13 @@ export function GithubTab({
                         return;
                       }
 
-                      // Save to .gemini/config.json
+                      // Persisted to <workspace>/.agent/config.json — see core/paths.js.
+                      // The env var is set for this process only; it does not
+                      // outlive the session, which is why the config is the store.
                       agentLoop.modelConfig = agentLoop.modelConfig || {};
                       agentLoop.modelConfig.githubToken = token;
-                      agentLoop._saveConfig(); // Fixed method name
-                      
+                      agentLoop._saveConfig();
+
                       process.env.GITHUB_TOKEN = token;
                       
                       const { GitHubEventHandler } = await import('../github/github-event-handler.js');

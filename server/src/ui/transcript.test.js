@@ -88,3 +88,34 @@ describe('parseTurnActions', () => {
     assert.deepStrictEqual(actions.map(a => a.type), ['command_output', 'system']);
   });
 });
+
+describe('parseTurnActions — image attachments', () => {
+  const turnWith = (content) => ({ id: 0, userMsg: null, steps: [{ role: 'assistant', content }] });
+
+  it('the size suffix /image writes is consumed, not left in the prose', () => {
+    const { actions, finalMessages } = parseTurnActions(
+      turnWith('🖼️ Image attached: /tmp/shot.png (128KB)\nType your prompt and the image will be included.'),
+    );
+    assert.strictEqual(actions[0].type, 'image');
+    assert.strictEqual(actions[0].content, '/tmp/shot.png');
+    assert.doesNotMatch(finalMessages[0].content, /128KB/);
+    assert.doesNotMatch(finalMessages[0].content, /^\s*\(/);
+  });
+
+  it('every supported extension is recognised, with or without a size', () => {
+    for (const name of ['a.png', 'b.jpg', 'c.jpeg', 'd.webp']) {
+      for (const suffix of ['', ' (4KB)', '(1024 KB)']) {
+        const { actions } = parseTurnActions(turnWith(`🖼️ Image attached: /tmp/${name}${suffix}\nrest`));
+        assert.strictEqual(actions[0]?.content, `/tmp/${name}`, `${name}${suffix}`);
+      }
+    }
+  });
+
+  it('an image and a think block in one message get distinct ids', () => {
+    const { actions } = parseTurnActions(
+      turnWith('<think>hmm</think>🖼️ Image attached: /tmp/a.png (2KB)\nrest'),
+    );
+    const ids = actions.map((a) => a.id);
+    assert.strictEqual(new Set(ids).size, ids.length, `duplicate ids: ${ids.join(', ')}`);
+  });
+});
