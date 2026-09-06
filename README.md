@@ -43,7 +43,7 @@ A powerful, Claude Code-style autonomous coding agent that runs locally and conn
 1. Open Google Chrome and go to `chrome://extensions/`.
 2. Enable **Developer mode** (toggle in the top right corner).
 3. Click **Load unpacked** and select the `extension` folder located inside this repository.
-4. Ensure the extension is enabled. (You may want to pin it to your toolbar).
+4. Ensure the extension is enabled — it appears as **Gemini Agent Bridge**. (You may want to pin it to your toolbar.)
 
 ### 4. (Optional) Install the VS Code Companion Extension
 To enable Editor State Awareness (so the agent knows your cursor position and active file):
