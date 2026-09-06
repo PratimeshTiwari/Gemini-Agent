@@ -2,6 +2,8 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import SelectInput from 'ink-select-input';
 import { Clickable } from './Clickable.jsx';
+import { QuestionPrompt } from './QuestionPrompt.jsx';
+import { summarizeDiff, previewRows } from '../diff-preview.js';
 import { FOCUS_INPUT } from '../constants.js';
 
 /**
@@ -25,18 +27,24 @@ export function Menus({
   return (
     <>
         {activeMenu?.type === 'ask_question' && (
-          <Box flexDirection="column" borderStyle="single" borderColor="blue" padding={1}>
-            <Text bold color="cyan">❓ {activeMenu.payload.question}</Text>
-            <SelectInput
-              items={activeMenu.payload.options.map(o => ({ label: o, value: o }))}
-              onSelect={(item) => {
-                setActiveMenu(null);
-                agentLoop.answerQuestion(item.value);
-                setHistory(prev => [...prev, { role: 'system', content: `[System: You answered: ${item.value}]` }]);
-                setFocus(FOCUS_INPUT);
-              }}
-            />
-          </Box>
+          <QuestionPrompt
+            payload={activeMenu.payload}
+            onAnswer={(entries) => {
+              setActiveMenu(null);
+              agentLoop.answerQuestion(entries);
+              const summary = entries.length === 1
+                ? `You answered: ${entries[0].answer}`
+                : entries.map((e, i) => `${i + 1}. ${e.answer}`).join('  ');
+              setHistory(prev => [...prev, { role: 'system', content: `[System: ${summary}]` }]);
+              setFocus(FOCUS_INPUT);
+            }}
+            onCancel={() => {
+              setActiveMenu(null);
+              agentLoop.cancelQuestion();
+              setHistory(prev => [...prev, { role: 'system', content: '[System: You dismissed the question. The agent will proceed on its own assumption.]' }]);
+              setFocus(FOCUS_INPUT);
+            }}
+          />
         )}
 
         {activeMenu?.type === 'command_approval' && (

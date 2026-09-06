@@ -659,9 +659,46 @@ export class AgentLoop {
 
   // ── Private Methods ──────────────────────────────────────────────
 
+  /**
+   * @param {string|Array<{question: string, answer: string}>} answer - a bare
+   *   answer, or one entry per question when the model asked a batch.
+   */
   answerQuestion(answer) {
+    if (!this.pendingQuestionResolve) return;
+
+    let result;
+    if (Array.isArray(answer)) {
+      // Echo the questions back beside the answers: the model asked them
+      // several turns of tool output ago and pairing them up itself is exactly
+      // the kind of bookkeeping it gets wrong.
+      result = answer.length === 1
+        ? `User answered: ${answer[0].answer}`
+        : ['The user answered all of your questions:', ...answer.map(
+            (entry, i) => `${i + 1}. ${entry.question}\n   → ${entry.answer}`,
+          )].join('\n');
+    } else {
+      result = `User answered: ${answer}`;
+    }
+
+    this.pendingQuestionResolve({ success: true, result });
+    this.pendingQuestionResolve = null;
+  }
+
+  /**
+   * The user dismissed the question instead of answering it.
+   *
+   * This has to resolve, not reject and not do nothing: `ask_question` awaits
+   * `pendingQuestionResolve`, so leaving it pending hangs the turn with no way
+   * back. Telling the model to proceed on a stated assumption is the only
+   * answer that keeps the loop moving.
+   */
+  cancelQuestion() {
     if (this.pendingQuestionResolve) {
-      this.pendingQuestionResolve({ success: true, result: `User answered: ${answer}` });
+      this.pendingQuestionResolve({
+        success: true,
+        result: 'The user dismissed the question without answering. Do not ask it again. '
+          + 'Choose the most reasonable interpretation, state it explicitly as an assumption, and continue.',
+      });
       this.pendingQuestionResolve = null;
     }
   }
@@ -839,7 +876,12 @@ export class AgentLoop {
           this.callbacks.sendToPanel({
             id: randomUUID(),
             type: 'ask_question',
-            payload: { question: call.args.question, options: call.args.options },
+            payload: {
+              question: call.args.question,
+              options: call.args.options,
+              header: call.args.header,
+              questions: call.args.questions,
+            },
             timestamp: Date.now(),
           });
         });
