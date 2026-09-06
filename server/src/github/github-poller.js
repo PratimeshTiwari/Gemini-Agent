@@ -45,7 +45,16 @@ export class GitHubPoller extends EventEmitter {
       this.username = await this._fetchAuthenticatedUser();
       this.emit('status', { message: `🔗 GitHub connected as @${this.username}` });
     } catch (err) {
-      this.emit('error', { message: `GitHub auth failed: ${err.message}` });
+      // A rejected token never starts working on its own, so keep saying so
+      // once and let the owner clear it rather than retrying every interval.
+      if (/\b401\b|Bad credentials/i.test(err.message)) {
+        this.emit('auth_rejected', {
+          message: 'GitHub rejected the stored token (401). PR watching is off. '
+            + 'Clear it with `/github remove-token`, then set GITHUB_TOKEN and restart.',
+        });
+      } else {
+        this.emit('error', { message: `GitHub auth failed: ${err.message}` });
+      }
       return;
     }
 

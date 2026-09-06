@@ -560,11 +560,22 @@ export class AgentLoop {
       }
 
       case 'github': {
+        const subCommand = args?.[0]?.toLowerCase();
+
+        if (subCommand === 'remove-token') {
+          delete process.env.GITHUB_TOKEN;
+          this.modelConfig.githubToken = '';
+          this._saveConfig();
+          if (this.githubHandler) {
+            this.githubHandler.stop();
+            this.githubHandler = null;
+          }
+          return { message: '🗑️ GitHub token removed. Set GITHUB_TOKEN and restart to reconnect.' };
+        }
+
         if (!this.githubHandler) {
           return { message: '⚠️ GitHub Agent not initialized. Set GITHUB_TOKEN env var and restart.' };
         }
-
-        const subCommand = args?.[0]?.toLowerCase();
 
         switch (subCommand) {
           case 'plans': {
@@ -608,17 +619,6 @@ export class AgentLoop {
                this.githubHandler.refresh();
             }
             return { message: '🗑️ GitHub Poller state cleared! Rescanning...' };
-          }
-
-          case 'remove-token': {
-            delete process.env.GITHUB_TOKEN;
-            this.modelConfig.githubToken = '';
-            this._saveConfig();
-            if (this.githubHandler) {
-              this.githubHandler.stop();
-              this.githubHandler = null;
-            }
-            return { message: '🗑️ GitHub Token removed. Integration disabled.' };
           }
 
           case 'stats': {
