@@ -219,38 +219,79 @@ export function Menus({
 }
 
 /**
- * Pending edit approval. Deliberately its own SelectInput for the same reason.
+ * Pending edit approval.
+ *
+ * Its own SelectInput for the same reason as the rest: an approval that a stray
+ * 'y' in typed text could trigger is how edits used to get applied without
+ * anyone agreeing to them.
+ *
+ * It shows the actual change, not just a hunk count — approving an edit you
+ * cannot see is not approval. The preview is capped so a large edit cannot push
+ * the buttons off screen.
  */
 export function DiffApproval({
   diffRequest,
   handleDiffResponse,
   setFocus,
 }) {
+  if (!diffRequest) return null;
+
+  const hunks = diffRequest.hunks ?? [];
+  const { added, removed } = summarizeDiff(hunks);
+  const rows = previewRows(hunks, { maxLines: 16 });
+  const critical = diffRequest.riskLevel === 'critical';
+
+  const colorFor = { add: 'green', del: 'red', header: 'cyan' };
+
   return (
-    <>
-      {diffRequest && (
-        <Box borderStyle="single" borderColor="yellow" padding={1} flexDirection="column" width="100%" flexShrink={1}>
-        <Text bold color="yellow" wrap="wrap">⚠️ Diff Approval Required: {diffRequest.filePath}</Text>
-        {diffRequest.hunks?.length > 0 && (
-          <Text dimColor wrap="wrap">
-            {diffRequest.hunks.length} hunk{diffRequest.hunks.length === 1 ? '' : 's'}
-            {diffRequest.riskReason ? ` — ${diffRequest.riskReason}` : ''}
-          </Text>
-        )}
-        <Box marginTop={1}>
-          <SelectInput
-            items={[
-              { label: 'Approve — apply this change', value: 'accept' },
-              { label: 'Reject — discard it', value: 'reject' },
-            ]}
-            onSelect={(item) => {
-              handleDiffResponse(item.value);
-              setFocus(FOCUS_INPUT);
-            }}
-          />
-        </Box>
+    <Box
+      borderStyle="round"
+      borderColor={critical ? 'red' : 'yellow'}
+      paddingX={1}
+      flexDirection="column"
+      width="100%"
+      flexShrink={1}
+    >
+      <Box flexDirection="row" justifyContent="space-between">
+        <Text bold color={critical ? 'red' : 'yellow'} wrap="truncate-start">
+          {diffRequest.isNewFile ? 'Create' : 'Edit'} {diffRequest.filePath}
+        </Text>
+        <Text>
+          <Text color="green">+{added}</Text>
+          <Text dimColor> / </Text>
+          <Text color="red">-{removed}</Text>
+        </Text>
+      </Box>
+
+      {diffRequest.riskReason ? (
+        <Text dimColor wrap="wrap">{diffRequest.riskReason}</Text>
+      ) : null}
+
+      {rows.length > 0 && (
+        <Box flexDirection="column" marginY={1}>
+          {rows.map((row, i) => (
+            <Text
+              key={i}
+              wrap="truncate"
+              dimColor={row.type === 'ctx' || row.type === 'more'}
+              color={colorFor[row.type]}
+            >
+              {row.text}
+            </Text>
+          ))}
         </Box>
       )}
-    </>
+
+      <SelectInput
+        items={[
+          { label: `Approve — write ${hunks.length === 1 ? 'it' : 'all of it'} to disk`, value: 'accept' },
+          { label: 'Reject — discard the change', value: 'reject' },
+        ]}
+        onSelect={(item) => {
+          handleDiffResponse(item.value);
+          setFocus(FOCUS_INPUT);
+        }}
+      />
+    </Box>
   );
 }
