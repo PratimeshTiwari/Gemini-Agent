@@ -23,6 +23,7 @@ const SLASH_COMMANDS = [
   { name: 'github', desc: 'Run GitHub commands (e.g. /github refresh)' },
   { name: 'image', desc: 'Attach an image (e.g. /image path/to/img.png)' },
   { name: 'paste-image', desc: 'Attach image from clipboard (macOS)' },
+  { name: 'mouse', desc: 'Toggle mouse tracking — off gives back text selection' },
   { name: 'agent-dir', desc: 'Open the agent data directory' },
   { name: 'restart', desc: 'Restart the server' },
   { name: 'exit', desc: 'Quit the agent' },

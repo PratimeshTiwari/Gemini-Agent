@@ -31,7 +31,7 @@ export function TranscriptTurn({
 
 
       return (
-        <Box key={turn.id} flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
+        <Box flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>
           {/* User Message */}
           {turn.userMsg && (
             <Box flexDirection="column" marginBottom={1} width="100%" flexShrink={1}>

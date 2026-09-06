@@ -4,6 +4,7 @@ import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import Gradient from 'ink-gradient';
 import crypto from 'crypto';
+import { useMouseTracking } from './mouse.jsx';
 import { Clickable } from './components/Clickable.jsx';
 import { GithubTab } from './components/GithubTab.jsx';
 import { Menus, DiffApproval } from './components/Menus.jsx';
@@ -120,6 +121,7 @@ export function App({ agentLoop, wsServer }) {
   const [historyIdx, setHistoryIdx] = useState(-1);
   // Set while the input line holds a recalled history entry rather than typing.
   const [paletteSuppressed, setPaletteSuppressed] = useState(false);
+  const mouseTracking = useMouseTracking();
   // Set by the key bindings when Enter carried a modifier, read by InputBar's
   // deferred submit. A ref because the two run in the same event dispatch.
   const newlineRef = useRef(false);
@@ -405,6 +407,7 @@ export function App({ agentLoop, wsServer }) {
         setHistory,
         setIsProcessing,
         setPendingImage,
+        mouseTracking,
       });
       return;
     }
@@ -570,9 +573,12 @@ export function App({ agentLoop, wsServer }) {
               {staticItems.length > 0 && (
                 <Static key={staticEpoch} items={staticItems}>
                   {(item) => {
-                    if (item.isBanner) return <Banner agentLoop={agentLoop} agentNameAscii={agentNameAscii} />;
+                    if (item.isBanner) {
+                      return <Banner key={item.id} agentLoop={agentLoop} agentNameAscii={agentNameAscii} />;
+                    }
                     return (
                       <TranscriptTurn
+                        key={item.id}
                         turn={item}
                         isLastTurn={false}
                         isProcessingTurn={false}
