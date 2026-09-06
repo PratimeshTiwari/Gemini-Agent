@@ -1,6 +1,6 @@
 {
   "name": "gemini-agent-extension",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Chrome extension for Gemini Agent",
   "scripts": {
     "build": "esbuild src/background/main.js --bundle --outfile=service-worker.js"
