@@ -142,6 +142,27 @@ export function Menus({
           </Box>
         )}
 
+        {activeMenu?.type === 'reasoning' && (
+          <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+            <Text bold color="cyan">🧭 Reasoning level</Text>
+            <Text dimColor>How much planning Pro does before it touches anything.</Text>
+            <Text dimColor>{'   '}Ignored on the Flash tiers.</Text>
+            <SelectInput
+              items={[
+                { label: `🏃 Brief — investigate, implement, verify${agentLoop.modelConfig?.reasoningLevel === 'brief' ? '  ← (Current)' : ''}`, value: 'brief' },
+                { label: `🪜 Standard — decompose into a checklist first${(agentLoop.modelConfig?.reasoningLevel || 'standard') === 'standard' ? '  ← (Current)' : ''}`, value: 'standard' },
+                { label: `🔭 Deep — enumerate approaches, then self-review${agentLoop.modelConfig?.reasoningLevel === 'deep' ? '  ← (Current)' : ''}`, value: 'deep' },
+              ]}
+              onSelect={async (item) => {
+                setActiveMenu(null);
+                const result = await agentLoop.handleSlashCommand('reasoning', [item.value]);
+                setHistory(prev => [...prev, { role: 'system', content: result.message }]);
+                setFocus(FOCUS_INPUT);
+              }}
+            />
+          </Box>
+        )}
+
         {activeMenu?.type === 'config_role' && (
           <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
             <Text bold color="cyan">Select Role to Configure:</Text>

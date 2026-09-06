@@ -41,6 +41,7 @@ export async function handleSlashCommand(query, {
           '### 🧠 AI & LLM Settings',
           '  /mode             - Change agent topology (Single, Duo, Swarm)',
           '  /model            - Switch model tier (Flash, Flash Thinking, Pro)',
+          '  /reasoning        - How hard Pro plans before acting (Brief, Standard, Deep)',
           '  /allowlist        - Manage auto-approved/blocked command rules',
           '  /config           - Configure models for specific roles',
           '  /plan             - Switch to Plan Mode (requires approval for edits)',
@@ -124,6 +125,12 @@ export async function handleSlashCommand(query, {
 
     if (command === 'model') {
       setActiveMenu({ type: 'model' });
+      setIsProcessing(false);
+      return;
+    }
+
+    if (command === 'reasoning' && args.length === 0) {
+      setActiveMenu({ type: 'reasoning' });
       setIsProcessing(false);
       return;
     }

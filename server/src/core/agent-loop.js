@@ -50,7 +50,8 @@ export class AgentLoop {
       reviewer: 'claude',
       reasoner: 'chatgpt',
       reasoningEffort: 'high',
-      modelTier: 'pro'
+      modelTier: 'pro',
+      reasoningLevel: 'standard' // 'brief' | 'standard' | 'deep' — pro tier only
     };
     
     this.commandRules = {
@@ -527,6 +528,29 @@ export class AgentLoop {
         }
         const current = this.modelConfig.modelTier || 'pro';
         return { message: `🤖 Current model tier: **${current.toUpperCase()}**\n\nAvailable tiers:\n  ⚡ \`/model flash\` — Ultra-fast, minimal reasoning (use with Flash)\n  🧠 \`/model flash-thinking\` — Moderate reasoning (use with Flash Thinking)\n  🔬 \`/model pro\` — Full principal-engineer protocol (use with Pro)` };
+      }
+
+      case 'reasoning': {
+        const levels = {
+          brief: { label: '🏃 Brief', blurb: 'Investigate → Implement → Verify. For small, well-understood edits.' },
+          standard: { label: '🪜 Standard', blurb: 'Restate and decompose into a checklist first, then the 4-phase protocol.' },
+          deep: { label: '🔭 Deep', blurb: 'Standard, plus approach enumeration, risk analysis and an adversarial self-review.' },
+        };
+        const wanted = args?.[0]?.toLowerCase();
+        if (wanted && levels[wanted]) {
+          this.modelConfig.reasoningLevel = wanted;
+          this._saveConfig();
+          this.promptBuilder.resetPromptState();
+          const tierNote = (this.modelConfig.modelTier || 'pro') === 'pro'
+            ? ''
+            : `\n\n⚠️ You are on the ${(this.modelConfig.modelTier || 'pro').toUpperCase()} tier, where reasoning levels do nothing. Switch with \`/model pro\`.`;
+          return { message: `${levels[wanted].label} reasoning\n\n${levels[wanted].blurb}${tierNote}` };
+        }
+        const now = this.modelConfig.reasoningLevel || 'standard';
+        const list = Object.entries(levels)
+          .map(([key, v]) => `  ${v.label} \`/reasoning ${key}\`${key === now ? '  ← current' : ''}\n      ${v.blurb}`)
+          .join('\n');
+        return { message: `🧭 Reasoning level: **${now.toUpperCase()}** (pro tier only)\n\n${list}` };
       }
 
       case 'allowlist': {

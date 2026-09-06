@@ -7,6 +7,7 @@ const SLASH_COMMANDS = [
   { name: 'help', desc: 'Show all available commands' },
   { name: 'mode', desc: 'Change agent topology (Single, Duo, Swarm)' },
   { name: 'model', desc: 'Switch model tier (Flash, Flash Thinking, Pro)' },
+  { name: 'reasoning', desc: 'How hard Pro plans before acting (Brief, Standard, Deep)' },
   { name: 'allowlist', desc: 'Manage auto-approved/blocked command rules' },
   { name: 'config', desc: 'Configure models for specific roles' },
   { name: 'plan', desc: 'Plan Mode — every edit needs approval' },
