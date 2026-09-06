@@ -9,6 +9,13 @@ import { FOCUS_INPUT } from '../constants.js';
  * transcript 50+ times a second is what used to tear the terminal, so streamed
  * text is left to the live region and the status line keeps cycling instead.
  */
+// Tool-call row ids. These were Date.now(), which collides whenever the agent
+// fans out several calls in one tick — the parallel ask_* path does exactly that.
+// React then warns about duplicate keys on every render, and both rows share one
+// entry in the expanded-log set, so opening one opens the other.
+let toolCallSeq = 0;
+const nextToolCallId = () => `tc_${Date.now().toString(36)}_${toolCallSeq++}`;
+
 export function buildAgentCallbacks({
   agentLoop,
   isToolRunningRef,
@@ -42,7 +49,7 @@ export function buildAgentCallbacks({
       } else if (msg.type === 'tool_call') {
         setStatus(`Running ${msg.payload.name}...`);
         isToolRunningRef.current = true;
-        setActiveToolCalls(prev => [...prev, { id: Date.now().toString(), type: 'call', name: msg.payload.name, args: msg.payload.args }]);
+        setActiveToolCalls(prev => [...prev, { id: nextToolCallId(), type: 'call', name: msg.payload.name, args: msg.payload.args }]);
       } else if (msg.type === 'tool_result') {
         setActiveToolCalls(prev => {
           const updated = [...prev];

@@ -46,7 +46,7 @@ export function parseTurnActions(turn) {
         cleanContent = cleanContent.replace(imgMatch[0], '').trim();
         actions.push({
           type: 'image',
-          id: `turn_${turn.id}_act_${sIdx}`,
+          id: `turn_${turn.id}_act_${sIdx}_image`,
           content: imgMatch[1],
           msg
         });
@@ -55,7 +55,7 @@ export function parseTurnActions(turn) {
       if (thinkMatch) {
         actions.push({
           type: 'think',
-          id: `turn_${turn.id}_act_${sIdx}`,
+          id: `turn_${turn.id}_act_${sIdx}_think`,
           content: thinkMatch[1].trim(),
           msg
         });
