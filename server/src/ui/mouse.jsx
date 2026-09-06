@@ -8,11 +8,12 @@
  * provider does the same job against raw stdin. Its geometry helpers are still
  * that package's — no reason to reimplement yoga hit-testing.
  *
- * Tracking is on by default so clicks just work. The cost is real and not
- * ours to hide: a terminal that is tracking owns the wheel and the drag, so
- * scrollback and text selection stop working (hold Option/Shift to select).
- * The wheel is reported as a button in every tracking mode, so there is no
- * "clicks only" setting that keeps scrollback — hence `/mouse off`.
+ * Tracking is OFF by default, because it is not free: a terminal that is
+ * tracking owns the wheel and the drag, so scrollback and text selection stop
+ * working while it is on. The wheel is reported as a button in every tracking
+ * mode, so there is no "clicks only" setting that would keep scrollback —
+ * the choice is all or nothing, and the default is the one that leaves the
+ * terminal behaving like a terminal. `/mouse on` asks for clicks.
  */
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
@@ -61,7 +62,7 @@ function frameHeight(entries) {
   return 0;
 }
 
-export function MouseProvider({ children, autoEnable = true }) {
+export function MouseProvider({ children, autoEnable = false }) {
   const mouseRef = useRef(null);
   const handlersRef = useRef(new Map());
   const [enabled, setEnabled] = useState(false);

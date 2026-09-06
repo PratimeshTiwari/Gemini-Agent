@@ -195,7 +195,8 @@ not limitations to route around:
   path stayed in `App.jsx` deliberately, and adding memoization to the transcript rows is how
   the scroll glitches came back the last two times.
 - **The transcript has no keyboard selection.** Rows are opened by clicking them, with Ctrl+E
-  as the way in when the mouse isn't there (`/mouse off`, tmux without mouse mode, bare ssh).
+  as the way in when the mouse isn't there — which is the default: tracking starts off so the
+  terminal keeps its own selection and scrollback, and `/mouse on` asks for clicks.
   There is no FOCUS_CHAT and no selected-row index, so ↑/↓ always mean input history. A turn
   committed to `<Static>` freezes as its one-line summary and drops its toggle arrow, because
   Ink cannot repaint it — an arrow there would promise something the renderer can't do.

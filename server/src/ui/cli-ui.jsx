@@ -55,9 +55,8 @@ export class CliUI {
       if (text) inkStdin.write(text);
     });
 
-    // Mouse tracking starts ON (MouseProvider defaults to autoEnable), so rows
-    // are clickable from the first frame. The cost is the terminal's: while it
-    // is tracking, drag-select and wheel-scrollback need Option or Shift held.
+    // Mouse tracking starts OFF (see mouse.jsx): text selection and the
+    // terminal's own scrollback keep working until `/mouse on` asks for clicks.
     const { waitUntilExit } = render(
       <MouseProvider>
         <App agentLoop={this.agentLoop} wsServer={this.wsServer} />
