@@ -207,6 +207,26 @@ runs only when `.agent/` is absent, moves rather than copies, and is a no-op on 
 `server/`. Changing `AGENT_DIR` in `paths.js` means changing it there too, then repackaging
 the `.vsix`.
 
+## Branching and PRs
+
+**Never commit or push to `main` directly. Work lands on a branch and merges through a PR.**
+
+The branches in this repo are deliberate: they are the history. `beta-v1` … `beta-v10`,
+`fix/bridge-lock-and-cli`, `v1-stable` are kept on purpose, not left behind. Do not delete
+them, and do not squash their history away.
+
+- Branch from `main`, name it for the work (`fix/…`, `feat/…`, or the next `beta-vN`).
+- Open a PR into `main`. That is the only way work reaches `main`.
+- A force-push to `main` is not a merge and is not covered by this: it is a repair, it needs
+  the owner to ask for it explicitly, and it breaks every open PR targeting `main` plus every
+  existing clone.
+
+A conflict on a PR that *should* be a clean descendant almost always means the two sides no
+longer share history — check `git rev-list --left-right --count main...<branch>` locally
+before believing GitHub. If local says `0 <n>` and GitHub says conflicts, the remote branches
+have diverged (a rewrite that was pushed to one side and not the other), and the fix is to
+make both sides share the same base, not to resolve 120 files by hand.
+
 ## Product decisions
 
 Standing constraints on this project (previously kept in LEARNINGS.md). These are choices,
