@@ -119,6 +119,10 @@ export class GitHubEventHandler extends EventEmitter {
   getStatus() {
     return {
       ...this.stats,
+      // Which account the token actually belongs to. Worth showing: a work
+      // machine often has several, and "0 PRs watched" reads very differently
+      // once you can see it is watching as the wrong one.
+      username: this.poller?.username || null,
       ciWatchEnabled: this.config.enableCIWatch,
       pollInterval: `${this.config.pollIntervalMs / 1000}s`,
       planDir: this.config.planOutputDir,

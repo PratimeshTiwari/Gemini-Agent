@@ -213,6 +213,9 @@ function Activity({ agentLoop, github, maxRows }) {
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text wrap="wrap">
+        {status.username
+          ? <Text color="cyan" bold>@{status.username}<Text dimColor> · </Text></Text>
+          : <Text dimColor>connecting… · </Text>}
         <Text bold>{watched}</Text>
         <Text dimColor> PR{watched === 1 ? '' : 's'} watched · CI watch </Text>
         <Text bold color={agentLoop.githubHandler?.config?.enableCIWatch ? 'green' : 'gray'}>
