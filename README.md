@@ -107,11 +107,27 @@ The CLI shows `🟢 Agent` in its status bar once the extension connects. While 
 
 ### 5. (Optional) VS Code companion
 
-Lets the agent see your active file and cursor position.
+Four things, all of which the agent can use immediately:
+
+- **Editor state** — the file you're in and where the cursor is.
+- **Diagnostics** — the Problems panel. The agent reads your TypeScript and ESLint errors
+  with `get_diagnostics` instead of running a build, and uses it to check its own edits.
+- **Add to Agent Chat** — select code, hit `cmd+alt+L` (or right-click → *Add to Agent Chat*),
+  and it lands on your prompt as `@client.js:12-40`. The full text goes to the model on
+  submit; only the marker sits in the terminal.
+- **Plan review** — a plan opens with `✅ Approve · 📤 Submit review · ❌ Reject` at the top and
+  `💬 Comment` on every heading. Leave comments on the sections that need changing and submit,
+  and the agent revises the plan against all of them at once — the way you'd review a PR.
+  Approving with no comments is still one click.
+
+To install:
 
 1. In VS Code, open the Extensions panel (`Cmd+Shift+X`).
 2. `...` menu → **Install from VSIX...**
-3. Pick `vscode-companion/agent-cli-companion-1.1.0.vsix`.
+3. Pick `vscode-companion/cli-agent-companion-1.2.0.vsix`.
+
+It talks to the CLI through files in `.agent/state/`, so it works whether or not the agent is
+running — a selection queued before you start `agent-cli` is waiting for you when you do.
 
 ### 6. First run
 

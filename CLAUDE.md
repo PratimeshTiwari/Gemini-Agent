@@ -207,6 +207,14 @@ runs only when `.agent/` is absent, moves rather than copies, and is a no-op on 
 `server/`. Changing `AGENT_DIR` in `paths.js` means changing it there too, then repackaging
 the `.vsix`.
 
+The companion and the CLI talk only through files under `<ws>/.agent/state/`, never a socket:
+`editor.json` (active file and cursor), `diagnostics.json` (the Problems panel, debounced 1.5s
+because `onDidChangeDiagnostics` fires continuously while a project indexes),
+`chat-queue.jsonl` (append-only; "Add to Agent Chat" selections, drained by `ui/chat-queue.js`),
+`plan-review.json` (comments accumulated while reviewing) and `plan-approval.json` (the
+submitted verdict: `accept` | `changes_requested` | `reject`). Files rather than a socket is
+what lets the extension queue work before the CLI is even running.
+
 ## Branching and PRs
 
 **Never commit or push to `main` directly. Work lands on a branch and merges through a PR.**

@@ -11,6 +11,7 @@ import { clampForDisplay } from './format.js';
 import { SLASH_COMMANDS, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES, RESERVED_ROWS } from './constants.js';
 import { groupTurns } from './transcript.js';
 import { expandPastes } from './paste.js';
+import { drainChatQueue } from './chat-queue.js';
 import { useKeyBindings } from './hooks/use-key-bindings.js';
 import { useHotkeys } from './hooks/use-hotkeys.js';
 import { useGithubTab } from './hooks/use-github-tab.js';
@@ -288,6 +289,25 @@ export function App({ agentLoop, wsServer }) {
     return () => clearInterval(id);
   }, [isProcessing]);
 
+  // Selections sent over from the editor with "Add to Agent Chat".
+  //
+  // They ride the same attachment machinery as a paste: a short marker in the
+  // prompt, the real text swapped in on submit. So a 400-line selection costs
+  // one row of the live frame, and the model still gets all of it.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const added = drainChatQueue(agentLoop.workspace);
+      if (added.length === 0) return;
+      setPastes((prev) => [...prev, ...added].slice(-20));
+      setInput((prev) => {
+        const markers = added.map((a) => a.marker).join(' ');
+        return prev ? `${prev} ${markers} ` : `${markers} `;
+      });
+      setPaletteSuppressed(true);
+    }, 500);
+    return () => clearInterval(id);
+  }, [agentLoop.workspace]);
+
   // Poll active background tasks
   useEffect(() => {
     let lastTasksJson = '[]';
@@ -445,6 +465,18 @@ export function App({ agentLoop, wsServer }) {
             setActiveMenu(null);
             if (data.status === 'accept') {
               handleSubmit('I have reviewed the implementation plan and approve it. Please proceed with the execution phase.');
+            } else if (data.status === 'changes_requested') {
+              // A review with comments attached to lines, like a PR review.
+              // Sent as one message so the agent revises the whole plan once
+              // rather than round-tripping per comment.
+              const comments = Array.isArray(data.comments) ? data.comments : [];
+              const body = comments.length > 0
+                ? comments.map((c) => `- ${c.section ? `**${c.section}** ` : ''}(line ${c.line}): ${c.comment}`).join('\n')
+                : '(no comments were recorded)';
+              handleSubmit(
+                'I reviewed the implementation plan and left comments. Revise the plan to address '
+                + `each one, then show me the updated plan.\n\n${body}`,
+              );
             } else if (data.status === 'reject') {
               handleSubmit('I reject the implementation plan. Please wait for my feedback.');
             }

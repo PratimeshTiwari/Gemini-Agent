@@ -43,6 +43,12 @@ export const statePath = (workspace, name) => path.join(stateDir(workspace), nam
 export const editorStatePath = (workspace) => statePath(workspace, 'editor.json');
 export const githubStatePath = (workspace) => statePath(workspace, 'github.json');
 export const planApprovalPath = (workspace) => statePath(workspace, 'plan-approval.json');
+/** Problems from the editor's language servers, written by the VS Code companion. */
+export const diagnosticsPath = (workspace) => statePath(workspace, 'diagnostics.json');
+/** Selections the user sent over with "Add to Agent Chat". Append-only. */
+export const chatQueuePath = (workspace) => statePath(workspace, 'chat-queue.jsonl');
+/** Comments left on a plan while reviewing it, before the review is submitted. */
+export const planReviewPath = (workspace) => statePath(workspace, 'plan-review.json');
 
 export const backupsDir = (workspace) => path.join(agentDir(workspace), 'backups');
 export const contextDir = (workspace) => path.join(agentDir(workspace), 'context');

@@ -1,9 +1,13 @@
 {
-  "name": "agent-cli-companion",
-  "publisher": "pratimesh-tiwari",
+  "name": "cli-agent-companion",
   "displayName": "Agent CLI Companion",
-  "description": "Exposes editor state to the local Agent CLI.",
-  "version": "1.1.0",
+  "description": "Editor state, diagnostics, Add to Agent Chat, and plan review for the local Agent CLI.",
+  "version": "1.2.0",
+  "publisher": "pratimesh-tiwari",
+  "author": {
+    "name": "Pratimesh Tiwari"
+  },
+  "license": "MIT",
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -17,14 +21,59 @@
   "contributes": {
     "commands": [
       {
-        "command": "geminiCompanion.approvePlan",
-        "title": "Gemini: Approve Plan"
+        "command": "agentCli.addToChat",
+        "title": "Add to Agent Chat",
+        "category": "Agent CLI"
       },
       {
-        "command": "geminiCompanion.rejectPlan",
-        "title": "Gemini: Reject Plan"
+        "command": "agentCli.openPlan",
+        "title": "Open Plan",
+        "category": "Agent CLI"
+      },
+      {
+        "command": "agentCli.approvePlan",
+        "title": "Approve Plan",
+        "category": "Agent CLI"
+      },
+      {
+        "command": "agentCli.submitReview",
+        "title": "Submit Plan Review",
+        "category": "Agent CLI"
+      },
+      {
+        "command": "agentCli.rejectPlan",
+        "title": "Reject Plan",
+        "category": "Agent CLI"
+      },
+      {
+        "command": "agentCli.commentOnPlan",
+        "title": "Comment on Plan Section",
+        "category": "Agent CLI"
       }
-    ]
+    ],
+    "keybindings": [
+      {
+        "command": "agentCli.addToChat",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
+        "when": "editorTextFocus"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "agentCli.addToChat",
+          "group": "navigation@1",
+          "when": "editorTextFocus"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "agentCli.commentOnPlan",
+          "when": "false"
+        }
+      ]
+    }
   },
   "repository": {
     "type": "git",

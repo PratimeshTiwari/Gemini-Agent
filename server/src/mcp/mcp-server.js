@@ -18,6 +18,7 @@ import { runBackground } from './tools/run-background.js';
 import { manageTask } from './tools/manage-task.js';
 import semanticSearch from './tools/semantic-search.js';
 import getEditorState from './tools/get-editor-state.js';
+import getDiagnostics from './tools/get-diagnostics.js';
 
 // Tool registry with schemas
 const TOOL_DEFINITIONS = [
@@ -134,6 +135,12 @@ const TOOL_DEFINITIONS = [
     description: getEditorState.description,
     parameters: getEditorState.schema.properties,
     handler: getEditorState.execute,
+  },
+  {
+    name: getDiagnostics.name,
+    description: getDiagnostics.description,
+    parameters: getDiagnostics.schema.properties,
+    handler: getDiagnostics.execute,
   },
 ];
 
