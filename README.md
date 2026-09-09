@@ -143,12 +143,19 @@ description matches what it is doing.
 /skills dir add ~/my-skills   # load skills you keep somewhere else
 ```
 
-Three folders are searched, in order — the first to define a name wins, so a project can
-override a personal skill:
+The search walks **up** from your project, the way git finds `.git`. The nearest definition
+of a name wins, so a repo overrides its parent and the parent overrides your personal set —
+with no configuration:
 
-1. `<project>/.agent/skills/` — this project's
-2. `~/.agent/skills/` — yours, in every project
-3. anything added with `/skills dir add`
+```
+~/.agent/skills/                    yours, everywhere
+/work/coindcx/.agent/skills/        every repo under coindcx
+/work/coindcx/api/.agent/skills/    just this repo  ← wins
+```
+
+That is what makes a monorepo work: put a skill in `/work/coindcx/.agent/skills/` and every
+repo underneath picks it up. `/skills dir add` stays for skills kept outside the tree
+entirely — a shared git repo of them, say.
 
 A skill looks like this:
 
@@ -166,6 +173,31 @@ description: Reviewing a diff or a pull request before it merges.
 ## Steps
 1. ...
 ```
+
+## 🔁 Self-healing background tasks
+
+The agent can start a long-running process and be woken when it breaks, instead of having to
+remember to check:
+
+```
+run_background   npm run dev          → starts it, returns a task id
+manage_task      watch  <task id>     → wake me if this logs a failure
+```
+
+When a watched task logs something that looks wrong — `error`, `failed`, `exception`,
+`EADDRINUSE`, `Cannot find module`, or a pattern you supply — the agent starts a turn on its
+own with the failing lines and their surrounding output already in hand, reads the code, and
+fixes it. It fires once per fault, not once per line, and never interrupts a turn already in
+progress.
+
+The same instinct applies to ordinary commands: a non-zero exit is marked `status="failed"` in
+what the model sees, with an instruction to diagnose and fix rather than report. That is
+bounded — four consecutive failing rounds ends the turn, lists the actual errors and asks you,
+rather than burning a session on variations of one broken command.
+
+**A limit worth knowing:** the agent cannot read your *other* terminal windows. Those belong to
+your terminal emulator and there is no API for them. Run the process through `run_background`
+so the agent owns the pipe, or point it at a log file.
 
 ## ⚙️ Configuration & Commands
 

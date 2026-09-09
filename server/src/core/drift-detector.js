@@ -99,3 +99,40 @@ export function looksLikeCapabilityDenial(text) {
   const capability = /\b(?:execute|run|access|read|write|browse|list|open)\b[^.!?\n]{0,60}\b(?:local|file\s*system|filesystem|files?|directory|directories|folder|command|terminal|shell|your\s+(?:machine|computer|disk))\b/i;
   return capability.test(head);
 }
+
+
+/**
+ * Is this the *provider's* error, rather than the model's answer?
+ *
+ * Gemini Web hands back a short apology of its own when a request fails on
+ * their side — "I encountered an error doing what you asked. Could you try
+ * again?" — and it arrives through exactly the same path as a real reply. The
+ * agent has no way to tell the difference by structure: no tool calls, some
+ * prose, turn over. In the background GitHub agent that string was then written
+ * to disk as the PR plan.
+ *
+ * Retrying is the right response, so the bar is "short and generic": a genuine
+ * answer to a coding question is neither. The length check is what stops a real
+ * reply that happens to discuss an error from matching.
+ *
+ * @param {string} text - the model's reply, tool calls already stripped
+ * @returns {boolean}
+ */
+export function looksLikeProviderError(text) {
+  if (typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (trimmed.length === 0 || trimmed.length > 300) return false;
+
+  return [
+    // Gemini
+    /\bI encountered an error\b/i,
+    /\bsomething went wrong\b/i,
+    // Common to several providers
+    /\bplease try again\b/i,
+    /\bcould you try again\b/i,
+    /\btry again later\b/i,
+    /\ban error (?:has )?occurred\b/i,
+    /\bunable to (?:complete|process) (?:your |the )?(?:request|response)\b/i,
+    /\bI'?m (?:having trouble|not able) (?:responding|to respond)\b/i,
+  ].some((re) => re.test(trimmed));
+}

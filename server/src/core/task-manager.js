@@ -11,6 +11,30 @@ import { resolve } from 'path';
 
 const MAX_LOG_LINES = 500; // Circular buffer size per task
 
+/**
+ * Lines that mean "this run is broken" in almost any toolchain.
+ *
+ * Used when a watch is registered without a pattern of its own, which is the
+ * common case: the agent starts a dev server and wants to know if it falls
+ * over, not to write a regex for every framework.
+ */
+const DEFAULT_FAILURE_PATTERN = new RegExp(
+  [
+    String.raw`\berror\b`,
+    String.raw`\bfailed\b`,
+    String.raw`\bfatal\b`,
+    String.raw`\bexception\b`,
+    String.raw`\btraceback\b`,
+    String.raw`\bpanic:`,
+    String.raw`\bECONN\w+`,
+    String.raw`\bEADDRINUSE\b`,
+    String.raw`\bMODULE_NOT_FOUND\b`,
+    String.raw`\bCannot find module\b`,
+    String.raw`\bsegmentation fault\b`,
+  ].join('|'),
+  'i',
+);
+
 export class TaskManager {
   constructor(workspace, callbacks) {
     this.workspace = workspace;
@@ -51,6 +75,8 @@ export class TaskManager {
       startedAt: Date.now(),
       endedAt: null,
       logBuffer: [], // Circular buffer of { timestamp, stream, line }
+      // Set by watch(); see _checkWatch.
+      watch: null,
     };
 
     // Capture stdout
@@ -96,6 +122,76 @@ export class TaskManager {
     this.tasks.set(taskId, task);
 
     return { taskId, command, cwd: workingDir, pid: child.pid };
+  }
+
+  /**
+   * Watch a task's output and report the first thing that looks wrong.
+   *
+   * This is what turns a background process into something the agent can heal.
+   * Without it nothing observes a dev server: the agent has to remember to poll
+   * `read_logs`, and a crash three minutes after launch is simply never seen.
+   *
+   * A watch fires once and then disarms. Re-arming on every matching line would
+   * turn a stack trace into twenty wake-ups for one fault, and a crash loop into
+   * an unbounded stream of them.
+   *
+   * @param {string} taskId
+   * @param {string} [pattern] - a regex source; omitted means the default
+   *   "something went wrong" set.
+   * @param {(hit: object) => void} onMatch
+   */
+  watch(taskId, pattern, onMatch) {
+    const task = this.tasks.get(taskId);
+    if (!task) return { error: `Unknown task: ${taskId}` };
+
+    let regex;
+    try {
+      regex = pattern ? new RegExp(pattern, 'i') : DEFAULT_FAILURE_PATTERN;
+    } catch (err) {
+      return { error: `Invalid watch pattern: ${err.message}` };
+    }
+
+    task.watch = { regex, onMatch, armed: true, pattern: pattern || '(default failure patterns)' };
+    return {
+      taskId,
+      watching: task.watch.pattern,
+      message: `Watching task ${taskId}. The next matching line wakes the agent.`,
+    };
+  }
+
+  /** Stop watching a task. */
+  unwatch(taskId) {
+    const task = this.tasks.get(taskId);
+    if (!task) return { error: `Unknown task: ${taskId}` };
+    task.watch = null;
+    return { taskId, message: `No longer watching task ${taskId}.` };
+  }
+
+  /**
+   * Fire a task's watch if this line matches. Called for every captured line.
+   */
+  _checkWatch(task, stream, line) {
+    const watch = task.watch;
+    if (!watch?.armed || !watch.regex.test(line)) return;
+
+    watch.armed = false; // one wake-up per fault, not one per line
+    // A single line is rarely the whole story — a stack trace's first line is
+    // the least useful part — so hand over the surrounding context too.
+    const context = task.logBuffer.slice(-25).map((l) => `[${l.stream}] ${l.line}`).join('\n');
+
+    try {
+      watch.onMatch({
+        taskId: task.taskId,
+        command: task.command,
+        stream,
+        line,
+        status: task.status,
+        exitCode: task.exitCode,
+        context,
+      });
+    } catch (err) {
+      /* a broken listener must not take the task down with it */
+    }
   }
 
   /**
@@ -218,6 +314,9 @@ export class TaskManager {
     if (task.logBuffer.length > MAX_LOG_LINES) {
       task.logBuffer = task.logBuffer.slice(-MAX_LOG_LINES);
     }
+    // After the append, so the context handed to the watcher includes the line
+    // that triggered it.
+    this._checkWatch(task, stream, line);
   }
 
   _formatDuration(ms) {

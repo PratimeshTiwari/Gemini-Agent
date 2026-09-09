@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import {
   slugify, parseFrontmatter, listSkills, createSkill, skillCatalogue, skillTemplate,
+  skillSearchPath,
 } from './skills.js';
 
 const freshWorkspace = () => fs.mkdtempSync(path.join(os.tmpdir(), 'skills-test-'));
@@ -127,5 +128,56 @@ test('skillCatalogue', async (t) => {
     const { meta } = parseFrontmatter(skillTemplate('round-trip'));
     assert.equal(meta.name, 'round-trip');
     assert.ok(meta.description.length > 0);
+  });
+});
+
+
+test('skillSearchPath — the monorepo case', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mono-'));
+  const group = path.join(root, 'coindcx');
+  const repo = path.join(group, 'api');
+  fs.mkdirSync(path.join(repo, '.agent/skills'), { recursive: true });
+  fs.mkdirSync(path.join(group, '.agent/skills'), { recursive: true });
+
+  const write = (dir, name, description) => fs.writeFileSync(
+    path.join(dir, '.agent/skills', `${name}.md`),
+    `---\nname: ${name}\ndescription: ${description}\n---\nbody`,
+  );
+  write(group, 'house-style', 'shared across the group');
+  write(group, 'deploy', 'the generic deploy');
+  write(repo, 'deploy', 'this repo overrides it');
+
+  await t.test('walks up from the workspace, nearest first', () => {
+    const dirs = skillSearchPath(repo);
+    assert.equal(dirs[0], path.join(repo, '.agent/skills'));
+    assert.equal(dirs[1], path.join(group, '.agent/skills'));
+    assert.ok(dirs.includes(path.join(root, '.agent/skills')));
+  });
+
+  await t.test('a parent folder\'s skills apply to every repo under it', () => {
+    // The whole point: no per-repo configuration, no duplication.
+    const names = listSkills(repo).map((s) => s.name);
+    assert.ok(names.includes('house-style'));
+  });
+
+  await t.test('the nearest definition of a name wins', () => {
+    const deploy = listSkills(repo).find((s) => s.name === 'deploy');
+    assert.equal(deploy.description, 'this repo overrides it');
+  });
+
+  await t.test('a sibling repo does not see this one\'s skills', () => {
+    const sibling = path.join(group, 'web');
+    fs.mkdirSync(sibling, { recursive: true });
+    const names = listSkills(sibling).map((s) => s.name);
+    assert.ok(names.includes('house-style'), 'still sees the group');
+    assert.equal(
+      listSkills(sibling).find((s) => s.name === 'deploy').description,
+      'the generic deploy',
+      'gets the group version, not the api override',
+    );
+  });
+
+  await t.test('terminates on a root path rather than looping', () => {
+    assert.ok(skillSearchPath('/').length < 8);
   });
 });

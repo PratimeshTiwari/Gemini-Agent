@@ -113,12 +113,13 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'manage_task',
-    description: 'Interact with background tasks. Actions: status (check if running), read_logs (read output), send_input (send stdin text), kill (terminate), list (show all tasks).',
+    description: 'Interact with background tasks. Actions: status (check if running), read_logs (read output), send_input (send stdin text), kill (terminate), list (show all tasks), watch (be woken automatically when the task logs a failure — use this after starting a dev server or watcher so you find out it broke without polling), unwatch (stop).',
     parameters: {
-      action: { type: 'string', description: 'Action: status, read_logs, send_input, kill, list', required: true },
+      action: { type: 'string', description: 'Action: status, read_logs, send_input, kill, list, watch, unwatch', required: true },
       taskId: { type: 'string', description: 'Task ID (required for all actions except list)', required: false },
       lines: { type: 'number', description: 'Number of log lines to read (default: 50)', required: false },
       input: { type: 'string', description: 'Text to send to stdin (required for send_input)', required: false },
+      pattern: { type: 'string', description: 'For watch: a regex to look for in the output. Omit to use the built-in failure patterns (error, failed, exception, traceback, EADDRINUSE, Cannot find module, ...).', required: false },
     },
     handler: manageTask,
   },

@@ -9,7 +9,14 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
-import { looksLikeMultipleDrafts, looksLikeCapabilityDenial } from './drift-detector.js';
+import { looksLikeMultipleDrafts, looksLikeCapabilityDenial, looksLikeProviderError } from './drift-detector.js';
+
+/**
+ * How many times to re-ask when the *provider* errors rather than the model.
+ * These are transient by nature, so a couple of attempts clears almost all of
+ * them; more than that and something is actually wrong with the tab.
+ */
+const MAX_PROVIDER_RETRIES = 2;
 
 /**
  * How many consecutive rounds may end with a failing tool call before the loop
@@ -166,6 +173,7 @@ export class AgentLoop {
       this._deniedToolsOnce = false;
       // Auto-heal budget, per user turn.
       this._failedRounds = 0;
+      this._providerRetries = 0;
 
       // Build the full prompt
       const prompt = this.promptBuilder.buildPrompt({
@@ -288,6 +296,23 @@ export class AgentLoop {
       
       this._sendToGemini('Please correct the previous JSON formatting error.', this.callbacks);
       return;
+    }
+
+    // The provider errored rather than the model answering. Re-ask: this is a
+    // transient failure of the tab, and the user should not have to notice it.
+    if (toolCalls.length === 0 && looksLikeProviderError(cleanContent)) {
+      this._providerRetries = (this._providerRetries || 0) + 1;
+      if (this._providerRetries <= MAX_PROVIDER_RETRIES && this.currentObjective) {
+        this._notify(`⚠️ Gemini returned an error — retrying (${this._providerRetries}/${MAX_PROVIDER_RETRIES})…`);
+        this._sendToGemini(this.promptBuilder.buildPrompt({
+          userMessage: this.currentObjective,
+          mode: this.mode,
+          topology: this.topology,
+          modelConfig: this.modelConfig,
+          objective: this.currentObjective,
+        }), this.callbacks);
+        return;
+      }
     }
 
     // The model has forgotten it has tools and refused the task outright. This
@@ -424,6 +449,58 @@ export class AgentLoop {
   /**
    * Handle slash commands.
    */
+  /**
+   * A watched background task logged something that looks broken.
+   *
+   * This is the self-healing entry point, and the only path that starts a turn
+   * without the user typing. A dev server that dies three minutes after launch
+   * is invisible otherwise: the agent has finished its turn, nothing is
+   * polling, and the next thing anyone notices is the app not working.
+   *
+   * Ignored while a turn is already running — the agent is mid-thought, the
+   * failing lines are in the task's buffer, and interrupting it to insert an
+   * unrelated prompt is how two turns end up interleaved in one browser tab.
+   * The watch stays disarmed either way, so this fires once per fault.
+   */
+  handleTaskAlert(hit) {
+    if (this.isProcessing || !this.callbacks) return;
+
+    const prompt = [
+      `A background task you started has failed. Task ${hit.taskId}: \`${hit.command}\``,
+      '',
+      `Matched line (${hit.stream}): ${hit.line}`,
+      '',
+      'Recent output:',
+      hit.context,
+      '',
+      'Diagnose it and fix it. Read the files involved, make the change, and restart the task '
+      + 'if that is what it needs. If the cause is something only the user can resolve, say so '
+      + 'plainly and stop rather than guessing.',
+    ].join('\n');
+
+    const turn = {
+      role: 'user',
+      content: `[Watched task ${hit.taskId} failed: ${hit.line}]`,
+      timestamp: Date.now(),
+    };
+    this.conversationHistory.push(turn);
+    this.sessionStore.appendTurn(turn);
+
+    this.isProcessing = true;
+    this.currentObjective = `Fix the failure in background task ${hit.taskId}`;
+    this._deniedToolsOnce = false;
+    this._failedRounds = 0;
+
+    this._notify(`🔧 Task ${hit.taskId} failed — investigating…`);
+    this._sendToGemini(this.promptBuilder.buildPrompt({
+      userMessage: prompt,
+      mode: this.mode,
+      topology: this.topology,
+      modelConfig: this.modelConfig,
+      objective: this.currentObjective,
+    }), this.callbacks);
+  }
+
   /**
    * Point the agent at another directory.
    *
@@ -1062,6 +1139,7 @@ export class AgentLoop {
           result = await this.mcpServer.executeTool(call.name, call.args, {
             editor: this.editor,
             taskManager: this.taskManager,
+            onTaskAlert: (hit) => this.handleTaskAlert(hit),
             workspaceIndexer: this.workspaceIndexer,
           });
         } else {
@@ -1450,6 +1528,7 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
 
   async runHeadlessTask(prompt, systemInstruction = null) {
     const localHistory = [];
+    let providerRetries = 0;
 
     const baseSystem = `You are a headless background agent running inside the user's code workspace.
 You have access to a local MCP tool server. You MUST use tools to explore the codebase before drawing conclusions.
@@ -1514,6 +1593,22 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
       } catch (err) {
         localHistory.push({ role: 'system', content: `JSON Parse Error: ${err.message}. Fix your tool call format.` });
         continue;
+      }
+
+      // Gemini's own failure message arrives through the same path as a real
+      // reply, with no tool calls and some prose — structurally identical to a
+      // finished answer. Left alone it became `lastCleanContent` and was
+      // written to disk as the PR plan.
+      if (toolCalls.length === 0 && looksLikeProviderError(cleanContent)) {
+        providerRetries++;
+        if (providerRetries <= MAX_PROVIDER_RETRIES) {
+          localHistory.push({
+            role: 'system',
+            content: '[System: the previous response was a provider error, not an answer. Retrying the same request.]',
+          });
+          continue;
+        }
+        return { success: false, error: `Gemini kept returning an error: ${cleanContent.trim()}` };
       }
 
       // Track the last non-empty clean content as the candidate final plan

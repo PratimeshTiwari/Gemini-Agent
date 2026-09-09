@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { looksLikeMultipleDrafts, looksLikeCapabilityDenial } from './drift-detector.js';
+import { looksLikeMultipleDrafts, looksLikeCapabilityDenial, looksLikeProviderError } from './drift-detector.js';
 
 describe('looksLikeMultipleDrafts', () => {
   test('catches a reply offering two drafts', () => {
@@ -93,5 +93,40 @@ describe('looksLikeCapabilityDenial — the model forgot it has tools', () => {
     ), false);
     assert.equal(looksLikeCapabilityDenial(''), false);
     assert.equal(looksLikeCapabilityDenial(undefined), false);
+  });
+});
+
+
+describe('looksLikeProviderError — the tab failed, not the model', () => {
+  test('catches the message Gemini Web actually returns', () => {
+    assert.equal(looksLikeProviderError(
+      'I encountered an error doing what you asked. Could you try again?',
+    ), true);
+  });
+
+  test('catches the other providers\' equivalents', () => {
+    for (const text of [
+      'Something went wrong. Please try again.',
+      'An error occurred. Try again later.',
+      'Unable to complete your request.',
+    ]) {
+      assert.equal(looksLikeProviderError(text), true, text);
+    }
+  });
+
+  test('length is what separates it from a real answer', () => {
+    // A genuine reply that discusses an error is long and specific; the
+    // provider's own apology is short and generic. Without this the detector
+    // would retry perfectly good answers.
+    const realAnswer = 'The build fails because config.js is missing. I encountered an error in '
+      + 'the logs at line 40 showing MODULE_NOT_FOUND, and the fix is to add the file back. '.repeat(3);
+    assert.equal(looksLikeProviderError(realAnswer), false);
+  });
+
+  test('is quiet on ordinary short replies and refusals', () => {
+    assert.equal(looksLikeProviderError('Done — I updated three files.'), false);
+    assert.equal(looksLikeProviderError('I cannot help with that request.'), false);
+    assert.equal(looksLikeProviderError(''), false);
+    assert.equal(looksLikeProviderError(undefined), false);
   });
 });

@@ -2,9 +2,9 @@
  * format — Unit Tests
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, test } from 'node:test';
 import assert from 'node:assert';
-import { oneLine, summarizeResult, clampForDisplay } from './format.js';
+import { oneLine, summarizeResult, clampForDisplay, formatCommandResult } from './format.js';
 
 describe('oneLine', () => {
   it('collapses whitespace to a single line', () => {
@@ -69,5 +69,45 @@ describe('clampForDisplay', () => {
 
   it('pretty-prints non-strings', () => {
     assert.ok(clampForDisplay({ a: 1 }).includes('"a": 1'));
+  });
+});
+
+
+describe('formatCommandResult — a shell result should look like a shell', () => {
+  test('shows the command, its output and a non-zero exit', () => {
+    const out = formatCommandResult({
+      command: 'npm run build',
+      exitCode: 1,
+      stdout: 'building...',
+      stderr: 'Error: Cannot find module ./config',
+    });
+    assert.match(out, /^\$ npm run build/);
+    assert.match(out, /Cannot find module/);
+    assert.match(out, /✗ exit 1/);
+  });
+
+  test('does not shout about a successful command', () => {
+    const out = formatCommandResult({ command: 'git add -A', exitCode: 0, stdout: '', stderr: '' });
+    assert.ok(!out.includes('exit'), 'exit 0 is the expected case and needs no marker');
+    assert.match(out, /\(no output\)/);
+  });
+
+  test('says so when the command timed out', () => {
+    const out = formatCommandResult({ command: 'sleep 99', exitCode: -1, stdout: '', timedOut: true });
+    assert.match(out, /timed out/);
+    assert.ok(!out.includes('(no output)'), 'a timeout explains itself');
+  });
+
+  test('clamps a wall of output', () => {
+    const out = formatCommandResult({ command: 'cat big', exitCode: 0, stdout: 'line\n'.repeat(500) }, 5);
+    assert.ok(out.split('\n').length < 12, 'must not paste 500 lines into the frame');
+    assert.match(out, /truncated/);
+  });
+
+  test('returns null for anything that is not a shell result', () => {
+    // The caller falls back to the generic renderer, so this must not guess.
+    assert.equal(formatCommandResult({ path: '.', totalFiles: 8 }), null);
+    assert.equal(formatCommandResult('plain string'), null);
+    assert.equal(formatCommandResult(null), null);
   });
 });

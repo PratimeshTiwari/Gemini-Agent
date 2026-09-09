@@ -108,6 +108,17 @@ resending a large system prompt every turn trips Gemini's repetition/safety
 filters and A/B-test modals. Prompt content is also tiered by `modelTier`
 (`flash` / `flash-thinking` / `pro`) via `_getReasoningInstructions`.
 
+The **tool anchor** (`_buildToolAnchor`) is the exception that rides on *every* turn: tool
+names only, 56 tokens against 1,575 for the definitions. The model does not gradually forget
+its tools, it forgets them completely — mid-session it answers "I cannot execute local
+commands or access your local file system" with total confidence and the turn is lost. Three
+detectors in `core/drift-detector.js` back that up, each with a different response:
+`looksLikeMultipleDrafts` → bring the refresh forward; `looksLikeCapabilityDenial` → resend the
+full definitions and retry the turn once; `looksLikeProviderError` → Gemini's own error rather
+than an answer, so re-ask (this one used to be written to disk as a PR plan). All three match
+prose and will always trail the model's phrasing, which is why the anchor exists: prevention
+first, detection as the backstop.
+
 ### Tools
 
 `mcp/mcp-server.js` holds a flat `TOOL_DEFINITIONS` array (name, description, parameters,

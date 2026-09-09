@@ -1,7 +1,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import Spinner from 'ink-spinner';
-import { renderMarkdown, oneLine, summarizeResult, clampForDisplay } from '../format.js';
+import { renderMarkdown, oneLine, summarizeResult, clampForDisplay, formatCommandResult } from '../format.js';
 import { parseTurnActions } from '../transcript.js';
 
 /**
@@ -101,7 +101,11 @@ function ActionRow({ act, verbose }) {
         </Box>
         {verbose && act.result !== null && act.result !== undefined && (
           <Box paddingLeft={2} width="100%">
-            <Text dimColor wrap="wrap">{clampForDisplay(act.result, 20)}</Text>
+            {/* A shell result gets shell shape; everything else falls back to
+                the generic clamp. */}
+            <Text dimColor wrap="wrap">
+              {formatCommandResult(act.result, 20) ?? clampForDisplay(act.result, 20)}
+            </Text>
           </Box>
         )}
       </Box>

@@ -128,6 +128,44 @@ export function formatPollTime(value, now = Date.now()) {
 }
 
 /**
+ * A shell result as a terminal block rather than a JSON dump.
+ *
+ * `run_command` returns `{exitCode, stdout, stderr, command, cwd}`, and the
+ * expanded row used to print that object verbatim — escaped newlines, quoted
+ * keys and all, so a page of output arrived as one unreadable line. What the
+ * user wants to see is what they would have seen in a shell.
+ *
+ * @returns {string|null} null when this is not a shell result, so the caller
+ *   can fall back to the generic renderer.
+ */
+export function formatCommandResult(result, maxLines = 20) {
+  if (!result || typeof result !== 'object') return null;
+  const isShellResult = typeof result.exitCode === 'number'
+    && ('stdout' in result || 'stderr' in result);
+  if (!isShellResult) return null;
+
+  const lines = [];
+  if (result.command) lines.push(`$ ${result.command}`);
+
+  const body = [result.stdout, result.stderr].filter((p) => p && p.trim()).join('\n').trimEnd();
+  if (body) {
+    lines.push(clampForDisplay(body, maxLines, maxLines * 200));
+  } else if (!result.timedOut) {
+    lines.push('(no output)');
+  }
+
+  if (result.timedOut) {
+    lines.push('⏱ timed out');
+  } else if (result.exitCode !== 0) {
+    // The exit code is the whole point of showing this expanded, and it is the
+    // easiest thing to lose in a wall of output.
+    lines.push(`✗ exit ${result.exitCode}`);
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * Markdown for a transcript row, memoised by source text.
  *
  * `marked.parse` is not cheap and a turn re-renders whenever anything in the

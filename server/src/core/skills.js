@@ -2,14 +2,22 @@
  * Skills: reusable instructions the agent can pull in when they are relevant.
  *
  * One markdown file per skill, with a short frontmatter block naming it and
- * saying when it applies. Three places are searched, in this order:
+ * saying when it applies.
  *
- *   1. `<ws>/.agent/skills/`  — this project's own
- *   2. `~/.agent/skills/`     — yours, shared by every workspace
- *   3. anything in `skillFolders` (config.json) — `/skills add <dir>`
+ * The search walks *up* from the workspace, the way git finds `.git`, eslint
+ * finds its config and editors find `.editorconfig`. That is what makes a
+ * monorepo work without configuring anything:
  *
- * First one to claim a name wins, so a project can override a personal skill
- * with its own version without renaming anything.
+ *     ~/.agent/skills/                  yours, everywhere
+ *     /work/.agent/skills/              every repo under /work
+ *     /work/coindcx/.agent/skills/      every repo under coindcx
+ *     /work/coindcx/api/.agent/skills/  just this repo
+ *
+ * Nearest wins, so a repo overrides its parent and the parent overrides your
+ * personal set — without renaming anything or pointing at directories by hand.
+ * `skillFolders` in config.json stays for skills kept outside the tree
+ * entirely (a shared git repo of them, say); it is the escape hatch, not the
+ * main road.
  *
  * Only the *catalogue* — name and description, a line each — goes into the
  * system prompt. The body is left on disk and the model reads it with the
@@ -92,11 +100,28 @@ thorough.
  *   entries resolve against the workspace, so a repo can commit a path.
  */
 export function skillSearchPath(workspace, extraFolders = []) {
-  const dirs = [paths.skillsDir(workspace), path.join(paths.homeDir(), 'skills')];
+  const dirs = [];
+
+  // Up from the workspace to the filesystem root, nearest first. Bounded by
+  // path.dirname reaching a fixed point, so a relative or malformed workspace
+  // cannot spin here.
+  let dir = path.resolve(workspace);
+  for (let i = 0; i < 64; i++) {
+    dirs.push(paths.skillsDir(dir));
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  // The personal set, which is outside any project.
+  dirs.push(path.join(paths.homeDir(), 'skills'));
+
+  // Explicitly registered folders come last: they are the escape hatch.
   for (const folder of extraFolders) {
     if (!folder) continue;
     dirs.push(path.isAbsolute(folder) ? folder : path.resolve(workspace, folder));
   }
+
   return [...new Set(dirs)];
 }
 
