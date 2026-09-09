@@ -3,7 +3,7 @@ import { Box, Text, usePaste } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { FOCUS_INPUT } from '../constants.js';
-import { applyPaste } from '../paste.js';
+import { applyPaste, attachedPastes, nextPasteId } from '../paste.js';
 
 /** First `n` non-empty lines of an artifact, for the one-glance summary. */
 function head(text, n) {
@@ -54,6 +54,8 @@ export function InputBar({
   verbose,
 }) {
   const hasArtifacts = Boolean(artifacts?.task || artifacts?.walkthrough);
+  // Derived from the prompt, not from the list — see attachedPastes.
+  const attached = attachedPastes(input, pastes);
   const promptVisible = !diffRequest && !terminalOpen && !activeMenu;
 
   // Bracketed paste, which this hook turns on, is what separates "the user
@@ -62,7 +64,7 @@ export function InputBar({
   // misparsed as keystrokes — and a big one is folded to a marker rather than
   // rendered at full height into a frame that must stay short.
   usePaste((text) => {
-    const { value, paste } = applyPaste(input, text, pastes.length + 1);
+    const { value, paste } = applyPaste(input, text, nextPasteId(pastes));
     setInput(value);
     setPaletteSuppressed(true);
     if (paste) addPaste(paste);
@@ -162,9 +164,9 @@ export function InputBar({
           <Box paddingX={1}>
             <Text color={mode === 'auto' ? 'green' : 'yellow'}>
               ▶▶ {mode} mode on <Text dimColor>(shift+tab to cycle)</Text>
-              {pastes.length > 0 && (
+              {attached.length > 0 && (
                 <Text dimColor>
-                  {'  · '}{pastes.length} paste{pastes.length === 1 ? '' : 's'} attached
+                  {'  · '}{attached.length} paste{attached.length === 1 ? '' : 's'} attached
                   {' — delete the marker to drop one'}
                 </Text>
               )}

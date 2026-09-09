@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizePaste, countLines, shouldCollapse, pasteMarker, expandPastes, applyPaste,
+  attachedPastes, nextPasteId,
 } from './paste.js';
 
 test('normalizePaste', async (t) => {
@@ -89,5 +90,59 @@ test('expandPastes', async (t) => {
     assert.equal(countLines(''), 0);
     assert.equal(countLines('a'), 1);
     assert.equal(countLines('a\nb'), 2);
+  });
+});
+
+
+test('attachedPastes — what the prompt actually still references', async (t) => {
+  const big = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n');
+
+  await t.test('counts a paste while its marker is in the prompt', () => {
+    const { value, paste } = applyPaste('', big, 1);
+    assert.equal(attachedPastes(value, [paste]).length, 1);
+  });
+
+  await t.test('stops counting it the moment the marker is deleted', () => {
+    // The bug: the hint read the length of the list, which only grows, so it
+    // said "1 paste attached" forever — including after the marker was removed
+    // and after the message had been sent.
+    const { value, paste } = applyPaste('', big, 1);
+    assert.equal(attachedPastes(value.replace(paste.marker, ''), [paste]).length, 0);
+  });
+
+  await t.test('counts nothing on an empty prompt', () => {
+    const { paste } = applyPaste('', big, 1);
+    assert.equal(attachedPastes('', [paste]).length, 0);
+    assert.equal(attachedPastes(undefined, [paste]).length, 0);
+  });
+
+  await t.test('counts only the ones still referenced', () => {
+    const a = applyPaste('', big, 1);
+    const b = applyPaste('', big, 2);
+    const prompt = `keep ${b.paste.marker}`;
+    assert.deepEqual(attachedPastes(prompt, [a.paste, b.paste]).map((p) => p.id), [2]);
+  });
+});
+
+test('nextPasteId', async (t) => {
+  const big = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n');
+
+  await t.test('never reuses an id after one is dropped', () => {
+    // `pastes.length + 1` reused the id once a marker was deleted, so two
+    // different blocks ended up sharing one marker and expandPastes would
+    // substitute the wrong text.
+    const pastes = [];
+    for (let i = 0; i < 3; i++) pastes.push(applyPaste('', big, nextPasteId(pastes)).paste);
+    assert.deepEqual(pastes.map((p) => p.id), [1, 2, 3]);
+
+    pastes.splice(1, 1); // the user deleted the second marker
+    const next = applyPaste('', big, nextPasteId(pastes)).paste;
+    assert.equal(next.id, 4, 'must not reuse 3');
+    assert.equal(new Set([...pastes, next].map((p) => p.marker)).size, 3, 'markers stay unique');
+  });
+
+  await t.test('starts at 1', () => {
+    assert.equal(nextPasteId([]), 1);
+    assert.equal(nextPasteId(), 1);
   });
 });

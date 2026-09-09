@@ -57,6 +57,35 @@ export function expandPastes(input, pastes) {
 }
 
 /**
+ * The pastes still referenced by the prompt.
+ *
+ * `pastes` only grows — a paste is kept after submit so recalling the command
+ * from history still expands, and dropping one is done by deleting its marker
+ * from the text. So the list is not the answer to "how many are attached";
+ * the markers actually present in the prompt are. Counting the list showed
+ * "1 paste attached" forever, including after the marker was deleted and after
+ * the message had been sent.
+ *
+ * @param {string} input
+ * @param {Array<{marker: string}>} pastes
+ */
+export function attachedPastes(input, pastes = []) {
+  const text = String(input ?? '');
+  return pastes.filter((p) => p?.marker && text.includes(p.marker));
+}
+
+/**
+ * The next id to hand a paste.
+ *
+ * Monotonic over everything ever pasted, not `length + 1`: dropping a marker
+ * and pasting again would otherwise reuse the id, and two different blocks
+ * would share one marker.
+ */
+export function nextPasteId(pastes = []) {
+  return pastes.reduce((max, p) => Math.max(max, p?.id || 0), 0) + 1;
+}
+
+/**
  * Fold a paste into the prompt.
  *
  * @returns {{ value: string, paste: {id: number, marker: string, text: string}|null }}
