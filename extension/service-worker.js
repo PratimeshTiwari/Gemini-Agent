@@ -105,7 +105,7 @@
     if (tabs.length > 0) {
       return tabs[tabs.length - 1];
     }
-    console.log(`[Gemini Agent] No ${targetModel} tab found. Auto-reopening in a new tab...`);
+    console.log(`[Agent CLI] No ${targetModel} tab found. Auto-reopening in a new tab...`);
     const openUrl = targetModel === "gemini" ? "https://gemini.google.com/app" : targetModel === "chatgpt" ? "https://chatgpt.com" : targetModel === "claude" ? "https://claude.ai" : targetUrl.replace("/*", "");
     const newTab = await chrome.tabs.create({ url: openUrl, active: true });
     await new Promise((resolve) => {
@@ -151,7 +151,7 @@
     } else {
       let tabs = await chrome.tabs.query({ url: targetUrl });
       if (tabs.length === 0) {
-        console.log(`[Gemini Agent] No active ${targetModel} tab found. Auto-reopening...`);
+        console.log(`[Agent CLI] No active ${targetModel} tab found. Auto-reopening...`);
         sendToServer({
           type: "status",
           payload: { message: `\u{1F310} Reopening ${targetModel} in a new tab...` }
@@ -199,7 +199,7 @@
         await chrome.tabs.sendMessage(tabs[i].id, { type: "new_chat", payload });
         break;
       } catch (err) {
-        console.warn(`[Gemini Agent] Failed to send new_chat to ${targetModel} tab ${tabs[i].id}:`, err);
+        console.warn(`[Agent CLI] Failed to send new_chat to ${targetModel} tab ${tabs[i].id}:`, err);
       }
     }
   }
@@ -370,7 +370,7 @@
     if (alarm.name === "reconnect") connectWebSocket();
   });
   chrome.runtime.onInstalled.addListener(() => {
-    console.log("\u{1F916} Gemini Agent extension installed");
+    console.log("\u{1F916} Agent CLI extension installed");
     connectWebSocket();
   });
   chrome.runtime.onStartup.addListener(() => {

@@ -341,7 +341,15 @@ describe('PromptBuilder — tool results ride in one envelope', () => {
   test('an object result is serialised rather than stringified to [object Object]', () => {
     const pb = new PromptBuilder(ws, ws);
     const one = pb.buildToolResultPrompt('manage_task', { status: 'running', taskId: 'abc' });
-    assert.match(one, /"taskId": "abc"/);
+    assert.match(one, /"taskId":"abc"/);
+  });
+
+  test('object results go in minified — indentation is pure token cost', () => {
+    const pb = new PromptBuilder(ws, ws);
+    const result = { path: '.', children: [{ name: 'server', type: 'dir' }] };
+    const one = pb.buildToolResultPrompt('list_directory', result);
+    assert.ok(one.includes(JSON.stringify(result)), 'should contain the compact form');
+    assert.ok(!one.includes('\n  "path"'), 'should not contain pretty-printed indentation');
   });
 });
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
 /**
- * Gemini Agent — Local Agent Server
+ * Agent CLI — Local Agent Server
  *
  * Entry point: starts the WebSocket server, initializes MCP tools,
  * and connects the agent loop.
  *
- * Usage (installed as both `agent` and `gemini-agent`):
+ * Usage (installed as both `agent` and `agent-cli`):
  *   agent                    # Uses cwd as workspace root
  *   agent --workspace /path  # Explicit workspace root
  *   agent --port 7777        # Custom port (default: 7777)
@@ -85,10 +85,10 @@ function parseArgs() {
 function printHelp() {
   console.log(`
 ╔══════════════════════════════════════════════════════════╗
-║               🤖 Gemini Agent Server                    ║
+║                  🤖 Agent CLI Server                     ║
 ╚══════════════════════════════════════════════════════════╝
 
-Usage: agent [options]          (alias: gemini-agent)
+Usage: agent [options]          (alias: agent-cli)
 
 Options:
   --workspace, -w <path>   Set workspace root (default: cwd)
@@ -103,7 +103,7 @@ Options:
 
 Environment:
   EDITOR                   Default editor command (fallback: 'code')
-  GEMINI_AGENT_HOME        Agent home directory (default: ~/.agent)
+  AGENT_CLI_HOME           Agent home directory (default: ~/.agent)
   GITHUB_TOKEN             GitHub PAT for PR comment watching (required for --github)
 `);
 }

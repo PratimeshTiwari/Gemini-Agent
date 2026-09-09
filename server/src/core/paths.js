@@ -10,8 +10,8 @@
  * Machine state is hidden inside `.agent/`; documents the *user* is meant to
  * read and approve (task lists, plans, walkthroughs) live in `.agent/artifacts/`.
  *
- * Home-scoped state (sessions, cross-repo context) lives in `~/.gemini-agent/`,
- * overridable with GEMINI_AGENT_HOME. Note this is deliberately NOT `~/.gemini`,
+ * Home-scoped state (sessions, cross-repo context) lives in `~/.agent/`,
+ * overridable with AGENT_CLI_HOME. Note this is deliberately NOT `~/.gemini`,
  * which belongs to Google's Gemini CLI.
  */
 
@@ -54,6 +54,10 @@ export const sessionsDirLocal = (workspace) => path.join(agentDir(workspace), 's
 export const localSessionPath = (workspace) => path.join(sessionsDirLocal(workspace), 'history.jsonl');
 export const tmpDir = (workspace) => path.join(agentDir(workspace), 'tmp');
 export const rulesPath = (workspace) => path.join(agentDir(workspace), 'rules.md');
+
+/** Where `/skills` keeps one markdown file per skill. */
+export const skillsDir = (workspace) => path.join(agentDir(workspace), 'skills');
+export const skillPath = (workspace, name) => path.join(skillsDir(workspace), `${name}.md`);
 export const mistakesPath = (workspace) => path.join(agentDir(workspace), 'mistakes.md');
 export const logPath = (workspace) => path.join(logsDir(workspace), 'agent.log');
 
@@ -65,8 +69,19 @@ export const REL_ARTIFACTS_DIR = `${AGENT_DIR}/artifacts`;
 
 // ── Home-scoped ──────────────────────────────────────────────────────
 
+/**
+ * The home directory, `~/.agent` unless overridden.
+ *
+ * `AGENT_CLI_HOME` is the current name. The two older ones are still read
+ * because dropping them would not fail — it would silently point an existing
+ * install at a different directory and look like the session history had
+ * vanished. They cost one `||` each.
+ */
 export const homeDir = () =>
-  process.env.GEMINI_AGENT_HOME || process.env.AGENT_HOME || path.join(os.homedir(), AGENT_DIR);
+  process.env.AGENT_CLI_HOME           // current
+  || process.env.GEMINI_AGENT_HOME     // deprecated: pre-rename name
+  || process.env.AGENT_HOME            // deprecated: earlier alias
+  || path.join(os.homedir(), AGENT_DIR);
 
 /** The pre-.agent home directory, kept so migration can find it. */
 export const legacyHomeDir = () => path.join(os.homedir(), '.gemini-agent');

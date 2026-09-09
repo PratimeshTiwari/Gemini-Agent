@@ -1,12 +1,12 @@
 {
-  "name": "gemini-agent-server",
+  "name": "agent-cli-server",
   "version": "1.0.0",
   "description": "Local agent server with MCP tools and context engine",
   "type": "module",
   "main": "src/index.js",
   "bin": {
     "agent": "./src/index.js",
-    "gemini-agent": "./src/index.js"
+    "agent-cli": "./src/index.js"
   },
   "scripts": {
     "start": "tsx src/index.js --workspace ../",
@@ -15,7 +15,6 @@
   },
   "dependencies": {
     "@inquirer/prompts": "^8.6.0",
-    "acorn": "^8.18.0",
     "chalk": "^6.0.0",
     "chokidar": "^4.0.0",
     "diff": "^7.0.0",

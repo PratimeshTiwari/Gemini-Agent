@@ -66,7 +66,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 // Connect on install/startup
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('🤖 Gemini Agent extension installed');
+  console.log('🤖 Agent CLI extension installed');
   connectWebSocket();
 });
 

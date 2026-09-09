@@ -2,6 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as paths from '../../core/paths.js';
+import { createSkill, listSkills, skillSearchPath } from '../../core/skills.js';
+import { resolveWorkspaceInput, validateWorkspace } from '../../core/workspaces.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -58,6 +60,8 @@ export async function handleSlashCommand(query, {
           '  /clear            - Clear local history',
           '  /new              - Start a new chat session',
           '  /undo             - Undo the last step/action',
+          '  /skills           - List, create and open skills (.agent/skills/*.md)',
+          '  /skills dir       - Show or add directories skills are loaded from',
           '  /init-skills      - Create workspace rules (.agent/rules.md)',
           '',
           '### 🛠️ System & Tools',
@@ -134,6 +138,102 @@ export async function handleSlashCommand(query, {
 
     if (command === 'reasoning' && args.length === 0) {
       setActiveMenu({ type: 'reasoning' });
+      setIsProcessing(false);
+      return;
+    }
+
+    if (command === 'skills' || command === 'skill') {
+      const action = (args[0] || '').toLowerCase();
+
+      // Point the agent at a directory of skills you keep elsewhere.
+      if (action === 'dir' || action === 'folder') {
+        const sub = (args[1] || '').toLowerCase();
+        const target = args.slice(2).join(' ').trim();
+
+        if (sub === 'add' && target) {
+          const abs = resolveWorkspaceInput(target, agentLoop.workspace);
+          const problem = validateWorkspace(abs);
+          if (problem) {
+            setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ ${problem}`, isLocal: true }]);
+            setIsProcessing(false);
+            return;
+          }
+          if (!agentLoop.skillFolders.includes(abs)) {
+            agentLoop.skillFolders.push(abs);
+            agentLoop._saveConfig();
+            agentLoop.promptBuilder?.resetPromptState?.();
+          }
+          const found = listSkills(agentLoop.workspace, agentLoop.skillFolders).length;
+          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `✅ Watching \`${abs}\` for skills — ${found} skill${found === 1 ? '' : 's'} visible now.`, isLocal: true }]);
+          setIsProcessing(false);
+          return;
+        }
+
+        if ((sub === 'remove' || sub === 'rm') && target) {
+          const abs = resolveWorkspaceInput(target, agentLoop.workspace);
+          const before = agentLoop.skillFolders.length;
+          agentLoop.skillFolders = agentLoop.skillFolders.filter((f) => f !== abs && f !== target);
+          const changed = agentLoop.skillFolders.length !== before;
+          if (changed) {
+            agentLoop._saveConfig();
+            agentLoop.promptBuilder?.resetPromptState?.();
+          }
+          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: changed ? `🗑️ Stopped watching \`${abs}\`.` : `Not a skill folder: \`${target}\``, isLocal: true }]);
+          setIsProcessing(false);
+          return;
+        }
+
+        const dirs = skillSearchPath(agentLoop.workspace, agentLoop.skillFolders)
+          .map((d, i) => `  ${i + 1}. \`${d}\`${i === 0 ? ' _(this project)_' : i === 1 ? ' _(yours, all projects)_' : ''}`);
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant',
+          isLocal: true,
+          content: `### 📁 Skill folders, searched in order\n${dirs.join('\n')}\n\n`
+            + 'Add one with `/skills dir add <path>`, drop one with `/skills dir remove <path>`.\n'
+            + 'The first folder to define a name wins, so a project can override a personal skill.',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      if (action === 'new' || action === 'add' || action === 'create') {
+        const isGlobal = (args[1] || '').toLowerCase() === '--global';
+        const nameParts = isGlobal ? args.slice(2) : args.slice(1);
+        const result = createSkill(agentLoop.workspace, nameParts.join(' '), { global: isGlobal });
+        if (!result.ok) {
+          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ ${result.error}`, isLocal: true }]);
+          setIsProcessing(false);
+          return;
+        }
+        // Open it straight away: a scaffold nobody edits is worse than nothing.
+        try {
+          const { exec } = await import('child_process');
+          exec(`"${agentLoop.editor || 'code'}" "${result.file}" || open "${result.file}" || xdg-open "${result.file}"`);
+        } catch (e) { /* no editor here; the path is in the message */ }
+        // The catalogue is part of the system prompt, so it has to be re-sent.
+        agentLoop.promptBuilder?.resetPromptState?.();
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant',
+          isLocal: true,
+          content: `✅ Created skill **${result.name}**\n\n\`${result.file}\`\n\n`
+            + 'Fill in the `description` — it is the only part always in the prompt, and it is '
+            + 'what the agent matches against to decide whether to read the rest.',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      const skills = listSkills(agentLoop.workspace, agentLoop.skillFolders);
+      if (action === 'list' || args.length > 0) {
+        const body = skills.length === 0
+          ? 'No skills yet. Create one with `/skills new <name>`.'
+          : skills.map((sk) => `  • **${sk.name}** — ${sk.description || '_(no description)_'}\n    \`${sk.relative}\``).join('\n');
+        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `### 🧩 Skills\n${body}`, isLocal: true }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      setActiveMenu({ type: 'skills', skills, workspace: agentLoop.workspace });
       setIsProcessing(false);
       return;
     }

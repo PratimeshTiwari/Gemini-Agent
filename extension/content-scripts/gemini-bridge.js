@@ -672,7 +672,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // ── Initialization ──────────────────────────────────────────────────
-console.log('[Gemini Agent] Content script loaded on:', window.location.href);
+console.log('[Agent CLI] Content script loaded on:', window.location.href);
 
 // Notify service worker that we're ready
 chrome.runtime.sendMessage({

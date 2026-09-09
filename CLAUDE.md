@@ -19,7 +19,7 @@ npm install                       # installs both workspaces from the root
 npm run start                     # server with workspace pinned to repo root (../)
 npm run dev                       # same, with tsx --watch
 cd server && npm start -- --workspace /path/to/project   # run against another project
-npm link --workspace=server       # exposes the `agent` (and `gemini-agent`) bin globally
+npm link --workspace=server       # exposes the `agent` (and `agent-cli`) bin globally
 
 npm run build --workspace=extension   # esbuild src/background/main.js -> service-worker.js
 cd vscode-companion && vsce package --allow-missing-repository --skip-license
@@ -61,11 +61,11 @@ server/src/
 ├── core/             # agent-loop, prompt-builder, diff-engine, risk-classifier,
 │                     # task-manager, paths, migrate, workspaces
 ├── bridge/           # websocket-server (the Chrome-extension transport)
-├── context/          # RAG + token budget: workspace-indexer, ast-chunker,
-│                     # code-minifier, token-counter, context-manager, memory-manager
+├── context/          # RAG + token budget: workspace-indexer, code-minifier,
+│                     # token-counter, context-manager, memory-manager
 ├── github/           # PR agent: poller, comment-classifier, ci-log-parser, plan-generator
 ├── mcp/              # mcp-server.js + tools/
-├── skills/  storage/  watcher/
+├── storage/  watcher/
 └── ui/               # the terminal front-end
     ├── cli-ui.jsx    # render(): stdin shim, hotkey routing, trailing-Enter split
     ├── App.jsx       # state, effects, layout — everything else is a module
@@ -142,8 +142,18 @@ persistent allow/block rules live in `commandRules`  (`/allowlist`).
 
 ### Context engine
 
-`context/` — `workspace-indexer` (structural map via `madge` + acorn), `ast-chunker` (acorn),
-`code-minifier`, `token-counter`, `context-manager`, `memory-manager`.
+`context/` — `workspace-indexer` (structural map via `madge`), `code-minifier`,
+`token-counter`, `context-manager`, `memory-manager`. `CodeMinifier.minifyJson` is on the hot
+path: `PromptBuilder.buildToolResultBatch` embeds every tool result in the next prompt, and
+serialising them compact rather than pretty-printed is ~40% fewer characters there.
+
+There is no `ast-chunker` and no `skills/` registry any more. Both were written, never wired to
+anything, and removed on 2026-09-10: the chunker resolved 24% of this repo's top-level symbols
+(it walked only `ast.body`, so every class method and every `export const foo = () => {}` missed,
+and plain acorn cannot parse the `.jsx` files at all), and `SkillRegistry` was a second, parallel
+way to declare a tool that competed with `mcp/mcp-server.js`'s `TOOL_DEFINITIONS` — which is the
+one described above and the one that actually runs. A per-symbol read tool is still a real gap;
+it wants `acorn-walk` plus `acorn-jsx`, not that file.
 `watcher/file-watcher.js` (chokidar) invalidates context on external edits. `semantic_search`
 is backed by a local TF-IDF index.
 
@@ -172,7 +182,9 @@ can't drift again.
 workspace copy sits next to the code; the home copy survives a clean checkout or a wiped
 `.agent/`. On startup the two are reconciled — more turns wins, the other is rebuilt from it.
 
-`GEMINI_AGENT_HOME` (or `AGENT_HOME`) overrides the home dir, which is `~/.agent`. It is
+`AGENT_CLI_HOME` overrides the home dir, which is `~/.agent`. The pre-rename `GEMINI_AGENT_HOME`
+and the older `AGENT_HOME` are still read, because dropping them would silently repoint an
+existing install rather than fail. It is
 deliberately **not** `~/.gemini`: that belongs to Google's Gemini CLI and Antigravity, which
 really do keep data there.
 

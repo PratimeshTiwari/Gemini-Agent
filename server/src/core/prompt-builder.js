@@ -16,6 +16,8 @@ import * as paths from './paths.js';
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import os from 'os';
 import { resolve, relative } from 'path';
+import { CodeMinifier } from '../context/code-minifier.js';
+import { skillCatalogue } from './skills.js';
 
 // How often to send the condensed reminder, counted in MESSAGES pushed to the tab —
 // not user turns. One user turn can be a dozen tool round-trips, so a turn-based
@@ -79,6 +81,15 @@ export class PromptBuilder {
       const workspaceRules = this._loadWorkspaceRules();
       if (workspaceRules) {
         parts.push(`<workspace_rules>\n${workspaceRules}\n</workspace_rules>`);
+      }
+
+      // Names and one-line descriptions only. The bodies stay on disk and are
+      // fetched with read_file when the model judges one relevant, so writing
+      // twenty skills costs twenty lines of prompt rather than twenty files of
+      // it — which matters when the prompt is retyped into a browser tab.
+      const skills = skillCatalogue(this.workspace, this._configuredSkillFolders());
+      if (skills) {
+        parts.push(`<skills>\n${skills}\n</skills>`);
       }
       parts.push(`</system_state>`);
 
@@ -145,7 +156,11 @@ export class PromptBuilder {
   buildToolResultBatch(results = []) {
     const body = results.map(({ name, result }) => [
       `<result tool="${name}">`,
-      typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+      // Minified, not pretty-printed. Every tool result goes into the prompt,
+      // and indentation is the single largest avoidable cost there — a plain
+      // list_directory result is 40% smaller without it. The model does not
+      // read the whitespace; the token budget does.
+      typeof result === 'string' ? result : CodeMinifier.minifyJson(result),
       `</result>`,
     ].join('\n'));
 
@@ -922,7 +937,7 @@ Rules: Use tools (read_file, edit_file, etc). JSON blocks: \`\`\`json {"name":..
     }
 
     return `<system_reminder>
-You are Gemini Agent, an AI coding assistant. Current mode: ${modeStr}. Model tier: ${tier}.
+You are Agent CLI, an AI coding assistant. Current mode: ${modeStr}. Model tier: ${tier}.
 Workspace: \`${this.workspace}\`
 Agent source: \`${this.agentSourceDir}\`
 
@@ -955,6 +970,22 @@ ${tier === 'pro' ? this._reminderLineForLevel(this._normalizeLevel(modelConfig.r
    * lands in the system prompt on turn 0 and every Nth turn, so an unbounded
    * folder would blow the context window (and trip Gemini's repetition filter).
    */
+  /**
+   * Extra skill directories from config.json.
+   *
+   * Read from disk rather than passed in, the same way `contextFolders` is:
+   * `/skills add` writes the config and the next prompt picks it up, with no
+   * second copy of the list to keep in sync.
+   */
+  _configuredSkillFolders() {
+    try {
+      const cfg = JSON.parse(readFileSync(paths.configPath(this.workspace), 'utf8'));
+      return Array.isArray(cfg.skillFolders) ? cfg.skillFolders : [];
+    } catch {
+      return [];
+    }
+  }
+
   _loadContextFolders() {
     const MAX_TOTAL = 24000; // characters across all files
     const MAX_FILES = 40;

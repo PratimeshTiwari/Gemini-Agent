@@ -20,6 +20,7 @@ const SLASH_COMMANDS = [
   { name: 'clear', desc: 'Clear local history' },
   { name: 'new', desc: 'Start a new chat session' },
   { name: 'undo', desc: 'Undo the last step/action' },
+  { name: 'skills', desc: 'List, create and open skills the agent can load' },
   { name: 'init-skills', desc: 'Create workspace rules (.agent/rules.md)' },
   { name: 'github', desc: 'Run GitHub commands (e.g. /github refresh)' },
   { name: 'image', desc: 'Attach an image (e.g. /image path/to/img.png)' },

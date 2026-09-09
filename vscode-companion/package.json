@@ -1,8 +1,8 @@
 {
-  "name": "gemini-agent-companion",
+  "name": "agent-cli-companion",
   "publisher": "pratimesh-tiwari",
-  "displayName": "Gemini Agent Companion",
-  "description": "Exposes editor state to the local Gemini Agent CLI.",
+  "displayName": "Agent CLI Companion",
+  "description": "Exposes editor state to the local Agent CLI.",
   "version": "1.1.0",
   "engines": {
     "vscode": "^1.80.0"

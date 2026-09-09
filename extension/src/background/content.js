@@ -84,7 +84,7 @@ export async function ensureModelTab(targetModel = 'gemini') {
   }
 
   // No tab found: automatically reopen in a new tab
-  console.log(`[Gemini Agent] No ${targetModel} tab found. Auto-reopening in a new tab...`);
+  console.log(`[Agent CLI] No ${targetModel} tab found. Auto-reopening in a new tab...`);
   const openUrl = targetModel === 'gemini' 
     ? 'https://gemini.google.com/app' 
     : (targetModel === 'chatgpt' ? 'https://chatgpt.com' : (targetModel === 'claude' ? 'https://claude.ai' : targetUrl.replace('/*', '')));
@@ -145,7 +145,7 @@ export async function injectPromptIntoModel(payload) {
     // Primary Agent: Find existing tab or auto-reopen if none is found
     let tabs = await chrome.tabs.query({ url: targetUrl });
     if (tabs.length === 0) {
-      console.log(`[Gemini Agent] No active ${targetModel} tab found. Auto-reopening...`);
+      console.log(`[Agent CLI] No active ${targetModel} tab found. Auto-reopening...`);
       sendToServer({
         type: 'status',
         payload: { message: `🌐 Reopening ${targetModel} in a new tab...` }
@@ -199,7 +199,7 @@ export async function triggerNewChatInModel(payload) {
       await chrome.tabs.sendMessage(tabs[i].id, { type: 'new_chat', payload });
       break;
     } catch (err) {
-      console.warn(`[Gemini Agent] Failed to send new_chat to ${targetModel} tab ${tabs[i].id}:`, err);
+      console.warn(`[Agent CLI] Failed to send new_chat to ${targetModel} tab ${tabs[i].id}:`, err);
     }
   }
 }

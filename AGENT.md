@@ -1,6 +1,6 @@
 # AGENT.md — Project Context
 
-> This file is automatically loaded by Gemini Agent to provide persistent project context.
+> This file is automatically loaded by Agent CLI to provide persistent project context.
 > Edit this file to teach the agent about your project.
 
 ## Project Description

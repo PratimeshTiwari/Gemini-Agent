@@ -68,6 +68,9 @@ export class AgentLoop {
 
     // Extra folders whose .md files are injected as repo context each session.
     this.contextFolders = [];
+    // Extra directories searched for skills, on top of <ws>/.agent/skills and
+    // ~/.agent/skills. Set with `/skills add <dir>`.
+    this.skillFolders = [];
     
     this._loadConfig();
     this.conversationHistory = this.sessionStore.loadHistory();
@@ -787,6 +790,7 @@ export class AgentLoop {
         if (data.modelConfig) this.modelConfig = { ...this.modelConfig, ...data.modelConfig };
         if (data.commandRules) this.commandRules = { ...this.commandRules, ...data.commandRules };
         if (Array.isArray(data.contextFolders)) this.contextFolders = data.contextFolders;
+        if (Array.isArray(data.skillFolders)) this.skillFolders = data.skillFolders;
       } catch (err) {
         console.warn(`⚠️ Failed to load ${paths.AGENT_DIR}/config.json:`, err.message);
       }
@@ -812,7 +816,8 @@ export class AgentLoop {
         topology: this.topology,
         modelConfig: this.modelConfig,
         commandRules: this.commandRules,
-        contextFolders: this.contextFolders
+        contextFolders: this.contextFolders,
+        skillFolders: this.skillFolders
       }, null, 2));
     } catch (err) {
       console.warn('⚠️ Failed to save config:', err.message);

@@ -41,7 +41,7 @@ export function App({ agentLoop, wsServer }) {
   const [history, setHistory] = useState([...agentLoop.conversationHistory]);
   const [activeToolCalls, setActiveToolCalls] = useState([]);
   const [agentNameAscii, setAgentNameAscii] = useState(() => {
-    let name = 'Gemini Agent';
+    let name = 'Agent CLI';
     try {
       const configPath = paths.configPath(agentLoop.workspace);
       if (fs.existsSync(configPath)) {
@@ -58,7 +58,7 @@ export function App({ agentLoop, wsServer }) {
   });
 
   useEffect(() => {
-    let name = 'Gemini Agent';
+    let name = 'Agent CLI';
     try {
       const configPath = paths.configPath(agentLoop.workspace);
       if (fs.existsSync(configPath)) {

@@ -1,9 +1,11 @@
 import React from 'react';
+import { exec } from 'child_process';
 import { Box, Text } from 'ink';
 import SelectInput from 'ink-select-input';
 import { QuestionPrompt } from './QuestionPrompt.jsx';
 import { summarizeDiff, previewRows } from '../diff-preview.js';
 import { listWorkspaceCandidates } from '../../core/workspaces.js';
+import { skillsDir } from '../../core/paths.js';
 import { FOCUS_INPUT } from '../constants.js';
 
 /**
@@ -205,6 +207,42 @@ export function Menus({
                 setFocus(FOCUS_INPUT);
               }}
             />
+          </Box>
+        )}
+
+        {activeMenu?.type === 'skills' && (
+          <Box flexDirection="column" borderStyle="single" borderColor="magenta" padding={1}>
+            <Text bold color="magenta">🧩 Skills</Text>
+            <Text dimColor wrap="wrap">
+              Markdown files the agent reads when their description matches the task.
+              Only the descriptions sit in the prompt.
+            </Text>
+            <SelectInput
+              limit={10}
+              items={[
+                ...activeMenu.skills.map((sk) => ({
+                  label: `  ${sk.name} — ${sk.description ? sk.description.slice(0, 48) : '(no description)'}`,
+                  value: `open:${sk.file}`,
+                })),
+                { label: '  + New skill…', value: 'new' },
+                { label: '  Open the skills folder', value: `open:${skillsDir(activeMenu.workspace)}` },
+              ]}
+              onSelect={(item) => {
+                setActiveMenu(null);
+                setFocus(FOCUS_INPUT);
+                if (item.value === 'new') {
+                  // Hand over a half-written command: the skill needs a name and
+                  // the prompt is already the place to type one.
+                  setInput('/skills new ');
+                  return;
+                }
+                const target = item.value.slice('open:'.length);
+                try {
+                  exec(`"${agentLoop.editor || 'code'}" "${target}" || open "${target}" || xdg-open "${target}"`);
+                } catch (e) { /* no editor on this machine */ }
+              }}
+            />
+            <Text dimColor>↑↓ move · enter open · esc cancel</Text>
           </Box>
         )}
 
