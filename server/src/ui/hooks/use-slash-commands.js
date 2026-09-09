@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import * as paths from '../../core/paths.js';
 import { createSkill, listSkills, skillSearchPath } from '../../core/skills.js';
 import { readErrors, summarizeErrors, clearErrors, FLOWS } from '../../core/error-log.js';
-import { resolveWorkspaceInput, validateWorkspace } from '../../core/workspaces.js';
+import { resolveWorkspaceInput, validateWorkspace, listScopes } from '../../core/workspaces.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -53,6 +53,7 @@ export async function handleSlashCommand(query, {
           '  /auto             - Switch to Auto Mode (auto-applies safe edits)',
           '',
           '### 📁 Workspace & Context',
+          '  /scope [repo]     - Work on one repo in a group that shares a .agent/',
           '  /workspace <path> - Change the active workspace (checked before it is set)',
           '  /set-workspace    - Pick a workspace from a list of nearby folders',
           '  /memory           - View current agent memory context',
@@ -140,6 +141,45 @@ export async function handleSlashCommand(query, {
 
     if (command === 'reasoning' && args.length === 0) {
       setActiveMenu({ type: 'reasoning' });
+      setIsProcessing(false);
+      return;
+    }
+
+    if (command === 'scope' || command === 'repo') {
+      const scopes = listScopes(agentLoop.workspace);
+      const target = args.join(' ').trim();
+
+      if (scopes.length === 0) {
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant',
+          isLocal: true,
+          content: 'This workspace has its own `.agent/`, so there is nothing to scope between.\n\n'
+            + 'Scopes exist when several repos share one `.agent/` from a parent folder — put '
+            + '`.agent/` in the folder above your repos and open that folder (or any repo inside it).',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      if (target) {
+        const match = scopes.find((sc) => sc.name === target)
+          || scopes.find((sc) => sc.name.toLowerCase() === target.toLowerCase());
+        if (!match) {
+          setHistory(prev => [...prev, { role: 'user', content: query }, {
+            role: 'assistant', isLocal: true,
+            content: `❌ No repo called \`${target}\` here.\nAvailable: ${scopes.map((sc) => sc.name).join(', ')}`,
+          }]);
+          setIsProcessing(false);
+          return;
+        }
+        const message = agentLoop.setScope(match.name);
+        setHistory([...agentLoop.conversationHistory, { role: 'assistant', content: message, isLocal: true }]);
+        resetScreen();
+        setIsProcessing(false);
+        return;
+      }
+
+      setActiveMenu({ type: 'scope', scopes, workspace: agentLoop.workspace });
       setIsProcessing(false);
       return;
     }

@@ -210,6 +210,29 @@ export function Menus({
           </Box>
         )}
 
+        {activeMenu?.type === 'scope' && (
+          <Box flexDirection="column" borderStyle="single" borderColor="green" padding={1}>
+            <Text bold color="green">🎯 Which repo are we working on?</Text>
+            <Text dimColor wrap="wrap">
+              These share one `.agent/` from the folder above. Rules and skills are common;
+              history, plans and state are kept per repo.
+            </Text>
+            <SelectInput
+              limit={10}
+              items={activeMenu.scopes.map((sc) => ({
+                label: `${sc.current ? '● ' : '  '}${sc.name}${sc.hasState ? '' : '  (new)'}`,
+                value: sc.name,
+              }))}
+              onSelect={(item) => {
+                setActiveMenu(null);
+                setFocus(FOCUS_INPUT);
+                handleSubmit(`/scope ${item.value}`);
+              }}
+            />
+            <Text dimColor>↑↓ move · enter choose · esc cancel</Text>
+          </Box>
+        )}
+
         {activeMenu?.type === 'skills' && (
           <Box flexDirection="column" borderStyle="single" borderColor="magenta" padding={1}>
             <Text bold color="magenta">🧩 Skills</Text>

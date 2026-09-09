@@ -12,6 +12,7 @@ const SLASH_COMMANDS = [
   { name: 'config', desc: 'Configure models for specific roles' },
   { name: 'plan', desc: 'Plan Mode — every edit needs approval' },
   { name: 'auto', desc: 'Auto Mode — safe edits apply automatically' },
+  { name: 'scope', desc: 'Work on one repo in a group that shares a .agent/' },
   { name: 'workspace', desc: 'Show or set the active workspace' },
   { name: 'set-workspace', desc: 'Pick a workspace from a list of folders' },
   { name: 'memory', desc: 'View current agent memory context' },

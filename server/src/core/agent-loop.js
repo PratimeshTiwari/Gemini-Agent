@@ -517,6 +517,41 @@ export class AgentLoop {
   }
 
   /**
+   * Switch which repo inside the group the agent is working on.
+   *
+   * Only meaningful when the workspace sits under a shared `.agent/` — see
+   * paths.resolveState. The scope decides where state, sessions, artifacts and
+   * config live, so changing it is closer to opening a different project than
+   * to changing a setting: the conversation belongs to the old scope and the
+   * new one has its own history.
+   *
+   * @returns {string} a message for the transcript.
+   */
+  setScope(scope) {
+    const previous = paths.getActiveScope(this.workspace);
+    const next = paths.setActiveScope(scope);
+    if (previous === (next || '')) {
+      return `Already working on: ${next || '(the workspace root)'}`;
+    }
+
+    // Everything below is keyed on the resolved .agent directory, which has
+    // just moved.
+    this.sessionStore = new SessionStore(this.workspace);
+    this.conversationHistory = this.sessionStore.loadHistory();
+    this.memoryManager = new MemoryManager(this.workspace);
+    this.contextManager = new ContextManager(this.workspace, this.memoryManager);
+    this._loadConfig();
+    this.promptBuilder?.resetPromptState?.();
+    this.workspaceSummary = '';
+
+    const target = next ? path.join(this.workspace, next) : this.workspace;
+    return `🎯 Now working on **${next || 'the workspace root'}**\n\n`
+      + `Code: \`${target}\`\nState: \`${paths.agentDir(this.workspace)}\`\n`
+      + `Shared with the other repos: \`${paths.sharedAgentDir(this.workspace)}\`\n\n`
+      + `${this.conversationHistory.length} turn${this.conversationHistory.length === 1 ? '' : 's'} of history loaded for this scope.`;
+  }
+
+  /**
    * Point the agent at another directory.
    *
    * The workspace is duplicated across half a dozen collaborators, so this is
@@ -547,6 +582,7 @@ export class AgentLoop {
 
     this.workspaceSummary = '';        // stale for the new project
     this.promptBuilder?.resetPromptState?.();
+    paths.clearPathCache();            // the state root is resolved per workspace
     rememberWorkspace(workspace);
 
     return `📂 Workspace changed${note ? ` to ${note}` : ''}: ${workspace}`;
@@ -933,18 +969,34 @@ export class AgentLoop {
     }
   }
 
+  /**
+   * Load config, shared settings first and the scope's own on top.
+   *
+   * In a group layout the root's config.json holds what every repo inherits —
+   * the model, the topology, the command allowlist — and each repo's own file
+   * overrides only what it needs. Outside a group the two are the same file and
+   * this is exactly what it always was.
+   */
   _loadConfig() {
-    const configPath = paths.configPath(this.workspace);
-    if (fs.existsSync(configPath)) {
+    const shared = paths.sharedConfigPath(this.workspace);
+    const scoped = paths.configPath(this.workspace);
+    // Same path when there is no scope; reading it twice would be harmless but
+    // pointless.
+    const files = shared === scoped ? [scoped] : [shared, scoped];
+
+    for (const file of files) {
+      if (!fs.existsSync(file)) continue;
       try {
-        const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        const data = JSON.parse(fs.readFileSync(file, 'utf8'));
         if (data.topology) this.topology = data.topology;
         if (data.modelConfig) this.modelConfig = { ...this.modelConfig, ...data.modelConfig };
         if (data.commandRules) this.commandRules = { ...this.commandRules, ...data.commandRules };
         if (Array.isArray(data.contextFolders)) this.contextFolders = data.contextFolders;
         if (Array.isArray(data.skillFolders)) this.skillFolders = data.skillFolders;
       } catch (err) {
-        console.warn(`⚠️ Failed to load ${paths.AGENT_DIR}/config.json:`, err.message);
+        logError(this.workspace, {
+          flow: 'context', op: 'load_config', message: `${file}: ${err.message}`,
+        });
       }
     }
   }

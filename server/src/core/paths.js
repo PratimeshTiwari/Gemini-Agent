@@ -13,6 +13,24 @@
  * Home-scoped state (sessions, cross-repo context) lives in `~/.agent/`,
  * overridable with AGENT_CLI_HOME. Note this is deliberately NOT `~/.gemini`,
  * which belongs to Google's Gemini CLI.
+ *
+ * ## Where `.agent/` actually goes
+ *
+ * `workspace` used to mean two things at once — where state lives, and what the
+ * agent is working on. In a monorepo those come apart:
+ *
+ *     /coindcx/.agent/            one state root for the whole group
+ *     /coindcx/.agent/repo-1/     everything specific to repo-1
+ *     /coindcx/repo-1/            the code itself, with no .agent of its own
+ *
+ * So resolution walks *up* from the workspace looking for an existing
+ * `.agent/`, the way git finds `.git`. The first one found is the **root**, and
+ * the path from it down to the workspace is the **scope**. Nothing is found —
+ * the ordinary single-repo case — and the root is `<workspace>/.agent` with an
+ * empty scope, which is exactly the old behaviour.
+ *
+ * The useful consequence: opening `/coindcx` and opening `/coindcx/repo-1` land
+ * on the same state, because both walks end at the same root.
  */
 
 import path from 'path';
@@ -26,16 +44,134 @@ export const AGENT_DIR = '.agent';
 /** Directories used by pre-.agent versions, kept for one-time migration. */
 export const LEGACY_DIRS = ['.gemini', '.gemini-agent', '.agent-github-plans'];
 
+// ── Resolving the state root ─────────────────────────────────────────
+
+/** How far up to walk before giving up. A sane tree is nowhere near this deep. */
+const MAX_WALK = 64;
+
+/**
+ * Directories that must never be mistaken for a project's state root.
+ *
+ * `~/.agent` is the *home* directory — sessions and cross-repo context for
+ * every project on the machine. A naive upward walk from anything under $HOME
+ * finds it and would quietly adopt it as the root, putting every project's
+ * state in one place and every project's rules in everyone else's prompt.
+ */
+function forbiddenRoots() {
+  return new Set([homeDir(), path.join(os.homedir(), AGENT_DIR)]);
+}
+
+// resolveState hits the filesystem, and the path helpers call it constantly.
+const resolveCache = new Map();
+
+/** Forget cached resolutions. Call after the workspace changes. */
+export function clearPathCache() {
+  resolveCache.clear();
+}
+
+/**
+ * Find the state root for a workspace, and the scope within it.
+ *
+ * @param {string} workspace
+ * @returns {{ root: string, base: string, scope: string, discovered: boolean }}
+ *   `root` is the `.agent` directory; `base` is the directory containing it;
+ *   `scope` is the workspace's path relative to `base` (empty at the top);
+ *   `discovered` is false when nothing was found and the root is the default.
+ */
+export function resolveState(workspace) {
+  const ws = path.resolve(workspace || process.cwd());
+  const cached = resolveCache.get(ws);
+  if (cached) return cached;
+
+  const forbidden = forbiddenRoots();
+  const home = os.homedir();
+  let answer = null;
+  let dir = ws;
+
+  for (let i = 0; i < MAX_WALK; i++) {
+    const candidate = path.join(dir, AGENT_DIR);
+    if (!forbidden.has(candidate) && existsSync(candidate)) {
+      answer = { root: candidate, base: dir, scope: path.relative(dir, ws), discovered: true };
+      break;
+    }
+    // Stop at $HOME. Above it lies ~/.agent's neighbourhood and then the
+    // filesystem root, and adopting anything up there would capture every
+    // project on the machine.
+    const parent = path.dirname(dir);
+    if (parent === dir || dir === home) break;
+    dir = parent;
+  }
+
+  if (!answer) {
+    answer = { root: path.join(ws, AGENT_DIR), base: ws, scope: '', discovered: false };
+  }
+  resolveCache.set(ws, answer);
+  return answer;
+}
+
+/**
+ * The active scope, when the user has chosen one explicitly.
+ *
+ * Opening `/coindcx` and asking the agent to work on repo-1 cannot be inferred
+ * from the workspace — the workspace is the group. `--scope` and `/scope` set
+ * this; it overrides whatever the walk derived.
+ */
+let scopeOverride = null;
+
+export function setActiveScope(scope) {
+  scopeOverride = scope ? String(scope).replace(/^[./]+|\/+$/g, '') : null;
+  clearPathCache();
+  return scopeOverride;
+}
+
+export function getActiveScope(workspace) {
+  return scopeOverride ?? resolveState(workspace).scope;
+}
+
 // ── Workspace-scoped ─────────────────────────────────────────────────
 
-export const agentDir = (workspace) => path.join(workspace, AGENT_DIR);
+/**
+ * The directory for *this* project's state — `<root>/<scope>`, or the root
+ * itself when there is no scope. This is what almost every helper builds on.
+ */
+export const agentDir = (workspace) => {
+  const { root } = resolveState(workspace);
+  const scope = getActiveScope(workspace);
+  return scope ? path.join(root, scope) : root;
+};
 
+/**
+ * The root, shared by every scope under it: house rules, skills, the
+ * config every repo inherits. Identical to `agentDir` when there is no scope,
+ * which is why single-repo workspaces see no change at all.
+ */
+export const sharedAgentDir = (workspace) => resolveState(workspace).root;
+
+/**
+ * The config the agent writes to: the active scope's own.
+ *
+ * Reads merge `sharedConfigPath` underneath it (see AgentLoop._loadConfig), so
+ * a group can set the model and allowlist once and a repo can override just
+ * what it needs. With no scope the two are the same file and nothing changes.
+ */
 export const configPath = (workspace) => path.join(agentDir(workspace), 'config.json');
+
+/** Config inherited by every scope under the root. */
+export const sharedConfigPath = (workspace) => path.join(sharedAgentDir(workspace), 'config.json');
 export const memoryPath = (workspace) => path.join(agentDir(workspace), 'memory.json');
 
 /** Documents written for the user to read: task.md, plan.md, walkthrough.md. */
 export const artifactsDir = (workspace) => path.join(agentDir(workspace), 'artifacts');
 export const artifactPath = (workspace, name) => path.join(artifactsDir(workspace), name);
+
+/**
+ * Past plans, kept.
+ *
+ * `artifacts/plan.md` is a single file the agent overwrites every time, so
+ * asking for a second plan destroyed the first — including the one you were
+ * halfway through reviewing. Each is archived here as it is superseded.
+ */
+export const planArchiveDir = (workspace) => path.join(artifactsDir(workspace), 'plans');
 
 /** Machine state: editor.json, github.json, plan-approval.json. */
 export const stateDir = (workspace) => path.join(agentDir(workspace), 'state');
@@ -59,12 +195,25 @@ export const sessionsDirLocal = (workspace) => path.join(agentDir(workspace), 's
 /** Session history kept alongside the project. */
 export const localSessionPath = (workspace) => path.join(sessionsDirLocal(workspace), 'history.jsonl');
 export const tmpDir = (workspace) => path.join(agentDir(workspace), 'tmp');
-export const rulesPath = (workspace) => path.join(agentDir(workspace), 'rules.md');
+/**
+ * House rules for everything under the root. A scope adds to these rather than
+ * replacing them — see `scopedRulesPath`.
+ */
+export const rulesPath = (workspace) => path.join(sharedAgentDir(workspace), 'rules.md');
 
-/** Where `/skills` keeps one markdown file per skill. */
-export const skillsDir = (workspace) => path.join(agentDir(workspace), 'skills');
+/** Rules for the active scope only, appended to the shared ones. */
+export const scopedRulesPath = (workspace) => path.join(agentDir(workspace), 'rules.md');
+
+/**
+ * Where `/skills` keeps one markdown file per skill.
+ *
+ * Shared across the whole root: a skill written for the group applies to every
+ * repo in it, which is the same thing the ancestor walk in core/skills.js does
+ * for directories further up the tree.
+ */
+export const skillsDir = (workspace) => path.join(sharedAgentDir(workspace), 'skills');
 export const skillPath = (workspace, name) => path.join(skillsDir(workspace), `${name}.md`);
-export const mistakesPath = (workspace) => path.join(agentDir(workspace), 'mistakes.md');
+export const mistakesPath = (workspace) => path.join(sharedAgentDir(workspace), 'mistakes.md');
 export const logPath = (workspace) => path.join(logsDir(workspace), 'agent.log');
 /** Structured failure log, one JSON object per line. See core/error-log.js. */
 export const errorLogPath = (workspace) => path.join(logsDir(workspace), 'errors.jsonl');
@@ -99,8 +248,15 @@ export const legacyHomeDir = () => path.join(os.homedir(), '.gemini-agent');
  * short hash of the absolute path, so two projects called "app" never collide.
  */
 export const workspaceSlug = (workspace) => {
-  const hash = crypto.createHash('md5').update(workspace).digest('hex').slice(0, 8);
-  return `${path.basename(workspace)}-${hash}`;
+  // Keyed on the resolved state directory, not the workspace path. Opening
+  // /coindcx with --scope repo-1 and opening /coindcx/repo-1 are the same
+  // project and must share one history file; /coindcx with repo-1 and with
+  // repo-2 are different projects and must not.
+  const identity = agentDir(workspace);
+  const hash = crypto.createHash('md5').update(identity).digest('hex').slice(0, 8);
+  const scope = getActiveScope(workspace);
+  const name = scope ? path.basename(scope) : path.basename(workspace);
+  return `${name}-${hash}`;
 };
 
 /** Legacy session filename, hashed into one shared folder. Migration reads these. */

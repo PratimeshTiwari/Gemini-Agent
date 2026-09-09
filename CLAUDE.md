@@ -179,6 +179,37 @@ logs (`ci-log-parser`), and writes plans via `plan-generator`.
 `server/src/core/paths.js`,** which is the single source of truth and the reason the layout
 can't drift again.
 
+### Where `.agent/` actually is
+
+`workspace` used to mean two things: where state lives, and what the agent works on. In a
+monorepo those come apart, so `paths.resolveState(workspace)` walks *up* looking for an
+existing `.agent/`, the way git finds `.git`. The first hit is the **root**; the path from it
+down to the workspace is the **scope**.
+
+```
+/coindcx/.agent/             root — shared by every repo
+├── rules.md  skills/  mistakes.md  config.json     inherited
+├── repo-1/   artifacts/ state/ sessions/ logs/     this repo only
+│             rules.md (appended)  config.json (overrides)
+└── repo-2/ …
+/coindcx/repo-1/             the code, with no .agent of its own
+```
+
+Nothing found — the ordinary single-repo case — and the root is `<workspace>/.agent` with an
+empty scope, byte-identical to the old behaviour. Opening `/coindcx` and opening
+`/coindcx/repo-1` land on the same state, because both walks end at the same root;
+`workspaceSlug` is keyed on the resolved state dir for exactly that reason, so siblings don't
+collide on one history file.
+
+Scope is **explicit, never inferred from which files the agent touches**: `--scope repo-1`,
+`/scope`, shown in the status bar. Tools stay rooted at the workspace so cross-repo work is
+still possible — only state, sessions and config are scoped.
+
+**The landmine:** `homeDir()` is `~/.agent`. A naive upward walk from any project under `$HOME`
+finds it and would adopt the global home as a project root, pooling every project's state and
+leaking every project's rules into everyone else's prompt. `resolveState` excludes it and stops
+walking at `$HOME`; `paths.test.js` covers it.
+
 | Path | Contents |
 | --- | --- |
 | `<ws>/.agent/config.json` | topology, `modelConfig`, `commandRules`, `agentName`, GitHub token |

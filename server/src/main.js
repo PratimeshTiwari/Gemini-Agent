@@ -15,7 +15,7 @@
  */
 
 import { resolve, dirname } from 'path';
-import { homeDir, ensureDir } from './core/paths.js';
+import { homeDir, ensureDir, setActiveScope, resolveState } from './core/paths.js';
 import { runMigrations } from './core/migrate.js';
 import { existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -34,6 +34,7 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const config = {
     workspace: process.cwd(),
+    scope: null,
     port: 7777,
     continue: false,
     sessions: false,
@@ -48,6 +49,10 @@ function parseArgs() {
       case '--workspace':
       case '-w':
         config.workspace = resolve(args[++i]);
+        break;
+      case '--scope':
+      case '-s':
+        config.scope = args[++i];
         break;
       case '--port':
       case '-p':
@@ -92,6 +97,7 @@ Usage: agent [options]          (alias: agent-cli)
 
 Options:
   --workspace, -w <path>   Set workspace root (default: cwd)
+  --scope, -s <name>       Work on one repo inside a group that shares a .agent/
   --port, -p <number>      WebSocket port (default: 7777)
   --continue, -c           Resume most recent session
   --resume <session-id>    Resume a specific session
@@ -123,6 +129,10 @@ async function main() {
   // Fold any pre-.agent state (.gemini, .gemini-agent, .agent-github-plans and
   // the old ~/.gemini-agent home) into .agent/. Must run BEFORE ensureConfigDir,
   // which would otherwise create the home directory the migration wants to fill.
+  // Before anything reads a path. The scope decides where .agent state lives,
+  // and migration is the first thing to touch it.
+  if (config.scope) setActiveScope(config.scope);
+
   runMigrations(config.workspace);
 
   const configHome = ensureConfigDir();

@@ -1090,16 +1090,29 @@ ${tier === 'pro' ? this._reminderLineForLevel(this._normalizeLevel(modelConfig.r
     return `\n<repo_context>\n${collected.join('\n\n')}${note}\n</repo_context>\n`;
   }
 
+  /**
+   * Workspace rules: the group's, then this repo's.
+   *
+   * Both, not one or the other — a repo adds to the house rules rather than
+   * replacing them, which is the whole point of having a shared root. The two
+   * resolve to the same file outside a group, so it is read once there.
+   */
   _loadWorkspaceRules() {
-    try {
-      const rulesFile = paths.rulesPath(this.workspace);
-      if (existsSync(rulesFile)) {
-        return readFileSync(rulesFile, 'utf-8');
+    const shared = paths.rulesPath(this.workspace);
+    const scoped = paths.scopedRulesPath(this.workspace);
+    const files = shared === scoped ? [shared] : [shared, scoped];
+
+    const parts = [];
+    for (const file of files) {
+      try {
+        if (!existsSync(file)) continue;
+        const body = readFileSync(file, 'utf-8').trim();
+        if (body) parts.push(body);
+      } catch {
+        /* unreadable rules must not take the prompt down with them */
       }
-    } catch (e) {
-      // ignore
     }
-    return '';
+    return parts.join('\n\n');
   }
 
   /**

@@ -507,6 +507,9 @@ export function App({ agentLoop, wsServer }) {
   const tokenPct = Math.round((syncTokenEstimate / tokenLimit) * 100);
   const tokenColor = tokenPct > 80 ? 'red' : tokenPct > 50 ? 'yellow' : 'cyan';
   const runningTasks = tasks.filter(t => t.status === 'running').length;
+  // Which repo of a group we are on. Empty for an ordinary single-repo
+  // workspace, where showing it would be noise.
+  const activeScope = paths.getActiveScope(agentLoop.workspace);
 
   // The banner is committed with the rest of the scrollback rather than living
   // in the live frame: it is ten rows of figlet that would otherwise be
@@ -665,6 +668,7 @@ export function App({ agentLoop, wsServer }) {
             )}
           </Text>
           <Text dimColor>
+            {activeScope ? <Text color="green">🎯 {activeScope} · </Text> : ''}
             {agentLoop.modelConfig?.modelTier?.toUpperCase() || 'PRO'}
             {' · '}
             <Text color={tokenColor}>~{syncTokenEstimate.toLocaleString()}/{tokenLimit.toLocaleString()} ({tokenPct}%)</Text>

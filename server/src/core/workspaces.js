@@ -121,3 +121,40 @@ export function listWorkspaceCandidates(current, { limit = 12 } = {}) {
 
   return out;
 }
+
+/**
+ * The repos available to `/scope` — the directories beside the state root.
+ *
+ * Only meaningful in a group layout. A workspace with its own `.agent/` has
+ * exactly one scope (itself) and this returns nothing, which is the signal the
+ * UI uses to explain that rather than showing an empty list.
+ *
+ * @returns {Array<{ name: string, current: boolean, hasState: boolean }>}
+ */
+export function listScopes(workspace) {
+  const { root, base, discovered } = paths.resolveState(workspace);
+  if (!discovered || base !== path.resolve(workspace)) {
+    // Either no group at all, or the workspace is already inside one repo —
+    // in both cases there is nothing to choose between from here.
+    if (!discovered) return [];
+  }
+
+  const active = paths.getActiveScope(workspace);
+  let entries;
+  try {
+    entries = fs.readdirSync(base, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  return entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules')
+    .map((e) => ({
+      name: e.name,
+      current: e.name === active,
+      // Whether this repo has been worked on before, which is worth showing:
+      // it is the difference between resuming and starting fresh.
+      hasState: fs.existsSync(path.join(root, e.name)),
+    }))
+    .sort((a, b) => Number(b.hasState) - Number(a.hasState) || a.name.localeCompare(b.name));
+}

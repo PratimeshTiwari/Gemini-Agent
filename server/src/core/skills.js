@@ -105,9 +105,12 @@ export function skillSearchPath(workspace, extraFolders = []) {
   // Up from the workspace to the filesystem root, nearest first. Bounded by
   // path.dirname reaching a fixed point, so a relative or malformed workspace
   // cannot spin here.
+  // Note this walks *directories*, so it uses the literal `<dir>/.agent/skills`
+  // at each level rather than paths.skillsDir(), which resolves to the shared
+  // root and would return the same answer for every step.
   let dir = path.resolve(workspace);
   for (let i = 0; i < 64; i++) {
-    dirs.push(paths.skillsDir(dir));
+    dirs.push(path.join(dir, paths.AGENT_DIR, 'skills'));
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
