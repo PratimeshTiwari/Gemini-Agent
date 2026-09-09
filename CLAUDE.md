@@ -59,7 +59,7 @@ server/src/
 ├── index.js          # bin shim: re-spawns main.js under tsx (sources contain JSX)
 ├── main.js           # arg parsing, migration, component wiring, bootstrap
 ├── core/             # agent-loop, prompt-builder, diff-engine, risk-classifier,
-│                     # task-manager, paths, migrate
+│                     # task-manager, paths, migrate, workspaces
 ├── bridge/           # websocket-server (the Chrome-extension transport)
 ├── context/          # RAG + token budget: workspace-indexer, ast-chunker,
 │                     # code-minifier, token-counter, context-manager, memory-manager
@@ -67,14 +67,13 @@ server/src/
 ├── mcp/              # mcp-server.js + tools/
 ├── skills/  storage/  watcher/
 └── ui/               # the terminal front-end
-    ├── cli-ui.jsx    # render(): builds the filtered stdin, mounts MouseProvider
+    ├── cli-ui.jsx    # render(): stdin shim + the trailing-Enter split
     ├── App.jsx       # state, effects, layout — everything else is a module
-    ├── mouse.jsx     # click/wheel hit-testing over raw stdin
-    ├── stdin-filter.js  # strips mouse reports before Ink's key parser sees them
+    ├── enter-splitter.js  # peels a trailing \r off a chunk so Enter is a keypress
     ├── format.js  constants.js  transcript.js     # pure, tested
     ├── hooks/        # use-key-bindings, use-slash-commands, use-agent-callbacks
     └── components/   # Banner, TranscriptTurn, GithubTab, Menus, InputBar,
-                      #   AgentTerminal, Clickable
+                      #   AgentTerminal, QuestionPrompt
 ```
 
 Modules are kebab-case; React components keep PascalCase (`ui/App.jsx`). Tests are colocated
@@ -113,6 +112,16 @@ handler) with handlers in `mcp/tools/`. To add a tool: write the handler, add on
 array — the schema is what `PromptBuilder` renders into the prompt, so the description *is* the
 contract. `executeTool` retries transient OS errors (EBUSY/EACCES/EAGAIN/EMFILE/EPERM) with
 backoff and rewrites `errno` codes into LLM-readable instructions.
+
+### Workspace
+
+`core/workspaces.js` owns path handling for the workspace: `resolveWorkspaceInput` (`~`
+expansion, relative paths, quotes), `validateWorkspace` (exists / is a directory / readable) and
+`listWorkspaceCandidates` for the `/set-workspace` picker. `AgentLoop.setWorkspace` is the one
+place that rewires the collaborators that hold a copy of the path — `/workspace` and
+`/agent-dir` each used to carry their own list and had already drifted. SessionStore is
+deliberately *not* rebound: doing so would write the current conversation into another
+project's history.
 
 ### Approval path
 
@@ -194,20 +203,35 @@ not limitations to route around:
   behind explicit dependency lists; the `<Static>` element, `staticEpoch` and the streaming
   path stayed in `App.jsx` deliberately, and adding memoization to the transcript rows is how
   the scroll glitches came back the last two times.
-- **The transcript has no keyboard selection.** Rows are opened by clicking them, with Ctrl+E
-  as the way in when the mouse isn't there — which is the default: tracking starts off so the
-  terminal keeps its own selection and scrollback, and `/mouse on` asks for clicks.
-  There is no FOCUS_CHAT and no selected-row index, so ↑/↓ always mean input history. A turn
-  committed to `<Static>` freezes as its one-line summary and drops its toggle arrow, because
-  Ink cannot repaint it — an arrow there would promise something the renderer can't do.
-- **Ink never reads the real stdin.** `cli-ui.jsx` pipes `process.stdin` through
-  `stdin-filter.js` into a PassThrough and hands *that* to `render()`, because Ink has no mouse
-  parser: a tracked terminal's reports reach `parse-keypress`, fail to match, and get typed into
-  the prompt as literal text. The mouse layer reads the raw fd instead. Anything else that emits
-  a terminal query (a cursor-position report, say) has to be stripped there too, or it lands in
-  the input line. Raw mode belongs to Ink alone — `mouse.jsx` passes xterm-mouse an inert
-  `setRawMode`, since its disable() would otherwise drop the tty back into line mode and Enter
-  would stop submitting.
+- **The live frame must never outgrow the viewport.** This is the single most important rule in
+  `ui/`. When Ink's dynamic output is taller than the terminal, `shouldClearTerminalForFrame`
+  (`ink/build/ink.js`) switches it to writing `ESC[2J ESC[3J` plus a full repaint on *every*
+  render. Measured on the pre-fix code, sitting idle with a 12-turn history in a 24-row
+  terminal: 108 full clears and 108 scrollback wipes in 15 seconds, 3.85 MB of escape codes.
+  That is what "it flickers and I can't scroll or copy" was — the terminal's scrollback and the
+  user's selection were being deleted seven times a second. The same shape is now 36 KB and
+  zero clears. So: settled turns go to `<Static>`, only the in-flight turn is live, and every
+  live row is bounded by `liveBudget` (`terminalHeight - RESERVED_ROWS`). Adding an unbounded
+  row to the live region — a full tool result, an artifact dump, a list that grows — brings the
+  whole thing back.
+- **No mouse tracking, ever.** Terminal mouse reporting and native scroll are mutually
+  exclusive: a terminal that is tracking hands the app the wheel and suppresses drag-select. The
+  app therefore enables nothing, and `cli-ui.jsx` writes the disable sequences once on startup
+  in case a crashed run left the terminal tracking. Scroll, drag-select and copy are the
+  terminal's, exactly as in Claude Code. Everything that used to be clickable is a keybinding.
+- **The transcript has no selection model.** `Ctrl+E` toggles verbosity for the *whole*
+  transcript rather than one row, because there is nothing to point at a single row with. Ink
+  cannot repaint what `<Static>` has committed, so `toggleVerbose` clears the screen and lets
+  Static print the transcript again at the new setting — that one clear per keypress is
+  deliberate and is the only `ESC[2J` the app writes. ↑/↓ always mean input history.
+- **Ink never reads the real stdin.** `cli-ui.jsx` pipes `process.stdin` through a PassThrough
+  so `enter-splitter.js` can peel a trailing `\r` into a chunk of its own. Ink's input parser
+  deliberately does not split `\r` from adjacent text (a CR can sit inside a paste), so when the
+  terminal delivers the last typed character and the Enter after it in one read — routine when
+  typing fast, over ssh, in tmux, or on key repeat — Ink sees `"i\r"` with `key.return` false,
+  `ink-text-input` types the CR into the prompt, and **the message is silently never sent**. The
+  second write is deferred with `setImmediate`, because Ink's `read()` drains everything
+  buffered and two back-to-back writes would arrive as the one chunk this exists to split.
 - Running the CLI without a TTY fails with Ink's "Raw mode is not supported". That is the
   harness, not a bug — use `script -q /dev/null <cmd>` to test under a pty.
 - Content-script DOM selectors break when the chat sites change; `extractLatestResponse` must

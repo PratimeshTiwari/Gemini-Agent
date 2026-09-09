@@ -12,7 +12,8 @@ const SLASH_COMMANDS = [
   { name: 'config', desc: 'Configure models for specific roles' },
   { name: 'plan', desc: 'Plan Mode — every edit needs approval' },
   { name: 'auto', desc: 'Auto Mode — safe edits apply automatically' },
-  { name: 'workspace', desc: 'Change the active workspace' },
+  { name: 'workspace', desc: 'Show or set the active workspace' },
+  { name: 'set-workspace', desc: 'Pick a workspace from a list of folders' },
   { name: 'memory', desc: 'View current agent memory context' },
   { name: 'context', desc: 'Show current context window usage' },
   { name: 'compact', desc: 'Compact history to save tokens' },
@@ -23,23 +24,34 @@ const SLASH_COMMANDS = [
   { name: 'github', desc: 'Run GitHub commands (e.g. /github refresh)' },
   { name: 'image', desc: 'Attach an image (e.g. /image path/to/img.png)' },
   { name: 'paste-image', desc: 'Attach image from clipboard (macOS)' },
-  { name: 'mouse', desc: 'Toggle mouse tracking — off gives back text selection' },
   { name: 'agent-dir', desc: 'Open the agent data directory' },
   { name: 'restart', desc: 'Restart the server' },
   { name: 'exit', desc: 'Quit the agent' },
 ];
 
-/** Where typed input goes. There is no transcript focus: rows are clicked. */
+/** Where typed input goes. */
 export const FOCUS_INPUT = 'input';
 export const FOCUS_TERMINAL = 'terminal';
 
+/**
+ * Rows the live frame spends on furniture below the transcript: the thinking
+ * line (2), the input box with its margin and border (5), the mode chip (1),
+ * the status bar with its rule (3), and a row of slack so a wrapped line
+ * cannot tip the frame over the viewport.
+ *
+ * Overshooting costs a little transcript; undershooting costs the scrollback,
+ * because Ink answers an overflowing frame with a full clear-and-repaint on
+ * every render. See the note at the top of App.jsx.
+ */
+export const RESERVED_ROWS = 14;
+
 export const THINKING_MESSAGES = [
-  'Thinking...',
-  'Gemining...',
-  'Vibing...',
-  'Analyzing syntax...',
-  'Consulting the AI elders...',
-  'Pondering the orb...',
-  'Brewing code...',
-  'Synthesizing logic...',
+  'Thinking…',
+  'Gemining…',
+  'Vibing…',
+  'Analyzing syntax…',
+  'Consulting the AI elders…',
+  'Pondering the orb…',
+  'Brewing code…',
+  'Synthesizing logic…',
 ];

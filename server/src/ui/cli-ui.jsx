@@ -1,16 +1,20 @@
 import React from 'react';
 import { render } from 'ink';
 import { PassThrough } from 'node:stream';
-import { MouseProvider } from './mouse.jsx';
-import { createMouseSequenceFilter } from './stdin-filter.js';
+import { splitTrailingEnter } from './enter-splitter.js';
 import { App } from './App.jsx';
 
 /**
- * The stream Ink reads: real stdin with mouse reports stripped out.
+ * The stream Ink reads: real stdin, with a trailing Enter delivered separately.
  *
  * Ink drives it with setEncoding/'readable'/read() and owns raw mode, so the
  * PassThrough has to look enough like a TTY for that: `isTTY` decides whether
  * raw mode is supported at all, and setRawMode/ref/unref forward to the real fd.
+ *
+ * This used to strip mouse reports as well. It no longer needs to — the app
+ * never turns terminal mouse tracking on — and with the mouse went the 20ms
+ * escape timeout that stripping required, so Escape now stops the agent the
+ * instant it is pressed.
  */
 function createInkStdin() {
   const stream = new PassThrough();
@@ -41,37 +45,32 @@ export class CliUI {
   start() {
     console.clear();
 
-    const inkStdin = createInkStdin();
-    const filter = createMouseSequenceFilter({
-      onFlush: (text) => inkStdin.write(text),
-    });
+    // A terminal left in a tracking mode by a previous crashed run would still
+    // be spraying mouse reports into our stdin, and Ink has no parser for them:
+    // they would be typed into the prompt as literal text. Turning every mode
+    // off once on the way up is a no-op when tracking was never on.
+    if (process.stdout.isTTY) {
+      process.stdout.write('\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?9l');
+    }
 
-    // Both this listener and xterm-mouse's read the same fd — Node delivers
-    // 'data' to every listener, so the mouse layer still sees the reports this
-    // filter keeps away from Ink's key parser.
+    const inkStdin = createInkStdin();
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (chunk) => {
-      const text = filter.feed(chunk);
-      if (text) inkStdin.write(text);
+      const [text, enter] = splitTrailingEnter(String(chunk));
+      inkStdin.write(text);
+      // Deferred, not written back to back: Ink's read() drains everything
+      // buffered at once, so two immediate writes would arrive as the single
+      // chunk this is here to take apart.
+      if (enter) setImmediate(() => inkStdin.write(enter));
     });
 
-    // Mouse tracking starts OFF (see mouse.jsx): text selection and the
-    // terminal's own scrollback keep working until `/mouse on` asks for clicks.
-    const { waitUntilExit } = render(
-      <MouseProvider>
-        <App agentLoop={this.agentLoop} wsServer={this.wsServer} />
-      </MouseProvider>,
-      {
-        stdin: inkStdin,
-        // Terminals report Shift+Enter as a plain Enter unless the kitty
-        // keyboard protocol is negotiated. Ink's auto mode asks (CSI ? u) and
-        // only enables it if the terminal answers, so terminals that don't
-        // support it are unaffected — they can still send Esc+Enter instead.
-        kittyKeyboard: { mode: 'auto', flags: ['disambiguateEscapeCodes'] },
-      },
-    );
-
-    // Optional: await waitUntilExit() if we wanted to block,
-    // but the original architecture just launched the UI and let events drive it.
+    render(<App agentLoop={this.agentLoop} wsServer={this.wsServer} />, {
+      stdin: inkStdin,
+      // Terminals report Shift+Enter as a plain Enter unless the kitty
+      // keyboard protocol is negotiated. Ink's auto mode asks (CSI ? u) and
+      // only enables it if the terminal answers, so terminals that don't
+      // support it are unaffected — they can still send Esc+Enter instead.
+      kittyKeyboard: { mode: 'auto', flags: ['disambiguateEscapeCodes'] },
+    });
   }
 }

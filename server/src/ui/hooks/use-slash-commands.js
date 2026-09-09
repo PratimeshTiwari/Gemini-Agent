@@ -14,7 +14,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 export async function handleSlashCommand(query, {
   agentLoop,
-  mouseTracking,
   wsServer,
   resetScreen,
   setActiveMenu,
@@ -32,11 +31,13 @@ export async function handleSlashCommand(query, {
         isLocal: true,
         content: [
           '### ⌨️ UI & Navigation',
-          '  [Tab]             - Toggle focus between Chat Input and Tool Executions',
-          '  [Up/Down]         - Navigate between tool executions or CLI tabs',
-          '  [Enter]           - Expand/Minimize raw output of tools, or Open GitHub Plan',
+          '  [Tab]             - Complete a slash command, or return to the prompt',
+          '  [Up/Down]         - Prompt history (or the list, on the GitHub tab)',
+          '  [Ctrl+E]          - Expand/collapse every step and tool output',
           '  [Ctrl+T]          - Toggle the Agent Terminal at the bottom of the screen',
           '  [Ctrl+O]          - Toggle between Agent Chat and GitHub PR Dashboard',
+          '  [Shift+Tab]       - Cycle Plan <-> Auto mode',
+          '  [Esc]             - Stop the run, or close whatever is open',
           "  :stop             - Immediately cancel the agent's current generation",
           '',
           '### 🧠 AI & LLM Settings',
@@ -49,7 +50,8 @@ export async function handleSlashCommand(query, {
           '  /auto             - Switch to Auto Mode (auto-applies safe edits)',
           '',
           '### 📁 Workspace & Context',
-          '  /workspace <path> - Change the active workspace',
+          '  /workspace <path> - Change the active workspace (checked before it is set)',
+          '  /set-workspace    - Pick a workspace from a list of nearby folders',
           '  /memory           - View current agent memory context',
           '  /context          - Show current context window usage',
           '  /compact          - Compact history to save tokens',
@@ -62,7 +64,6 @@ export async function handleSlashCommand(query, {
           '  /github           - Run GitHub specific commands (e.g., /github refresh)',
           '  /image            - Attach an image (e.g., /image path/to/img.png)',
           '  /paste-image      - Attach image directly from clipboard (macOS only)',
-          '  /mouse            - Toggle mouse tracking (off restores text selection)',
           '  /agent-dir        - Open the agent data directory',
           '  /restart          - Restart the server',
           '  /exit             - Quit the agent'
@@ -137,23 +138,8 @@ export async function handleSlashCommand(query, {
       return;
     }
 
-    if (command === 'mouse') {
-      const arg = (args[0] || '').toLowerCase();
-      let msg;
-      if (!mouseTracking?.supported) {
-        msg = '⚠️ This terminal does not report mouse events.';
-      } else if (arg === 'on' || (arg === '' && !mouseTracking.enabled)) {
-        mouseTracking.enable();
-        msg = 'Mouse tracking **on** — rows, slash commands and menus are clickable.\n\n'
-          + 'While it is on the terminal hands the mouse to the app: drag-select needs '
-          + 'Option or Shift held, and the wheel no longer scrolls scrollback. '
-          + '`/mouse off` gives them back.';
-      } else {
-        mouseTracking.disable();
-        msg = 'Mouse tracking **off** — text selection and scrollback are back. '
-          + 'Rows still open with Ctrl+E.';
-      }
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: msg, isLocal: true }]);
+    if (command === 'set-workspace' || (command === 'workspace' && args.length === 0)) {
+      setActiveMenu({ type: 'workspace', current: agentLoop.workspace });
       setIsProcessing(false);
       return;
     }

@@ -11,6 +11,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import { looksLikeMultipleDrafts } from './drift-detector.js';
 import * as paths from './paths.js';
+import { resolveWorkspaceInput, validateWorkspace, rememberWorkspace } from './workspaces.js';
 import { z } from 'zod';
 import { SessionStore } from '../storage/session-store.js';
 import { ContextManager } from '../context/context-manager.js';
@@ -360,6 +361,42 @@ export class AgentLoop {
   /**
    * Handle slash commands.
    */
+  /**
+   * Point the agent at another directory.
+   *
+   * The workspace is duplicated across half a dozen collaborators, so this is
+   * the one place that rewires them — `/workspace` and `/agent-dir` both used
+   * to carry their own copy of the list, and they had already drifted apart.
+   *
+   * SessionStore is deliberately left alone: rebinding it here would write the
+   * current conversation into the other project's history file.
+   *
+   * @param {string} workspace - an absolute path that has already been checked
+   *   by {@link validateWorkspace}.
+   * @returns {string} a message for the transcript.
+   */
+  setWorkspace(workspace, note = '') {
+    if (workspace === this.workspace) {
+      return `📂 Already using: ${workspace}`;
+    }
+
+    this.workspace = workspace;
+    if (this.mcpServer) this.mcpServer.workspace = workspace;
+    if (this.promptBuilder) this.promptBuilder.workspace = workspace;
+    if (this.diffEngine) this.diffEngine.workspace = workspace;
+    if (this.contextManager) {
+      this.contextManager.workspacePath = workspace;
+      if (this.contextManager.summarizer) this.contextManager.summarizer.workspacePath = workspace;
+    }
+    if (this.workspaceIndexer) this.workspaceIndexer.workspace = workspace;
+
+    this.workspaceSummary = '';        // stale for the new project
+    this.promptBuilder?.resetPromptState?.();
+    rememberWorkspace(workspace);
+
+    return `📂 Workspace changed${note ? ` to ${note}` : ''}: ${workspace}`;
+  }
+
   async handleSlashCommand(command, args) {
     switch (command) {
       case 'plan':
@@ -485,44 +522,28 @@ export class AgentLoop {
       }
 
       case 'agent-dir': {
-        const newWorkspace = this.agentSourceDir || this.workspace;
-        this.workspace = newWorkspace;
-        
-        if (this.mcpServer) this.mcpServer.workspace = newWorkspace;
-        if (this.promptBuilder) this.promptBuilder.workspace = newWorkspace;
-        if (this.diffEngine) this.diffEngine.workspace = newWorkspace;
-        if (this.contextManager) {
-          this.contextManager.workspacePath = newWorkspace;
-          this.contextManager.summarizer.workspacePath = newWorkspace;
-        }
-        // this.workspaceSummary removed
-        return { message: `📂 Workspace changed to agent source: ${this.workspace}` };
+        const target = this.agentSourceDir || this.workspace;
+        const problem = validateWorkspace(target);
+        if (problem) return { message: `❌ ${problem}` };
+        return { message: this.setWorkspace(target, 'agent source') };
       }
 
-      case 'workspace':
-        if (args?.[0]) {
-          const newWorkspace = args[0];
-          this.workspace = newWorkspace;
-          
-          // Update all child components with the new workspace path
-          if (this.mcpServer) this.mcpServer.workspace = newWorkspace;
-          if (this.promptBuilder) this.promptBuilder.workspace = newWorkspace;
-          if (this.diffEngine) this.diffEngine.workspace = newWorkspace;
-          
-          // Note: SessionStore and ContextManager currently base off workspace in constructor,
-          // so we should update them too.
-          if (this.contextManager) {
-            this.contextManager.workspacePath = newWorkspace;
-            this.contextManager.summarizer.workspacePath = newWorkspace;
-          }
-          // We don't change SessionStore to avoid saving current history into another project's session.
-          // In a full implementation, we might reload the history from the new project.
-          
-           this.workspaceSummary = ''; // Clear stale summary so it regenerates
+      case 'workspace': {
+        // Args are re-joined because a path may contain spaces; the command
+        // used to take args[0] and silently truncate "~/My Projects/app".
+        const requested = args?.join(' ').trim();
+        if (!requested) return { message: `📂 Current workspace: ${this.workspace}` };
 
-          return { message: `📂 Workspace changed to: ${this.workspace}` };
+        const abs = resolveWorkspaceInput(requested, this.workspace);
+        const problem = validateWorkspace(abs);
+        if (problem) {
+          // Refusing here is the whole point: an unchecked path used to be
+          // assigned anyway, and every tool call after it failed separately
+          // against a root that was never there.
+          return { message: `❌ ${problem}\n\nWorkspace unchanged: ${this.workspace}\nTry \`/set-workspace\` to pick one from a list.` };
         }
-        return { message: `📂 Current workspace: ${this.workspace}` };
+        return { message: this.setWorkspace(abs) };
+      }
 
       case 'model': {
         const tiers = {

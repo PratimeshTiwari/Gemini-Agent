@@ -2,18 +2,24 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
-import { Clickable } from './Clickable.jsx';
-import { formatPollTime } from '../format.js';
+import { formatPollTime, oneLine } from '../format.js';
 
 /**
- * The GitHub PR dashboard (Ctrl+O).
+ * The GitHub PR dashboard (ctrl+o).
  *
- * Three views behind one tab — recent activity, the avoid-words editor and the
- * PR explorer — plus the token-setup screen shown when no handler exists yet.
+ * One screen at a time, never nested: no token yet means the setup screen and
+ * nothing else, and with a token exactly one of activity / avoid-words / PR
+ * explorer is drawn. The setup screen used to be rendered *inside* the activity
+ * view, so it only appeared in one of the three states.
+ *
+ * Everything here is bounded by `maxRows`, because this whole tab lives in Ink's
+ * repainted frame. A list that outgrows the viewport makes Ink clear and
+ * repaint the terminal on every render — the flicker, and the reason the
+ * dashboard could not be scrolled or copied out of.
+ *
  * Navigation lives in the key bindings; this only draws.
  */
 export function GithubTab({
-  activeTab,
   agentLoop,
   wsServer,
   avoidWords,
@@ -22,6 +28,8 @@ export function GithubTab({
   setNewAvoidWord,
   githubSetupToken,
   setGithubSetupToken,
+  githubError,
+  setGithubError,
   githubView,
   expandedComments,
   explorerMode,
@@ -32,281 +40,292 @@ export function GithubTab({
   prComments,
   selectedPlanId,
   selectedPrIdx,
-  setSelectedPrIdx,
   selectedPrCommentIdx,
-  setSelectedPrCommentIdx,
-  setSelectedPlanId,
-  setExpandedComments,
+  maxRows,
 }) {
+  const body = !agentLoop.githubHandler
+    ? (
+      <TokenSetup
+        agentLoop={agentLoop}
+        wsServer={wsServer}
+        token={githubSetupToken}
+        setToken={setGithubSetupToken}
+        error={githubError}
+        setError={setGithubError}
+      />
+    )
+    : githubView === 'avoid_words'
+      ? (
+        <AvoidWords
+          agentLoop={agentLoop}
+          avoidWords={avoidWords}
+          setAvoidWords={setAvoidWords}
+          newAvoidWord={newAvoidWord}
+          setNewAvoidWord={setNewAvoidWord}
+          maxRows={maxRows}
+        />
+      )
+      : githubView === 'pr_explorer'
+        ? (
+          <PrExplorer
+            explorerMode={explorerMode}
+            loadingPrs={loadingPrs}
+            loadingPrComments={loadingPrComments}
+            prList={prList}
+            prComments={prComments}
+            selectedPrIdx={selectedPrIdx}
+            selectedPrCommentIdx={selectedPrCommentIdx}
+            maxRows={maxRows}
+          />
+        )
+        : (
+          <Activity
+            agentLoop={agentLoop}
+            githubActivity={githubActivity}
+            selectedPlanId={selectedPlanId}
+            expandedComments={expandedComments}
+            maxRows={maxRows}
+          />
+        );
+
   return (
-        <Box flexDirection="column" flexGrow={1} borderStyle="single" borderColor="cyan" padding={1}>
-          <Text bold color="cyan">📋 GitHub PR Dashboard</Text>
+    <Box flexDirection="column" borderStyle="single" borderColor="cyan" paddingX={1} width="100%">
+      <Text bold color="cyan">📋 GitHub PR Dashboard</Text>
+      {body}
+    </Box>
+  );
+}
 
-          {githubView === "avoid_words" && (
-            <Box flexDirection="column" marginTop={1}>
-              <Text bold color="yellow">🚫 Avoid Words Editor</Text>
-              <Text color="gray">These words indicate that a comment is noise (e.g. LGTM, +1) and should not be analyzed by the AI.</Text>
-              
-              <Box flexDirection="column" marginY={1} borderStyle="single" borderColor="gray" padding={1}>
-                {avoidWords.map((word, i) => (
-                  <Text key={i}>• {word}</Text>
-                ))}
-                {avoidWords.length === 0 && <Text dimColor>No avoid words configured.</Text>}
-              </Box>
-              
-              <Box>
-                <Text bold color="green">Add Word: </Text>
-                <TextInput
-                  focus={githubView === "avoid_words"}
-                  value={newAvoidWord}
-                  onChange={setNewAvoidWord}
-                  onSubmit={(val) => {
-                    if (!val.trim()) return;
-                    const updated = [...avoidWords, val.trim()];
-                    setAvoidWords(updated);
-                    setNewAvoidWord("");
-                    
-                    if (agentLoop.githubHandler) {
-                      agentLoop.githubHandler.config.avoidWords = updated;
-                      agentLoop.modelConfig = agentLoop.modelConfig || {};
-                      agentLoop.modelConfig.githubAvoidWords = updated;
-                      agentLoop._saveConfig();
-                    }
-                  }}
-                />
-              </Box>
-              <Text dimColor marginTop={1}>[Enter] to add | [ESC] to return to Dashboard</Text>
-            </Box>
+function TokenSetup({ agentLoop, wsServer, token, setToken, error, setError }) {
+  const [busy, setBusy] = React.useState(false);
+
+  const submit = async (val) => {
+    const trimmed = val.trim();
+    if (!trimmed || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const res = await fetch('https://api.github.com/user', {
+        headers: { Authorization: `Bearer ${trimmed}`, 'User-Agent': 'Gemini-Agent' },
+      });
+      if (!res.ok) {
+        setError(`GitHub rejected the token (HTTP ${res.status}). It needs the \`repo\` scope.`);
+        setBusy(false);
+        return;
+      }
+
+      // Persisted to <workspace>/.agent/config.json — see core/paths.js. The env
+      // var is set for this process only; it does not outlive the session,
+      // which is why the config is the store.
+      agentLoop.modelConfig = agentLoop.modelConfig || {};
+      agentLoop.modelConfig.githubToken = trimmed;
+      agentLoop._saveConfig();
+      process.env.GITHUB_TOKEN = trimmed;
+
+      // Two levels up, not one: this file lives in ui/components/, so the old
+      // '../github/…' resolved to ui/github/ and every token submission died
+      // on ERR_MODULE_NOT_FOUND — which was then swallowed by console.error
+      // straight into Ink's frame, so it read as "some error".
+      const { GitHubEventHandler } = await import('../../github/github-event-handler.js');
+      const handler = new GitHubEventHandler({
+        token: trimmed,
+        workspace: agentLoop.workspace,
+        configOverrides: { enableCIWatch: true },
+      });
+      handler.on('error', ({ message }) => setError(String(message)));
+
+      agentLoop.githubHandler = handler;
+      if (wsServer) {
+        wsServer.githubHandler = handler;
+        if (typeof wsServer._wireGitHubEvents === 'function') wsServer._wireGitHubEvents();
+      }
+      handler.start().catch((err) => setError(String(err?.message || err)));
+      setToken('');
+    } catch (e) {
+      // Never console.error from inside an Ink app: it writes straight into the
+      // frame Ink is repainting and the message is gone on the next render.
+      setError(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text color="yellow" bold>⚠️  GitHub setup pending</Text>
+      <Text wrap="wrap">Generate a token with the <Text bold>repo</Text> scope at https://github.com/settings/tokens/new and paste it below.</Text>
+      <Text dimColor wrap="wrap">Stored in this workspace's .agent/config.json; the integration starts immediately.</Text>
+      <Box marginTop={1}>
+        <Text bold color="green">Token: </Text>
+        {busy
+          ? <Text dimColor><Spinner type="dots" /> verifying…</Text>
+          : (
+            <TextInput
+              focus
+              mask="*"
+              value={token}
+              onChange={setToken}
+              onSubmit={submit}
+            />
           )}
+      </Box>
+      {error ? <Text color="red" wrap="wrap">❌ {error}</Text> : null}
+      <Text dimColor>ctrl+o returns to the agent.</Text>
+    </Box>
+  );
+}
 
+function AvoidWords({ agentLoop, avoidWords, setAvoidWords, newAvoidWord, setNewAvoidWord, maxRows }) {
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text bold color="yellow">🚫 Avoid words</Text>
+      <Text dimColor wrap="wrap">Comments containing these are treated as noise (LGTM, +1) and never sent to the AI.</Text>
+      <Box flexDirection="column" marginY={1}>
+        {avoidWords.length === 0
+          ? <Text dimColor>None configured.</Text>
+          : avoidWords.slice(0, Math.max(1, maxRows - 6)).map((word, i) => <Text key={i}>• {word}</Text>)}
+      </Box>
+      <Box>
+        <Text bold color="green">Add: </Text>
+        <TextInput
+          focus
+          value={newAvoidWord}
+          onChange={setNewAvoidWord}
+          onSubmit={(val) => {
+            if (!val.trim()) return;
+            const updated = [...avoidWords, val.trim()];
+            setAvoidWords(updated);
+            setNewAvoidWord('');
+            if (agentLoop.githubHandler) {
+              agentLoop.githubHandler.config.avoidWords = updated;
+              agentLoop.modelConfig = agentLoop.modelConfig || {};
+              agentLoop.modelConfig.githubAvoidWords = updated;
+              agentLoop._saveConfig();
+            }
+          }}
+        />
+      </Box>
+      <Text dimColor>enter adds · esc returns to the dashboard</Text>
+    </Box>
+  );
+}
 
-          {githubView === "pr_explorer" && (
-            <Box flexDirection="column" marginTop={1}>
-              <Text bold color="magenta">🧭 PR Explorer</Text>
-              
-              {explorerMode === "prs" && (
-                <Box flexDirection="column" marginY={1}>
-                  <Text color="gray">Select a PR to view comments:</Text>
-                  {loadingPrs ? (
-                    <Text dimColor><Spinner type="dots" /> Loading PRs...</Text>
-                  ) : prList.length === 0 ? (
-                    <Box marginY={1}>
-                      <Text dimColor>No open PRs found.</Text>
-                    </Box>
+function PrExplorer({
+  explorerMode, loadingPrs, loadingPrComments, prList, prComments,
+  selectedPrIdx, selectedPrCommentIdx, maxRows,
+}) {
+  // Keep the selected row on screen without letting the list grow the frame.
+  const window = Math.max(3, maxRows - 6);
+  const slice = (items, selected) => {
+    const start = Math.max(0, Math.min(selected - Math.floor(window / 2), items.length - window));
+    return { start: Math.max(0, start), items: items.slice(Math.max(0, start), Math.max(0, start) + window) };
+  };
+
+  if (explorerMode === 'comments') {
+    const pr = prList[selectedPrIdx];
+    const view = slice(prComments, selectedPrCommentIdx);
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text bold color="magenta" wrap="truncate">🧭 PR #{pr?.number} — {pr?.title}</Text>
+        <Text dimColor>enter dispatches to the agent · esc goes back</Text>
+        {loadingPrComments ? <Text dimColor><Spinner type="dots" /> Loading comments…</Text> : null}
+        {!loadingPrComments && prComments.length === 0 ? <Text dimColor>No comments on this PR.</Text> : null}
+        {view.items.map((c, i) => {
+          const idx = view.start + i;
+          const isSelected = idx === selectedPrCommentIdx;
+          const date = c.created_at
+            ? new Date(c.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+            : '';
+          return (
+            <Text key={idx} wrap="truncate">
+              <Text color={isSelected ? 'cyan' : 'yellow'} bold>{isSelected ? '❯ ' : '  '}@{c.author}</Text>
+              <Text dimColor> {c.type === 'review_comment' ? '[review]' : '[comment]'}{date ? ` ${date}` : ''} </Text>
+              <Text color={isSelected ? 'white' : 'gray'}>{oneLine(c.body, 70)}</Text>
+            </Text>
+          );
+        })}
+      </Box>
+    );
+  }
+
+  const view = slice(prList, selectedPrIdx);
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text bold color="magenta">🧭 PR explorer</Text>
+      <Text dimColor>↑↓ move · enter opens comments · esc back</Text>
+      {loadingPrs ? <Text dimColor><Spinner type="dots" /> Loading PRs…</Text> : null}
+      {!loadingPrs && prList.length === 0 ? <Text dimColor>No open PRs found.</Text> : null}
+      {view.items.map((pr, i) => {
+        const idx = view.start + i;
+        return (
+          <Text key={idx} color={idx === selectedPrIdx ? 'white' : 'gray'} wrap="truncate">
+            {idx === selectedPrIdx ? '❯ ' : '  '}[{pr.repo?.name}] #{pr.number} {pr.title}
+          </Text>
+        );
+      })}
+    </Box>
+  );
+}
+
+function Activity({ agentLoop, githubActivity, selectedPlanId, expandedComments, maxRows }) {
+  const status = agentLoop.githubHandler?.getStatus?.() || {};
+  const watched = status.prsWatched || 0;
+  const recent = githubActivity.slice().reverse().slice(0, Math.max(1, Math.floor((maxRows - 6) / 2)));
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text wrap="wrap">
+        <Text bold>{watched}</Text>
+        <Text dimColor> PR{watched === 1 ? '' : 's'} watched · CI watch </Text>
+        <Text bold color={agentLoop.githubHandler?.config?.enableCIWatch ? 'green' : 'gray'}>
+          {agentLoop.githubHandler?.config?.enableCIWatch ? 'on' : 'off'}
+        </Text>
+        <Text dimColor> · polled {formatPollTime(status.lastPollTime)}</Text>
+      </Text>
+
+      {agentLoop.githubHandler?._currentAnalysis && (
+        <Text color="yellow" wrap="truncate">
+          🔄 Analysing @{agentLoop.githubHandler._currentAnalysis.author} on PR #{agentLoop.githubHandler._currentAnalysis.prNumber}
+          <Text dimColor> · queue {agentLoop.githubHandler?._commentQueue?.length || 0}</Text>
+        </Text>
+      )}
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text bold>Recent activity</Text>
+        {recent.length === 0
+          ? <Text dimColor>Nothing yet — waiting for PR comments or CI runs.</Text>
+          : recent.map((activity) => {
+            if (activity.type === 'github_plan_generated') {
+              const isSelected = activity.id === selectedPlanId;
+              const isExpanded = expandedComments.has(activity.id);
+              const body = activity.payload?.comment?.body || '';
+              return (
+                <Box key={activity.id} flexDirection="column">
+                  <Text color={isSelected ? 'cyan' : 'white'} wrap="truncate">
+                    {isSelected ? '❯ ' : '  '}PR #{activity.payload.prNumber} — plan generated
+                    <Text dimColor> · {activity.payload.category}</Text>
+                  </Text>
+                  {body ? (
+                    <Text dimColor wrap={isExpanded ? 'wrap' : 'truncate'}>
+                      {'    💬 '}{isExpanded ? body : oneLine(body, 80)}
+                    </Text>
                   ) : null}
-                  {prList.map((pr, i) => (
-                    <Clickable key={i} onClick={() => setSelectedPrIdx(i)}>
-                      <Text color={i === selectedPrIdx ? "white" : "gray"}>
-                        {i === selectedPrIdx ? "❯ " : "  "}[{pr.repo.name}] #{pr.number} {pr.title}
-                      </Text>
-                    </Clickable>
-                  ))}
-                </Box>
-              )}
-              
-              {explorerMode === "comments" && (
-                <Box flexDirection="column" marginY={1}>
-                  <Box marginBottom={1}>
-                    <Text bold color="cyan">PR #{prList[selectedPrIdx]?.number}</Text>
-                    <Text color="gray"> — </Text>
-                    <Text color="white">{prList[selectedPrIdx]?.title}</Text>
-                  </Box>
-                  <Text color="gray" dimColor>↵ Enter to dispatch to AI Agent  ·  ESC to go back</Text>
-                  <Box flexDirection="column" marginTop={1}>
-                    {loadingPrComments ? (
-                      <Text dimColor><Spinner type="dots" /> Loading comments...</Text>
-                    ) : prComments.length === 0 ? (
-                      <Text dimColor>No comments found for this PR.</Text>
-                    ) : null}
-                    {prComments.map((c, i) => {
-                      const isSelected = i === selectedPrCommentIdx;
-                      const date = c.created_at ? new Date(c.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
-                      const typeTag = c.type === 'review_comment' ? '[review]' : '[comment]';
-                      return (
-                        <Clickable key={i} onClick={() => setSelectedPrCommentIdx(i)} flexDirection="column" marginBottom={1} borderStyle={isSelected ? 'single' : undefined} borderColor={isSelected ? 'cyan' : undefined} paddingX={isSelected ? 1 : 0}>
-                          <Box flexDirection="row">
-                            <Text color={isSelected ? 'cyan' : 'yellow'} bold>{isSelected ? '❯ ' : '  '}@{c.author}</Text>
-                            <Text color="gray"> {typeTag}</Text>
-                            {date ? <Text color="gray" dimColor>  {date}</Text> : null}
-                            {c.path ? <Text color="magenta" dimColor>  📄 {c.path}</Text> : null}
-                          </Box>
-                          <Box marginLeft={isSelected ? 0 : 2}>
-                            <Text color={isSelected ? 'white' : 'gray'} wrap="wrap">
-                              {c.body.replace(/\n/g, ' ').substring(0, 100)}{c.body.length > 100 ? '...' : ''}
-                            </Text>
-                          </Box>
-                        </Clickable>
-                      );
-                    })}
-                  </Box>
-                </Box>
-              )}
-              
-              <Text dimColor marginTop={1}>[↑/↓] Navigate | [Enter] Select | [ESC] Back</Text>
-            </Box>
-          )}
-
-          {githubView === "activity" && (
-            <Box flexDirection="column" marginTop={1}>
-
-          {!agentLoop.githubHandler ? (
-            <Box flexDirection="column" marginTop={1}>
-              <Text color="yellow" bold>⚠️ GitHub Setup Pending</Text>
-              <Text>The GitHub PR integration is currently disabled because the <Text bold>GITHUB_TOKEN</Text> environment variable is not set.</Text>
-              <Text></Text>
-              <Text>To enable PR comment and CI failure watching:</Text>
-              <Text>1. Go to <Text color="blue" underline>https://github.com/settings/tokens/new</Text> and generate a token with `repo` scope.</Text>
-              <Text>2. Paste it below. It is stored in this workspace's <Text bold>.agent/config.json</Text> and the integration starts immediately.</Text>
-              <Text></Text>
-              <Box>
-                <Text bold color="green">Token: </Text>
-                <TextInput 
-                  focus={activeTab === 'github' && !agentLoop.githubHandler}
-                  value={githubSetupToken}
-                  onChange={setGithubSetupToken}
-                  onSubmit={async (val) => {
-                    const token = val.trim();
-                    if (!token) return;
-                    try {
-                      // Validate token first
-                      const res = await fetch('https://api.github.com/user', {
-                        headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'Gemini-Agent' }
-                      });
-                      if (!res.ok) {
-                        console.error(`❌ Invalid token: GitHub API returned ${res.status}`);
-                        setGithubSetupToken('');
-                        return;
-                      }
-
-                      // Persisted to <workspace>/.agent/config.json — see core/paths.js.
-                      // The env var is set for this process only; it does not
-                      // outlive the session, which is why the config is the store.
-                      agentLoop.modelConfig = agentLoop.modelConfig || {};
-                      agentLoop.modelConfig.githubToken = token;
-                      agentLoop._saveConfig();
-
-                      process.env.GITHUB_TOKEN = token;
-                      
-                      const { GitHubEventHandler } = await import('../github/github-event-handler.js');
-                      const handler = new GitHubEventHandler({
-                        token,
-                        workspace: agentLoop.workspace,
-                        configOverrides: { enableCIWatch: true }
-                      });
-                      
-                      handler.on('status', ({ message }) => console.log(`  [GitHub] ${message}`));
-                      handler.on('error', ({ message }) => console.error(`  [GitHub] ❌ ${message}`));
-                      handler.on('notification', ({ message }) => console.log(`  [GitHub] ${message}`));
-                      
-                      agentLoop.githubHandler = handler;
-                      wsServer.githubHandler = handler;
-                      if (typeof wsServer._wireGitHubEvents === 'function') {
-                        wsServer._wireGitHubEvents();
-                      }
-                      handler.start().catch(err => console.error(err));
-                      
-                      setGithubSetupToken('');
-                    } catch (e) {
-                      console.error("Failed to setup token:", e);
-                    }
-                  }}
-                />
-              </Box>
-              <Text></Text>
-              <Text dimColor>Press [Ctrl+O] to return to the Agent tab.</Text>
-            </Box>
-          ) : (
-            <Box flexDirection="column" width="100%" flexShrink={1}>
-              {/* One wrapping line rather than two competing for the same row:
-                  space-between let the right-hand text overlap the left one on
-                  a narrow terminal. */}
-              <Box marginBottom={1}>
-                <Text wrap="wrap">
-                  <Text bold>{agentLoop.githubHandler?.getStatus()?.prsWatched || 0}</Text>
-                  <Text dimColor>
-                    {' '}PR{(agentLoop.githubHandler?.getStatus()?.prsWatched || 0) === 1 ? '' : 's'} watched · CI watch{' '}
+                  <Text dimColor wrap="truncate-start">
+                    {'    → '}{String(activity.payload.filePath || '').split('/').slice(-2).join('/')}
                   </Text>
-                  <Text bold color={agentLoop.githubHandler?.config?.enableCIWatch ? 'green' : 'gray'}>
-                    {agentLoop.githubHandler?.config?.enableCIWatch ? 'on' : 'off'}
-                  </Text>
-                  <Text dimColor> · polled {formatPollTime(agentLoop.githubHandler?.getStatus()?.lastPollTime)}</Text>
-                </Text>
-              </Box>
-
-              {agentLoop.githubHandler?._currentAnalysis && (
-                <Box borderStyle="round" borderColor="yellow" paddingX={2} marginBottom={1} flexDirection="column">
-                  <Text color="yellow" bold>
-                    <Text>🔄 Analyzing comment by @{agentLoop.githubHandler._currentAnalysis.author} on PR #{agentLoop.githubHandler._currentAnalysis.prNumber}...</Text>
-                  </Text>
-                  <Text dimColor>Please wait while the AI generates a plan. Queue size: {agentLoop.githubHandler?._commentQueue?.length || 0}</Text>
                 </Box>
-              )}
-              <Box borderStyle="single" borderColor="gray" flexDirection="column" flexGrow={1} paddingX={1}>
-                <Box marginBottom={1}><Text bold>Recent activity</Text></Box>
-                {githubActivity.length === 0 ? (
-                  <Text dimColor>No activity yet. Waiting for PR comments or CI runs...</Text>
-                ) : (
-                  githubActivity.slice().reverse().map((activity, i) => {
-                    if (activity.type === 'github_plan_generated') {
-                      const visiblePlans = githubActivity.slice().reverse().filter(a => a.type === 'github_plan_generated').slice(0, 10);
-                      const isSelected = activity.id === selectedPlanId || (selectedPlanId === null && visiblePlans[0]?.id === activity.id);
-                      const isExpanded = expandedComments.has(activity.id);
-                      let snippet = '';
-                      if (activity.payload.comment && activity.payload.comment.body) {
-                        snippet = activity.payload.comment.body;
-                        if (!isExpanded) {
-                          const lines = snippet.split('\n');
-                          snippet = lines.slice(0, 2).join('\n') + (lines.length > 2 || snippet.length > 100 ? '...' : '');
-                          if (snippet.length > 100) snippet = snippet.substring(0, 100) + '...';
-                        }
-                      }
-                      return (
-                        <Clickable
-                          key={activity.id}
-                          onClick={() => {
-                            setSelectedPlanId(activity.id);
-                            setExpandedComments((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(activity.id)) next.delete(activity.id);
-                              else next.add(activity.id);
-                              return next;
-                            });
-                          }}
-                          flexDirection="column"
-                          marginBottom={1}
-                        >
-                          <Text color={isSelected ? 'cyan' : 'white'} wrap="truncate">
-                            {isSelected ? '❯ ' : '  '}PR #{activity.payload.prNumber} — plan generated
-                          </Text>
-                          <Box marginLeft={4} flexDirection="column">
-                            <Text dimColor>{activity.payload.category}</Text>
-                            {snippet ? <Text dimColor wrap="wrap">💬 {snippet}</Text> : null}
-                            <Text dimColor wrap="truncate-start">
-                              → {activity.payload.filePath.split('/').slice(-2).join('/')}
-                            </Text>
-                          </Box>
-                        </Clickable>
-                      );
-                    } else if (activity.type === 'github_notification') {
-                      return (
-                        <Box key={activity.id} flexDirection="column" marginBottom={1}>
-                          <Text>  ℹ️ {activity.payload.message}</Text>
-                        </Box>
-                      );
-                    }
-                    return null;
-                  }).filter(Boolean).slice(0, 10)
-                )}
-              </Box>
+              );
+            }
+            if (activity.type === 'github_notification') {
+              return <Text key={activity.id} wrap="truncate">  ℹ️  {activity.payload.message}</Text>;
+            }
+            return null;
+          })}
+      </Box>
 
-              <Box marginTop={1} flexDirection="column">
-                <Text dimColor wrap="wrap">↑↓ move · space expand · enter open plan</Text>
-                <Text dimColor wrap="wrap">a avoid words · p PR explorer · r refresh · ctrl+o agent</Text>
-              </Box>
-            </Box>
-          )}
-          </Box>
-          )}
-        </Box>
+      <Box marginTop={1}>
+        <Text dimColor wrap="wrap">↑↓ move · space expand · enter open plan · a avoid words · p PRs · r refresh · ctrl+o agent</Text>
+      </Box>
+    </Box>
   );
 }

@@ -113,3 +113,10 @@ export function ensureParent(filePath) {
   ensureDir(path.dirname(filePath));
   return filePath;
 }
+
+/**
+ * Absolute paths of workspaces this agent has been pointed at, most recent
+ * first. The per-workspace home folders are named by `workspaceSlug`, which
+ * hashes the path and cannot be reversed, so the list has to be kept separately.
+ */
+export const recentWorkspacesPath = () => path.join(homeDir(), 'recent-workspaces.json');

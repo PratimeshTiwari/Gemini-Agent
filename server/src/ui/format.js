@@ -127,4 +127,43 @@ export function formatPollTime(value, now = Date.now()) {
   return new Date(then).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
+/**
+ * Markdown for a transcript row, memoised by source text.
+ *
+ * `marked.parse` is not cheap and a turn re-renders whenever anything in the
+ * live frame ticks, so parsing the same reply on every frame showed up as
+ * tearing. The cache is bounded and keyed on the raw content — the same string
+ * always produces the same rendering.
+ *
+ * The two regexes run before marked because `marked-terminal` mangles inline
+ * bold inside list items, so bold is pre-baked as raw SGR (see CLAUDE.md).
+ */
+const RENDER_CACHE = new Map();
+const RENDER_CACHE_MAX = 200;
+
+export function renderMarkdown(content) {
+  const source = content || '';
+  const hit = RENDER_CACHE.get(source);
+  if (hit !== undefined) return hit;
+
+  let out;
+  try {
+    out = marked
+      .parse(source
+        .replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m')
+        .replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m'))
+      .trim();
+  } catch {
+    out = source;
+  }
+
+  // Oldest-first eviction: Map preserves insertion order, so the first key is
+  // the least recently added.
+  if (RENDER_CACHE.size >= RENDER_CACHE_MAX) {
+    RENDER_CACHE.delete(RENDER_CACHE.keys().next().value);
+  }
+  RENDER_CACHE.set(source, out);
+  return out;
+}
+
 export { marked };

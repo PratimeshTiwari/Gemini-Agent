@@ -1,9 +1,9 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import SelectInput from 'ink-select-input';
-import { Clickable } from './Clickable.jsx';
 import { QuestionPrompt } from './QuestionPrompt.jsx';
 import { summarizeDiff, previewRows } from '../diff-preview.js';
+import { listWorkspaceCandidates } from '../../core/workspaces.js';
 import { FOCUS_INPUT } from '../constants.js';
 
 /**
@@ -23,6 +23,7 @@ export function Menus({
   setActiveTab,
   setFocus,
   setHistory,
+  setInput,
 }) {
   return (
     <>
@@ -204,6 +205,36 @@ export function Menus({
                 setFocus(FOCUS_INPUT);
               }}
             />
+          </Box>
+        )}
+
+        {activeMenu?.type === 'workspace' && (
+          <Box flexDirection="column" borderStyle="single" borderColor="blue" padding={1}>
+            <Text bold color="blue">📂 Choose a workspace</Text>
+            <Text dimColor wrap="truncate-start">Currently: {activeMenu.current}</Text>
+            <SelectInput
+              limit={10}
+              items={[
+                ...listWorkspaceCandidates(activeMenu.current).map((c) => ({
+                  label: `${c.current ? '● ' : '  '}${c.label}`,
+                  value: c.path,
+                })),
+                { label: '  Type a path instead…', value: '\u0000type' },
+              ]}
+              onSelect={(item) => {
+                setActiveMenu(null);
+                setFocus(FOCUS_INPUT);
+                if (item.value === '\u0000type') {
+                  // Hand the user a half-written command rather than a second
+                  // prompt of our own: the input line already knows how to edit.
+                  setInput('/workspace ');
+                  return;
+                }
+                if (item.value === activeMenu.current) return;
+                handleSubmit(`/workspace ${item.value}`);
+              }}
+            />
+            <Text dimColor>↑↓ move · enter choose · esc cancel</Text>
           </Box>
         )}
 
