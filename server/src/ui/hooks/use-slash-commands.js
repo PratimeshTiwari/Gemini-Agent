@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import * as paths from '../../core/paths.js';
 import { createSkill, listSkills, skillSearchPath } from '../../core/skills.js';
+import { readErrors, summarizeErrors, clearErrors, FLOWS } from '../../core/error-log.js';
 import { resolveWorkspaceInput, validateWorkspace } from '../../core/workspaces.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -68,6 +69,7 @@ export async function handleSlashCommand(query, {
           '  /github           - Run GitHub specific commands (e.g., /github refresh)',
           '  /image            - Attach an image (e.g., /image path/to/img.png)',
           '  /paste-image      - Attach image directly from clipboard (macOS only)',
+          '  /logs             - What has been failing, grouped by flow',
           '  /agent-dir        - Open the agent data directory',
           '  /restart          - Restart the server',
           '  /exit             - Quit the agent'
@@ -138,6 +140,50 @@ export async function handleSlashCommand(query, {
 
     if (command === 'reasoning' && args.length === 0) {
       setActiveMenu({ type: 'reasoning' });
+      setIsProcessing(false);
+      return;
+    }
+
+    if (command === 'logs' || command === 'errors') {
+      const arg = (args[0] || '').toLowerCase();
+
+      if (arg === 'clear') {
+        const n = clearErrors(agentLoop.workspace);
+        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `🧹 Cleared ${n} logged failure${n === 1 ? '' : 's'}.`, isLocal: true }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      // `/logs <flow>` drills into one; bare `/logs` answers "what is breaking?"
+      if (arg && FLOWS[arg]) {
+        const entries = readErrors(agentLoop.workspace, { flow: arg, limit: 15 });
+        const body = entries.length === 0
+          ? `Nothing logged for **${arg}**.`
+          : entries.map((e) => {
+            const when = new Date(e.time).toLocaleTimeString();
+            const repeat = e.repeatedSince ? ` _(+${e.repeatedSince} more like it)_` : '';
+            const detail = e.detail ? `\n    \`${String(e.detail).split('\n')[0].slice(0, 120)}\`` : '';
+            return `  ${when} **${e.op || '—'}** — ${e.message}${repeat}${detail}`;
+          }).join('\n');
+        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `### 🩺 ${arg} — ${FLOWS[arg]}\n${body}`, isLocal: true }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      const summary = summarizeErrors(agentLoop.workspace);
+      let content;
+      if (summary.total === 0) {
+        content = '### 🩺 Failures\nNothing has failed since the log was last cleared.';
+      } else {
+        const rows = summary.byFlow.map((f) => {
+          const when = new Date(f.last).toLocaleTimeString();
+          return `  **${f.flow}** ${String(f.count).padStart(3)}  _${f.label}_\n`
+            + `      last ${when} — ${f.lastMessage}`;
+        }).join('\n');
+        content = `### 🩺 ${summary.total} failure${summary.total === 1 ? '' : 's'} logged\n${rows}\n\n`
+          + `_\`/logs <flow>\` for detail · \`/logs clear\` to reset · full log in \`.agent/logs/errors.jsonl\`_`;
+      }
+      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content, isLocal: true }]);
       setIsProcessing(false);
       return;
     }

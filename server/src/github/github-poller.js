@@ -12,6 +12,7 @@
 import { EventEmitter } from 'events';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { resolve, dirname } from 'path';
+import { logError } from '../core/error-log.js';
 
 export class GitHubPoller extends EventEmitter {
   /**
@@ -136,11 +137,13 @@ export class GitHubPoller extends EventEmitter {
       // which is what it did, straight into the terminal.
       if (/\b401\b|Bad credentials/i.test(err.message)) {
         this.stop();
+        logError(this.workspace, { flow: 'github', op: 'poll', message: `Auth rejected: ${err.message}` });
         this.emit('auth_rejected', {
           message: 'GitHub rejected the token (401 Bad credentials). PR watching is off. '
             + 'Open the GitHub tab (ctrl+o) and paste a new token, or run `/github remove-token`.',
         });
       } else {
+        logError(this.workspace, { flow: 'github', op: 'poll', message: err.message, detail: err.stack });
         this.emit('error', { message: `Poll failed: ${err.message}`, stack: err.stack });
       }
     } finally {

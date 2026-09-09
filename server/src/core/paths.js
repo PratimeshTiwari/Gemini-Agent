@@ -66,6 +66,8 @@ export const skillsDir = (workspace) => path.join(agentDir(workspace), 'skills')
 export const skillPath = (workspace, name) => path.join(skillsDir(workspace), `${name}.md`);
 export const mistakesPath = (workspace) => path.join(agentDir(workspace), 'mistakes.md');
 export const logPath = (workspace) => path.join(logsDir(workspace), 'agent.log');
+/** Structured failure log, one JSON object per line. See core/error-log.js. */
+export const errorLogPath = (workspace) => path.join(logsDir(workspace), 'errors.jsonl');
 
 // ── Workspace-relative (for configs and prompts that need a relative name) ──
 

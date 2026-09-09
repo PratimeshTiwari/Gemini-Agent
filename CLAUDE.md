@@ -185,6 +185,7 @@ can't drift again.
 | `<ws>/.agent/artifacts/` | `task.md`, `plan.md`, `walkthrough.md` — written for the user to read |
 | `<ws>/.agent/state/` | `editor.json` (VS Code companion), `github.json`, `plan-approval.json` |
 | `<ws>/.agent/github-pr-plans/` | GitHub PR agent output |
+| `<ws>/.agent/logs/errors.jsonl` | structured failure log — one JSON object per line |
 | `<ws>/.agent/backups/`, `context/`, `logs/`, `tmp/`, `rules.md`, `mistakes.md` | see `paths.js` |
 | `<ws>/.agent/sessions/history.jsonl` | conversation history, local copy |
 | `~/.agent/workspaces/<name>-<hash>/history.jsonl` | the durable copy of the same history |
@@ -214,6 +215,24 @@ because `onDidChangeDiagnostics` fires continuously while a project indexes),
 `plan-review.json` (comments accumulated while reviewing) and `plan-approval.json` (the
 submitted verdict: `accept` | `changes_requested` | `reject`). Files rather than a socket is
 what lets the extension queue work before the CLI is even running.
+
+### Failure logging
+
+`core/error-log.js` writes every failure to `<ws>/.agent/logs/errors.jsonl`, tagged with the
+flow it came from (`bridge`, `extension`, `agent`, `tool`, `github`, `task`, `diff`, `context`,
+`ui`). `/logs` reads it back grouped by flow; `/logs <flow>` drills in.
+
+It exists because failures here are spread across processes that cannot see each other — a
+content script in a Chrome tab, the bridge, the loop, the tools, the poller — and the symptom
+surfaces far from the cause. The console was the only sink, and console output inside an Ink
+app is destroyed by the next repaint.
+
+Two properties are load-bearing. It **never throws** (every caller is already on a failure
+path). And it **collapses repeats**: identical failures inside a 60s window are counted rather
+than written, because a poller failing every tick used to bury everything else. The tally is
+written as its own record marked `tally: true` when the window closes or the process exits —
+so a storm of 500 shows as 500, not 1, and the tally line is never miscounted as another
+occurrence.
 
 ## Branching and PRs
 

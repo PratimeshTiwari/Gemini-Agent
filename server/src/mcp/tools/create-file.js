@@ -29,11 +29,15 @@ export async function createFile(args, context) {
     filePath: diff.filePath,
     isNewFile: !fileExists,
     isOverwrite: fileExists,
-    status: 'pending_approval',
+    // 'proposed', not 'pending_approval': at this point a diff exists and
+    // nothing has been decided. The agent loop replaces this with 'applied' or
+    // 'rejected' once it knows which, and the model must report that rather
+    // than this.
+    status: 'proposed',
     patch: diff.patch,
     lineCount: content.split('\n').length,
     message: fileExists
-      ? `Will overwrite existing file ${relPath}. Waiting for approval.`
-      : `Will create new file ${relPath} (${content.split('\n').length} lines). Waiting for approval.`,
+      ? `Diff prepared to overwrite ${relPath}.`
+      : `Diff prepared to create ${relPath} (${content.split('\n').length} lines).`,
   };
 }

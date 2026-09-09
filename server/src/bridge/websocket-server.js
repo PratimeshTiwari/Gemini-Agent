@@ -16,6 +16,7 @@
 
 import { WebSocketServer as WS } from 'ws';
 import { randomUUID } from 'crypto';
+import { logError } from '../core/error-log.js';
 
 export class WebSocketServer {
   constructor({ port, agentLoop, githubHandler }) {
@@ -181,9 +182,19 @@ export class WebSocketServer {
         break;
 
       case 'error':
-        // Extension reported an error (e.g. failed to inject). The turn is
-        // dead, so hand the bridge lock back — otherwise every later prompt
-        // queues behind a request that will never be answered.
+        // Written down before anything else. This is the only report we get
+        // from inside the browser tab, and until now it was handled and thrown
+        // away — a selector that changed on gemini.google.com looked, from the
+        // terminal, like the agent simply going quiet.
+        logError(this.agentLoop?.workspace, {
+          flow: 'extension',
+          op: payload?.op || payload?.stage || 'unknown',
+          message: payload?.message || payload?.error || 'Extension reported an error',
+          detail: payload?.detail || payload?.stack,
+          meta: { targetModel: payload?.targetModel, url: payload?.url },
+        });
+        // The turn is dead, so hand the bridge lock back — otherwise every
+        // later prompt queues behind a request that will never be answered.
         this.agentLoop.isProcessing = false;
         this.agentLoop.abortExtensionWork();
         if (this.agentLoop.callbacks) {

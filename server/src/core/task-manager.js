@@ -8,6 +8,7 @@
 import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import { resolve } from 'path';
+import { logError } from './error-log.js';
 
 const MAX_LOG_LINES = 500; // Circular buffer size per task
 
@@ -106,6 +107,14 @@ export class TaskManager {
       task.status = signal ? 'killed' : 'exited';
       task.exitCode = code;
       task.endedAt = Date.now();
+      if (code !== 0 && !signal) {
+        logError(this.workspace, {
+          flow: 'task', op: 'exit',
+          message: `Exited with code ${code}`,
+          detail: task.logBuffer.slice(-15).map((l) => `[${l.stream}] ${l.line}`).join('\n'),
+          meta: { taskId, command },
+        });
+      }
       this._appendLog(task, 'system', `Process exited with code ${code}${signal ? ` (signal: ${signal})` : ''}`);
       if (this.callbacks?.onExit) {
         this.callbacks.onExit(taskId, code, signal);
@@ -117,6 +126,9 @@ export class TaskManager {
       task.exitCode = -1;
       task.endedAt = Date.now();
       this._appendLog(task, 'system', `Process error: ${err.message}`);
+      logError(this.workspace, {
+        flow: 'task', op: 'spawn', message: err.message, meta: { taskId, command },
+      });
     });
 
     this.tasks.set(taskId, task);

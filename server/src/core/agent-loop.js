@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { looksLikeMultipleDrafts, looksLikeCapabilityDenial, looksLikeProviderError } from './drift-detector.js';
+import { logError } from './error-log.js';
 
 /**
  * How many times to re-ask when the *provider* errors rather than the model.
@@ -264,7 +265,11 @@ export class AgentLoop {
         this.promptBuilder.noteDrift();
       }
     } catch (err) {
-      console.warn('⚠️ JSON Parse Error. Self-correcting...', err.message);
+      logError(this.workspace, {
+        flow: 'agent', op: 'parse_tool_calls',
+        message: `Malformed tool call: ${err.message}`,
+        detail: content?.slice(0, 1500),
+      });
       // A tool call the model could not format is the clearest signal its grip
       // on the instructions has slipped. Bring the reminder forward.
       this.promptBuilder.noteDrift();
@@ -302,6 +307,11 @@ export class AgentLoop {
     // transient failure of the tab, and the user should not have to notice it.
     if (toolCalls.length === 0 && looksLikeProviderError(cleanContent)) {
       this._providerRetries = (this._providerRetries || 0) + 1;
+      logError(this.workspace, {
+        flow: 'agent', op: 'provider_error',
+        message: cleanContent.trim().slice(0, 200),
+        meta: { attempt: this._providerRetries },
+      });
       if (this._providerRetries <= MAX_PROVIDER_RETRIES && this.currentObjective) {
         this._notify(`⚠️ Gemini returned an error — retrying (${this._providerRetries}/${MAX_PROVIDER_RETRIES})…`);
         this._sendToGemini(this.promptBuilder.buildPrompt({
@@ -327,6 +337,11 @@ export class AgentLoop {
     if (toolCalls.length === 0 && looksLikeCapabilityDenial(cleanContent)) {
       if (!this._deniedToolsOnce && this.currentObjective) {
         this._deniedToolsOnce = true;
+        logError(this.workspace, {
+          flow: 'agent', op: 'tool_amnesia',
+          message: 'Model denied having tools; re-sent the definitions',
+          detail: cleanContent.slice(0, 400),
+        });
         this.promptBuilder.resetPromptState(); // next prompt carries the tool definitions
 
         this.callbacks.sendToPanel({
@@ -1240,6 +1255,24 @@ export class AgentLoop {
         if (!needsApproval) {
           // Auto-apply safe edits
           const applyResult = this.diffEngine.acceptDiff(diffResult.diffId);
+
+          // Tell the model what actually happened. create_file and edit_file
+          // both return `status: 'pending_approval'` because that is true at
+          // the moment they build the diff — but when the edit is auto-applied
+          // (a .md file in plan mode, a safe edit in auto mode) nobody ever
+          // asks, and the model faithfully reported "waiting for your approval"
+          // about a file that was already on disk. The user then goes looking
+          // for a prompt that does not exist.
+          toolResults[i] = {
+            call_id: call.id || randomUUID(),
+            name: call.name,
+            result: {
+              filePath: diffResult.filePath,
+              status: 'applied',
+              message: `Applied to ${diffResult.filePath}. No approval was needed — do not tell the user it is pending.`,
+            },
+          };
+
           this.callbacks.sendToPanel({
             id: randomUUID(),
             type: 'diff_auto_applied',
@@ -1298,6 +1331,13 @@ export class AgentLoop {
 
     if (this._failedRounds >= MAX_FAILED_ROUNDS) {
       this._failedRounds = 0;
+      for (const r of toolResults.filter((x) => x?.failed)) {
+        logError(this.workspace, {
+          flow: 'tool', op: r.name,
+          message: oneLineError(r.result),
+          meta: { gaveUpAfter: MAX_FAILED_ROUNDS },
+        });
+      }
       const summary = toolResults
         .filter((r) => r?.failed)
         .map((r) => `  • ${r.name}: ${oneLineError(r.result)}`)

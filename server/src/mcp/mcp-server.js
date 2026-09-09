@@ -19,6 +19,7 @@ import { manageTask } from './tools/manage-task.js';
 import semanticSearch from './tools/semantic-search.js';
 import getEditorState from './tools/get-editor-state.js';
 import getDiagnostics from './tools/get-diagnostics.js';
+import { logError } from '../core/error-log.js';
 
 // Tool registry with schemas
 const TOOL_DEFINITIONS = [
@@ -54,7 +55,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'edit_file',
-    description: 'Propose edits to an existing file. Each edit specifies old text to find and new text to replace it with. The edit will be shown as a diff for user approval before being applied.',
+    description: 'Propose edits to an existing file. Each edit specifies old text to find and new text to replace it with. Depending on the mode and the file, the edit is either applied straight away or shown to the user as a diff to approve. The result tells you which happened — report that, never assume it is waiting for approval.',
     parameters: {
       path: { type: 'string', description: 'File path to edit', required: true },
       edits: {
@@ -67,7 +68,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'create_file',
-    description: 'Create a new file with the specified content. Parent directories will be created automatically. The file creation will be shown for user approval.',
+    description: 'Create a new file with the specified content. Parent directories will be created automatically. Depending on the mode and the file, it is either written straight away or shown to the user to approve. The result tells you which happened — report that, never assume it is waiting for approval.',
     parameters: {
       path: { type: 'string', description: 'File path to create', required: true },
       content: { type: 'string', description: 'File content', required: true },
@@ -207,6 +208,18 @@ export class MCPServer {
         break; // Non-retriable error
       }
     }
+
+    // Every tool failure is written down, whether or not the model recovers
+    // from it. A tool that fails often is a tool whose description is wrong or
+    // whose arguments the model keeps guessing — that pattern is invisible if
+    // only the give-ups are recorded.
+    logError(this.workspace, {
+      flow: 'tool',
+      op: name,
+      message: lastErr.message,
+      detail: lastErr.stack,
+      meta: { code: lastErr.code, retries, args: Object.keys(args || {}) },
+    });
 
     // Format OS errors into human-readable instructions for the LLM
     let errorMsg = lastErr.message;
