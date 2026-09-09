@@ -241,6 +241,22 @@ export class WebSocketServer {
   // ── GitHub Event Wiring ─────────────────────────────────────────
 
   _wireGitHubEvents() {
+    // Errors reach the UI through the same queue as everything else. They used
+    // to be console.error'd from main.js, which writes straight into the frame
+    // Ink is repainting: the message corrupts the layout and is gone on the
+    // next render.
+    const pushError = (data, fatal) => {
+      this.pendingGitHubNotifications.push({
+        id: randomUUID(),
+        type: fatal ? 'github_auth_rejected' : 'github_error',
+        payload: data,
+        timestamp: Date.now(),
+      });
+      if (this.pendingGitHubNotifications.length > 200) this.pendingGitHubNotifications.shift();
+    };
+    this.githubHandler.on('error', (data) => pushError(data, false));
+    this.githubHandler.on('auth_rejected', (data) => pushError(data, true));
+
     this.githubHandler.on('notification', (data) => {
       const msg = {
         id: randomUUID(),

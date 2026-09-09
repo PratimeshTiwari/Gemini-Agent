@@ -473,6 +473,31 @@ export function App({ agentLoop, wsServer }) {
 
   return (
     <Box flexDirection="column" width="100%" overflow="hidden">
+      {/*
+        Settled transcript: written once, then owned by the terminal.
+
+        Mounted unconditionally, *outside* the tab switch. <Static> only writes
+        the items it has not written before, and it tracks that in component
+        state — so unmounting it and mounting it again reprints the entire
+        transcript, banner included. Putting it inside the `activeTab` branch
+        meant a trip to the GitHub tab and back reprinted everything, which is
+        where the second banner came from.
+      */}
+      <Static key={staticEpoch} items={staticItems}>
+        {(item) => (item.isBanner
+          ? <Banner key={item.id} agentLoop={agentLoop} agentNameAscii={agentNameAscii} />
+          : (
+            <TranscriptTurn
+              key={item.id}
+              turn={item}
+              isLive={false}
+              verbose={verbose}
+              status={status}
+              liveBudget={liveBudget}
+            />
+          ))}
+      </Static>
+
       {activeTab === 'github' ? (
         <GithubTab
           agentLoop={agentLoop}
@@ -482,21 +507,6 @@ export function App({ agentLoop, wsServer }) {
         />
       ) : (
         <>
-          {/* Settled transcript: written once, then owned by the terminal. */}
-          <Static key={staticEpoch} items={staticItems}>
-            {(item) => (item.isBanner
-              ? <Banner key={item.id} agentLoop={agentLoop} agentNameAscii={agentNameAscii} />
-              : (
-                <TranscriptTurn
-                  key={item.id}
-                  turn={item}
-                  isLive={false}
-                  verbose={verbose}
-                  status={status}
-                  liveBudget={liveBudget}
-                />
-              ))}
-          </Static>
 
           {/* The in-flight turn — the only transcript rows Ink repaints. */}
           {liveTurns.map((turn) => (

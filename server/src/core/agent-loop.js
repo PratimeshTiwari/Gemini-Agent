@@ -9,7 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
-import { looksLikeMultipleDrafts } from './drift-detector.js';
+import { looksLikeMultipleDrafts, looksLikeCapabilityDenial } from './drift-detector.js';
 import * as paths from './paths.js';
 import { resolveWorkspaceInput, validateWorkspace, rememberWorkspace } from './workspaces.js';
 import { z } from 'zod';
@@ -146,6 +146,8 @@ export class AgentLoop {
       // Workspace summary injection removed
 
       this.currentObjective = content;
+      // One tool-amnesia retry per user turn; see handleGeminiResponse.
+      this._deniedToolsOnce = false;
 
       // Build the full prompt
       const prompt = this.promptBuilder.buildPrompt({
@@ -268,6 +270,46 @@ export class AgentLoop {
       
       this._sendToGemini('Please correct the previous JSON formatting error.', this.callbacks);
       return;
+    }
+
+    // The model has forgotten it has tools and refused the task outright. This
+    // is the cost of only sending the system prompt every Nth turn: usually it
+    // remembers, and when it does not the whole turn is wasted on a confident
+    // refusal. Re-send the full prompt and retry the request instead of handing
+    // the user a dead end to retype.
+    //
+    // Once per turn. If it denies its tools again with the definitions right
+    // there in front of it, retrying will not help and the reply is the honest
+    // thing to show.
+    if (toolCalls.length === 0 && looksLikeCapabilityDenial(cleanContent)) {
+      if (!this._deniedToolsOnce && this.currentObjective) {
+        this._deniedToolsOnce = true;
+        this.promptBuilder.resetPromptState(); // next prompt carries the tool definitions
+
+        this.callbacks.sendToPanel({
+          id: randomUUID(),
+          type: 'status',
+          payload: { message: '🧰 Model forgot its tools — resending the tool definitions...' },
+          timestamp: Date.now(),
+        });
+
+        const note = {
+          role: 'system',
+          content: '[System: the model denied having tools; the full tool definitions were re-sent and the request retried.]',
+          timestamp: Date.now(),
+        };
+        this.conversationHistory.push(note);
+        this.sessionStore.appendTurn(note);
+
+        this._sendToGemini(this.promptBuilder.buildPrompt({
+          userMessage: this.currentObjective,
+          mode: this.mode,
+          topology: this.topology,
+          modelConfig: this.modelConfig,
+          objective: this.currentObjective,
+        }), this.callbacks);
+        return;
+      }
     }
 
     // Show the response text (without tool call blocks) in the side panel
@@ -1236,12 +1278,9 @@ export class AgentLoop {
       const requestId = randomUUID();
       this.pendingSubagents.set(requestId, { resolve, reject });
 
-      this.callbacks.sendToPanel({
-        id: randomUUID(),
-        type: 'status',
-        payload: { message: `🤖 [${targetModel}] Thinking...`, status: `waiting_for_${targetModel}` },
-        timestamp: Date.now(),
-      });
+      // Subagents also run for /compact and background GitHub work, neither of
+      // which has a user turn's callbacks attached.
+      this._notify(`🤖 [${targetModel}] Thinking...`);
 
       this._enqueueExtensionRequest({
         prompt,
@@ -1514,6 +1553,25 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
     return { message };
   }
 
+  /**
+   * Push a status line to the UI, if anyone is listening.
+   *
+   * `this.callbacks` is only set while a *user turn* is running. Slash commands
+   * go straight to `handleSlashCommand`, so `/compact` on a fresh session found
+   * it null and threw on `this.callbacks.sendToPanel` — which the UI did not
+   * catch either, so the whole thing hung with nothing on screen.
+   */
+  _notify(message) {
+    const target = this.callbacks || this._backgroundCallbacks;
+    if (!target?.sendToPanel) return;
+    target.sendToPanel({
+      id: randomUUID(),
+      type: 'status',
+      payload: { message },
+      timestamp: Date.now(),
+    });
+  }
+
   async _compactHistory(focus) {
     if (this.conversationHistory.length <= 5) {
       return { message: 'Conversation is too short to compact.' };
@@ -1536,12 +1594,7 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
         return `[${turn.role.toUpperCase()}]: ${turn.content}`;
       }).join('\n\n');
 
-      this.callbacks.sendToPanel({
-        id: randomUUID(),
-        type: 'status',
-        payload: { message: '🧠 Compacting massive context window via Gemini LLM...' },
-        timestamp: Date.now(),
-      });
+      this._notify('🧠 Summarising the older turns in a browser tab…');
 
       const summaryPrompt = `You are a context compactor for an AI coding agent.
 Your job is to read the following conversation history and summarize it into a tight, dense block of text.
@@ -1575,14 +1628,27 @@ ${compactedSummary}`;
       this.sessionStore.saveHistory(this.conversationHistory);
       this.promptBuilder.resetPromptState();
 
-      this.callbacks.sendToPanel({
-        id: randomUUID(),
-        type: 'status',
-        payload: { message: llmResponse.success ? '✅ History successfully auto-compacted (Gemini Summary).' : '✅ History auto-compacted (Lightweight Fallback).' },
-        timestamp: Date.now(),
-      });
-      
-      return { message: '✅ History compacted.' };
+      // Say what actually happened. "✅ History compacted." told the user
+      // nothing — not how much went, not whether the model summarised it or the
+      // deterministic fallback did, and not where the summary went.
+      const approxTokens = (turns) => Math.round(
+        turns.reduce((sum, t) => sum + ((t.content?.length || 0) / 4), 0),
+      );
+      const before = approxTokens([...toCompact, ...toKeep]);
+      const after = approxTokens(this.conversationHistory);
+      const how = llmResponse.success
+        ? 'summarised by the model'
+        : 'condensed locally (the model did not answer, so the deterministic fallback ran)';
+
+      return {
+        message: `✅ Compacted ${toCompact.length} turn${toCompact.length === 1 ? '' : 's'} into one summary, `
+          + `${how}.\n\n`
+          + `Kept the last ${toKeep.length} turns as they were. `
+          + `Context is roughly ${before.toLocaleString()} → ${after.toLocaleString()} tokens.\n\n`
+          + 'The summary is now the first turn of this conversation — it is in the transcript above '
+          + 'and saved to `.agent/sessions/history.jsonl`. The browser tab it was written in is '
+          + 'scratch space; nothing is left there.',
+      };
     } finally {
       this.isCompacting = false;
     }

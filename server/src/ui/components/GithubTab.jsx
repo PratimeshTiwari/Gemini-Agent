@@ -20,7 +20,9 @@ import { formatPollTime, oneLine } from '../format.js';
  * Navigation lives in the key bindings; this only draws.
  */
 export function GithubTab({ agentLoop, wsServer, github, maxRows }) {
-  const body = !agentLoop.githubHandler
+  // A rejected token means the poller has stopped for good, so ask for a new
+  // one instead of drawing a dashboard that can never fill in.
+  const body = (!agentLoop.githubHandler || github.authRejected)
     ? <TokenSetup agentLoop={agentLoop} wsServer={wsServer} github={github} />
     : github.view === 'avoid_words'
       ? <AvoidWords github={github} maxRows={maxRows} />
@@ -37,7 +39,7 @@ export function GithubTab({ agentLoop, wsServer, github, maxRows }) {
 }
 
 function TokenSetup({ agentLoop, wsServer, github }) {
-  const { setupToken: token, setSetupToken: setToken, error, setError } = github;
+  const { setupToken: token, setSetupToken: setToken, error, setError, authRejected } = github;
   const [busy, setBusy] = React.useState(false);
 
   const submit = async (val) => {
@@ -81,6 +83,7 @@ function TokenSetup({ agentLoop, wsServer, github }) {
         if (typeof wsServer._wireGitHubEvents === 'function') wsServer._wireGitHubEvents();
       }
       handler.start().catch((err) => setError(String(err?.message || err)));
+      github.setAuthRejected(false);
       setToken('');
     } catch (e) {
       // Never console.error from inside an Ink app: it writes straight into the
@@ -93,7 +96,9 @@ function TokenSetup({ agentLoop, wsServer, github }) {
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Text color="yellow" bold>⚠️  GitHub setup pending</Text>
+      <Text color={authRejected ? 'red' : 'yellow'} bold>
+        {authRejected ? '🔒 GitHub token rejected' : '⚠️  GitHub setup pending'}
+      </Text>
       <Text wrap="wrap">Generate a token with the <Text bold>repo</Text> scope at https://github.com/settings/tokens/new and paste it below.</Text>
       <Text dimColor wrap="wrap">Stored in this workspace's .agent/config.json; the integration starts immediately.</Text>
       <Box marginTop={1}>

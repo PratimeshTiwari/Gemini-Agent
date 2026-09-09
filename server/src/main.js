@@ -184,16 +184,11 @@ async function main() {
       agentLoop,
     });
 
-    // Wire GitHub events to console output (errors only, status is handled by UI)
-    githubHandler.on('status', ({ message }) => {
-      // console.log(`  [GitHub] ${message}`);
-    });
-    githubHandler.on('error', ({ message }) => {
-      console.error(`  [GitHub] ❌ ${message}`);
-    });
-    githubHandler.on('notification', ({ message }) => {
-      console.log(`  [GitHub] ${message}`);
-    });
+    // Nothing is printed here on purpose. These events arrive while the Ink UI
+    // owns the terminal, and console output lands inside the frame Ink is
+    // repainting — it breaks the layout and vanishes on the next render. The
+    // WebSocket server forwards them to the GitHub tab instead
+    // (`_wireGitHubEvents`), which is the surface that can actually show them.
 
     // Connect to agent loop for /github slash commands
     agentLoop.githubHandler = githubHandler;

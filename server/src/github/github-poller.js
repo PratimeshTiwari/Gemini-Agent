@@ -130,7 +130,19 @@ export class GitHubPoller extends EventEmitter {
       });
 
     } catch (err) {
-      this.emit('error', { message: `Poll failed: ${err.message}`, stack: err.stack });
+      // A token that has been revoked or expired will fail identically on every
+      // future tick. `start()` already treats a 401 as terminal; polling has to
+      // as well, or the loop reports "Bad credentials" every interval forever —
+      // which is what it did, straight into the terminal.
+      if (/\b401\b|Bad credentials/i.test(err.message)) {
+        this.stop();
+        this.emit('auth_rejected', {
+          message: 'GitHub rejected the token (401 Bad credentials). PR watching is off. '
+            + 'Open the GitHub tab (ctrl+o) and paste a new token, or run `/github remove-token`.',
+        });
+      } else {
+        this.emit('error', { message: `Poll failed: ${err.message}`, stack: err.stack });
+      }
     } finally {
       this.isPolling = false;
     }

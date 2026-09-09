@@ -344,5 +344,8 @@ CRITICAL: Do NOT run \`git checkout\` or switch branches. The user may have unsa
     // ── Forward status/error events ────────────────────────────────
     this.poller.on('status', (data) => this.emit('status', data));
     this.poller.on('error', (data) => this.emit('error', data));
+    // Terminal auth failure: surfaced so the UI can ask for a new token rather
+    // than leaving the dashboard sitting at "0 PRs watched · polled never".
+    this.poller.on('auth_rejected', (data) => this.emit('auth_rejected', data));
   }
 }

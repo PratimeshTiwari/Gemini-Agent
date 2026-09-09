@@ -327,19 +327,31 @@ export async function handleSlashCommand(query, {
     // Handle standard agent loop commands
     const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'model', 'reasoning', 'allowlist', 'github'];
     if (validAgentCommands.includes(command)) {
-      const result = await agentLoop.handleSlashCommand(command, args);
-      
-      if (command === 'clear' || command === 'undo' || command === 'compact') {
-        const newHistory = [...agentLoop.conversationHistory];
-        if (result && result.message) {
-          newHistory.push({ role: 'assistant', content: result.message });
+      // A command that throws must still hand the prompt back. Without this the
+      // rejection escaped, `setIsProcessing(false)` below never ran, and the CLI
+      // sat spinning with nothing on screen — which is exactly how a `/compact`
+      // on a fresh session presented itself.
+      try {
+        const result = await agentLoop.handleSlashCommand(command, args);
+
+        if (command === 'clear' || command === 'undo' || command === 'compact') {
+          const newHistory = [...agentLoop.conversationHistory];
+          if (result && result.message) {
+            newHistory.push({ role: 'assistant', content: result.message, isLocal: true });
+          }
+          setHistory(newHistory);
+        } else if (result && result.message) {
+          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: result.message, isLocal: true }]);
         }
-        setHistory(newHistory);
-      } else if (result && result.message) {
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: result.message }]);
+      } catch (err) {
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant',
+          isLocal: true,
+          content: `❌ \`/${command}\` failed: ${err?.message || err}`,
+        }]);
       }
     } else {
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ Unrecognized command: \`/${command}\`\nType \`/help\` to see the list of available commands.` }]);
+      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ Unrecognized command: \`/${command}\`\nType \`/help\` to see the list of available commands.`, isLocal: true }]);
     }
     setIsProcessing(false);
     return;

@@ -18,6 +18,9 @@ export function useGithubTab({ agentLoop, wsServer, activeTab }) {
   const [hasNewEvent, setHasNewEvent] = useState(false);
   const [view, setView] = useState('activity'); // activity | avoid_words | pr_explorer
   const [error, setError] = useState('');
+  // A rejected token is terminal: the poller has stopped, so the tab shows the
+  // setup screen again rather than a dashboard that will never fill in.
+  const [authRejected, setAuthRejected] = useState(false);
   const [setupToken, setSetupToken] = useState('');
 
   const [prList, setPrList] = useState([]);
@@ -38,7 +41,25 @@ export function useGithubTab({ agentLoop, wsServer, activeTab }) {
       if (!wsServer) return;
       const notifications = wsServer.getGitHubNotifications();
       if (notifications.length === 0) return;
-      setActivity((prev) => [...prev, ...notifications].slice(-50));
+
+      // Errors are status, not activity: they belong on the error line rather
+      // than in the feed, where they would scroll away behind the next event.
+      const problems = notifications.filter(
+        (n) => n.type === 'github_error' || n.type === 'github_auth_rejected',
+      );
+      if (problems.length > 0) {
+        const last = problems[problems.length - 1];
+        setError(last.payload?.message || 'GitHub request failed.');
+        if (problems.some((n) => n.type === 'github_auth_rejected')) {
+          setAuthRejected(true);
+          setView('activity');
+        }
+      }
+
+      const events = notifications.filter(
+        (n) => n.type !== 'github_error' && n.type !== 'github_auth_rejected',
+      );
+      if (events.length > 0) setActivity((prev) => [...prev, ...events].slice(-50));
       if (activeTab !== 'github') setHasNewEvent(true);
     }, 1000);
     return () => clearInterval(id);
@@ -121,6 +142,7 @@ export function useGithubTab({ agentLoop, wsServer, activeTab }) {
   return {
     // state the screen draws
     activity, view, error, setupToken, setSetupToken, setError,
+    authRejected, setAuthRejected,
     prList, selectedPrIdx, prComments, selectedPrCommentIdx,
     explorerMode, loadingPrs, loadingPrComments,
     selectedPlanId, expandedComments, avoidWords, newAvoidWord, setNewAvoidWord,
@@ -133,7 +155,7 @@ export function useGithubTab({ agentLoop, wsServer, activeTab }) {
 
     /** True while a text field on the tab owns the letters — see use-github-keys. */
     get isTyping() {
-      return !agentLoop.githubHandler || view === 'avoid_words';
+      return !agentLoop.githubHandler || authRejected || view === 'avoid_words';
     },
   };
 }
