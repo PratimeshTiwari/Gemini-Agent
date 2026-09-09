@@ -163,6 +163,34 @@ function activate(context) {
 
     sub(vscode.commands.registerCommand('agentCli.addToChat', addToChat));
 
+    // The floating "Chat ⌘L" widget that Antigravity and Copilot draw on a
+    // selection is their own custom widget, not a VS Code extension point —
+    // nothing can contribute to it. The native equivalent is a Code Action:
+    // it appears on the lightbulb the moment you select something, and ⌘. is
+    // the same one-chord reach. So the selection has three ways in — ⌥⌘L, the
+    // right-click menu, and ⌘..
+    class AddToChatActionProvider {
+        provideCodeActions(document, range) {
+            // Only for a real selection. Offering this on every cursor move
+            // would push the actual quick-fixes down the list on every keypress.
+            if (range.isEmpty) return [];
+
+            const lines = range.end.line - range.start.line + 1;
+            const action = new vscode.CodeAction(
+                `Add to Agent Chat (${lines} line${lines === 1 ? '' : 's'})`,
+                vscode.CodeActionKind.Empty,
+            );
+            action.command = { command: 'agentCli.addToChat', title: 'Add to Agent Chat' };
+            return [action];
+        }
+    }
+
+    sub(vscode.languages.registerCodeActionsProvider(
+        { scheme: 'file' },
+        new AddToChatActionProvider(),
+        { providedCodeActionKinds: [vscode.CodeActionKind.Empty] },
+    ));
+
     // ── Plan review ───────────────────────────────────────────────────
     //
     // A plan is reviewed the way a PR is: leave comments on the parts that need

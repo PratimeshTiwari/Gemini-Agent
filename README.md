@@ -112,9 +112,11 @@ Four things, all of which the agent can use immediately:
 - **Editor state** — the file you're in and where the cursor is.
 - **Diagnostics** — the Problems panel. The agent reads your TypeScript and ESLint errors
   with `get_diagnostics` instead of running a build, and uses it to check its own edits.
-- **Add to Agent Chat** — select code, hit `cmd+alt+L` (or right-click → *Add to Agent Chat*),
-  and it lands on your prompt as `@client.js:12-40`. The full text goes to the model on
-  submit; only the marker sits in the terminal.
+- **Add to Agent Chat** — select code and send it to the prompt as `@client.js:12-40`. The
+  full text goes to the model on submit; only the marker sits in the terminal. Four ways in:
+  `cmd+alt+L`, right-click, the `cmd+.` lightbulb, or the button on the editor tab bar.
+  (The floating *Chat ⌘L* widget you may see on a selection belongs to Antigravity/Copilot —
+  it is their own widget and no extension can add to it. `cmd+.` is the native equivalent.)
 - **Plan review** — a plan opens with `✅ Approve · 📤 Submit review · ❌ Reject` at the top and
   `💬 Comment` on every heading. Leave comments on the sections that need changing and submit,
   and the agent revises the plan against all of them at once — the way you'd review a PR.
@@ -124,7 +126,7 @@ To install:
 
 1. In VS Code, open the Extensions panel (`Cmd+Shift+X`).
 2. `...` menu → **Install from VSIX...**
-3. Pick `vscode-companion/cli-agent-companion-1.2.0.vsix`.
+3. Pick `vscode-companion/cli-agent-companion-1.3.0.vsix`.
 
 It talks to the CLI through files in `.agent/state/`, so it works whether or not the agent is
 running — a selection queued before you start `agent-cli` is waiting for you when you do.
