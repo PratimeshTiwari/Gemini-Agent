@@ -237,6 +237,16 @@ export function App({ agentLoop, wsServer }) {
     if (isProcessing) return;
 
     if (planReviewReady) {
+      // Clear any verdict left over from a previous review before opening this
+      // one. The companion writes plan-approval.json whenever its lenses are
+      // clicked, including when no review is running; the poller below only
+      // reads while the menu is up, so a stale file would be consumed the
+      // instant the *next* review started and answer it for the user.
+      try {
+        const stale = paths.planApprovalPath(agentLoop.workspace);
+        if (fs.existsSync(stale)) fs.unlinkSync(stale);
+      } catch (e) { /* nothing to clear */ }
+
       setActiveMenu({ type: 'plan_review' });
       setPlanReviewReady(false);
       setFocus(FOCUS_INPUT);

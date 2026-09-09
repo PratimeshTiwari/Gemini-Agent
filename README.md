@@ -126,7 +126,7 @@ To install:
 
 1. In VS Code, open the Extensions panel (`Cmd+Shift+X`).
 2. `...` menu → **Install from VSIX...**
-3. Pick `vscode-companion/cli-agent-companion-1.3.0.vsix`.
+3. Pick `vscode-companion/cli-agent-companion-1.3.1.vsix`.
 
 It talks to the CLI through files in `.agent/state/`, so it works whether or not the agent is
 running — a selection queued before you start `agent-cli` is waiting for you when you do.

@@ -2,7 +2,7 @@
   "name": "cli-agent-companion",
   "displayName": "Agent CLI Companion",
   "description": "Editor state, diagnostics, Add to Agent Chat, and plan review for the local Agent CLI.",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "publisher": "pratimesh-tiwari",
   "author": {
     "name": "Pratimesh Tiwari"

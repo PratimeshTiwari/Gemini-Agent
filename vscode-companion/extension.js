@@ -199,8 +199,16 @@ function activate(context) {
     // "approve or reject" had no answer for.
     let comments = [];
 
-    const isPlanFile = (fileName) =>
-        fileName.endsWith('implementation_plan.md') || fileName.endsWith('plan.md');
+    // Matched on the path rather than with a DocumentSelector glob. The plan
+    // lives inside a dot-directory (`.agent/artifacts/`), and whether `**/`
+    // crosses one is glob-implementation trivia — get it wrong and the lenses
+    // simply never appear, with nothing to debug. This also stops an unrelated
+    // `plan.md` elsewhere in the repo from offering to approve a plan.
+    const isPlanFile = (fileName) => {
+        const p = String(fileName || '').replace(/\\/g, '/');
+        return p.endsWith(`/${AGENT_DIR}/artifacts/plan.md`)
+            || p.endsWith(`/${AGENT_DIR}/artifacts/implementation_plan.md`);
+    };
 
     function persistComments() {
         writeState('plan-review.json', { comments, timestamp: Date.now() });
@@ -276,7 +284,7 @@ function activate(context) {
     }
 
     sub(vscode.languages.registerCodeLensProvider(
-        { language: 'markdown', scheme: 'file', pattern: `**/${AGENT_DIR}/artifacts/{implementation_plan,plan}.md` },
+        { language: 'markdown', scheme: 'file' },
         new PlanReviewCodeLensProvider(),
     ));
 
