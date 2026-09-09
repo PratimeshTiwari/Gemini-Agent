@@ -7,6 +7,7 @@ import { Banner } from './components/Banner.jsx';
 import { TranscriptTurn } from './components/TranscriptTurn.jsx';
 import { AgentTerminal } from './components/AgentTerminal.jsx';
 import { InputBar } from './components/InputBar.jsx';
+import { KeyHints } from './components/KeyHints.jsx';
 import { clampForDisplay } from './format.js';
 import { SLASH_COMMANDS, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES, RESERVED_ROWS } from './constants.js';
 import { groupTurns } from './transcript.js';
@@ -435,6 +436,19 @@ export function App({ agentLoop, wsServer }) {
       return !prev;
     }),
     'paste-image': () => handleSubmit('/paste-image'),
+
+    // ctrl+u and ctrl+w are what every readline prompt has bound for decades,
+    // and they have to come through this channel rather than useInput:
+    // ink-text-input types any key it does not recognise, so a ctrl+u handled
+    // there would clear the line and then put a "u" in it.
+    'clear-input': () => {
+      setInput('');
+      setHistoryIdx(-1);
+      setPaletteSuppressed(false);
+      // Attachments belong to the text that referenced them.
+      setPastes([]);
+    },
+    'delete-word': () => setInput((value) => value.replace(/\s*\S+\s*$/, '')),
   }, !diffRequest && !activeMenu);
 
   useKeyBindings({
@@ -675,9 +689,12 @@ export function App({ agentLoop, wsServer }) {
           </Text>
         </Box>
         <Box flexDirection="row" justifyContent="space-between" width="100%">
-          <Text dimColor>
-            ctrl+t terminal · ctrl+e {verbose ? 'collapse' : 'expand'} · shift+tab mode
-          </Text>
+          <KeyHints hints={[
+            ['^t', 'terminal'],
+            ['^e', verbose ? 'collapse' : 'expand'],
+            ['^u', 'clear'],
+            ['⇧⇥', 'mode'],
+          ]} />
           <Text dimColor>
             {runningTasks > 0 ? <Text color="yellow">{runningTasks} bg · </Text> : ''}
             {history.length}/50 ctx

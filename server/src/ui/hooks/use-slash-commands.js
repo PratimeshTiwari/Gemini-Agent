@@ -37,6 +37,8 @@ export async function handleSlashCommand(query, {
           '  [Tab]             - Complete a slash command, or return to the prompt',
           '  [Up/Down]         - Prompt history (or the list, on the GitHub tab)',
           '  [Ctrl+E]          - Expand/collapse every step and tool output',
+          '  [Ctrl+U]          - Clear the prompt (and any attachments on it)',
+          '  [Ctrl+W]          - Delete the word behind the cursor',
           '  [Ctrl+T]          - Toggle the Agent Terminal at the bottom of the screen',
           '  [Ctrl+O]          - Toggle between Agent Chat and GitHub PR Dashboard',
           '  [Shift+Tab]       - Cycle Plan <-> Auto mode',

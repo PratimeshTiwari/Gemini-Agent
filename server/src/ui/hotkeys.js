@@ -25,6 +25,8 @@ export const HOTKEYS = {
   '\x0f': 'tabs',         // ctrl+o — agent <-> GitHub
   '\x14': 'terminal',     // ctrl+t — the scratch shell
   '\x16': 'paste-image',  // ctrl+v — attach an image from the clipboard
+  '\x15': 'clear-input',  // ctrl+u — wipe the prompt, as readline has always done
+  '\x17': 'delete-word',  // ctrl+w — delete the word behind the cursor
 };
 
 const PASTE_START = '\x1b[200~';

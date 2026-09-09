@@ -3,6 +3,7 @@ import { Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { formatPollTime, oneLine } from '../format.js';
+import { KeyHints } from './KeyHints.jsx';
 
 /**
  * The GitHub PR dashboard (ctrl+o).
@@ -116,7 +117,7 @@ function TokenSetup({ agentLoop, wsServer, github }) {
           )}
       </Box>
       {error ? <Text color="red" wrap="wrap">❌ {error}</Text> : null}
-      <Text dimColor>ctrl+o returns to the agent.</Text>
+      <KeyHints hints={[['^o', 'back to the agent']]} />
     </Box>
   );
 }
@@ -141,7 +142,7 @@ function AvoidWords({ github, maxRows }) {
           onSubmit={addAvoidWord}
         />
       </Box>
-      <Text dimColor>enter adds · esc returns to the dashboard</Text>
+      <KeyHints hints={[['⏎', 'add'], ['esc', 'back to the dashboard']]} />
     </Box>
   );
 }
@@ -164,7 +165,7 @@ function PrExplorer({ github, maxRows }) {
     return (
       <Box flexDirection="column" marginTop={1}>
         <Text bold color="magenta" wrap="truncate">🧭 PR #{pr?.number} — {pr?.title}</Text>
-        <Text dimColor>enter dispatches to the agent · esc goes back</Text>
+        <KeyHints hints={[['⏎', 'send to the agent'], ['esc', 'back']]} />
         {loadingPrComments ? <Text dimColor><Spinner type="dots" /> Loading comments…</Text> : null}
         {!loadingPrComments && prComments.length === 0 ? <Text dimColor>No comments on this PR.</Text> : null}
         {view.items.map((c, i) => {
@@ -189,7 +190,7 @@ function PrExplorer({ github, maxRows }) {
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text bold color="magenta">🧭 PR explorer</Text>
-      <Text dimColor>↑↓ move · enter opens comments · esc back</Text>
+      <KeyHints hints={[['↑↓', 'move'], ['⏎', 'open comments'], ['esc', 'back']]} />
       {loadingPrs ? <Text dimColor><Spinner type="dots" /> Loading PRs…</Text> : null}
       {!loadingPrs && prList.length === 0 ? <Text dimColor>No open PRs found.</Text> : null}
       {view.items.map((pr, i) => {
@@ -265,7 +266,15 @@ function Activity({ agentLoop, github, maxRows }) {
       </Box>
 
       <Box marginTop={1}>
-        <Text dimColor wrap="wrap">↑↓ move · space expand · enter open plan · a avoid words · p PRs · r refresh · ctrl+o agent</Text>
+        <KeyHints hints={[
+          ['↑↓', 'move'],
+          ['space', 'expand'],
+          ['⏎', 'open plan'],
+          ['a', 'avoid words'],
+          ['p', 'PRs'],
+          ['r', 'refresh'],
+          ['^o', 'agent'],
+        ]} />
       </Box>
     </Box>
   );
