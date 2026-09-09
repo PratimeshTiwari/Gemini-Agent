@@ -111,7 +111,10 @@ export class PromptBuilder {
       if (objective && objective.trim() !== userMessage.trim()) {
         contextLine += ` [Objective: ${objective.substring(0, 100)}]`;
       }
-      parts.push(contextLine);
+      // The anchor goes on the same line as the workspace: one short bracketed
+      // context line, not two competing headers.
+      const anchor = this._buildToolAnchor(topology, modelConfig);
+      parts.push(anchor ? `${contextLine} ${anchor}` : contextLine);
     }
 
     // Current user message. Nothing follows it: the last thing the model reads
@@ -154,8 +157,13 @@ export class PromptBuilder {
    * @param {Array<{name: string, result: any}>} results
    */
   buildToolResultBatch(results = []) {
-    const body = results.map(({ name, result }) => [
-      `<result tool="${name}">`,
+    const failures = results.filter((r) => r.failed);
+
+    const body = results.map(({ name, result, failed }) => [
+      // `status="failed"` is the point: a non-zero exit code inside minified
+      // JSON is easy to skim past, and the model would summarise a failed
+      // command back to the user as though it had worked.
+      failed ? `<result tool="${name}" status="failed">` : `<result tool="${name}">`,
       // Minified, not pretty-printed. Every tool result goes into the prompt,
       // and indentation is the single largest avoidable cost there — a plain
       // list_directory result is 40% smaller without it. The model does not
@@ -164,13 +172,24 @@ export class PromptBuilder {
       `</result>`,
     ].join('\n'));
 
+    const instruction = failures.length > 0
+      // Fix, do not narrate. Left to itself the model reports the error back to
+      // the user and stops, which wastes the one thing it has that the user
+      // does not: the ability to read the output and try the next thing.
+      ? `${failures.length === 1 ? 'That call' : `${failures.length} of those calls`} failed. `
+        + 'Read the error above, work out the cause, and fix it yourself — run the diagnostic '
+        + 'you need, correct the file, or try the next approach. Only stop and tell the user if '
+        + 'the fix needs a decision that is theirs to make, or if you have already tried and it '
+        + 'failed the same way. Reply once, with either the next tool call or your final answer.'
+      : 'Reply once, with exactly one of: the next tool call, or your final answer to the '
+        + 'user. To change a file, use edit_file or create_file — do not paste code at them.';
+
     return [
       '<tool_results>',
       ...body,
       '</tool_results>',
       '',
-      'Reply once, with exactly one of: the next tool call, or your final answer to the '
-      + 'user. To change a file, use edit_file or create_file — do not paste code at them.',
+      instruction,
     ].join('\n');
   }
 
@@ -911,6 +930,31 @@ Parameters:
    * Derived from the full definitions rather than a second hand-kept list, so the
    * two cannot drift. The chat thread still holds the real schemas from turn 0.
    */
+  /**
+   * The one line that rides on *every* turn.
+   *
+   * Tool names only, no schemas: 56 tokens against 1,575 for the full
+   * definitions. It exists because the model does not gradually forget its
+   * tools, it forgets them completely — mid-session it will answer "I cannot
+   * execute local commands or access your local file system" with total
+   * confidence, and the turn is lost. Detecting that afterwards is guesswork
+   * over prose; keeping a name list in front of it is not.
+   *
+   * Names are fixed for a given topology, so this is computed once.
+   */
+  _buildToolAnchor(topology = 'single', modelConfig = {}) {
+    const key = `${topology}:${modelConfig.reviewer || ''}:${modelConfig.reasoner || ''}`;
+    if (this._anchorCache?.key === key) return this._anchorCache.value;
+
+    const defs = this._buildToolDefinitions(topology, modelConfig);
+    const names = [...defs.matchAll(/^## ([a-z_]+)/gm)].map((m) => m[1]);
+    const value = names.length
+      ? `[tools: ${names.join(' ')}]`
+      : '';
+    this._anchorCache = { key, value };
+    return value;
+  }
+
   _buildToolIndex(topology = 'single', modelConfig = {}) {
     const defs = this._buildToolDefinitions(topology, modelConfig);
     const names = [...defs.matchAll(/^## ([a-z_]+)/gm)].map(m => m[1]);

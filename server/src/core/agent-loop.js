@@ -10,6 +10,22 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { looksLikeMultipleDrafts, looksLikeCapabilityDenial } from './drift-detector.js';
+
+/**
+ * How many consecutive rounds may end with a failing tool call before the loop
+ * stops and asks. Four is enough for "run it, read the error, fix it, run it
+ * again" and short enough that a genuinely stuck command does not burn a
+ * session.
+ */
+const MAX_FAILED_ROUNDS = 4;
+
+/** The first useful line of a failed tool result, for the give-up message. */
+function oneLineError(result) {
+  if (typeof result === 'string') return result.split('\n')[0].slice(0, 160);
+  const text = result?.stderr || result?.error || result?.stdout || '';
+  const line = String(text).split('\n').find((l) => l.trim()) || 'no output';
+  return line.slice(0, 160);
+}
 import * as paths from './paths.js';
 import { resolveWorkspaceInput, validateWorkspace, rememberWorkspace } from './workspaces.js';
 import { z } from 'zod';
@@ -148,6 +164,8 @@ export class AgentLoop {
       this.currentObjective = content;
       // One tool-amnesia retry per user turn; see handleGeminiResponse.
       this._deniedToolsOnce = false;
+      // Auto-heal budget, per user turn.
+      this._failedRounds = 0;
 
       // Build the full prompt
       const prompt = this.promptBuilder.buildPrompt({
@@ -1096,6 +1114,11 @@ export class AgentLoop {
         call_id: call.id || randomUUID(),
         name: call.name,
         result: truncatedResult,
+        // Carried through so the result envelope can say plainly that this one
+        // failed. A non-zero exit buried in minified JSON is easy for the model
+        // to skim past and summarise as if it had worked.
+        failed: result.success === false
+          || (typeof result.result?.exitCode === 'number' && result.result.exitCode !== 0),
       };
 
       const callTurn = {
@@ -1186,6 +1209,44 @@ export class AgentLoop {
       }
     }
     await Promise.all(executionPromises);
+
+    // Auto-healing has to be bounded, or a command that cannot succeed — a
+    // missing binary, a service that is down, a permission the user has to
+    // grant — turns into the model retrying variations of it until the token
+    // budget is gone. Consecutive *failing* rounds are the thing to count:
+    // progress resets it, so a long run that keeps succeeding never trips.
+    const anyFailed = toolResults.some((r) => r?.failed);
+    this._failedRounds = anyFailed ? (this._failedRounds || 0) + 1 : 0;
+
+    if (this._failedRounds >= MAX_FAILED_ROUNDS) {
+      this._failedRounds = 0;
+      const summary = toolResults
+        .filter((r) => r?.failed)
+        .map((r) => `  • ${r.name}: ${oneLineError(r.result)}`)
+        .join('\n');
+
+      const stopTurn = {
+        role: 'assistant',
+        isLocal: true,
+        content: `🛑 Stopped after ${MAX_FAILED_ROUNDS} rounds of failing commands — `
+          + 'this needs you rather than another attempt.\n\n'
+          + `${summary}\n\n`
+          + 'Tell me what to try next, or fix the underlying problem and say "retry".',
+        timestamp: Date.now(),
+      };
+      this.conversationHistory.push(stopTurn);
+      this.sessionStore.appendTurn(stopTurn);
+
+      this.isProcessing = false;
+      this.callbacks.sendToPanel({
+        id: randomUUID(),
+        type: 'agent_response',
+        payload: { content: stopTurn.content },
+        timestamp: Date.now(),
+      });
+      this._releaseExtension();
+      return;
+    }
 
     // Send tool results back to Gemini for continuation. One message, however
     // many results it carries — the refresh cadence counts messages pushed to
