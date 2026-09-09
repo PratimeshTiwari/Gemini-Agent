@@ -165,5 +165,3 @@ export function renderMarkdown(content) {
   RENDER_CACHE.set(source, out);
   return out;
 }
-
-export { marked };

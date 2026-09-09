@@ -19,74 +19,14 @@ import { formatPollTime, oneLine } from '../format.js';
  *
  * Navigation lives in the key bindings; this only draws.
  */
-export function GithubTab({
-  agentLoop,
-  wsServer,
-  avoidWords,
-  setAvoidWords,
-  newAvoidWord,
-  setNewAvoidWord,
-  githubSetupToken,
-  setGithubSetupToken,
-  githubError,
-  setGithubError,
-  githubView,
-  expandedComments,
-  explorerMode,
-  githubActivity,
-  loadingPrs,
-  loadingPrComments,
-  prList,
-  prComments,
-  selectedPlanId,
-  selectedPrIdx,
-  selectedPrCommentIdx,
-  maxRows,
-}) {
+export function GithubTab({ agentLoop, wsServer, github, maxRows }) {
   const body = !agentLoop.githubHandler
-    ? (
-      <TokenSetup
-        agentLoop={agentLoop}
-        wsServer={wsServer}
-        token={githubSetupToken}
-        setToken={setGithubSetupToken}
-        error={githubError}
-        setError={setGithubError}
-      />
-    )
-    : githubView === 'avoid_words'
-      ? (
-        <AvoidWords
-          agentLoop={agentLoop}
-          avoidWords={avoidWords}
-          setAvoidWords={setAvoidWords}
-          newAvoidWord={newAvoidWord}
-          setNewAvoidWord={setNewAvoidWord}
-          maxRows={maxRows}
-        />
-      )
-      : githubView === 'pr_explorer'
-        ? (
-          <PrExplorer
-            explorerMode={explorerMode}
-            loadingPrs={loadingPrs}
-            loadingPrComments={loadingPrComments}
-            prList={prList}
-            prComments={prComments}
-            selectedPrIdx={selectedPrIdx}
-            selectedPrCommentIdx={selectedPrCommentIdx}
-            maxRows={maxRows}
-          />
-        )
-        : (
-          <Activity
-            agentLoop={agentLoop}
-            githubActivity={githubActivity}
-            selectedPlanId={selectedPlanId}
-            expandedComments={expandedComments}
-            maxRows={maxRows}
-          />
-        );
+    ? <TokenSetup agentLoop={agentLoop} wsServer={wsServer} github={github} />
+    : github.view === 'avoid_words'
+      ? <AvoidWords github={github} maxRows={maxRows} />
+      : github.view === 'pr_explorer'
+        ? <PrExplorer github={github} maxRows={maxRows} />
+        : <Activity agentLoop={agentLoop} github={github} maxRows={maxRows} />;
 
   return (
     <Box flexDirection="column" borderStyle="single" borderColor="cyan" paddingX={1} width="100%">
@@ -96,7 +36,8 @@ export function GithubTab({
   );
 }
 
-function TokenSetup({ agentLoop, wsServer, token, setToken, error, setError }) {
+function TokenSetup({ agentLoop, wsServer, github }) {
+  const { setupToken: token, setSetupToken: setToken, error, setError } = github;
   const [busy, setBusy] = React.useState(false);
 
   const submit = async (val) => {
@@ -175,7 +116,8 @@ function TokenSetup({ agentLoop, wsServer, token, setToken, error, setError }) {
   );
 }
 
-function AvoidWords({ agentLoop, avoidWords, setAvoidWords, newAvoidWord, setNewAvoidWord, maxRows }) {
+function AvoidWords({ github, maxRows }) {
+  const { avoidWords, newAvoidWord, setNewAvoidWord, addAvoidWord } = github;
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text bold color="yellow">🚫 Avoid words</Text>
@@ -191,18 +133,7 @@ function AvoidWords({ agentLoop, avoidWords, setAvoidWords, newAvoidWord, setNew
           focus
           value={newAvoidWord}
           onChange={setNewAvoidWord}
-          onSubmit={(val) => {
-            if (!val.trim()) return;
-            const updated = [...avoidWords, val.trim()];
-            setAvoidWords(updated);
-            setNewAvoidWord('');
-            if (agentLoop.githubHandler) {
-              agentLoop.githubHandler.config.avoidWords = updated;
-              agentLoop.modelConfig = agentLoop.modelConfig || {};
-              agentLoop.modelConfig.githubAvoidWords = updated;
-              agentLoop._saveConfig();
-            }
-          }}
+          onSubmit={addAvoidWord}
         />
       </Box>
       <Text dimColor>enter adds · esc returns to the dashboard</Text>
@@ -210,10 +141,11 @@ function AvoidWords({ agentLoop, avoidWords, setAvoidWords, newAvoidWord, setNew
   );
 }
 
-function PrExplorer({
-  explorerMode, loadingPrs, loadingPrComments, prList, prComments,
-  selectedPrIdx, selectedPrCommentIdx, maxRows,
-}) {
+function PrExplorer({ github, maxRows }) {
+  const {
+    explorerMode, loadingPrs, loadingPrComments, prList, prComments,
+    selectedPrIdx, selectedPrCommentIdx,
+  } = github;
   // Keep the selected row on screen without letting the list grow the frame.
   const window = Math.max(3, maxRows - 6);
   const slice = (items, selected) => {
@@ -267,10 +199,11 @@ function PrExplorer({
   );
 }
 
-function Activity({ agentLoop, githubActivity, selectedPlanId, expandedComments, maxRows }) {
+function Activity({ agentLoop, github, maxRows }) {
+  const { activity, selectedPlanId, expandedComments } = github;
   const status = agentLoop.githubHandler?.getStatus?.() || {};
   const watched = status.prsWatched || 0;
-  const recent = githubActivity.slice().reverse().slice(0, Math.max(1, Math.floor((maxRows - 6) / 2)));
+  const recent = activity.slice().reverse().slice(0, Math.max(1, Math.floor((maxRows - 6) / 2)));
 
   return (
     <Box flexDirection="column" marginTop={1}>

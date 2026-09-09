@@ -8,9 +8,12 @@ import { TranscriptTurn } from './components/TranscriptTurn.jsx';
 import { AgentTerminal } from './components/AgentTerminal.jsx';
 import { InputBar } from './components/InputBar.jsx';
 import { clampForDisplay } from './format.js';
-import { SLASH_COMMANDS, FOCUS_INPUT, THINKING_MESSAGES, RESERVED_ROWS } from './constants.js';
+import { SLASH_COMMANDS, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES, RESERVED_ROWS } from './constants.js';
 import { groupTurns } from './transcript.js';
+import { expandPastes } from './paste.js';
 import { useKeyBindings } from './hooks/use-key-bindings.js';
+import { useHotkeys } from './hooks/use-hotkeys.js';
+import { useGithubTab } from './hooks/use-github-tab.js';
 import { handleSlashCommand } from './hooks/use-slash-commands.js';
 import { buildAgentCallbacks } from './hooks/use-agent-callbacks.js';
 import fs from 'fs';
@@ -116,7 +119,6 @@ export function App({ agentLoop, wsServer }) {
   const [elapsed, setElapsed] = useState(0);
   const [slashIdx, setSlashIdx] = useState(0);
   const [mode, setMode] = useState(agentLoop.mode || 'plan');
-  const [expandedComments, setExpandedComments] = useState(new Set());
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalInput, setTerminalInput] = useState('');
   const [pendingImage, setPendingImage] = useState(null);
@@ -124,6 +126,11 @@ export function App({ agentLoop, wsServer }) {
   const [planReviewReady, setPlanReviewReady] = useState(false);
   const [walkthroughReady, setWalkthroughReady] = useState(false);
   const [artifacts, setArtifacts] = useState({ task: null, walkthrough: null });
+  // Pasted blocks, kept out of the prompt as markers. See ui/paste.js.
+  const [pastes, setPastes] = useState([]);
+  const addPaste = React.useCallback((paste) => {
+    setPastes((prev) => [...prev, paste].slice(-20));
+  }, []);
   const [inputHistory, setInputHistory] = useState([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   // Set while the input line holds a recalled history entry rather than typing.
@@ -132,18 +139,9 @@ export function App({ agentLoop, wsServer }) {
   // deferred submit. A ref because the two run in the same event dispatch.
   const newlineRef = useRef(false);
   const [activeTab, setActiveTab] = useState('agent'); // 'agent' | 'github'
-  const [githubActivity, setGithubActivity] = useState([]);
-  const [selectedPlanId, setSelectedPlanId] = useState(null);
-  const [hasNewGitHubEvent, setHasNewGitHubEvent] = useState(false);
-  const [githubView, setGithubView] = useState('activity');
-  const [githubError, setGithubError] = useState('');
-  const [prList, setPrList] = useState([]);
-  const [selectedPrIdx, setSelectedPrIdx] = useState(0);
-  const [prComments, setPrComments] = useState([]);
-  const [selectedPrCommentIdx, setSelectedPrCommentIdx] = useState(0);
-  const [explorerMode, setExplorerMode] = useState('prs');
-  const [loadingPrs, setLoadingPrs] = useState(false);
-  const [loadingPrComments, setLoadingPrComments] = useState(false);
+  // The whole GitHub screen — state, polling and actions — lives in its own
+  // hook. See hooks/use-github-tab.js for why.
+  const github = useGithubTab({ agentLoop, wsServer, activeTab });
 
   const { stdout } = useStdout();
 
@@ -211,10 +209,6 @@ export function App({ agentLoop, wsServer }) {
     stdout.on('resize', onResize);
     return () => stdout.off('resize', onResize);
   }, [stdout]);
-
-  const [avoidWords, setAvoidWords] = useState(agentLoop.githubHandler?.config?.avoidWords || []);
-  const [newAvoidWord, setNewAvoidWord] = useState('');
-  const [githubSetupToken, setGithubSetupToken] = useState('');
 
   const turns = groupTurns(history);
 
@@ -310,22 +304,6 @@ export function App({ agentLoop, wsServer }) {
     return () => clearInterval(updateInterval);
   }, [agentLoop]);
 
-  // Poll GitHub Activity
-  useEffect(() => {
-    const updateInterval = setInterval(() => {
-      if (wsServer) {
-        const notifications = wsServer.getGitHubNotifications();
-        if (notifications.length > 0) {
-          setGithubActivity(prev => [...prev, ...notifications].slice(-50)); // keep last 50
-          if (activeTab !== 'github') {
-            setHasNewGitHubEvent(true);
-          }
-        }
-      }
-    }, 1000);
-    return () => clearInterval(updateInterval);
-  }, [wsServer, activeTab]);
-
   const handleSubmit = async (query) => {
     if (!query.trim()) return;
     setInputHistory(prev => [...prev, query]);
@@ -376,9 +354,12 @@ export function App({ agentLoop, wsServer }) {
       return;
     }
 
-    let messageContent = query;
+    // The prompt carries markers; the model gets what was actually pasted. The
+    // transcript keeps the marker form, so a 500-line paste never becomes a
+    // 500-row user message in the live frame.
+    let messageContent = expandPastes(query, pastes);
     if (pendingImage) {
-      messageContent = `[Image attached: ${pendingImage.path} (${pendingImage.sizeKB}KB, ${pendingImage.mime})]\n\n<image_data>\ndata:${pendingImage.mime};base64,${pendingImage.base64}\n</image_data>\n\n${query}`;
+      messageContent = `[Image attached: ${pendingImage.path} (${pendingImage.sizeKB}KB, ${pendingImage.mime})]\n\n<image_data>\ndata:${pendingImage.mime};base64,${pendingImage.base64}\n</image_data>\n\n${messageContent}`;
       setPendingImage(null);
     }
 
@@ -409,48 +390,46 @@ export function App({ agentLoop, wsServer }) {
     setDiffRequest(null);
   };
 
+  // The ctrl+ chords never reach Ink — see ui/hotkeys.js. They are inert while a
+  // diff or a menu is up, so nothing can act behind a question the user has not
+  // answered yet.
+  useHotkeys({
+    expand: toggleVerbose,
+    tabs: () => setActiveTab((prev) => {
+      const next = prev === 'agent' ? 'github' : 'agent';
+      if (next === 'github') github.clearNewEvent();
+      return next;
+    }),
+    terminal: () => setTerminalOpen((prev) => {
+      setFocus(prev ? FOCUS_INPUT : FOCUS_TERMINAL);
+      return !prev;
+    }),
+    'paste-image': () => handleSubmit('/paste-image'),
+  }, !diffRequest && !activeMenu);
+
   useKeyBindings({
     activeMenu,
     activeTab,
     agentLoop,
     cycleMode,
     diffRequest,
-    explorerMode,
     focus,
-    githubActivity,
-    githubView,
+    github,
     handleSubmit,
     historyIdx,
-    setPaletteSuppressed,
     inputHistory,
     isProcessing,
     newlineRef,
-    prComments,
-    prList,
-    selectedPlanId,
-    selectedPrCommentIdx,
-    selectedPrIdx,
     setActiveTab,
-    setExpandedComments,
-    setExplorerMode,
-    setFocus,
-    setGithubView,
-    setHasNewGitHubEvent,
     setHistoryIdx,
     setInput,
-    setLoadingPrComments,
-    setLoadingPrs,
-    setPrComments,
-    setPrList,
-    setSelectedPlanId,
-    setSelectedPrCommentIdx,
-    setSelectedPrIdx,
+    setPaletteSuppressed,
     setSlashIdx,
     setTerminalOpen,
+    setFocus,
     slashMatches,
     slashOpen,
     slashSelected,
-    toggleVerbose,
   });
 
   useEffect(() => {
@@ -496,29 +475,9 @@ export function App({ agentLoop, wsServer }) {
     <Box flexDirection="column" width="100%" overflow="hidden">
       {activeTab === 'github' ? (
         <GithubTab
-          activeTab={activeTab}
           agentLoop={agentLoop}
           wsServer={wsServer}
-          avoidWords={avoidWords}
-          setAvoidWords={setAvoidWords}
-          newAvoidWord={newAvoidWord}
-          setNewAvoidWord={setNewAvoidWord}
-          githubSetupToken={githubSetupToken}
-          setGithubSetupToken={setGithubSetupToken}
-          githubError={githubError}
-          setGithubError={setGithubError}
-          githubView={githubView}
-          expandedComments={expandedComments}
-          explorerMode={explorerMode}
-          githubActivity={githubActivity}
-          loadingPrs={loadingPrs}
-          loadingPrComments={loadingPrComments}
-          prList={prList}
-          prComments={prComments}
-          selectedPlanId={selectedPlanId}
-          selectedPrIdx={selectedPrIdx}
-          selectedPrCommentIdx={selectedPrCommentIdx}
-          setSelectedPlanId={setSelectedPlanId}
+          github={github}
           maxRows={Math.max(6, terminalHeight - 8)}
         />
       ) : (
@@ -593,6 +552,8 @@ export function App({ agentLoop, wsServer }) {
             isProcessing={isProcessing}
             isThinkingTooLong={isThinkingTooLong}
             isToolRunningRef={isToolRunningRef}
+            addPaste={addPaste}
+            pastes={pastes}
             mode={mode}
             newlineRef={newlineRef}
             setInput={setInput}
@@ -642,7 +603,7 @@ export function App({ agentLoop, wsServer }) {
                 {isProcessing
                   ? <Text color="yellow"><Spinner type="dots" /> Agent</Text>
                   : <Text color={extensionConnected ? 'cyan' : 'yellow'} bold>{extensionConnected ? '🟢' : '🟡'} Agent</Text>}
-                <Text dimColor> │ GitHub {hasNewGitHubEvent ? '🔴 ' : ''}(ctrl+o)</Text>
+                <Text dimColor> │ GitHub {github.hasNewEvent ? '🔴 ' : ''}(ctrl+o)</Text>
               </>
             ) : (
               <>

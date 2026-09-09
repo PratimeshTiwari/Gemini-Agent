@@ -1,8 +1,9 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, usePaste } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { FOCUS_INPUT } from '../constants.js';
+import { applyPaste } from '../paste.js';
 
 /** First `n` non-empty lines of an artifact, for the one-glance summary. */
 function head(text, n) {
@@ -26,6 +27,7 @@ function head(text, n) {
  */
 export function InputBar({
   activeMenu,
+  addPaste,
   artifacts,
   diffRequest,
   setPaletteSuppressed,
@@ -47,10 +49,24 @@ export function InputBar({
   status,
   syncTokenEstimate,
   terminalOpen,
+  pastes,
   thinkingText,
   verbose,
 }) {
   const hasArtifacts = Boolean(artifacts?.task || artifacts?.walkthrough);
+  const promptVisible = !diffRequest && !terminalOpen && !activeMenu;
+
+  // Bracketed paste, which this hook turns on, is what separates "the user
+  // pasted forty lines" from "the user typed forty lines very fast". Ink routes
+  // the text here instead of through useInput, so a paste can never be
+  // misparsed as keystrokes — and a big one is folded to a marker rather than
+  // rendered at full height into a frame that must stay short.
+  usePaste((text) => {
+    const { value, paste } = applyPaste(input, text, pastes.length + 1);
+    setInput(value);
+    setPaletteSuppressed(true);
+    if (paste) addPaste(paste);
+  }, { isActive: promptVisible && focus === FOCUS_INPUT });
 
   return (
     <>
@@ -70,7 +86,7 @@ export function InputBar({
         </Box>
       )}
 
-      {!diffRequest && !terminalOpen && !activeMenu && (
+      {promptVisible && (
         <Box flexDirection="column">
           {hasArtifacts && !isProcessing && (
             <Box flexDirection="column" marginBottom={1}>
@@ -146,6 +162,12 @@ export function InputBar({
           <Box paddingX={1}>
             <Text color={mode === 'auto' ? 'green' : 'yellow'}>
               ▶▶ {mode} mode on <Text dimColor>(shift+tab to cycle)</Text>
+              {pastes.length > 0 && (
+                <Text dimColor>
+                  {'  · '}{pastes.length} paste{pastes.length === 1 ? '' : 's'} attached
+                  {' — delete the marker to drop one'}
+                </Text>
+              )}
             </Text>
           </Box>
         </Box>

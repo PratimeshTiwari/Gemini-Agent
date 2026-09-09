@@ -2,6 +2,7 @@ import React from 'react';
 import { render } from 'ink';
 import { PassThrough } from 'node:stream';
 import { splitTrailingEnter } from './enter-splitter.js';
+import { extractHotkeys, hotkeys } from './hotkeys.js';
 import { App } from './App.jsx';
 
 /**
@@ -54,10 +55,21 @@ export class CliUI {
     }
 
     const inkStdin = createInkStdin();
+    let pasteState = { inPaste: false };
+
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (chunk) => {
-      const [text, enter] = splitTrailingEnter(String(chunk));
-      inkStdin.write(text);
+      // Application chords come out first and are dispatched on the side. They
+      // must never reach Ink: `ink-text-input` types any key it does not
+      // recognise straight into the prompt, so ctrl+e used to leave an "e"
+      // behind on its way to toggling the transcript.
+      const stripped = extractHotkeys(String(chunk), pasteState);
+      pasteState = stripped.state;
+      for (const name of stripped.hotkeys) hotkeys.emit(name);
+      if (!stripped.text) return;
+
+      const [text, enter] = splitTrailingEnter(stripped.text);
+      if (text) inkStdin.write(text);
       // Deferred, not written back to back: Ink's read() drains everything
       // buffered at once, so two immediate writes would arrive as the single
       // chunk this is here to take apart.

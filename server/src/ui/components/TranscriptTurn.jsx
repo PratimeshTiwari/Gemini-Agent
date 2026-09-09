@@ -5,6 +5,22 @@ import { renderMarkdown, oneLine, summarizeResult, clampForDisplay } from '../fo
 import { parseTurnActions } from '../transcript.js';
 
 /**
+ * The user's own message, shortened to fit.
+ *
+ * A prompt is normally one line, but it can carry an expanded paste or a long
+ * Shift+Enter block, and while the turn is live that text is inside Ink's
+ * repainted frame — where going over the viewport costs the scrollback. It is
+ * clamped once settled too, just less hard: nobody needs to re-read four
+ * hundred lines they pasted themselves.
+ */
+function userMessageText(content, isLive) {
+  const max = isLive ? 3 : 12;
+  const lines = String(content ?? '').split('\n');
+  if (lines.length <= max) return content;
+  return `${lines.slice(0, max).join('\n')}\n… +${lines.length - max} more lines`;
+}
+
+/**
  * One turn of the transcript: the user's message, the action rows, and the
  * agent's reply.
  *
@@ -35,7 +51,9 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget }) {
     <Box flexDirection="column" marginBottom={1} width="100%">
       {turn.userMsg && (
         <Box marginBottom={1} width="100%">
-          <Text bold wrap="wrap"><Text color="white">❯</Text> {turn.userMsg.content}</Text>
+          <Text bold wrap="wrap">
+            <Text color="white">❯</Text> {userMessageText(turn.userMsg.content, isLive)}
+          </Text>
         </Box>
       )}
 

@@ -1,6 +1,6 @@
 import { useInput } from 'ink';
-import { exec } from 'child_process';
 import { FOCUS_INPUT, FOCUS_TERMINAL } from '../constants.js';
+import { handleGithubKey } from './use-github-keys.js';
 
 /**
  * Every keystroke the app answers outside a text field.
@@ -18,6 +18,11 @@ import { FOCUS_INPUT, FOCUS_TERMINAL } from '../constants.js';
  * claims its own letters before the agent hotkeys see them, and shift+tab is
  * checked ahead of plain tab, which would otherwise eat it.
  *
+ * The ctrl+ chords are NOT here. They are pulled off stdin in `cli-ui.jsx` and
+ * dispatched through `use-hotkeys.js`, because `ink-text-input` types every key
+ * it does not recognise into the field and Ink offers no way to stop a handler
+ * from running — so a ctrl+e handled here still left an "e" in the prompt.
+ *
  * There is no selection model in the transcript and no mouse. Steps open with
  * ctrl+e, which toggles the whole transcript at once — Ink can never repaint
  * what <Static> has already committed, so App reprints it instead.
@@ -28,42 +33,23 @@ export function useKeyBindings({
   agentLoop,
   cycleMode,
   diffRequest,
-  explorerMode,
   focus,
-  githubActivity,
-  githubView,
+  github,
   handleSubmit,
   historyIdx,
   inputHistory,
   isProcessing,
   newlineRef,
-  prComments,
-  prList,
-  selectedPlanId,
-  selectedPrCommentIdx,
-  selectedPrIdx,
   setActiveTab,
-  setExpandedComments,
-  setExplorerMode,
   setFocus,
-  setGithubView,
-  setHasNewGitHubEvent,
   setHistoryIdx,
   setInput,
-  setLoadingPrComments,
-  setLoadingPrs,
   setPaletteSuppressed,
-  setPrComments,
-  setPrList,
-  setSelectedPlanId,
-  setSelectedPrCommentIdx,
-  setSelectedPrIdx,
   setSlashIdx,
   setTerminalOpen,
   slashMatches,
   slashOpen,
   slashSelected,
-  toggleVerbose,
 }) {
   useInput((char, key) => {
     // Deliberately inert while a modal owns the screen: diffs and menus are
@@ -82,154 +68,8 @@ export function useKeyBindings({
       return;
     }
 
-    // Toggle tabs (ctrl+o)
-    if (key.ctrl && char === 'o') {
-      setActiveTab(prev => {
-        const next = prev === 'agent' ? 'github' : 'agent';
-        if (next === 'github') setHasNewGitHubEvent(false);
-        return next;
-      });
-      return;
-    }
-
     if (activeTab === 'github') {
-      // The setup screen and the avoid-words editor both own a text field.
-      // Letters are theirs while one of those is up, not the dashboard's.
-      const typingOnTab = !agentLoop.githubHandler || githubView === 'avoid_words';
-
-      if (key.escape) {
-        if (githubView === 'pr_explorer' && explorerMode === 'comments') {
-          setExplorerMode('prs');
-          return;
-        }
-        if (githubView !== 'activity') {
-          setGithubView('activity');
-          return;
-        }
-        setActiveTab('agent');
-        return;
-      }
-
-      if (typingOnTab) return;
-
-      if (char === 'r' || char === 'R') {
-        handleSubmit('/github refresh');
-        return;
-      }
-
-      if (char === 'a' || char === 'A') {
-        setGithubView(prev => (prev === 'avoid_words' ? 'activity' : 'avoid_words'));
-        return;
-      }
-
-      if (char === 'p' || char === 'P') {
-        const willOpen = githubView !== 'pr_explorer';
-        setGithubView(willOpen ? 'pr_explorer' : 'activity');
-        if (willOpen) {
-          setLoadingPrs(true);
-          setExplorerMode('prs');
-          try {
-            if (agentLoop?.githubHandler?.fetchAllOpenPRs) {
-              agentLoop.githubHandler.fetchAllOpenPRs()
-                .then(prs => {
-                  setPrList(prs || []);
-                  setSelectedPrIdx(0);
-                })
-                .catch(() => setPrList([]))
-                .finally(() => setLoadingPrs(false));
-            } else {
-              setLoadingPrs(false);
-            }
-          } catch (err) {
-            setLoadingPrs(false);
-          }
-        }
-        return;
-      }
-
-      if (githubView === 'pr_explorer') {
-        if (explorerMode === 'prs') {
-          if (key.upArrow) setSelectedPrIdx(prev => Math.max(0, prev - 1));
-          if (key.downArrow) setSelectedPrIdx(prev => Math.min(prList.length - 1, prev + 1));
-          if (key.return && prList.length > 0) {
-            const pr = prList[selectedPrIdx];
-            if (pr && agentLoop?.githubHandler?.poller) {
-              setLoadingPrComments(true);
-              setPrComments([]);
-              setExplorerMode('comments');
-              setSelectedPrCommentIdx(0);
-              agentLoop.githubHandler.poller.fetchAllComments(pr)
-                .then(comments => setPrComments(comments || []))
-                .catch(() => setPrComments([]))
-                .finally(() => setLoadingPrComments(false));
-            }
-          }
-        } else if (explorerMode === 'comments') {
-          if (key.upArrow) setSelectedPrCommentIdx(prev => Math.max(0, prev - 1));
-          if (key.downArrow) setSelectedPrCommentIdx(prev => Math.min(prComments.length - 1, prev + 1));
-          if (key.return && prComments.length > 0) {
-            const pr = prList[selectedPrIdx];
-            const comment = prComments[selectedPrCommentIdx];
-            if (agentLoop?.githubHandler?.forceAnalyzeComment && pr && comment) {
-              // Show feedback immediately, run analysis in background
-              setGithubView('activity');
-              agentLoop.githubHandler.forceAnalyzeComment(pr, comment).catch(() => {});
-            } else {
-              setGithubView('activity');
-            }
-          }
-        }
-        return;
-      }
-
-      const visiblePlans = githubActivity.slice().reverse().filter(a => a.type === 'github_plan_generated').slice(0, 10);
-      let currentIdx = visiblePlans.findIndex(p => p.id === selectedPlanId);
-      if (currentIdx === -1 && visiblePlans.length > 0) currentIdx = 0;
-
-      if (key.upArrow) {
-        if (visiblePlans.length > 0) setSelectedPlanId(visiblePlans[Math.max(0, currentIdx - 1)].id);
-        return;
-      }
-      if (key.downArrow) {
-        if (visiblePlans.length > 0) {
-          setSelectedPlanId(visiblePlans[Math.min(visiblePlans.length - 1, currentIdx + 1)].id);
-        }
-        return;
-      }
-      if (key.return) {
-        const item = visiblePlans[currentIdx];
-        if (item && item.payload?.filePath) {
-          try {
-            exec(`"${agentLoop.editor || 'code'}" "${item.payload.filePath}" || open "${item.payload.filePath}" || xdg-open "${item.payload.filePath}"`);
-          } catch (e) {}
-        }
-        return;
-      }
-      if (char === ' ') {
-        const item = visiblePlans[currentIdx];
-        if (item) {
-          setExpandedComments(prev => {
-            const next = new Set(prev);
-            if (next.has(item.id)) next.delete(item.id);
-            else next.add(item.id);
-            return next;
-          });
-        }
-        return;
-      }
-      return; // Skip agent tab hotkeys when on the github tab
-    }
-
-    // Ctrl+V for paste-image
-    if (key.ctrl && char === 'v') {
-      handleSubmit('/paste-image');
-      return;
-    }
-
-    // Expand or collapse every step in the transcript (ctrl+e). App reprints
-    // the transcript so committed turns pick up the new setting too.
-    if (key.ctrl && char === 'e') {
-      toggleVerbose();
+      handleGithubKey(char, key, { github, agentLoop, handleSubmit, setActiveTab });
       return;
     }
 
@@ -237,15 +77,6 @@ export function useKeyBindings({
     // which would otherwise swallow it.
     if (key.tab && key.shift) {
       cycleMode();
-      return;
-    }
-
-    // Agent terminal (ctrl+t)
-    if (key.ctrl && char === 't') {
-      setTerminalOpen(prev => {
-        setFocus(prev ? FOCUS_INPUT : FOCUS_TERMINAL);
-        return !prev;
-      });
       return;
     }
 

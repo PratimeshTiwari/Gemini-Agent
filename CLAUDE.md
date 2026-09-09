@@ -67,11 +67,14 @@ server/src/
 ├── mcp/              # mcp-server.js + tools/
 ├── skills/  storage/  watcher/
 └── ui/               # the terminal front-end
-    ├── cli-ui.jsx    # render(): stdin shim + the trailing-Enter split
+    ├── cli-ui.jsx    # render(): stdin shim, hotkey routing, trailing-Enter split
     ├── App.jsx       # state, effects, layout — everything else is a module
+    ├── hotkeys.js    # ctrl+ chords, pulled off stdin before Ink sees them
     ├── enter-splitter.js  # peels a trailing \r off a chunk so Enter is a keypress
+    ├── paste.js      # collapses a big paste to a marker; expands it on submit
     ├── format.js  constants.js  transcript.js     # pure, tested
-    ├── hooks/        # use-key-bindings, use-slash-commands, use-agent-callbacks
+    ├── hooks/        # use-key-bindings, use-hotkeys, use-github-tab,
+    │                 #   use-github-keys, use-slash-commands, use-agent-callbacks
     └── components/   # Banner, TranscriptTurn, GithubTab, Menus, InputBar,
                       #   AgentTerminal, QuestionPrompt
 ```
@@ -224,6 +227,19 @@ not limitations to route around:
   cannot repaint what `<Static>` has committed, so `toggleVerbose` clears the screen and lets
   Static print the transcript again at the new setting — that one clear per keypress is
   deliberate and is the only `ESC[2J` the app writes. ↑/↓ always mean input history.
+- **`ink-text-input` types every key it does not recognise.** Its handler special-cases exactly
+  one chord, ctrl+c, so a ctrl+e handled in `useKeyBindings` still left a stray `e` in the
+  prompt — and ctrl+o, ctrl+t and ctrl+v their letters. Ink offers no way to stop a `useInput`
+  handler running, and the text field's is registered first (child effects run before the
+  parent's). So the chords never reach Ink at all: `cli-ui.jsx` pulls them out of the stdin
+  chunk via `hotkeys.js` and dispatches them through `use-hotkeys.js`. Adding a new ctrl+ binding
+  means adding it to `HOTKEYS`, not to `useKeyBindings`.
+- **A paste is folded to a marker, not typed into the prompt.** `usePaste` (Ink 7) turns on
+  bracketed paste, which is the only thing that distinguishes "pasted forty lines" from "typed
+  forty lines very fast" — and it keeps the text off `useInput` entirely. `paste.js` swaps
+  anything over four lines for `[Pasted text #1 +42 lines]` and `App.handleSubmit` expands it on
+  the way to the model. This is a frame-budget rule as much as a legibility one: the input box
+  is in the live frame, and a pasted file is the easiest way to blow the viewport.
 - **Ink never reads the real stdin.** `cli-ui.jsx` pipes `process.stdin` through a PassThrough
   so `enter-splitter.js` can peel a trailing `\r` into a chunk of its own. Ink's input parser
   deliberately does not split `\r` from adjacent text (a CR can sit inside a paste), so when the
