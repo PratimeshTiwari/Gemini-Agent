@@ -38,15 +38,16 @@ export const FOCUS_TERMINAL = 'terminal';
 
 /**
  * Rows the live frame spends on furniture below the transcript: the thinking
- * line (2), the input box with its margin and border (5), the mode chip (1),
- * the status bar with its rule (3), and a row of slack so a wrapped line
- * cannot tip the frame over the viewport.
+ * line (2), the input box with its margin and border (5), the mode chip with
+ * the blank row above it (2), the status bar with its rule and its own blank
+ * row (4), and a row of slack so a wrapped line cannot tip the frame over the
+ * viewport.
  *
  * Overshooting costs a little transcript; undershooting costs the scrollback,
  * because Ink answers an overflowing frame with a full clear-and-repaint on
  * every render. See the note at the top of App.jsx.
  */
-export const RESERVED_ROWS = 14;
+export const RESERVED_ROWS = 16;
 
 export const THINKING_MESSAGES = [
   'Thinking…',

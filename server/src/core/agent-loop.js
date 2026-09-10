@@ -777,33 +777,57 @@ export class AgentLoop {
       }
 
       case 'allowlist': {
-        if (args?.[0] === 'clear') {
-          this.commandRules.allow = [];
-          this.commandRules.block = [];
+        const action = args?.[0]?.toLowerCase();
+        const rest = args?.slice(1).join(' ').trim();
+        const rules = this.commandRules;
+
+        // `add` was missing entirely: rules could only ever appear by answering
+        // "Allow Always" on a prompt, so there was no way to pre-approve a
+        // command you already knew you wanted.
+        if ((action === 'add' || action === 'allow') && rest) {
+          if (!rules.allow.includes(rest)) rules.allow.push(rest);
+          rules.block = rules.block.filter((c) => c !== rest);
           this._saveConfig();
-          return { message: '✅ Command allowlist and blocklist cleared.' };
-        } else if (args?.[0] === 'remove' && args[1]) {
-          const cmdToRemove = args.slice(1).join(' ');
-          this.commandRules.allow = this.commandRules.allow.filter(c => c !== cmdToRemove);
-          this.commandRules.block = this.commandRules.block.filter(c => c !== cmdToRemove);
-          this._saveConfig();
-          return { message: `✅ Removed \`${cmdToRemove}\` from rules.` };
-        } else if (args?.[0] === 'enable') {
-          this.commandRules.enabled = true;
-          this._saveConfig();
-          return { message: '✅ Command allowlist is now **enabled**.' };
-        } else if (args?.[0] === 'disable') {
-          this.commandRules.enabled = false;
-          this._saveConfig();
-          return { message: '⛔ Command allowlist is now **disabled**. All commands will prompt for approval.' };
+          return { message: `✅ Allowed: \`${rest}\`` };
         }
-        let msg = `🛡️ **Command Rules** (Status: ${this.commandRules.enabled !== false ? '✅ Enabled' : '⛔ Disabled'})\n\n`;
-        msg += '**Allowed Commands:**\n';
-        msg += this.commandRules.allow.length > 0 ? this.commandRules.allow.map(cmd => `  - \`${cmd}\``).join('\n') : '  *(None)*';
-        msg += '\n\n**Blocked Commands:**\n';
-        msg += this.commandRules.block.length > 0 ? this.commandRules.block.map(cmd => `  - \`${cmd}\``).join('\n') : '  *(None)*';
-        msg += '\n\n**Commands:**\n  `/allowlist enable` or `/allowlist disable`\n  `/allowlist remove <command>`\n  `/allowlist clear`';
-        return { message: msg };
+        if (action === 'block' && rest) {
+          if (!rules.block.includes(rest)) rules.block.push(rest);
+          rules.allow = rules.allow.filter((c) => c !== rest);
+          this._saveConfig();
+          return { message: `⛔ Blocked: \`${rest}\`` };
+        }
+        if (action === 'remove' && rest) {
+          const had = rules.allow.includes(rest) || rules.block.includes(rest);
+          rules.allow = rules.allow.filter((c) => c !== rest);
+          rules.block = rules.block.filter((c) => c !== rest);
+          this._saveConfig();
+          return { message: had ? `🗑️ Removed: \`${rest}\`` : `Not a rule: \`${rest}\`` };
+        }
+        if (action === 'clear') {
+          const n = rules.allow.length + rules.block.length;
+          rules.allow = [];
+          rules.block = [];
+          this._saveConfig();
+          return { message: `🧹 Cleared ${n} rule${n === 1 ? '' : 's'}.` };
+        }
+        if (action === 'enable' || action === 'disable') {
+          rules.enabled = action === 'enable';
+          this._saveConfig();
+          return {
+            message: rules.enabled
+              ? '✅ Command rules **enabled** — allowed commands run without asking.'
+              : '⛔ Command rules **disabled** — every command asks for approval.',
+          };
+        }
+
+        const list = (items) => (items.length
+          ? items.map((c) => `  • \`${c}\``).join('\n')
+          : '  _(none)_');
+        return {
+          message: `### 🛡️ Command rules — ${rules.enabled !== false ? 'enabled' : 'disabled'}\n\n`
+            + `**Allowed**\n${list(rules.allow)}\n\n**Blocked**\n${list(rules.block)}\n\n`
+            + '_`/allowlist` on its own opens the picker._',
+        };
       }
 
       case 'github': {

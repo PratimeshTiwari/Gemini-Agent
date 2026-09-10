@@ -663,8 +663,11 @@ export function App({ agentLoop, wsServer }) {
         </>
       )}
 
-      {/* Fixed Status Bar */}
-      <Box paddingX={1} flexDirection="column" width="100%" borderTopStyle="single" borderTopColor="gray">
+      {/* Fixed Status Bar
+          marginTop separates it from the mode chip above; the two rows inside
+          are one unit and stay together. Three lines stacked with no gap read
+          as one dense block rather than as three different kinds of thing. */}
+      <Box marginTop={1} paddingX={1} flexDirection="column" width="100%" borderTopStyle="single" borderTopColor="gray">
         <Box flexDirection="row" justifyContent="space-between" width="100%">
           <Text>
             {activeTab === 'agent' ? (

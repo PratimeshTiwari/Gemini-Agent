@@ -161,7 +161,7 @@ export function InputBar({
             />
           </Box>
 
-          <Box paddingX={1}>
+          <Box paddingX={1} marginTop={1}>
             <Text color={mode === 'auto' ? 'green' : 'yellow'}>
               ▶▶ {mode} mode on <Text dimColor>(shift+tab to cycle)</Text>
               {attached.length > 0 && (

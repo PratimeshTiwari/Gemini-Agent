@@ -210,6 +210,70 @@ export function Menus({
           </Box>
         )}
 
+        {activeMenu?.type === 'logs' && (
+          <Box flexDirection="column" borderStyle="single" borderColor="red" padding={1}>
+            <Text bold color="red">🩺  {activeMenu.summary.total} failure{activeMenu.summary.total === 1 ? '' : 's'} logged</Text>
+            <Text dimColor wrap="wrap">Pick a flow to see what broke in it.</Text>
+            <SelectInput
+              limit={10}
+              items={[
+                ...activeMenu.summary.byFlow.map((f) => ({
+                  label: `${String(f.count).padStart(3)}  ${f.flow.padEnd(10)} ${f.label}`,
+                  value: f.flow,
+                })),
+                { label: '🧹  Clear the log', value: 'clear' },
+              ]}
+              onSelect={(item) => {
+                setActiveMenu(null);
+                setFocus(FOCUS_INPUT);
+                handleSubmit(`/logs ${item.value}`);
+              }}
+            />
+            <Text dimColor>↑↓ move · enter open · esc cancel</Text>
+          </Box>
+        )}
+
+        {activeMenu?.type === 'allowlist' && (() => {
+          const rules = activeMenu.rules;
+          const on = rules.enabled !== false;
+          // Every row does something. A rule listed here is selectable *because*
+          // selecting it removes it — a list you can only look at needs a second
+          // command to act on, which is what the old text output forced.
+          const items = [
+            { label: on ? '⛔  Disable — ask before every command' : '✅  Enable — let allowed commands run',
+              value: on ? 'disable' : 'enable' },
+            { label: '＋  Allow a command…', value: '\u0000add' },
+            { label: '＋  Block a command…', value: '\u0000block' },
+            ...rules.allow.map((c) => ({ label: `✅  ${c}`, value: `remove ${c}` })),
+            ...rules.block.map((c) => ({ label: `⛔  ${c}`, value: `remove ${c}` })),
+            ...(rules.allow.length + rules.block.length > 0
+              ? [{ label: '🧹  Clear every rule', value: 'clear' }]
+              : []),
+          ];
+
+          return (
+            <Box flexDirection="column" borderStyle="single" borderColor="yellow" padding={1}>
+              <Text bold color="yellow">🛡️  Command rules — {on ? 'enabled' : 'disabled'}</Text>
+              <Text dimColor wrap="wrap">
+                Allowed commands run without asking. Blocked ones are refused outright.
+                Pick a rule to remove it.
+              </Text>
+              <SelectInput
+                limit={12}
+                items={items}
+                onSelect={(item) => {
+                  setActiveMenu(null);
+                  setFocus(FOCUS_INPUT);
+                  if (item.value === '\u0000add') { setInput('/allowlist add '); return; }
+                  if (item.value === '\u0000block') { setInput('/allowlist block '); return; }
+                  handleSubmit(`/allowlist ${item.value}`);
+                }}
+              />
+              <Text dimColor>↑↓ move · enter choose · esc cancel</Text>
+            </Box>
+          );
+        })()}
+
         {activeMenu?.type === 'scope' && (
           <Box flexDirection="column" borderStyle="single" borderColor="green" padding={1}>
             <Text bold color="green">🎯 Which repo are we working on?</Text>

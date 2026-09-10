@@ -147,6 +147,12 @@ export async function handleSlashCommand(query, {
       return;
     }
 
+    if (command === 'allowlist' && args.length === 0) {
+      setActiveMenu({ type: 'allowlist', rules: agentLoop.commandRules });
+      setIsProcessing(false);
+      return;
+    }
+
     if (command === 'scope' || command === 'repo') {
       const scopes = listScopes(agentLoop.workspace);
       const target = args.join(' ').trim();
@@ -213,6 +219,13 @@ export async function handleSlashCommand(query, {
       }
 
       const summary = summarizeErrors(agentLoop.workspace);
+      // A summary you can act on. Picking a flow drills into it; picking clear
+      // clears it — rather than printing a list and a set of commands to type.
+      if (summary.total > 0 && !arg) {
+        setActiveMenu({ type: 'logs', summary });
+        setIsProcessing(false);
+        return;
+      }
       let content;
       if (summary.total === 0) {
         content = '### 🩺 Failures\nNothing has failed since the log was last cleared.';
