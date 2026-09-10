@@ -15,7 +15,7 @@
  */
 
 import { resolve, dirname } from 'path';
-import { homeDir, ensureDir, setActiveScope, resolveState } from './core/paths.js';
+import { homeDir, ensureDir, setActiveScope, resolveState, codeDir } from './core/paths.js';
 import { runMigrations } from './core/migrate.js';
 import { existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -177,7 +177,7 @@ async function main() {
     workspaceIndexer,
   });
 
-  const fileWatcher = new FileWatcher(config.workspace, agentLoop);
+  const fileWatcher = new FileWatcher(codeDir(config.workspace), agentLoop);
   fileWatcher.start();
 
   // ── GitHub PR Comment Agent ──────────────────────────────────────

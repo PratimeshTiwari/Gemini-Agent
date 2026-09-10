@@ -15,7 +15,7 @@ import path from 'path';
 import * as paths from './paths.js';
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import os from 'os';
-import { resolve, relative } from 'path';
+import { resolve, relative, join, dirname } from 'path';
 import { CodeMinifier } from '../context/code-minifier.js';
 import { skillCatalogue } from './skills.js';
 
@@ -995,16 +995,48 @@ ${tier === 'pro' ? this._reminderLineForLevel(this._normalizeLevel(modelConfig.r
 </system_reminder>`;
   }
 
+  /**
+   * `AGENT.md`, from every level between the code and the state root.
+   *
+   * Walked rather than read from one place, and walked from the *code* rather
+   * than the workspace: with `/base-repo` open and repo-1 active, the file that
+   * matters most is `repo-1/AGENT.md`, and reading `workspace/AGENT.md` missed
+   * it entirely.
+   *
+   * Concatenated outermost-first so the nearest file has the last word, the
+   * same order the shell resolves anything else. Your personal one in
+   * `~/.agent/AGENT.md` is the outermost layer of all.
+   */
   _loadAgentMd() {
-    const agentMdPath = resolve(this.workspace, 'AGENT.md');
-    if (existsSync(agentMdPath)) {
+    const files = [];
+    const home = join(paths.homeDir(), 'AGENT.md');
+    if (existsSync(home)) files.push(home);
+
+    // From the state root down to the code, so nearest lands last.
+    const { base } = paths.resolveState(this.workspace);
+    const code = paths.codeDir(this.workspace);
+    const chain = [];
+    let dir = code;
+    for (let i = 0; i < 32; i++) {
+      chain.unshift(dir);
+      if (dir === base || dirname(dir) === dir) break;
+      dir = dirname(dir);
+    }
+    for (const d of chain) {
+      const file = join(d, 'AGENT.md');
+      if (existsSync(file)) files.push(file);
+    }
+
+    const parts = [];
+    for (const file of [...new Set(files)]) {
       try {
-        return readFileSync(agentMdPath, 'utf-8');
+        const body = readFileSync(file, 'utf-8').trim();
+        if (body) parts.push(body);
       } catch {
-        return null;
+        /* an unreadable AGENT.md must not take the prompt down */
       }
     }
-    return null;
+    return parts.join('\n\n');
   }
 
   /**

@@ -108,7 +108,10 @@ export function skillSearchPath(workspace, extraFolders = []) {
   // Note this walks *directories*, so it uses the literal `<dir>/.agent/skills`
   // at each level rather than paths.skillsDir(), which resolves to the shared
   // root and would return the same answer for every step.
-  let dir = path.resolve(workspace);
+  // From the code, not the workspace: with the group open and repo-1 active,
+  // repo-1's own skills live under repo-1, and starting at the workspace
+  // never saw them.
+  let dir = paths.codeDir(workspace);
   for (let i = 0; i < 64; i++) {
     dirs.push(path.join(dir, paths.AGENT_DIR, 'skills'));
     const parent = path.dirname(dir);

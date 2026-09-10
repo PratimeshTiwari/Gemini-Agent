@@ -148,6 +148,27 @@ export const agentDir = (workspace) => {
 export const sharedAgentDir = (workspace) => resolveState(workspace).root;
 
 /**
+ * Where the *code* being worked on lives, as opposed to where its state is kept.
+ *
+ * These are different directories in a group layout and the same one otherwise,
+ * and conflating them was a real bug: `AGENT.md` and the skills walk both read
+ * from `workspace`, so opening `/base-repo` scoped to repo-1 read the group's
+ * AGENT.md and never saw repo-1's own.
+ *
+ *   workspace  /base-repo            what was opened
+ *   codeDir    /base-repo/repo-1     what is being worked on   ← this
+ *   agentDir   /base-repo/.agent/repo-1
+ *
+ * Anything about the *project* — instructions, skills, indexing, watching —
+ * belongs to codeDir. Anything the agent writes belongs to agentDir.
+ */
+export const codeDir = (workspace) => {
+  const { base } = resolveState(workspace);
+  const scope = getActiveScope(workspace);
+  return scope ? path.join(base, scope) : path.resolve(workspace);
+};
+
+/**
  * The config the agent writes to: the active scope's own.
  *
  * Reads merge `sharedConfigPath` underneath it (see AgentLoop._loadConfig), so
