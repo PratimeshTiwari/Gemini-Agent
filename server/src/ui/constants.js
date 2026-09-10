@@ -5,10 +5,9 @@
 export /** Slash commands offered by the palette. Keep in sync with the /help output. */
 const SLASH_COMMANDS = [
   { name: 'help', desc: 'Show all available commands' },
-  { name: 'mode', desc: 'Solo, or Duo with a reviewer on the other model' },
   { name: 'effort', desc: 'How hard to work, and which browser tab it expects' },
   { name: 'allowlist', desc: 'Manage auto-approved/blocked command rules' },
-  { name: 'config', desc: 'Configure models for specific roles' },
+  { name: 'config', desc: 'Which model implements, and which one reviews it' },
   { name: 'plan', desc: 'Plan Mode — every edit needs approval' },
   { name: 'auto', desc: 'Auto Mode — safe edits apply automatically' },
   { name: 'workspace', desc: 'Show or set the active workspace' },

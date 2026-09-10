@@ -46,10 +46,9 @@ export async function handleSlashCommand(query, {
           "  :stop             - Immediately cancel the agent's current generation",
           '',
           '### 🧠 AI & LLM Settings',
-          '  /mode             - Solo, or Duo with a reviewer on the other model',
           '  /effort           - How hard to work, and which browser tab it expects',
           '  /allowlist        - Manage auto-approved/blocked command rules',
-          '  /config           - Configure models for specific roles',
+          '  /config           - Which model implements, and which one reviews it',
           '  /plan             - Switch to Plan Mode (requires approval for edits)',
           '  /auto             - Switch to Auto Mode (auto-applies safe edits)',
           '',
@@ -119,14 +118,10 @@ export async function handleSlashCommand(query, {
       return;
     }
 
-    if (command === 'mode') {
-      setActiveMenu({ type: 'mode' });
-      setIsProcessing(false);
-      return;
-    }
-
-    if (command === 'config') {
-      setActiveMenu({ type: 'config_role' });
+    // Only the bare form opens the picker. `/config reviewer none` used to open
+    // it too and throw the arguments away, so the command was unusable typed.
+    if (command === 'config' && args.length === 0) {
+      setActiveMenu({ type: 'config' });
       setIsProcessing(false);
       return;
     }

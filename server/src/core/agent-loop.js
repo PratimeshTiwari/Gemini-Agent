@@ -41,6 +41,7 @@ import { z } from 'zod';
 import { SessionStore } from '../storage/session-store.js';
 import { ContextManager } from '../context/context-manager.js';
 import { MemoryManager } from '../context/memory-manager.js';
+import { ExtensionLock } from '../bridge/extension-lock.js';
 
 
 // Backstop for a prompt the extension never answers. Longer than the content
@@ -74,10 +75,12 @@ export class AgentLoop {
 
     // State defaults
     this.mode = 'plan'; // 'plan' | 'auto'
-    this.topology = 'single'; // 'single' | 'duo' — derived from modelConfig.reviewer
     this.modelConfig = {
       main: 'gemini',
-      reviewer: 'chatgpt',
+      // No reviewer is what makes the topology single. It used to be its own
+      // setting, so "duo" could be on with nowhere to route a review to, and
+      // "single" could be on while a reviewer sat configured and unused.
+      reviewer: null,
       effort: 'standard' // one of core/effort.js's five rungs
     };
     
@@ -98,10 +101,14 @@ export class AgentLoop {
     this.queuedUserMessage = null;
     this.callbacks = null;
     this.isProcessing = false;
-    this.extensionQueue = [];
-    this.isExtensionBusy = false;
-    this.extensionWatchdog = null;
-    this.pendingSubagents = new Map(); // Maps requestId -> { resolve, reject }
+    // One in-flight prompt per model, not one for the whole bridge — see
+    // bridge/extension-lock.js.
+    this.extensionLock = new ExtensionLock({
+      send: (payload) => this.callbacks?.injectPrompt?.(payload),
+      onStall: (model) => this._onExtensionStall(model),
+      timeoutMs: EXTENSION_RESPONSE_TIMEOUT,
+    });
+    this.pendingSubagents = new Map(); // requestId -> { resolve, reject, targetModel }
     this.githubHandler = null; // Set externally after initialization
 
     // Workspace summary (generated dynamically by context manager)
@@ -221,8 +228,12 @@ export class AgentLoop {
 
     if (isSubagent) {
       if (complete) {
+        // Read the lane before handling the response — handleSubagentResponse
+        // deletes the pending entry, and with it the only record of which tab
+        // this reply came from.
+        const lane = this.pendingSubagents.get(requestId)?.targetModel;
         this.handleSubagentResponse(requestId, content, payload.subagentUrl);
-        this._releaseExtension();
+        this._releaseExtension(lane);
       }
       return;
     }
@@ -599,37 +610,53 @@ export class AgentLoop {
         };
       }
 
+      // Topology is derived from whether a reviewer is set, so there is one
+      // place to change it and no way for the two to disagree.
       case 'mode':
-        if (args?.[0]) {
-          const newTopology = args[0].toLowerCase();
-          if (['single', 'duo'].includes(newTopology)) {
-            this.topology = newTopology;
-            this._saveConfig();
-            this.promptBuilder.resetPromptState();
-            return { message: `🌐 Switched to Agent Topology: ${newTopology.toUpperCase()}` };
-          }
-          return { message: `❌ Invalid mode. Use: single or duo.` };
-        }
-        return { message: `Current Agent Topology: ${this.topology}` };
+      case 'config': {
+        const role = args?.[0]?.toLowerCase();
+        const model = args?.[1]?.toLowerCase();
+        const MODELS = ['gemini', 'chatgpt'];
 
-      case 'config':
-        if (args?.length === 2) {
-          const role = args[0].toLowerCase();
-          const model = args[1].toLowerCase();
-          if (['main', 'reviewer'].includes(role) && ['gemini', 'chatgpt'].includes(model)) {
-            this.modelConfig[role] = model;
-            this._saveConfig();
-            this.promptBuilder.resetPromptState();
-            return { message: `✅ Assigned ${model} to ${role} role.` };
-          }
-          return { message: `❌ Invalid args. Usage: /config <role> <model>\nRoles: main, reviewer\nModels: gemini, chatgpt` };
+        if (role === 'reviewer' && (model === 'none' || model === 'off')) {
+          this.modelConfig.reviewer = null;
+          this._saveConfig();
+          this.promptBuilder.resetPromptState();
+          return { message: '👤 Solo — one model plans, implements and reviews its own work.' };
         }
-        
-        // No args given -> format the current config string cleanly
-        const configStr = Object.entries(this.modelConfig)
-          .map(([r, m]) => `  ${r.charAt(0).toUpperCase() + r.slice(1)} Agent: ${m}`)
-          .join('\n');
-        return { message: `Current Agent Topology: ${this.topology.toUpperCase()}\nCurrent Model Config:\n${configStr}` };
+
+        if (['main', 'reviewer'].includes(role) && MODELS.includes(model)) {
+          if (role === 'reviewer' && model === this.mainModel) {
+            // The point of a reviewer is different blind spots. Same model,
+            // same blind spots, and the extension would race the two requests
+            // for one tab besides.
+            return {
+              message: `❌ The reviewer has to be a *different* model from the main agent `
+                + `(currently **${this.mainModel}**). Try \`/config reviewer `
+                + `${MODELS.find((m) => m !== this.mainModel)}\`, or \`/config reviewer none\`.`,
+            };
+          }
+          this.modelConfig[role] = model;
+          if (role === 'main' && this.modelConfig.reviewer === model) this.modelConfig.reviewer = null;
+          this._saveConfig();
+          this.promptBuilder.resetPromptState();
+          return {
+            message: `✅ ${role} → **${model}**\n\nNow running **${this.topology}**`
+              + `${this.topology === 'duo' ? ` — ${this.mainModel} implements, ${this.modelConfig.reviewer} reviews.` : ' — one model, start to finish.'}`,
+          };
+        }
+
+        const renamed = command === 'mode'
+          ? '_(`/mode` is now `/config` — the topology follows from who reviews.)_\n\n'
+          : '';
+        return {
+          message: `${renamed}### 🌐 ${this.topology === 'duo' ? 'Duo' : 'Solo'}\n\n`
+            + `  Main:     **${this.mainModel}**\n`
+            + `  Reviewer: **${this.modelConfig.reviewer || 'none'}**\n\n`
+            + '_`/config main <gemini|chatgpt>` · `/config reviewer <gemini|chatgpt|none>`_\n'
+            + '_A reviewer on the other model is the point — the same model reviewing itself has the same blind spots._',
+        };
+      }
 
       case 'clear':
         this.conversationHistory = [];
@@ -941,7 +968,6 @@ export class AgentLoop {
       if (!fs.existsSync(file)) continue;
       try {
         const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-        if (data.topology) this.topology = data.topology;
         if (data.modelConfig) {
           // modelTier / reasoningLevel / reasoningEffort collapse into one rung.
           // Folded on read rather than written back, so an older build sharing
@@ -959,6 +985,14 @@ export class AgentLoop {
         }
         if (data.commandRules) this.commandRules = { ...this.commandRules, ...data.commandRules };
         if (Array.isArray(data.skillFolders)) this.skillFolders = data.skillFolders;
+        // `topology` used to be stored beside `modelConfig` and could contradict
+        // it. Folded into the one thing it was ever describing: is there a
+        // second model to review with?
+        if (data.topology === 'single') {
+          this.modelConfig.reviewer = null;
+        } else if (data.topology === 'duo' && !this.modelConfig.reviewer) {
+          this.modelConfig.reviewer = this.mainModel === 'gemini' ? 'chatgpt' : 'gemini';
+        }
         // The memory toggle used to live only in the MemoryManager instance, so
         // /memory off lasted until you quit. PromptBuilder reads the same key
         // off disk when it decides whether to recall anything.
@@ -987,9 +1021,12 @@ export class AgentLoop {
       } catch {
         /* absent or unparseable: start from nothing rather than refuse to save */
       }
+      // `topology` is not written: it is derived from modelConfig.reviewer, and
+      // a derived value in a config file is one someone will edit and be
+      // ignored for editing.
+      const { topology: _dropped, ...rest } = existing;
       fs.writeFileSync(configPath, JSON.stringify({
-        ...existing,
-        topology: this.topology,
+        ...rest,
         modelConfig: this.modelConfig,
         commandRules: this.commandRules,
         skillFolders: this.skillFolders,
@@ -1001,42 +1038,49 @@ export class AgentLoop {
   }
 
 
-  _enqueueExtensionRequest(payload) {
-    this.extensionQueue.push(payload);
-    this._processExtensionQueue();
-  }
-
-  _processExtensionQueue() {
-    if (this.isExtensionBusy || this.extensionQueue.length === 0) return;
-    this.isExtensionBusy = true;
-    const payload = this.extensionQueue.shift();
-    this._armExtensionWatchdog();
-    if (this.callbacks && this.callbacks.injectPrompt) {
-      this.callbacks.injectPrompt(payload);
-    }
+  /** The model the main conversation runs on. Subagents name their own. */
+  get mainModel() {
+    return this.modelConfig.main || 'gemini';
   }
 
   /**
-   * One browser tab, one in-flight prompt: `isExtensionBusy` is the lock.
-   * Every path that ends a turn has to hand it back, or the queue wedges for
-   * the rest of the session and later prompts vanish into it silently.
+   * Solo, or a reviewer on the other model.
+   *
+   * Derived rather than stored. As a knob of its own it could disagree with
+   * the thing it describes: duo with no reviewer configured advertised
+   * `ask_reviewer` to the model with nowhere to send it, and single with a
+   * reviewer configured left a second tab wired up and never used. A review by
+   * the same model is not offered — same blind spots review nothing — so
+   * "is there another model?" is the whole question.
    */
-  _releaseExtension() {
-    this._clearExtensionWatchdog();
-    this.isExtensionBusy = false;
-    this._processExtensionQueue();
+  get topology() {
+    const reviewer = this.modelConfig.reviewer;
+    return reviewer && reviewer !== this.mainModel ? 'duo' : 'single';
+  }
+
+  _enqueueExtensionRequest(payload) {
+    this.extensionLock.enqueue(payload);
   }
 
   /**
-   * Give up on the in-flight request and drop anything queued behind it.
-   * Used when a turn dies rather than completes — an injection error, a
-   * user stop, an exception while building the prompt. The queued prompts
-   * belong to that dead turn, so replaying them would be wrong.
+   * Hand a model's tab back so the next prompt for it can go.
+   *
+   * Takes the model rather than guessing it: the lock is per lane now, and
+   * releasing the wrong one leaves the right one wedged for the rest of the
+   * session with later prompts vanishing into it silently.
+   */
+  _releaseExtension(model = this.mainModel) {
+    this.extensionLock.release(model);
+  }
+
+  /**
+   * Give up on everything in flight and drop what was queued behind it.
+   * Used when a turn dies rather than completes — an injection error, a user
+   * stop, an exception while building the prompt. The queued prompts belong to
+   * that dead turn, so replaying them would be wrong.
    */
   abortExtensionWork() {
-    this._clearExtensionWatchdog();
-    this.extensionQueue.length = 0;
-    this.isExtensionBusy = false;
+    this.extensionLock.abortAll();
     this.pendingGeminiResponse = null;
   }
 
@@ -1046,35 +1090,22 @@ export class AgentLoop {
    * — an asleep service worker, a tab with no bridge — where nothing would come
    * back and the CLI would sit on "Thinking..." forever.
    */
-  _armExtensionWatchdog() {
-    this._clearExtensionWatchdog();
-    this.extensionWatchdog = setTimeout(() => {
-      this.extensionWatchdog = null;
-      if (!this.isExtensionBusy) return;
-      console.warn('[Agent Loop] No response from the extension bridge; releasing it.');
-      this.isProcessing = false;
-      if (this.callbacks) {
-        this.callbacks.sendToPanel({
-          id: randomUUID(),
-          type: 'error',
-          payload: {
-            message:
-              'No response from the browser bridge. Check that the extension is loaded ' +
-              'and a gemini.google.com tab is open, then try again.',
-          },
-          timestamp: Date.now(),
-        });
-      }
-      this.abortExtensionWork();
-    }, EXTENSION_RESPONSE_TIMEOUT);
-    this.extensionWatchdog.unref?.();
-  }
-
-  _clearExtensionWatchdog() {
-    if (this.extensionWatchdog) {
-      clearTimeout(this.extensionWatchdog);
-      this.extensionWatchdog = null;
+  _onExtensionStall(model) {
+    console.warn(`[Agent Loop] No response from the ${model} tab; releasing it.`);
+    this.isProcessing = false;
+    if (this.callbacks) {
+      this.callbacks.sendToPanel({
+        id: randomUUID(),
+        type: 'error',
+        payload: {
+          message:
+            `No response from the ${model} tab. Check that the extension is loaded `
+            + 'and that tab is open, then try again.',
+        },
+        timestamp: Date.now(),
+      });
     }
+    this.abortExtensionWork();
   }
 
   async _sendToGemini(prompt, callbacks) {
@@ -1488,7 +1519,7 @@ export class AgentLoop {
   async _executeSubagent(targetModel, prompt) {
     return new Promise((resolve, reject) => {
       const requestId = randomUUID();
-      this.pendingSubagents.set(requestId, { resolve, reject });
+      this.pendingSubagents.set(requestId, { resolve, reject, targetModel });
 
       // Subagents also run for /compact and background GitHub work, neither of
       // which has a user turn's callbacks attached.
@@ -1506,8 +1537,7 @@ export class AgentLoop {
       setTimeout(() => {
         if (this.pendingSubagents.has(requestId)) {
           this.pendingSubagents.delete(requestId);
-          this.isExtensionBusy = false;
-          this._processExtensionQueue();
+          this._releaseExtension(targetModel);
           resolve({ success: false, error: `${targetModel} timeout after 5 minutes.` });
         }
       }, 300000);

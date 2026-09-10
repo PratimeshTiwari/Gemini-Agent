@@ -336,7 +336,7 @@ fact to a standing instruction is a manual edit, deliberately.
 | 3 | Memory as `.agent/<scope>/memory.md`, bounded in the prompt | the write-only trap | **done** |
 | 4 | One model picker, five valid states, `/reasoning` → `/effort` | `reasoningEffort`, `_effortToTier`, `modelTier`, `reasoningLevel` as stored keys | **done** |
 | 5 | Keep `--scope` and derived resolution; delete the runtime switcher | `/scope`'s picker, `setScope`, `listScopes`, the reload path | **done** |
-| 6 | Per-model extension lock; derive topology from `modelConfig` | `topology` as a knob, `/mode`, the mode menu | next |
+| 6 | Per-model extension lock; derive topology from `modelConfig` | `topology` as a knob, `/mode`, the mode menu, the two-step config picker | **done** |
 
 **What phase 2 kept (phase 2).** Bare `/context` survives as what its name says — a report of
 what is in the window. Only `add|remove|list` went: registering folders of `.md` files was a
@@ -401,6 +401,19 @@ query type that dominates code search. A broken tool is worse than a missing one
 model reaches for it and concludes the code is not there. Even repaired it is keyword matching
 that `grep_search` already does better, and it costs a full-repo read at every startup. The
 madge dependency graph dies with it: it is read only inside `search()`.
+
+**What phase 6 did.** `bridge/extension-lock.js` holds a lane per model — queue, busy flag and
+watchdog each — so a ChatGPT review and a Gemini prompt genuinely overlap. Every release path
+names its lane (`_releaseExtension(model)`, defaulting to `mainModel`); the subagent path reads
+the lane out of `pendingSubagents` *before* `handleSubagentResponse` deletes the entry, which is
+the only record of which tab the reply came from.
+
+`topology` is now a getter: `reviewer && reviewer !== main ? 'duo' : 'single'`. It is not written
+to config any more — a derived value in a config file is one someone edits and is ignored for
+editing — and a stored `topology` is folded into the reviewer on read. `/mode` and `/config`
+became one command and one screen: the role picker, then the model picker, then a "View Current
+Config" row that navigated away to print what the screen could have shown, are one list with
+Solo and Duo both on it and the current state as the heading.
 
 **Why subagents stay but change (phase 6).** `isParallel` fans the `ask_*` calls out with
 `Promise.all`, but every one queues behind a single global `isExtensionBusy` lock, so they run

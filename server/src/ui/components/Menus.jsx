@@ -122,24 +122,6 @@ export function Menus({
           </Box>
         )}
 
-        {activeMenu?.type === 'mode' && (
-          <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-            <Text bold color="cyan">Select Agent Topology Mode:</Text>
-            <SelectInput
-              items={[
-                { label: `Single (Gemini only)${agentLoop.topology === 'single' ? '  ← (Current)' : ''}`, value: 'single' },
-                { label: `Duo (Gemini + Reviewer)${agentLoop.topology === 'duo' ? '  ← (Current)' : ''}`, value: 'duo' },
-              ]}
-              onSelect={async (item) => {
-                setActiveMenu(null);
-                await agentLoop.handleSlashCommand('mode', [item.value]);
-                setHistory([...agentLoop.conversationHistory]);
-                setFocus(FOCUS_INPUT);
-              }}
-            />
-          </Box>
-        )}
-
         {activeMenu?.type === 'effort' && (() => {
           const current = resolveEffort(agentLoop.modelConfig?.effort).id;
           return (
@@ -166,47 +148,53 @@ export function Menus({
           );
         })()}
 
-        {activeMenu?.type === 'config_role' && (
-          <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-            <Text bold color="cyan">Select Role to Configure:</Text>
-            <SelectInput
-              items={[
-                { label: 'View Current Config', value: 'view' },
-                { label: 'Main Agent', value: 'main' },
-                { label: 'Reviewer Subagent', value: 'reviewer' },
-              ]}
-              onSelect={async (item) => {
-                if (item.value === 'view') {
-                  setActiveMenu(null);
-                  await agentLoop.handleSlashCommand('config', []);
-                  setHistory([...agentLoop.conversationHistory]);
-                  setFocus(FOCUS_INPUT);
-                } else {
-                  setActiveMenu({ type: 'config_model', role: item.value });
-                }
-              }}
-            />
-          </Box>
-        )}
+        {/*
+          One screen, not three. It used to be a role picker, then a model
+          picker, with "View Current Config" as a third row that navigated away
+          to print what the screen could have shown. The topology is just
+          whether these two models differ, so both states are on the list and
+          the current one is the heading.
+        */}
+        {activeMenu?.type === 'config' && (() => {
+          const main = agentLoop.modelConfig?.main || 'gemini';
+          const reviewer = agentLoop.modelConfig?.reviewer || null;
+          const other = main === 'gemini' ? 'chatgpt' : 'gemini';
+          const isDuo = Boolean(reviewer) && reviewer !== main;
+          const run = async (args) => {
+            setActiveMenu(null);
+            const result = await agentLoop.handleSlashCommand('config', args);
+            setHistory(prev => [...prev, { role: 'assistant', content: result.message, isLocal: true }]);
+            setFocus(FOCUS_INPUT);
+          };
 
-        {activeMenu?.type === 'config_model' && (
-          <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-            <Text bold color="cyan">Select Model for {activeMenu.role}:</Text>
-            <SelectInput
-              items={[
-                { label: 'Google Gemini', value: 'gemini' },
-                { label: 'ChatGPT', value: 'chatgpt' },
-              ]}
-              onSelect={async (item) => {
-                const role = activeMenu.role;
-                setActiveMenu(null);
-                await agentLoop.handleSlashCommand('config', [role, item.value]);
-                setHistory([...agentLoop.conversationHistory]);
-                setFocus(FOCUS_INPUT);
-              }}
-            />
-          </Box>
-        )}
+          return (
+            <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+              <Text bold color="cyan">
+                🌐 {isDuo ? 'Duo' : 'Solo'} — {main} implements
+                {isDuo ? `, ${reviewer} reviews` : ' and reviews its own work'}
+              </Text>
+              <Text dimColor wrap="wrap">
+                A second tab is worth it only on the other model: the same model reviewing
+                itself has the same blind spots.
+              </Text>
+              <SelectInput
+                items={[
+                  {
+                    label: `👤  Solo — ${main} alone, start to finish${isDuo ? '' : '  ← current'}`,
+                    value: 'reviewer none',
+                  },
+                  {
+                    label: `🔍  Duo — ${other} reviews ${main}${isDuo ? '  ← current' : ''}`,
+                    value: `reviewer ${other}`,
+                  },
+                  { label: `🤖  Swap the main model to ${other}`, value: `main ${other}` },
+                ]}
+                onSelect={(item) => run(item.value.split(' '))}
+              />
+              <Text dimColor>↑↓ move · enter choose · esc cancel</Text>
+            </Box>
+          );
+        })()}
 
         {activeMenu?.type === 'logs' && (
           <Box flexDirection="column" borderStyle="single" borderColor="red" padding={1}>

@@ -22,8 +22,7 @@ describe('AgentLoop._saveConfig', () => {
   const loopFor = (workspace) => {
     const loop = Object.create(AgentLoop.prototype);
     loop.workspace = workspace;
-    loop.topology = 'duo';
-    loop.modelConfig = { effort: 'standard' };
+    loop.modelConfig = { main: 'gemini', reviewer: 'chatgpt', effort: 'standard' };
     loop.commandRules = { enabled: true, allow: [], block: [] };
     return loop;
   };
@@ -49,7 +48,7 @@ describe('AgentLoop._saveConfig', () => {
     writeFileSync(paths.configPath(ws), JSON.stringify({
       agentName: 'DCX',
       somethingFuture: { keep: true },
-      topology: 'single',
+      modelConfig: { main: 'chatgpt' },
     }, null, 2));
 
     loopFor(ws)._saveConfig();
@@ -57,25 +56,55 @@ describe('AgentLoop._saveConfig', () => {
     const saved = read();
     assert.strictEqual(saved.agentName, 'DCX', 'the banner name must survive');
     assert.deepStrictEqual(saved.somethingFuture, { keep: true });
-    assert.strictEqual(saved.topology, 'duo', 'and owned keys still win');
+    assert.strictEqual(saved.modelConfig.main, 'gemini', 'and owned keys still win');
+  });
+
+  // topology is derived from modelConfig.reviewer now. Leaving a stale copy in
+  // the file is worse than dropping it: it is a value someone would edit and
+  // then be ignored for editing.
+  test('a stored topology is dropped rather than written back', () => {
+    writeFileSync(paths.configPath(ws), JSON.stringify({ topology: 'single', agentName: 'DCX' }));
+    loopFor(ws)._saveConfig();
+
+    const saved = read();
+    assert.strictEqual('topology' in saved, false);
+    assert.strictEqual(saved.agentName, 'DCX', 'without taking its neighbours with it');
+  });
+
+  test('a config that stored topology folds it into the reviewer', () => {
+    writeFileSync(paths.configPath(ws), JSON.stringify({ topology: 'single' }));
+    const loop = loopFor(ws);
+    loop._loadConfig();
+    assert.strictEqual(loop.modelConfig.reviewer, null, 'single means nobody reviews');
+    assert.strictEqual(loop.topology, 'single');
+  });
+
+  test('a stored duo with no reviewer named picks the other model', () => {
+    writeFileSync(paths.configPath(ws), JSON.stringify({
+      topology: 'duo', modelConfig: { main: 'gemini', reviewer: null },
+    }));
+    const loop = loopFor(ws);
+    loop._loadConfig();
+    assert.strictEqual(loop.modelConfig.reviewer, 'chatgpt');
+    assert.strictEqual(loop.topology, 'duo');
   });
 
   test('a missing config is created rather than refused', () => {
     const fresh = mkdtempSync(join(tmpdir(), 'cfg2-'));
     loopFor(fresh)._saveConfig();
-    assert.strictEqual(JSON.parse(readFileSync(paths.configPath(fresh), 'utf8')).topology, 'duo');
+    assert.strictEqual(JSON.parse(readFileSync(paths.configPath(fresh), 'utf8')).modelConfig.main, 'gemini');
     rmSync(fresh, { recursive: true, force: true });
   });
 
   test('an unparseable config does not block the save', () => {
     writeFileSync(paths.configPath(ws), '{ this is not json');
     loopFor(ws)._saveConfig();
-    assert.strictEqual(read().topology, 'duo');
+    assert.strictEqual(read().modelConfig.main, 'gemini');
   });
 
   test('a config that is an array, not an object, is discarded safely', () => {
     writeFileSync(paths.configPath(ws), '["nope"]');
     loopFor(ws)._saveConfig();
-    assert.strictEqual(read().topology, 'duo');
+    assert.strictEqual(read().modelConfig.main, 'gemini');
   });
 });
