@@ -1,96 +1,95 @@
 # Session handoff
 
-Written 2026-09-10 at the end of a long session. Delete this file once the work
-below is finished — it is a baton, not documentation.
+Written 2026-09-10 at the end of the second long session. Delete this file once the
+work below is finished — it is a baton, not documentation.
 
-**Read `CLAUDE.md` first.** It carries the architecture, the gotchas and the
-`## Direction` section with the phased plan and the reasoning behind each call.
-This file only says where the baton is.
+**Read `CLAUDE.md` first.** It carries the architecture, the gotchas, the `## Direction`
+section (all six phases, now done, with the reasoning behind each call) and
+`## What's next` (P0–P3, with the evidence for each). This file only says where the
+baton is.
 
 ---
 
 ## State
 
-- Branch `v1-stable`, pushed and current (`8e60a24` on origin).
-- `main` is untouched at `68f76cd`. **Work merges into `main` through a PR only** —
-  never push to it. The branches in this repo are deliberate history; do not delete them.
-- Tests: `npm test` → 295 passing. Keep it there.
-- Commits carry no `Co-Authored-By` trailer. The owner asked for that; earlier ones were
-  rewritten and then the rewrite was reverted, so old commits still have trailers and
-  that is intentional — do not rewrite history again.
+- Branch `v1-stable`. **Seven commits ahead of `origin/v1-stable`, not yet pushed.**
+- `main` is untouched at `68f76cd`. Work merges into `main` through a PR only.
+  The branches in this repo are deliberate history; do not delete them.
+- Tests: `npm test` → **403 passing**, up from 295.
+- Commits carry the `Co-Authored-By` and `Claude-Session` trailers the harness asked for.
+  Older commits are inconsistent on purpose — the rewrite was reverted. Do not rewrite
+  history again.
 
 ## Done this session
 
-The UI was unusable and is now not. In order:
+**All six Direction phases**, in the order 2 → 3 → 4 → 5 → 6:
 
-1. **Ink was clearing the terminal ~7×/second** whenever the live frame outgrew the
-   viewport — that is what "flickers, can't scroll, can't copy" was. Measured idle:
-   108 clears and 3.85 MB in 15s → 0 clears and 36 KB. Settled turns now go to
-   `<Static>`; only the in-flight turn is live, bounded by `RESERVED_ROWS`.
-2. **Enter was silently dropped** when the terminal delivered a character and the
-   Enter after it in one read (`enter-splitter.js`).
-3. **ctrl+e/o/t/v typed their letter into the prompt** — `ink-text-input` inserts any
-   key it does not recognise. Chords are pulled off stdin before Ink sees them
-   (`ui/hotkeys.js`).
-4. Multi-line paste folds to `[Pasted text #1 +60 lines]`; ctrl+u / ctrl+w added.
-5. GitHub: a 401 looped forever and printed into Ink's frame; the token screen's
-   import path was wrong so **every token submission failed**.
-6. `/compact` threw on a fresh session and the UI had no try/catch, so it hung silently.
-7. `run_command` hung for the full timeout on anything reading stdin (6.00s → 0.01s) —
-   the likely cause of `git show` failing on a work laptop.
-8. Renamed the CLI to `agent-cli`; skills; failure log at `.agent/logs/errors.jsonl`;
-   one `.agent/` for a group of repos; VS Code companion (diagnostics, Add to Agent
-   Chat, PR-style plan review) at `cli-agent-companion-1.3.1.vsix`.
-9. Phases 0, 1 and 7 of the plan (see `CLAUDE.md` → Direction).
+| | | commit |
+| --- | --- | --- |
+| 2 | One instruction surface: `AGENT.md`, walked. `rules.md`, `mistakes.md`, `contextFolders`, `/context add\|remove\|list`, `/init-skills` all gone | `7e8a595` |
+| 3 | Memory read back into `<memory>` — `getAllMemories` had *no callers*, so every remembered fact cost a tool call and bought nothing. `memory.json` → `memory.md` | `7d8c03d` |
+| 4 | One effort ladder, five rungs. `modelTier` + `reasoningLevel` + `reasoningEffort` → `effort` | `6a4f391` |
+| 5 | Scope chosen at launch. `setScope` rebuilt the session store under a transcript still on screen | `92b3008` |
+| 6 | A lock per model (`bridge/extension-lock.js`), topology derived from `modelConfig.reviewer` | `4abc845` |
 
-Net for the refactor phases: **2,863 lines deleted, 551 added.**
+**And the loose ends** (`9a82d3a`): `/plans`, `/settings`, `/help` generated from
+`SLASH_COMMANDS` rather than hand-kept, plus three commands that reported success without
+doing the thing — `/restart` (touched a mtime nothing watched), `/image` (delivered fine,
+but stored the base64 in history, both session files, every compaction prompt and the
+retry objective), `/context` (padded ANSI strings with `padEnd`, so the box never aligned).
 
-## Next — phase 2
+## Next
 
-`CLAUDE.md` → `## Direction` has the table and the reasoning. Phase 2 is the big one
-and lands the whole design:
+`CLAUDE.md` → `## What's next` has the detail and the evidence. In short:
 
-- `AGENT.md` walked from `codeDir` is already in (phase 0). What remains is deleting
-  the mechanisms it replaces: `rulesPath`, `scopedRulesPath`, `mistakesPath`,
-  `/init-skills`, `contextFolders`, `_loadContextFolders`, `/context add|remove|list`.
-- Then 3 → 4 → 5 → 6, one at a time, running the CLI in between.
+- **P0, before anyone else runs this.** The shell classifier can be walked past
+  (`echo hi; rm -rf /tmp/x` → `safe`, auto-executes); the bridge binds to `::` with no
+  auth; `diff-engine.js` overwrites files and has no tests.
+- **P1.** Validate tool args with the `zod` that is already installed and never imported;
+  the workspace commands (`/agent-dir`, `/workspace`, `/set-workspace` — `setWorkspace`
+  leaves memory and the allowlist pointing at the old project); settings rows can outgrow
+  the viewport; instrument `looksLikeMultipleDrafts`; tests for `agent-loop.js`.
+- **P2.** Settings tabs; `prompts/*.md`; extension `op`/`stage`; the ChatGPT image path.
+- **P3.** VS Code shell integration; folder picker; **restructure** the GitHub PR agent
+  (not delete — the owner asked for a separate plan); split `agent-loop.js`.
 
-After the phases, the owner wants to **simplify the extension and backend** for a
-stable release.
+Then the fork in `## What's next` → "The fork": whether an opt-in API backend joins the
+browser bridge. That is a product decision, not a task.
 
-## Loose ends not in any phase
+## Loose ends now closed
 
-- **VS Code terminal shell integration** — discussed, never built. Needs the companion
-  engine bumped `^1.80.0` → `^1.93.0` and the vsix repackaged. Would give the
-  Cursor-style "your dev server broke and the agent noticed" loop for terminals inside
-  VS Code. `watch_task` already exists to receive it.
-- **`/plans`** — plans are archived to `.agent/artifacts/plans/` but nothing lists them.
-- **Extension error richness** — the bridge logs whatever the content script sends, but
-  the content scripts send no `op`/`stage`, so `/logs extension` is thin.
-- **README skills section** still describes the three-folder search that phase 2 replaces.
-  Left deliberately: documenting an unbuilt design is worse than being a phase behind.
+`/plans`, the README skills section, `/restart`, `/image`, `/context`, and the two wrong
+command descriptions (`/memory` said "view memory" and toggled it off; `/agent-dir` said
+"open a directory" and repointed the workspace).
+
+Still open, and now in P2/P3: extension error richness, VS Code terminal shell integration.
 
 ## Gotchas that actually bit, this session
 
-- **Never bulk-edit `prompt-builder.js` with a regex.** A greedy pattern removing
-  `semantic_search` twice also ate `get_editor_state`, `ask_subagent` and
-  `ask_researcher` — three tools the model would have silently stopped knowing about.
-  The test suite caught it both times. Use exact strings or line boundaries.
-- **`RESERVED_ROWS` in `ui/constants.js` is load-bearing.** Add a row to the bottom
-  furniture without raising it and the clear-the-terminal bug returns. It is 16.
-- **`npm test` needs the quoted glob.** `node --test src/` runs `main.js` as a test and
-  hangs forever. Never import `main.js` to check syntax, for the same reason.
-- **The pty harness is how UI changes get verified.** `script -q /dev/null` does not
-  work in this environment; `pty.fork()` from Python does. Type one byte at a time with
-  ~90ms gaps and write escape sequences whole — Ink parses a chunk as one keypress, so a
-  fast harness produces false failures. Count `\x1b[2J` in the raw capture; expect zero,
-  except exactly one per ctrl+e, which reprints the transcript by design.
-- **`.agent/` is written in exactly one place**, `core/paths.js`. Keep it that way.
+- **Never bulk-edit `prompt-builder.js` with a regex.** Still true. Also: **escape
+  backticks** in text you insert into its template literals — a bare one ends the string
+  and the failure surfaces as `ReferenceError: memory is not defined` from an unrelated
+  function.
+- **A Python edit script that asserts before writing loses every earlier replacement.**
+  Two batches of description fixes silently did nothing this way. Verify with `grep`.
+- **`import('./src/index.js')` runs the CLI.** Same trap as `main.js` — it is a script,
+  not a module, and the import hung for 120s.
+- **The pty harness must send escape sequences one at a time.** `b"\x1b[B" * 3` in one
+  write arrives as a single keypress; Ink parses a chunk as one key. Send, sleep ~150ms,
+  drain, repeat.
+- **The pty harness earns its keep.** It caught the phase-4 bug where the default
+  `effort: 'standard'` shadowed every legacy config key — the unit tests did not.
+- **`RESERVED_ROWS` is still load-bearing**, and the settings screen showed why: any new
+  full-width row can overflow the viewport and bring the clear-the-terminal bug back.
+- Expect `0` `ESC[2J` and `0` idle bytes from every new screen. Every one added this
+  session was measured that way.
 
 ## Owner preferences observed
 
-- Simple over clever, every time. "Keep things simple stupid yet effective."
-- Wants the reasoning, not a list of changes — and will push back when a plan is a
-  pile of tasks rather than one idea.
-- Benchmarks the CLI against Claude Code and asks how Claude Code solves things.
-- Neutral names in examples (`base-repo`, never a real employer).
+- Simple over clever. "Keep things simple stupid yet effective."
+- Wants the reasoning, not a list of changes — and will push back when a plan is a pile
+  of tasks rather than one idea.
+- Benchmarks against Claude Code and asks how Claude Code solves things.
+- Asks for the unsugared answer and means it. Measure before asserting; an estimate
+  should be labelled as one.
+- Reverses course when the argument is good — and expects the same in return.

