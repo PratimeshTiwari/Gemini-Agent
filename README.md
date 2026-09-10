@@ -294,7 +294,7 @@ Everything the agent writes into a workspace lives in one directory, `.agent/`:
 ```
 <your project>/.agent/
 ├── config.json        # topology, model roles, command allowlist, agent name
-├── memory.json        # long-term memory (/memory)
+├── memory.md          # what the agent has learned here (/memory)
 ├── skills/            # one .md per skill (/skills)
 ├── artifacts/         # task.md, plan.md, walkthrough.md — written for you to read
 ├── state/             # editor.json, github.json, plan-approval.json

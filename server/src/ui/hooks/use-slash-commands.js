@@ -58,7 +58,7 @@ export async function handleSlashCommand(query, {
           '  /scope [repo]     - Work on one repo in a group that shares a .agent/',
           '  /workspace <path> - Change the active workspace (checked before it is set)',
           '  /set-workspace    - Pick a workspace from a list of nearby folders',
-          '  /memory           - Turn long-term memory on or off',
+          '  /memory           - What the agent has learned (on|off|forget <n>)',
           '  /context          - Show what is in the context window',
           '  /compact          - Compact history to save tokens',
           '  /clear            - Forget this conversation, keep the browser chat',

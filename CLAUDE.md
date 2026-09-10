@@ -213,7 +213,8 @@ walking at `$HOME`; `paths.test.js` covers it.
 
 | Path | Contents |
 | --- | --- |
-| `<ws>/.agent/config.json` | topology, `modelConfig`, `commandRules`, `agentName`, GitHub token |
+| `<ws>/.agent/config.json` | topology, `modelConfig`, `commandRules`, `memoryEnabled`, `agentName`, GitHub token |
+| `<ws>/.agent/memory.md` | what the agent learned here — scoped, never walked, read back into `<memory>` |
 | `<ws>/.agent/artifacts/` | `task.md`, `plan.md`, `walkthrough.md` — written for the user to read |
 | `<ws>/.agent/state/` | `editor.json` (VS Code companion), `github.json`, `plan-approval.json` |
 | `<ws>/.agent/github-pr-plans/` | GitHub PR agent output |
@@ -304,7 +305,8 @@ Agreed 2026-09-10, not yet built. Recorded so the reasoning is not re-derived.
 
 **The problem being solved:** seven mechanisms exist for "tell the model about this project"
 (`AGENT.md`, `.agent/rules.md`, scoped `rules.md`, `skills/`, `memory.json`, `mistakes.md`,
-`contextFolders` — five of the seven are gone as of phase 2) with six different discovery rules between them. The count of *rules* is the
+`contextFolders`). Phases 2 and 3 leave two: `AGENT.md` and `skills/`, plus `memory.md`, which
+is the agent's own notes rather than a place you tell it anything. with six different discovery rules between them. The count of *rules* is the
 mess, not the count of files.
 
 **The target:** two axes, one mechanism each.
@@ -330,8 +332,8 @@ fact to a standing instruction is a manual edit, deliberately.
 | 1 | Delete `semantic_search` + `workspace-indexer` + `workspace-summarizer` + dead `ContextManager` code | ~290 lines, `madge`, the startup index build | **done** `0b93bf6` |
 | 7 | Two bridges only; drop the Claude bridge, `swarm`, `ask_reasoner` | ~520 lines, 14 DOM selectors | **done** `8e60a24` |
 | 2 | One instruction surface: `AGENT.md`, walked | `rules.md`, `mistakesPath`, `/init-skills`, `contextFolders`, `/context add\|remove\|list` | **done** |
-| 3 | Memory as `.agent/<scope>/memory.md`, index-only in the prompt | the write-only trap | next |
-| 4 | One model picker, five valid states, `/reasoning` → `/effort` | `reasoningEffort`, `_effortToTier` | |
+| 3 | Memory as `.agent/<scope>/memory.md`, bounded in the prompt | the write-only trap | **done** |
+| 4 | One model picker, five valid states, `/reasoning` → `/effort` | `reasoningEffort`, `_effortToTier` | next |
 | 5 | Keep `--scope` and derived resolution; delete the runtime switcher | `/scope`, its picker, `setScope`, the reload path | |
 | 6 | Per-model extension lock; derive topology from `modelConfig` | `topology` as a knob, `/mode`, the mode menu | |
 
@@ -347,6 +349,23 @@ usually tracked in git, so the agent would be writing an unasked-for diff into t
 startup — and CLAUDE.md's own rule is that `AGENT.md` can always be trusted to say what the human
 wrote. The pre-`.agent/` migration path is the exception: `.gemini/rules.md` moves to `AGENT.md`
 because `move()` refuses to clobber, so it only lands where there is no `AGENT.md` to disturb.
+
+**The write-only trap, measured (phase 3).** `getAllMemories` had no callers. `manage_memory add`
+wrote to `memory.json`, the system prompt instructed the model to use it, and no prompt ever
+carried a single fact back — a tool call per fact, for nothing, forever. The fix is the missing
+half, not a new mechanism: `_loadMemory` puts the facts in `<memory>` on turn 0 and every
+refresh, numbered, because `remove` takes a position and the model had been choosing indices
+into a list it had never been shown.
+
+Bounded at 40 facts / 4,000 characters, degrading to a count and the path. Memory is the only
+context source that grows on its own — every turn can add to it, nothing prunes it — so it is
+the only one that could walk the system prompt into Gemini's repetition filter over months
+without anyone making a decision. That bound is the "index-only" in the row above.
+
+JSON became markdown because a learned fact is exactly the thing that is subtly wrong six weeks
+later, and a fact you cannot correct in an editor does not get corrected. `.agent/memory.json`
+is **converted** on startup where `rules.md` is only reported: it is machine-written, untracked,
+inside `.agent/`, and the alternative is the agent silently forgetting everything.
 
 **Why `semantic_search` goes (phase 1).** Measured: its tokenizer splits on non-alphanumerics
 only, so `getUserById` is one token and the query `user` can never match it — broken for the

@@ -594,19 +594,46 @@ export class AgentLoop {
         this.mode = 'auto';
         return { message: '⚡ Switched to Auto Mode. Safe edits will be auto-applied.' };
 
-      case 'memory':
-        if (args?.[0]) {
-          const action = args[0].toLowerCase();
-          if (action === 'on') {
-            this.memoryManager.memoryEnabled = true;
-            return { message: '🧠 Long-Term Memory is now ON.' };
-          } else if (action === 'off') {
-            this.memoryManager.memoryEnabled = false;
-            return { message: '🧠 Long-Term Memory is now OFF.' };
-          }
+      // `/memory` used to *toggle* memory, so typing it to look at something
+      // switched it off. It shows what is remembered now; on/off is a word you
+      // have to say, and it sticks across restarts because it lives in config.
+      case 'memory': {
+        const action = (args?.[0] || '').toLowerCase();
+
+        if (action === 'on' || action === 'off') {
+          this.memoryManager.memoryEnabled = action === 'on';
+          this._saveConfig();
+          this.promptBuilder?.resetPromptState?.();
+          return {
+            message: action === 'on'
+              ? '🧠 Memory on — learned facts go back into the prompt.'
+              : '🧠 Memory off — nothing new is learned and nothing is recalled.',
+          };
         }
-        const state = this.memoryManager.toggleMemory();
-        return { message: `🧠 Long-Term Memory is now ${state ? 'ON' : 'OFF'}.` };
+
+        if (action === 'forget') {
+          const which = args?.[1];
+          if (!which) return { message: 'Usage: `/memory forget <number>` — the numbers are the ones `/memory` shows.' };
+          const ok = this.memoryManager.removeMemory(which);
+          this.promptBuilder?.resetPromptState?.();
+          return { message: ok ? `🗑️ Forgot #${which}.` : `Nothing at #${which}.` };
+        }
+
+        const facts = this.memoryManager.getAllMemories();
+        const where = paths.memoryPath(this.workspace);
+        if (facts.length === 0) {
+          return {
+            message: `🧠 Nothing remembered yet.\n\nFacts land in \`${where}\` as the agent `
+              + 'learns them, and it is an ordinary markdown file — edit it freely.',
+          };
+        }
+        return {
+          message: `### 🧠 Memory — ${facts.length} fact${facts.length === 1 ? '' : 's'}`
+            + `${this.memoryManager.isMemoryEnabled() ? '' : ' _(off — not being recalled)_'}\n\n`
+            + facts.map((f, i) => `${i + 1}. ${f}`).join('\n')
+            + `\n\n_\`${where}\` · \`/memory forget <n>\` · \`/memory off\`_`,
+        };
+      }
 
       case 'mode':
         if (args?.[0]) {
@@ -966,6 +993,12 @@ export class AgentLoop {
         if (data.modelConfig) this.modelConfig = { ...this.modelConfig, ...data.modelConfig };
         if (data.commandRules) this.commandRules = { ...this.commandRules, ...data.commandRules };
         if (Array.isArray(data.skillFolders)) this.skillFolders = data.skillFolders;
+        // The memory toggle used to live only in the MemoryManager instance, so
+        // /memory off lasted until you quit. PromptBuilder reads the same key
+        // off disk when it decides whether to recall anything.
+        if (typeof data.memoryEnabled === 'boolean' && this.memoryManager) {
+          this.memoryManager.memoryEnabled = data.memoryEnabled;
+        }
       } catch (err) {
         logError(this.workspace, {
           flow: 'context', op: 'load_config', message: `${file}: ${err.message}`,
@@ -993,7 +1026,8 @@ export class AgentLoop {
         topology: this.topology,
         modelConfig: this.modelConfig,
         commandRules: this.commandRules,
-        skillFolders: this.skillFolders
+        skillFolders: this.skillFolders,
+        memoryEnabled: this.memoryManager ? this.memoryManager.memoryEnabled : true,
       }, null, 2));
     } catch (err) {
       console.warn('⚠️ Failed to save config:', err.message);
@@ -1205,11 +1239,22 @@ export class AgentLoop {
         result = await this._runSubAgentSession(role, call.args.prompt || call.args.query, targetModel);
       } else if (call.name === 'manage_memory') {
         if (call.args.action === 'add') {
-          const success = this.memoryManager.addMemory(call.args.fact);
-          result = { result: success ? `Added memory: ${call.args.fact}` : `Failed to add memory or memory is disabled.` };
+          if (!this.memoryManager.isMemoryEnabled()) {
+            // Said plainly, because "failed" made the model retry the same
+            // call. Memory being off is a decision, not a transient error.
+            result = { result: 'Memory is turned off for this workspace (`/memory on` re-enables it). Nothing was stored.' };
+          } else {
+            const added = this.memoryManager.addMemory(call.args.fact);
+            result = { result: added ? `Remembered: ${call.args.fact}` : 'Already remembered — nothing to do.' };
+          }
+          this.promptBuilder?.resetPromptState?.();
         } else if (call.args.action === 'remove') {
-          const success = this.memoryManager.removeMemory(call.args.index);
-          result = { result: success ? `Removed memory at index ${call.args.index}` : `Failed to remove memory (invalid index or disabled).` };
+          const which = call.args.index ?? call.args.position;
+          const removed = this.memoryManager.removeMemory(which);
+          result = removed
+            ? { result: `Forgot #${which}.` }
+            : { error: `No memory at #${which}. The numbers are the ones in <memory>; re-read them before removing.` };
+          this.promptBuilder?.resetPromptState?.();
         } else {
           result = { error: 'Invalid action. Use "add" or "remove".' };
         }

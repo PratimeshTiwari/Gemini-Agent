@@ -19,6 +19,7 @@
 import fs from 'fs';
 import path from 'path';
 import * as paths from './paths.js';
+import { parseMemory, renderMemory } from '../context/memory-manager.js';
 
 /** Move a file or directory, creating the destination's parent. Returns true if moved. */
 function move(from, to) {
@@ -98,7 +99,6 @@ export function migrateWorkspace(workspace) {
   const plan = [
     // .gemini/ — config, memory, context, approval
     [w('.gemini', 'config.json'), paths.configPath(workspace)],
-    [w('.gemini', 'memory.json'), paths.memoryPath(workspace)],
     // rules.md was the old instruction surface; AGENT.md is the only one now.
     // move() never clobbers, so a project that already has an AGENT.md keeps it.
     [w('.gemini', 'rules.md'), path.join(paths.codeDir(workspace), 'AGENT.md')],
@@ -219,6 +219,52 @@ export function migrateHome(workspace) {
 }
 
 /**
+ * `memory.json` → `memory.md`.
+ *
+ * Unlike `rules.md`, this one is converted rather than merely reported. The
+ * distinction is who wrote it: `rules.md` is hand-written and its destination
+ * is usually tracked in git, so touching it means putting a diff in someone's
+ * repo. `memory.json` is machine-written, lives inside `.agent/`, is not
+ * tracked, and the only alternative is the agent silently forgetting
+ * everything it had learned. So it is moved, and the JSON is removed once the
+ * markdown is safely on disk.
+ *
+ * Runs on every startup rather than only on a fresh `.agent/`, because the
+ * layout it converts from is one that current installs are sitting on.
+ *
+ * @returns {string[]} a one-line description if anything was converted
+ */
+export function migrateMemory(workspace) {
+  const legacy = path.join(paths.agentDir(workspace), 'memory.json');
+  const target = paths.memoryPath(workspace);
+  if (!fs.existsSync(legacy)) return [];
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(legacy, 'utf8'));
+    const facts = (Array.isArray(parsed) ? parsed : [])
+      .map((f) => String(f ?? '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+    // Merge rather than overwrite: an install that has already written some
+    // markdown must not lose it to a stale .json left beside it.
+    const existing = fs.existsSync(target) ? parseMemory(fs.readFileSync(target, 'utf8')) : [];
+    const merged = [...existing];
+    for (const fact of facts) {
+      if (!merged.some((f) => f.toLowerCase() === fact.toLowerCase())) merged.push(fact);
+    }
+
+    fs.writeFileSync(paths.ensureParent(target), renderMemory(merged), 'utf8');
+    fs.rmSync(legacy, { force: true });
+    return [`memory.json → memory.md (${merged.length} fact${merged.length === 1 ? '' : 's'})`];
+  } catch (err) {
+    // Leave the JSON alone if it cannot be read: a failed conversion must not
+    // be the thing that deletes the only copy.
+    console.warn(`⚠️  Could not convert memory.json: ${err.message}`);
+    return [];
+  }
+}
+
+/**
  * Files that used to be read as instructions and no longer are.
  *
  * `rules.md` and `mistakes.md` were two of the several places a project could
@@ -243,7 +289,8 @@ export function retiredInstructionFiles(workspace) {
 export function runMigrations(workspace) {
   const { migrated, items } = migrateWorkspace(workspace);
   const homeItems = migrateHome(workspace);
-  const all = [...items, ...homeItems];
+  const memoryItems = migrateMemory(workspace);
+  const all = [...items, ...homeItems, ...memoryItems];
 
   if (all.length > 0) {
     console.log(
@@ -261,5 +308,5 @@ export function runMigrations(workspace) {
     );
   }
 
-  return migrated || homeItems.length > 0;
+  return migrated || homeItems.length > 0 || memoryItems.length > 0;
 }

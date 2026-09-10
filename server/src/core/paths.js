@@ -179,7 +179,15 @@ export const configPath = (workspace) => path.join(agentDir(workspace), 'config.
 
 /** Config inherited by every scope under the root. */
 export const sharedConfigPath = (workspace) => path.join(sharedAgentDir(workspace), 'config.json');
-export const memoryPath = (workspace) => path.join(agentDir(workspace), 'memory.json');
+/**
+ * What the agent has learned here, as markdown.
+ *
+ * Scoped (`agentDir`, not `sharedAgentDir`) and deliberately never walked: a
+ * parent's `AGENT.md` applies to its children because a human wrote it, but a
+ * sibling repo's inferences are just guesses nobody reviewed. See
+ * context/memory-manager.js.
+ */
+export const memoryPath = (workspace) => path.join(agentDir(workspace), 'memory.md');
 
 /** Documents written for the user to read: task.md, plan.md, walkthrough.md. */
 export const artifactsDir = (workspace) => path.join(agentDir(workspace), 'artifacts');

@@ -15,7 +15,7 @@ const SLASH_COMMANDS = [
   { name: 'scope', desc: 'Work on one repo in a group that shares a .agent/' },
   { name: 'workspace', desc: 'Show or set the active workspace' },
   { name: 'set-workspace', desc: 'Pick a workspace from a list of folders' },
-  { name: 'memory', desc: 'Turn long-term memory on or off' },
+  { name: 'memory', desc: 'What the agent has learned about this project' },
   { name: 'context', desc: 'Show what is in the context window' },
   { name: 'compact', desc: 'Compact history to save tokens' },
   { name: 'clear', desc: 'Forget this conversation, keep the browser chat' },

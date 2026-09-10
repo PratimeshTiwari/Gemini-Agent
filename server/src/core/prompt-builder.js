@@ -18,6 +18,7 @@ import os from 'os';
 import { resolve, relative, join, dirname } from 'path';
 import { CodeMinifier } from '../context/code-minifier.js';
 import { skillCatalogue } from './skills.js';
+import { parseMemory, readMemoryEnabled } from '../context/memory-manager.js';
 
 // How often to send the condensed reminder, counted in MESSAGES pushed to the tab —
 // not user turns. One user turn can be a dozen tool round-trips, so a turn-based
@@ -76,6 +77,14 @@ export class PromptBuilder {
       // Workspace context removed to save tokens, rely on `search_files` tool instead.
       if (this.agentMdContent) {
         parts.push(`<agent_instructions>\n${this.agentMdContent}\n</agent_instructions>`);
+      }
+
+      // What the agent learned here on earlier runs. This is the half that was
+      // missing: `manage_memory` wrote facts to disk and no prompt ever carried
+      // them, so the model paid a tool call per fact and got nothing back.
+      const memory = this._loadMemory();
+      if (memory) {
+        parts.push(`<memory>\n${memory}\n</memory>`);
       }
 
       // Names and one-line descriptions only. The bodies stay on disk and are
@@ -364,7 +373,7 @@ Your job is to execute the task using your read-only tools if necessary and retu
 
 ## 3. Documentation & Context Maintenance
 - **Project instructions**: \`AGENT.md\` is where a project's standing rules live, walked from the code upward. If the user tells you a convention that should hold for every future turn, offer to add it there — do not keep it only in your own memory.
-- **Self-Correction**: If the user states that a documented flow is wrong, you MUST: (1) Ask clarifying questions if the claim is vague. (2) Verify the claim by reading the actual source code. (3) Use \`edit_file\` to correct the document so it matches reality. (4) Once verified against the codebase, use the \`manage_memory\` tool to store the fact so you don't make the same mistake twice.
+- **Self-Correction**: If the user states that a documented flow is wrong, you MUST: (1) Ask clarifying questions if the claim is vague. (2) Verify the claim by reading the actual source code. (3) Use \`edit_file\` to correct the document so it matches reality. (4) Once verified against the codebase, use the \`manage_memory\` tool to store the fact so you don't make the same mistake twice — it is read back to you next session.
 
 ${modelTier === 'pro' ? `## 4. Communication
 - Be exceptionally concise. Skip greetings and filler.
@@ -669,7 +678,7 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
 ## list_directory — List dir contents. Args: path? (string), recursive? (bool)
 ## run_command — Run shell command (needs approval). Args: command (string), cwd? (string)
 ## open_in_editor — Open file in editor. Args: path (string), line? (number)
-## manage_memory — Store/remove memory. Args: action ("add"|"remove"), fact? (string), index? (number)
+## manage_memory — Remember/forget a durable fact. Args: action ("add"|"remove"), fact? (string), index? (number, the number shown in <memory>)
 ## run_background — Spawn background process. Args: command (string), cwd? (string)
 ## manage_task — Manage background tasks. Args: action ("status"|"read_logs"|"send_input"|"kill"|"list"), taskId? (string)
 ## get_editor_state — Get current editor state. No args.
@@ -768,11 +777,20 @@ Parameters:
   - line (number, optional): Line number to jump to
 
 ## manage_memory
-Store or remove long-term memory facts about the workspace or user preferences.
+Remember a fact about this project, or forget one. Stored in \`.agent/memory.md\` and given
+back to you in the \`<memory>\` block at the start of a session.
+
+Remember something you had to *work out* and would have to work out again: that the tests
+run with pnpm, that a directory is generated. Not what you can read at any time — a file's
+contents, a function's signature — and not anything about this one task, which ends with it.
+Verify it against the code before storing it: a wrong memory is worse than no memory,
+because it will be believed.
+
 Parameters:
   - action (string, required): "add" or "remove"
-  - fact (string, optional): The string fact to add (required if action is "add")
-  - index (number, optional): The index of the memory to remove (required if action is "remove")
+  - fact (string, optional): the fact, as one sentence (required for "add")
+  - index (number, optional): which fact to forget, numbered as \`<memory>\` shows them
+    (required for "remove")
 
 ## run_background
 Spawn a long-running background process (dev servers, watchers, builds). Returns immediately with a taskId.
@@ -934,6 +952,50 @@ ${tier === 'pro' ? this._reminderLineForLevel(this._normalizeLevel(modelConfig.r
       }
     }
     return parts.join('\n\n');
+  }
+
+  /**
+   * `memory.md`, numbered, and hard-bounded.
+   *
+   * Memory is the one context source that grows on its own — every turn can
+   * add to it and nothing prunes it — so it is the one that must not be
+   * allowed to grow the prompt in step. Past the cap the prompt carries the
+   * count and the path instead of the contents, and the model reads the file
+   * with `read_file` if it wants the rest. The prompt is retyped into a
+   * browser tab; a system prompt that creeps upward for months is how you
+   * arrive at Gemini's repetition filter without ever making a decision.
+   *
+   * Numbered because `manage_memory remove` takes a position, and until now
+   * the model was choosing indices into a list it had never been shown.
+   */
+  _loadMemory() {
+    const MAX_FACTS = 40;
+    const MAX_CHARS = 4000;
+
+    if (!readMemoryEnabled(this.workspace)) return '';
+
+    let facts;
+    try {
+      facts = parseMemory(readFileSync(paths.memoryPath(this.workspace), 'utf8'));
+    } catch {
+      return ''; // no memory file yet, or an unreadable one
+    }
+    if (facts.length === 0) return '';
+
+    const lines = [];
+    let total = 0;
+    for (const [i, fact] of facts.entries()) {
+      if (i >= MAX_FACTS || total + fact.length > MAX_CHARS) {
+        lines.push(
+          `_${facts.length - i} more in ${paths.memoryPath(this.workspace)} — `
+          + 'read_file it if this task needs them._',
+        );
+        break;
+      }
+      total += fact.length;
+      lines.push(`${i + 1}. ${fact}`);
+    }
+    return lines.join('\n');
   }
 
   /**
