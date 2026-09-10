@@ -333,8 +333,8 @@ fact to a standing instruction is a manual edit, deliberately.
 | 7 | Two bridges only; drop the Claude bridge, `swarm`, `ask_reasoner` | ~520 lines, 14 DOM selectors | **done** `8e60a24` |
 | 2 | One instruction surface: `AGENT.md`, walked | `rules.md`, `mistakesPath`, `/init-skills`, `contextFolders`, `/context add\|remove\|list` | **done** |
 | 3 | Memory as `.agent/<scope>/memory.md`, bounded in the prompt | the write-only trap | **done** |
-| 4 | One model picker, five valid states, `/reasoning` → `/effort` | `reasoningEffort`, `_effortToTier` | next |
-| 5 | Keep `--scope` and derived resolution; delete the runtime switcher | `/scope`, its picker, `setScope`, the reload path | |
+| 4 | One model picker, five valid states, `/reasoning` → `/effort` | `reasoningEffort`, `_effortToTier`, `modelTier`, `reasoningLevel` as stored keys | **done** |
+| 5 | Keep `--scope` and derived resolution; delete the runtime switcher | `/scope`, its picker, `setScope`, the reload path | next |
 | 6 | Per-model extension lock; derive topology from `modelConfig` | `topology` as a knob, `/mode`, the mode menu | |
 
 **What phase 2 kept (phase 2).** Bare `/context` survives as what its name says — a report of
@@ -366,6 +366,24 @@ JSON became markdown because a learned fact is exactly the thing that is subtly 
 later, and a fact you cannot correct in an editor does not get corrected. `.agent/memory.json`
 is **converted** on startup where `rules.md` is only reported: it is machine-written, untracked,
 inside `.agent/`, and the alternative is the agent silently forgetting everything.
+
+**Nine states, five meanings (phase 4).** `modelTier` chose the prompt profile, `reasoningLevel`
+chose how hard the pro profile pushes and did nothing on the flash tiers, and `reasoningEffort`
+was a third name for the first — written on every change, read only as a fallback. The UI
+apologised for the impossible combinations at the point of use ("you are on the FLASH tier,
+where reasoning levels do nothing") instead of preventing them.
+
+`core/effort.js` is now the one ladder: `flash`, `flash-thinking`, `brief`, `standard`, `deep`.
+`modelTier` and `reasoningLevel` survive as *derived* values because the prompt builder really
+does branch on both, but nothing stores them separately, so they cannot disagree. Each rung also
+names the browser tab it is written for — a pro-tier prompt in a Flash tab is a long prompt to
+the model that handles long prompts worst.
+
+`effortFromConfig` folds an existing config on read, preferring the tier over the level when
+they contradict (the tier is what the prompt actually branched on). It is deliberately fed the
+config *from disk* rather than the merged object: the default `modelConfig` already carries
+`effort: 'standard'`, and folding the merge let that default shadow every legacy key — a bug the
+pty probe caught and `config-merge.test.js` now covers.
 
 **Why `semantic_search` goes (phase 1).** Measured: its tokenizer splits on non-alphanumerics
 only, so `getUserById` is one token and the query `user` can never match it — broken for the

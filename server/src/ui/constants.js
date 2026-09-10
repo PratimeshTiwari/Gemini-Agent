@@ -6,8 +6,7 @@ export /** Slash commands offered by the palette. Keep in sync with the /help ou
 const SLASH_COMMANDS = [
   { name: 'help', desc: 'Show all available commands' },
   { name: 'mode', desc: 'Solo, or Duo with a reviewer on the other model' },
-  { name: 'model', desc: 'Switch model tier (Flash, Flash Thinking, Pro)' },
-  { name: 'reasoning', desc: 'How hard Pro plans before acting (Brief, Standard, Deep)' },
+  { name: 'effort', desc: 'How hard to work, and which browser tab it expects' },
   { name: 'allowlist', desc: 'Manage auto-approved/blocked command rules' },
   { name: 'config', desc: 'Configure models for specific roles' },
   { name: 'plan', desc: 'Plan Mode — every edit needs approval' },

@@ -25,9 +25,10 @@ session. No API key, no hosted backend, no telemetry.
 - **Editor awareness.** A VS Code companion hands over your active file, cursor position and
   the Problems panel, so `get_diagnostics` reads your real TypeScript and ESLint errors
   instead of running a build.
-- **Tiered prompts.** `⚡ Flash` (terse), `🧠 Flash Thinking` (3-phase reasoning), `🔬 Pro`
-  (full protocol with chain-of-thought and anti-hallucination guardrails) — matched to
-  whichever model you have selected in the browser tab.
+- **One effort ladder.** `/effort` runs from `⚡ flash` (terse) through `🧠 flash-thinking`
+  (3-phase) to `🏃 brief` / `🪜 standard` / `🔭 deep` on Pro, which add a checklist, then
+  approach enumeration and an adversarial self-review. Each rung names the browser tab its
+  prompt is written for — that pairing is the whole point, so there is one setting, not two.
 - **GitHub PR agent.** Polls your open PRs, classifies review comments, reads CI logs, and
   writes a plan per comment. `ctrl+o` opens the dashboard.
 - **A terminal UI that behaves like one.** Real streaming, no mouse tracking, so scroll,
@@ -284,7 +285,7 @@ Once the agent is running, you can use built-in slash commands to manage your se
 - Type `/help` in the CLI to see all available commands.
 - Type `/mode` to switch between Solo and Duo — Duo puts a reviewer on the *other* model, which is the only kind of review worth the second tab.
 - Type `/config` to choose which web model (Gemini, ChatGPT) acts as your primary and which reviews it.
-- Type `/model <flash|flash-thinking|pro>` to dynamically adjust the cognitive effort and prompt complexity (optimizing for the model you select in your browser tab).
+- Type `/effort` to pick how hard the agent works — one ladder from `flash` to `deep`. It sets the prompt profile *and* names the browser tab that profile is written for.
 - Type `/allowlist` to view and manage your auto-approved and auto-rejected command rules.
 
 ## 📂 Where the agent keeps its files

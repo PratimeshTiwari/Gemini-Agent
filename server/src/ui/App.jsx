@@ -10,6 +10,7 @@ import { InputBar } from './components/InputBar.jsx';
 import { KeyHints } from './components/KeyHints.jsx';
 import { clampForDisplay } from './format.js';
 import { SLASH_COMMANDS, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES, RESERVED_ROWS } from './constants.js';
+import { resolveEffort } from '../core/effort.js';
 import { groupTurns } from './transcript.js';
 import { expandPastes } from './paste.js';
 import { drainChatQueue } from './chat-queue.js';
@@ -686,7 +687,7 @@ export function App({ agentLoop, wsServer }) {
           </Text>
           <Text dimColor>
             {activeScope ? <Text color="green">🎯 {activeScope} · </Text> : ''}
-            {agentLoop.modelConfig?.modelTier?.toUpperCase() || 'PRO'}
+            {resolveEffort(agentLoop.modelConfig?.effort).id.toUpperCase()}
             {' · '}
             <Text color={tokenColor}>~{syncTokenEstimate.toLocaleString()}/{tokenLimit.toLocaleString()} ({tokenPct}%)</Text>
           </Text>

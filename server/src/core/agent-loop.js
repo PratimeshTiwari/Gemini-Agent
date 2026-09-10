@@ -35,6 +35,7 @@ function oneLineError(result) {
   return line.slice(0, 160);
 }
 import * as paths from './paths.js';
+import { EFFORT_LEVELS, resolveEffort, isEffort, effortFromConfig } from './effort.js';
 import { resolveWorkspaceInput, validateWorkspace, rememberWorkspace } from './workspaces.js';
 import { z } from 'zod';
 import { SessionStore } from '../storage/session-store.js';
@@ -77,9 +78,7 @@ export class AgentLoop {
     this.modelConfig = {
       main: 'gemini',
       reviewer: 'chatgpt',
-      reasoningEffort: 'high',
-      modelTier: 'pro',
-      reasoningLevel: 'standard' // 'brief' | 'standard' | 'deep' — pro tier only
+      effort: 'standard' // one of core/effort.js's five rungs
     };
     
     this.commandRules = {
@@ -713,46 +712,34 @@ export class AgentLoop {
         return { message: this.setWorkspace(abs) };
       }
 
-      case 'model': {
-        const tiers = {
-          'flash': { modelTier: 'flash', reasoningEffort: 'low', label: '⚡ Flash (Fast)', browserHint: 'Gemini Flash' },
-          'flash-thinking': { modelTier: 'flash-thinking', reasoningEffort: 'medium', label: '🧠 Flash Thinking', browserHint: 'Gemini Flash (Thinking)' },
-          'pro': { modelTier: 'pro', reasoningEffort: 'high', label: '🔬 Pro (Deep Reasoning)', browserHint: 'Gemini Pro' },
-        };
-        const tierKey = args?.[0]?.toLowerCase();
-        if (tierKey && tiers[tierKey]) {
-          const tier = tiers[tierKey];
-          this.modelConfig.modelTier = tier.modelTier;
-          this.modelConfig.reasoningEffort = tier.reasoningEffort;
-          this._saveConfig();
-          this.promptBuilder.resetPromptState();
-          return { message: `${tier.label}\n\n📌 Prompt profile switched to **${tier.modelTier.toUpperCase()}**.\n💡 Make sure your Gemini browser tab is set to **${tier.browserHint}** for best results.` };
-        }
-        const current = this.modelConfig.modelTier || 'pro';
-        return { message: `🤖 Current model tier: **${current.toUpperCase()}**\n\nAvailable tiers:\n  ⚡ \`/model flash\` — Ultra-fast, minimal reasoning (use with Flash)\n  🧠 \`/model flash-thinking\` — Moderate reasoning (use with Flash Thinking)\n  🔬 \`/model pro\` — Full principal-engineer protocol (use with Pro)` };
-      }
-
-      case 'reasoning': {
-        const levels = {
-          brief: { label: '🏃 Brief', blurb: 'Investigate → Implement → Verify. For small, well-understood edits.' },
-          standard: { label: '🪜 Standard', blurb: 'Restate and decompose into a checklist first, then the 4-phase protocol.' },
-          deep: { label: '🔭 Deep', blurb: 'Standard, plus approach enumeration, risk analysis and an adversarial self-review.' },
-        };
+      // One ladder replaces /model and /reasoning. They were two knobs whose
+      // nine combinations had five meanings — see core/effort.js.
+      case 'model':
+      case 'reasoning':
+      case 'effort': {
+        const renamed = command !== 'effort'
+          ? `_(\`/${command}\` is now \`/effort\` — one setting instead of two.)_\n\n`
+          : '';
         const wanted = args?.[0]?.toLowerCase();
-        if (wanted && levels[wanted]) {
-          this.modelConfig.reasoningLevel = wanted;
+
+        if (wanted && isEffort(wanted)) {
+          const chosen = resolveEffort(wanted);
+          this.modelConfig.effort = chosen.id;
           this._saveConfig();
           this.promptBuilder.resetPromptState();
-          const tierNote = (this.modelConfig.modelTier || 'pro') === 'pro'
-            ? ''
-            : `\n\n⚠️ You are on the ${(this.modelConfig.modelTier || 'pro').toUpperCase()} tier, where reasoning levels do nothing. Switch with \`/model pro\`.`;
-          return { message: `${levels[wanted].label} reasoning\n\n${levels[wanted].blurb}${tierNote}` };
+          return {
+            message: `${renamed}${chosen.label}\n\n${chosen.blurb}\n\n`
+              + `💡 Set your browser tab to **${chosen.browser}** — the prompt is written for it.`,
+          };
         }
-        const now = this.modelConfig.reasoningLevel || 'standard';
-        const list = Object.entries(levels)
-          .map(([key, v]) => `  ${v.label} \`/reasoning ${key}\`${key === now ? '  ← current' : ''}\n      ${v.blurb}`)
+
+        const now = resolveEffort(this.modelConfig.effort);
+        const list = EFFORT_LEVELS
+          .map((e) => `  ${e.label} \`/effort ${e.id}\`${e.id === now.id ? '  ← current' : ''}\n      ${e.blurb}`)
           .join('\n');
-        return { message: `🧭 Reasoning level: **${now.toUpperCase()}** (pro tier only)\n\n${list}` };
+        return {
+          message: `${renamed}🎚️ Effort: **${now.label}** · browser tab: **${now.browser}**\n\n${list}`,
+        };
       }
 
       case 'allowlist': {
@@ -990,7 +977,21 @@ export class AgentLoop {
       try {
         const data = JSON.parse(fs.readFileSync(file, 'utf8'));
         if (data.topology) this.topology = data.topology;
-        if (data.modelConfig) this.modelConfig = { ...this.modelConfig, ...data.modelConfig };
+        if (data.modelConfig) {
+          // modelTier / reasoningLevel / reasoningEffort collapse into one rung.
+          // Folded on read rather than written back, so an older build sharing
+          // the same config keeps working off the keys it understands.
+          // Folded from what is *on disk*, not from the merge: the default
+          // modelConfig already carries `effort: 'standard'`, and merging first
+          // let that default shadow the legacy keys it was supposed to read —
+          // so every pre-/effort config resolved to standard whatever it said.
+          const merged = { ...this.modelConfig, ...data.modelConfig };
+          merged.effort = effortFromConfig(data.modelConfig);
+          delete merged.modelTier;
+          delete merged.reasoningLevel;
+          delete merged.reasoningEffort;
+          this.modelConfig = merged;
+        }
         if (data.commandRules) this.commandRules = { ...this.commandRules, ...data.commandRules };
         if (Array.isArray(data.skillFolders)) this.skillFolders = data.skillFolders;
         // The memory toggle used to live only in the MemoryManager instance, so

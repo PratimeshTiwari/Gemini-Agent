@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { PromptBuilder } from './prompt-builder.js';
+import { effortFromConfig } from './effort.js';
 
 // A workspace with no AGENT.md, no rules and no context folders, so the sizes
 // below measure the prompt itself rather than whatever repo the tests run in.
@@ -106,13 +107,13 @@ describe('PromptBuilder — refresh cadence counts messages, not user turns', ()
 
 describe('PromptBuilder — instructions the model can actually act on', () => {
   test('no message teaches the QUESTION: protocol, which nothing parses', () => {
-    for (const tier of ['flash', 'flash-thinking', 'pro']) {
+    for (const effort of ['flash', 'flash-thinking', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
-      const modelConfig = { modelTier: tier };
+      const modelConfig = { effort };
       const messages = [build(pb, { modelConfig }), driveToRefresh(pb, { modelConfig }).prompt];
       for (const m of messages) {
         assert.doesNotMatch(m, /QUESTION: </,
-          `${tier} still points the model at a protocol with no parser`);
+          `${effort} still points the model at a protocol with no parser`);
       }
       assert.match(messages[0], /ask_question/);
     }
@@ -129,7 +130,7 @@ describe('PromptBuilder — instructions the model can actually act on', () => {
 
   test('the anti-fluff rule does not forbid the thought blocks pro requires', () => {
     const pb = new PromptBuilder(ws, ws);
-    const p = build(pb, { modelConfig: { modelTier: 'pro' } });
+    const p = build(pb, { modelConfig: { effort: 'standard' } });
     assert.match(p, /<thought>/, 'pro asks for thought blocks');
     assert.match(p, /`<thought>` block is the one thing that may precede a tool call/);
   });
@@ -139,11 +140,11 @@ describe('PromptBuilder — the advertised tool set matches the dispatchable one
   const names = (text) => [...text.matchAll(/^## ([a-z_]+)/gm)].map((m) => m[1]);
 
   test('ask_researcher is advertised in every tier', () => {
-    for (const tier of ['flash', 'flash-thinking', 'pro']) {
+    for (const effort of ['flash', 'flash-thinking', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
-      const defs = pb._buildToolDefinitions('single', { modelTier: tier });
+      const defs = pb._buildToolDefinitions('single', { effort });
       assert.ok(names(defs).includes('ask_researcher'),
-        `${tier} omits ask_researcher, which agent-loop dispatches`);
+        `${effort} omits ask_researcher, which agent-loop dispatches`);
     }
   });
 
@@ -178,9 +179,9 @@ describe('PromptBuilder — the advertised tool set matches the dispatchable one
 describe('PromptBuilder — tier differentiation', () => {
   test('flash gets a smaller prompt than pro', () => {
     const pb = new PromptBuilder(ws, ws);
-    const flash = build(pb, { modelConfig: { modelTier: 'flash' } }).length;
+    const flash = build(pb, { modelConfig: { effort: 'flash' } }).length;
     const pb2 = new PromptBuilder(ws, ws);
-    const pro = build(pb2, { modelConfig: { modelTier: 'pro' } }).length;
+    const pro = build(pb2, { modelConfig: { effort: 'standard' } }).length;
     assert.ok(flash < pro / 2, `flash ${flash} vs pro ${pro}`);
   });
 
@@ -190,19 +191,27 @@ describe('PromptBuilder — tier differentiation', () => {
     assert.doesNotMatch(pb._buildToolCallFormat('pro'), /"name": "read_file"/);
   });
 
-  test('legacy reasoningEffort still selects a tier', () => {
-    const pb = new PromptBuilder(ws, ws);
-    assert.strictEqual(pb._effortToTier('low'), 'flash');
-    assert.strictEqual(pb._effortToTier('medium'), 'flash-thinking');
-    assert.strictEqual(pb._effortToTier('high'), 'pro');
-    assert.strictEqual(pb._effortToTier(undefined), 'pro');
+  // The three old keys are folded into one rung on read, so a config written
+  // by any earlier build still lands on the profile it used to get.
+  test('a config written before /effort still selects the right profile', () => {
+    assert.strictEqual(effortFromConfig({ modelTier: 'flash' }), 'flash');
+    assert.strictEqual(effortFromConfig({ reasoningEffort: 'low' }), 'flash');
+    assert.strictEqual(effortFromConfig({ reasoningEffort: 'medium' }), 'flash-thinking');
+    assert.strictEqual(effortFromConfig({ modelTier: 'pro', reasoningLevel: 'deep' }), 'deep');
+    assert.strictEqual(effortFromConfig({}), 'standard');
+  });
+
+  // "flash tier, deep reasoning" was representable and meant nothing. The tier
+  // is what the prompt branched on, so it wins and the level is dropped.
+  test('a combination that never made sense resolves to the half that did', () => {
+    assert.strictEqual(effortFromConfig({ modelTier: 'flash', reasoningLevel: 'deep' }), 'flash');
   });
 });
 
 describe('PromptBuilder — pro reasoning levels', () => {
-  const proPrompt = (reasoningLevel) => {
+  const proPrompt = (effort) => {
     const pb = new PromptBuilder(ws, ws);
-    return build(pb, { modelConfig: { modelTier: 'pro', reasoningLevel } });
+    return build(pb, { modelConfig: { effort } });
   };
 
   test('brief skips the planning ceremony; standard and deep require it', () => {
@@ -234,21 +243,21 @@ describe('PromptBuilder — pro reasoning levels', () => {
   test('an unknown or missing level falls back to standard, never to nothing', () => {
     for (const bad of [undefined, null, '', 'ultra', 42, {}]) {
       const pb = new PromptBuilder(ws, ws);
-      const p = build(pb, { modelConfig: { modelTier: 'pro', reasoningLevel: bad } });
-      assert.match(p, /RESTATE AND DECOMPOSE/, `level ${JSON.stringify(bad)} produced no protocol`);
+      const p = build(pb, { modelConfig: { effort: bad } });
+      assert.match(p, /RESTATE AND DECOMPOSE/, `effort ${JSON.stringify(bad)} produced no protocol`);
     }
   });
 
   test('levels do not leak into the flash tiers, which have no room for them', () => {
     const pb = new PromptBuilder(ws, ws);
-    const p = build(pb, { modelConfig: { modelTier: 'flash', reasoningLevel: 'deep' } });
+    const p = build(pb, { modelConfig: { effort: 'flash' } });
     assert.doesNotMatch(p, /RESTATE AND DECOMPOSE/);
-    assert.doesNotMatch(p, /reasoning level/);
+    assert.doesNotMatch(p, /Adversarial self-review/);
   });
 
   test('the periodic reminder repeats the level actually in force', () => {
     const pb = new PromptBuilder(ws, ws);
-    const modelConfig = { modelTier: 'pro', reasoningLevel: 'brief' };
+    const modelConfig = { effort: 'brief' };
     build(pb, { modelConfig });
     const { prompt } = driveToRefresh(pb, { modelConfig });
     assert.match(prompt, /Investigate → Implement → Verify/);
@@ -270,10 +279,10 @@ describe('PromptBuilder — the solo topology tells the truth about delegation',
 
 describe('PromptBuilder — the ask_question contract', () => {
   test('every tier is told a prose question does not reach the user', () => {
-    for (const tier of ['flash', 'flash-thinking', 'pro']) {
+    for (const effort of ['flash', 'flash-thinking', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
-      const p = build(pb, { modelConfig: { modelTier: tier } });
-      assert.match(p, /ask_question/, `${tier} does not mention the tool`);
+      const p = build(pb, { modelConfig: { effort } });
+      assert.match(p, /ask_question/, `${effort} does not mention the tool`);
     }
     const pb = new PromptBuilder(ws, ws);
     assert.match(build(pb), /a question written in prose is not a question/i);
@@ -403,11 +412,11 @@ describe('PromptBuilder — the single-response rule is stated, not chanted', ()
   });
 
   test('the rule is still stated where it is read at least once', () => {
-    for (const tier of ['flash', 'flash-thinking', 'pro']) {
+    for (const effort of ['flash', 'flash-thinking', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
-      const turn0 = build(pb, { modelConfig: { modelTier: tier } });
+      const turn0 = build(pb, { modelConfig: { effort } });
       assert.match(turn0, /one answer per turn/i,
-        `${tier} states it nowhere — retiring the trailer must not delete the rule`);
+        `${effort} states it nowhere — retiring the trailer must not delete the rule`);
     }
   });
 

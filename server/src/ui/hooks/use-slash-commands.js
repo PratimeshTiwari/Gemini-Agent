@@ -47,8 +47,7 @@ export async function handleSlashCommand(query, {
           '',
           '### 🧠 AI & LLM Settings',
           '  /mode             - Solo, or Duo with a reviewer on the other model',
-          '  /model            - Switch model tier (Flash, Flash Thinking, Pro)',
-          '  /reasoning        - How hard Pro plans before acting (Brief, Standard, Deep)',
+          '  /effort           - How hard to work, and which browser tab it expects',
           '  /allowlist        - Manage auto-approved/blocked command rules',
           '  /config           - Configure models for specific roles',
           '  /plan             - Switch to Plan Mode (requires approval for edits)',
@@ -133,14 +132,11 @@ export async function handleSlashCommand(query, {
       return;
     }
 
-    if (command === 'model') {
-      setActiveMenu({ type: 'model' });
-      setIsProcessing(false);
-      return;
-    }
-
-    if (command === 'reasoning' && args.length === 0) {
-      setActiveMenu({ type: 'reasoning' });
+    // /model and /reasoning were two knobs with five meaningful combinations.
+    // Both names still work — typing one you have used for months and being
+    // told it does not exist is a worse trade than one line of redirection.
+    if ((command === 'effort' || command === 'model' || command === 'reasoning') && args.length === 0) {
+      setActiveMenu({ type: 'effort' });
       setIsProcessing(false);
       return;
     }
@@ -411,7 +407,7 @@ export async function handleSlashCommand(query, {
 
 
     // Handle standard agent loop commands
-    const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'model', 'reasoning', 'allowlist', 'github'];
+    const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'effort', 'model', 'reasoning', 'allowlist', 'github'];
     if (validAgentCommands.includes(command)) {
       // A command that throws must still hand the prompt back. Without this the
       // rejection escaped, `setIsProcessing(false)` below never ran, and the CLI

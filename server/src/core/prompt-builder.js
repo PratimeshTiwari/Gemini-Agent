@@ -18,6 +18,7 @@ import os from 'os';
 import { resolve, relative, join, dirname } from 'path';
 import { CodeMinifier } from '../context/code-minifier.js';
 import { skillCatalogue } from './skills.js';
+import { resolveEffort } from './effort.js';
 import { parseMemory, readMemoryEnabled } from '../context/memory-manager.js';
 
 // How often to send the condensed reminder, counted in MESSAGES pushed to the tab —
@@ -232,16 +233,18 @@ export class PromptBuilder {
       ? 'You are in AUTO MODE. Safe operations (reads, searches, small additions) will be auto-applied. Risky operations (large rewrites, deletions, commands) will still require user approval.'
       : 'You are in PLAN MODE. All file modifications and command executions require user approval before being applied.';
 
-    // Resolve the model tier: use explicit modelTier if set, fall back to reasoningEffort mapping
-    const modelTier = modelConfig.modelTier || this._effortToTier(modelConfig.reasoningEffort || 'high');
+    // One setting decides both. They used to be stored separately and could
+    // disagree — "flash tier, deep reasoning" was representable and meant
+    // nothing, because the flash profile has no reasoning section to deepen.
+    const effort = resolveEffort(modelConfig.effort);
+    const modelTier = effort.tier;
+    const reasoningLevel = effort.level || 'standard';
 
     // Tier-adaptive core instructions
     const coreInstructions = modelTier === 'flash'
       ? this._buildFlashCoreInstructions()
       : this._buildFullCoreInstructions(modelTier);
 
-    // Reasoning protocol (the main tier differentiation)
-    const reasoningLevel = this._normalizeLevel(modelConfig.reasoningLevel);
     const reasoningInstructions = this._getReasoningInstructions(modelTier, reasoningLevel);
 
     // Tool call format (Flash gets examples, Pro gets description only)
@@ -252,7 +255,7 @@ export class PromptBuilder {
 You are currently operating in the user's workspace at: \`${this.workspace}\`
 Your OWN source code (the Gemini-Agent server) is at: \`${this.agentSourceDir}\`
 If the user asks you to modify yourself, you can read/write files directly in \`${this.agentSourceDir}\`.
-Model tier: ${modelTier}${modelTier === 'pro' ? ` (reasoning level: ${reasoningLevel})` : ''}
+Effort: ${effort.id} — ${effort.blurb}
 </self_awareness>`;
 
     const combined = `
@@ -325,14 +328,6 @@ Your job is to execute the task using your read-only tools if necessary and retu
 </role>
 
 `;
-  }
-
-  /**
-   * Map legacy reasoningEffort values to model tier names.
-   */
-  _effortToTier(effort) {
-    const map = { low: 'flash', medium: 'flash-thinking', high: 'pro' };
-    return map[effort?.toLowerCase()] || 'pro';
   }
 
   /**
@@ -661,7 +656,7 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
   }
 
   _buildToolDefinitions(topology = 'single', modelConfig = {}) {
-    const tier = modelConfig.modelTier || this._effortToTier(modelConfig.reasoningEffort || 'high');
+    const tier = resolveEffort(modelConfig.effort).tier;
     const isFlash = tier === 'flash';
 
     // Flash gets shorter descriptions. Pro/Flash-thinking gets full descriptions.
@@ -885,7 +880,7 @@ Full parameter schemas were given earlier in this chat — scroll back to them r
    */
   _buildCondensedReminder(mode, objective = '', modelConfig = {}) {
     const modeStr = mode === 'auto' ? 'AUTO MODE (safe ops auto-applied)' : 'PLAN MODE (all edits need approval)';
-    const tier = modelConfig.modelTier || this._effortToTier(modelConfig.reasoningEffort || 'high');
+    const tier = resolveEffort(modelConfig.effort).tier;
 
     if (tier === 'flash') {
       // Ultra-short reminder for Flash
@@ -906,7 +901,7 @@ Quick rules:
 - Tool call format: \`\`\`json {"name": "tool_name", "args": {...}} \`\`\`
 - If a requirement is ambiguous, use the \`ask_question\` tool. Do not just ask textually.
 - Guardrails: If edit_file fails with oldText mismatch, immediately use read_file to get the exact lines.
-${tier === 'pro' ? this._reminderLineForLevel(this._normalizeLevel(modelConfig.reasoningLevel)) : '- Think step by step. Be concise but thorough.'}
+${tier === 'pro' ? this._reminderLineForLevel(resolveEffort(modelConfig.effort).level) : '- Think step by step. Be concise but thorough.'}
 </system_reminder>`;
   }
 

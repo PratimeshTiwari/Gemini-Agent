@@ -5,6 +5,7 @@ import SelectInput from 'ink-select-input';
 import { QuestionPrompt } from './QuestionPrompt.jsx';
 import { summarizeDiff, previewRows } from '../diff-preview.js';
 import { oneLine } from '../format.js';
+import { EFFORT_LEVELS, resolveEffort } from '../../core/effort.js';
 import { listWorkspaceCandidates } from '../../core/workspaces.js';
 import { skillsDir } from '../../core/paths.js';
 import { FOCUS_INPUT } from '../constants.js';
@@ -139,46 +140,31 @@ export function Menus({
           </Box>
         )}
 
-        {activeMenu?.type === 'model' && (
-          <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-            <Text bold color="cyan">Select Model Tier:</Text>
-            <Text dimColor>  Tip: Also switch the model in your Gemini browser tab</Text>
-            <SelectInput
-              items={[
-                { label: `⚡ Flash (Fast, minimal reasoning)${agentLoop.modelConfig?.modelTier === 'flash' ? '  ← (Current)' : ''}`, value: 'flash' },
-                { label: `🧠 Flash Thinking (Moderate reasoning)${agentLoop.modelConfig?.modelTier === 'flash-thinking' ? '  ← (Current)' : ''}`, value: 'flash-thinking' },
-                { label: `🔬 Pro (Deep principal-engineer reasoning)${agentLoop.modelConfig?.modelTier === 'pro' ? '  ← (Current)' : ''}`, value: 'pro' }
-              ]}
-              onSelect={async (item) => {
-                setActiveMenu(null);
-                await agentLoop.handleSlashCommand('model', [item.value]);
-                setHistory([...agentLoop.conversationHistory]);
-                setFocus(FOCUS_INPUT);
-              }}
-            />
-          </Box>
-        )}
-
-        {activeMenu?.type === 'reasoning' && (
-          <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-            <Text bold color="cyan">🧭 Reasoning level</Text>
-            <Text dimColor>How much planning Pro does before it touches anything.</Text>
-            <Text dimColor>{'   '}Ignored on the Flash tiers.</Text>
-            <SelectInput
-              items={[
-                { label: `🏃 Brief — investigate, implement, verify${agentLoop.modelConfig?.reasoningLevel === 'brief' ? '  ← (Current)' : ''}`, value: 'brief' },
-                { label: `🪜 Standard — decompose into a checklist first${(agentLoop.modelConfig?.reasoningLevel || 'standard') === 'standard' ? '  ← (Current)' : ''}`, value: 'standard' },
-                { label: `🔭 Deep — enumerate approaches, then self-review${agentLoop.modelConfig?.reasoningLevel === 'deep' ? '  ← (Current)' : ''}`, value: 'deep' },
-              ]}
-              onSelect={async (item) => {
-                setActiveMenu(null);
-                const result = await agentLoop.handleSlashCommand('reasoning', [item.value]);
-                setHistory(prev => [...prev, { role: 'system', content: result.message }]);
-                setFocus(FOCUS_INPUT);
-              }}
-            />
-          </Box>
-        )}
+        {activeMenu?.type === 'effort' && (() => {
+          const current = resolveEffort(agentLoop.modelConfig?.effort).id;
+          return (
+            <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+              <Text bold color="cyan">🎚️  How hard should it work?</Text>
+              <Text dimColor wrap="wrap">
+                One ladder. It sets both the prompt profile and which browser tab it
+                is written for — set your Gemini tab to match.
+              </Text>
+              <SelectInput
+                items={EFFORT_LEVELS.map((e) => ({
+                  label: `${e.label}${e.id === current ? '  ← current' : ''}  ·  ${e.browser}`,
+                  value: e.id,
+                }))}
+                onSelect={async (item) => {
+                  setActiveMenu(null);
+                  const result = await agentLoop.handleSlashCommand('effort', [item.value]);
+                  setHistory(prev => [...prev, { role: 'assistant', content: result.message, isLocal: true }]);
+                  setFocus(FOCUS_INPUT);
+                }}
+              />
+              <Text dimColor>↑↓ move · enter choose · esc cancel</Text>
+            </Box>
+          );
+        })()}
 
         {activeMenu?.type === 'config_role' && (
           <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
