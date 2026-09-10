@@ -323,15 +323,16 @@ Memory is **scoped and never walked** (`.agent/<scope>/memory.md`), kept separat
 `AGENT.md` so that file can always be trusted to say what the human wrote. Promoting a learned
 fact to a standing instruction is a manual edit, deliberately.
 
-| Phase | Change | Removes |
-| --- | --- | --- |
-| 0 | `codeDir`; `AGENT.md` and skills read from the code location, not the workspace; watcher scoped | — (bug fixes) |
-| 1 | Delete `semantic_search` + `workspace-indexer` + `workspace-summarizer` + dead `ContextManager` code | ~290 lines, `madge`, the startup index build |
-| 2 | One instruction surface: `AGENT.md`, walked | `rules.md`, `mistakesPath`, `/init-skills`, `contextFolders`, `/context` |
-| 3 | Memory as `.agent/<scope>/memory.md`, index-only in the prompt | the write-only trap |
-| 4 | One model picker, five valid states, `/reasoning` → `/effort` | `reasoningEffort`, `_effortToTier` |
-| 5 | Keep `--scope` and derived resolution; delete the runtime switcher | `/scope`, its picker, `setScope`, the reload path |
-| 6 | Per-model extension lock; derive topology from `modelConfig` | `topology` as a knob, `/mode`, the mode menu |
+| Phase | Change | Removes | Status |
+| --- | --- | --- | --- |
+| 0 | `codeDir`; `AGENT.md` and skills read from the code location, not the workspace; watcher scoped | — (bug fixes) | **done** `5513557` |
+| 1 | Delete `semantic_search` + `workspace-indexer` + `workspace-summarizer` + dead `ContextManager` code | ~290 lines, `madge`, the startup index build | **done** `0b93bf6` |
+| 7 | Two bridges only; drop the Claude bridge, `swarm`, `ask_reasoner` | ~520 lines, 14 DOM selectors | **done** `8e60a24` |
+| 2 | One instruction surface: `AGENT.md`, walked | `rules.md`, `mistakesPath`, `/init-skills`, `contextFolders`, `/context` | next |
+| 3 | Memory as `.agent/<scope>/memory.md`, index-only in the prompt | the write-only trap | |
+| 4 | One model picker, five valid states, `/reasoning` → `/effort` | `reasoningEffort`, `_effortToTier` | |
+| 5 | Keep `--scope` and derived resolution; delete the runtime switcher | `/scope`, its picker, `setScope`, the reload path | |
+| 6 | Per-model extension lock; derive topology from `modelConfig` | `topology` as a knob, `/mode`, the mode menu | |
 
 **Why `semantic_search` goes (phase 1).** Measured: its tokenizer splits on non-alphanumerics
 only, so `getUserById` is one token and the query `user` can never match it — broken for the
