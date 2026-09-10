@@ -2,9 +2,10 @@
  * Values the UI shares across modules. No behaviour, no imports.
  */
 
-export /** Slash commands offered by the palette. Keep in sync with the /help output. */
+export /** Slash commands offered by the palette, and the source `/help` prints from. */
 const SLASH_COMMANDS = [
-  { name: 'help', desc: 'Show all available commands' },
+  { name: 'help', desc: 'Keys, and every command' },
+  { name: 'settings', desc: 'Everything that is set, on one page' },
   { name: 'effort', desc: 'How hard to work, and which browser tab it expects' },
   { name: 'allowlist', desc: 'Manage auto-approved/blocked command rules' },
   { name: 'config', desc: 'Which model implements, and which one reviews it' },
@@ -21,6 +22,7 @@ const SLASH_COMMANDS = [
   { name: 'skills', desc: 'List, create and open skills the agent can load' },
   { name: 'github', desc: 'Run GitHub commands (e.g. /github refresh)' },
   { name: 'image', desc: 'Attach an image — a path, or bare for the clipboard' },
+  { name: 'plans', desc: 'Past plans, newest first' },
   { name: 'logs', desc: 'What has been failing, grouped by flow' },
   { name: 'agent-dir', desc: 'Point the workspace at the agent\'s own source' },
   { name: 'restart', desc: 'Restart the server' },

@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { PromptBuilder } from './prompt-builder.js';
+import { PromptBuilder, stripImageData } from './prompt-builder.js';
 import { effortFromConfig } from './effort.js';
 
 // A workspace with no AGENT.md, no rules and no context folders, so the sizes
@@ -425,5 +425,33 @@ describe('PromptBuilder — the single-response rule is stated, not chanted', ()
     const envelope = pb.buildToolResultPrompt('read_file', 'x');
     assert.match(envelope, /Reply once, with exactly one of/);
     assert.doesNotMatch(envelope, /No drafts/);
+  });
+});
+
+describe('stripImageData — what goes out is not what is kept', () => {
+  const dataUrl = `data:image/png;base64,${'A'.repeat(2000)}`;
+  const message = `[Image attached: /tmp/shot.png (14KB, image/png)]\n\n<image_data>\n${dataUrl}\n</image_data>\n\nwhat is wrong here?`;
+
+  test('the payload itself is untouched — the bridge needs it whole', () => {
+    assert.ok(message.includes(dataUrl), 'sanity: the fixture carries the data URL');
+  });
+
+  test('the remembered form keeps the question and drops the megabyte', () => {
+    const kept = stripImageData(message);
+    assert.doesNotMatch(kept, /base64,A/);
+    assert.match(kept, /what is wrong here\?/);
+    assert.match(kept, /Image attached: \/tmp\/shot\.png/, 'you can still see one was sent');
+    assert.ok(kept.length < 300, `still ${kept.length} chars`);
+  });
+
+  test('several images in one message all go', () => {
+    const two = `${message}\n${message}`;
+    assert.doesNotMatch(stripImageData(two), /base64,A/);
+  });
+
+  test('a message with no image is returned unchanged', () => {
+    assert.equal(stripImageData('just a question'), 'just a question');
+    assert.equal(stripImageData(''), '');
+    assert.equal(stripImageData(null), '');
   });
 });

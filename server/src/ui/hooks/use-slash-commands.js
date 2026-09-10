@@ -4,7 +4,9 @@ import { fileURLToPath } from 'url';
 import * as paths from '../../core/paths.js';
 import { createSkill, listSkills, skillSearchPath } from '../../core/skills.js';
 import { readErrors, summarizeErrors, clearErrors, FLOWS } from '../../core/error-log.js';
+import { listPlans } from '../../core/plan-archive.js';
 import { resolveWorkspaceInput, validateWorkspace } from '../../core/workspaces.js';
+import { SLASH_COMMANDS } from '../constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -28,52 +30,30 @@ export async function handleSlashCommand(query, {
     const command = parts[0].toLowerCase();
     const args = parts.slice(1);
 
-    if (command === 'shortcuts' || command === 'help') {
-      const shortcutsMessage = {
+    // Generated from SLASH_COMMANDS, not written out beside it. The hand-kept
+    // copy had drifted twice — listing /init-skills and /paste-image after both
+    // were gone, and describing /memory as "view memory" while it toggled it —
+    // because nothing made the two lists agree.
+    if (command === 'help' || command === 'shortcuts') {
+      const width = Math.max(...SLASH_COMMANDS.map((c) => c.name.length));
+      setHistory(prev => [...prev, { role: 'user', content: query }, {
         role: 'assistant',
         isLocal: true,
         content: [
-          '### ⌨️ UI & Navigation',
-          '  [Tab]             - Complete a slash command, or return to the prompt',
-          '  [Up/Down]         - Prompt history (or the list, on the GitHub tab)',
-          '  [Ctrl+E]          - Expand/collapse every step and tool output',
-          '  [Ctrl+U]          - Clear the prompt (and any attachments on it)',
-          '  [Ctrl+W]          - Delete the word behind the cursor',
-          '  [Ctrl+T]          - Toggle the Agent Terminal at the bottom of the screen',
-          '  [Ctrl+O]          - Toggle between Agent Chat and GitHub PR Dashboard',
-          '  [Shift+Tab]       - Cycle Plan <-> Auto mode',
-          '  [Esc]             - Stop the run, or close whatever is open',
-          "  :stop             - Immediately cancel the agent's current generation",
+          '### ⌨️  Keys',
+          '  shift+tab   plan ⇄ auto',
+          '  ctrl+e      expand or collapse every step',
+          '  ctrl+t      shell',
+          '  ctrl+o      GitHub dashboard',
+          '  ctrl+u      clear the input   ·   ctrl+w   delete the last word',
+          '  esc         stop the run, or close a menu',
           '',
-          '### 🧠 AI & LLM Settings',
-          '  /effort           - How hard to work, and which browser tab it expects',
-          '  /allowlist        - Manage auto-approved/blocked command rules',
-          '  /config           - Which model implements, and which one reviews it',
-          '  /plan             - Switch to Plan Mode (requires approval for edits)',
-          '  /auto             - Switch to Auto Mode (auto-applies safe edits)',
+          '### ⌨️  Commands',
+          ...SLASH_COMMANDS.map((c) => `  /${c.name.padEnd(width)}   ${c.desc}`),
           '',
-          '### 📁 Workspace & Context',
-          '  /workspace <path> - Change the active workspace (checked before it is set)',
-          '  /set-workspace    - Pick a workspace from a list of nearby folders',
-          '  /memory           - What the agent has learned (on|off|forget <n>)',
-          '  /context          - Show what is in the context window',
-          '  /compact          - Compact history to save tokens',
-          '  /clear            - Forget this conversation, keep the browser chat',
-          '  /new              - Fresh session, and a fresh chat in the browser too',
-          '  /undo             - Undo the last step/action',
-          '  /skills           - List, create and open skills (.agent/skills/*.md)',
-          '  /skills dir       - Show or add directories skills are loaded from',
-          '',
-          '### 🛠️ System & Tools',
-          '  /github           - Run GitHub specific commands (e.g., /github refresh)',
-          '  /image            - Attach an image — a path, or bare for the clipboard',
-          '  /logs             - What has been failing, grouped by flow',
-          '  /agent-dir        - Point the workspace at the agent\'s own source',
-          '  /restart          - Restart the server',
-          '  /exit             - Quit the agent'
-        ].join('\n')
-      };
-      setHistory(prev => [...prev, { role: 'user', content: query }, shortcutsMessage]);
+          '_Typing `/` filters this same list as you go. `/settings` shows what is configured._',
+        ].join('\n'),
+      }]);
       setIsProcessing(false);
       return;
     }
@@ -85,16 +65,28 @@ export async function handleSlashCommand(query, {
       return;
     }
 
+    // Exit with the code src/index.js watches for, and it relaunches us. The
+    // old version touched index.js's mtime, which does something only under
+    // `tsx --watch` and nothing under `agent-cli` — where it printed
+    // "Restarting server..." and stayed exactly where it was.
     if (command === 'restart') {
-      const indexPath = path.resolve(__dirname, '../..', 'index.js');
-      const now = new Date();
-      try {
-        fs.utimesSync(indexPath, now, now);
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '🔄 Restarting server...', isLocal: true }]);
-      } catch (err) {
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '❌ Failed to restart server: ' + err.message, isLocal: true }]);
+      if (!process.env.AGENT_CLI_SUPERVISED) {
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant',
+          isLocal: true,
+          content: 'This process has no supervisor to restart it — it was started directly '
+            + 'rather than through `agent-cli`.\n\nQuit with `/exit` and start it again.',
+        }]);
+        setIsProcessing(false);
+        return;
       }
+      setHistory(prev => [...prev, { role: 'user', content: query }, {
+        role: 'assistant', content: '🔄 Restarting…', isLocal: true,
+      }]);
       setIsProcessing(false);
+      // Let the frame paint, then leave. Ink restores the terminal on exit,
+      // which is why this is an ordinary exit rather than an exec in place.
+      setTimeout(() => process.exit(75), 120);
       return;
     }
 
@@ -162,6 +154,32 @@ export async function handleSlashCommand(query, {
             + 'Scopes exist when several repos share one `.agent/` from a parent folder. Put '
             + '`.agent/` in the folder above your repos, then start with `--scope <repo>`.',
       }]);
+      setIsProcessing(false);
+      return;
+    }
+
+    // Plans were archived to .agent/artifacts/plans/ and nothing listed them,
+    // so they piled up somewhere no command would show them — which is its own
+    // way of losing the plan you wanted back.
+    if (command === 'settings' || command === 'config-all') {
+      setActiveMenu({ type: 'settings', query: '' });
+      setIsProcessing(false);
+      return;
+    }
+
+    if (command === 'plans') {
+      const plans = listPlans(agentLoop.workspace);
+      if (plans.length === 0) {
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant',
+          isLocal: true,
+          content: 'No past plans yet.\n\nEach plan is copied to `.agent/artifacts/plans/` when '
+            + 'the next one replaces it, so this fills up as you go.',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+      setActiveMenu({ type: 'plans', plans });
       setIsProcessing(false);
       return;
     }
@@ -413,7 +431,7 @@ export async function handleSlashCommand(query, {
         }]);
       }
     } else {
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ Unrecognized command: \`/${command}\`\nType \`/help\` to see the list of available commands.`, isLocal: true }]);
+      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ No such command: \`/${command}\`\nType \`/\` on its own to see what there is.`, isLocal: true }]);
     }
     setIsProcessing(false);
     return;

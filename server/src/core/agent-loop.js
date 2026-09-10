@@ -36,6 +36,7 @@ function oneLineError(result) {
 }
 import * as paths from './paths.js';
 import { EFFORT_LEVELS, resolveEffort, isEffort, effortFromConfig } from './effort.js';
+import { stripImageData } from './prompt-builder.js';
 import { resolveWorkspaceInput, validateWorkspace, rememberWorkspace } from './workspaces.js';
 import { z } from 'zod';
 import { SessionStore } from '../storage/session-store.js';
@@ -161,18 +162,25 @@ export class AgentLoop {
     }
 
     try {
-      // Add user message to history
+      // The image goes to the bridge, never into the record. `/image` inlines
+      // the whole file as a base64 data URL so the content script can rebuild
+      // it as a real File and paste it — but stored verbatim that put ~1.4x the
+      // file's bytes into conversationHistory, into history.jsonl *twice*
+      // (local and home), into every compaction prompt, and into currentObjective,
+      // which is what a provider-error retry re-sends. One screenshot poisoned
+      // the rest of the session.
+      const remembered = stripImageData(content);
       const turn = {
         role: 'user',
-        content,
+        content: remembered,
         timestamp: Date.now(),
       };
       this.conversationHistory.push(turn);
       this.sessionStore.appendTurn(turn);
 
-      // Workspace summary injection removed
-
-      this.currentObjective = content;
+      // Retries re-send this. The attachment is already in the browser's own
+      // conversation by then, so re-pasting it would duplicate the upload.
+      this.currentObjective = remembered;
       // One tool-amnesia retry per user turn; see handleGeminiResponse.
       this._deniedToolsOnce = false;
       // Auto-heal budget, per user turn.
@@ -1762,36 +1770,39 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
     return { success: true, result: `## 🧠 AI Context Analysis\n\n${finalOutput}`, turns: turnCount };
   }
 
+  /**
+   * What is in the context window right now.
+   *
+   * Plain markdown, not a hand-drawn box. The box was built by padding strings
+   * with `padEnd` — but those strings carried chalk's ANSI escapes and an emoji,
+   * so the padding counted escape bytes and code units rather than the columns
+   * the terminal actually draws. Every row came out a different width and the
+   * right border zig-zagged. Nothing here needs to be aligned to a border that
+   * cannot be aligned.
+   */
   async _getContextInfo() {
-    const historyTokenEstimate = this.contextManager 
-      ? import('../context/token-counter.js').then(m => m.TokenCounter.estimateHistoryTokens(this.conversationHistory)) 
-      : 0; // Token counting is now offloaded, but we can do a rough fallback:
-    
-    // For synchronous stats, we'll just require TokenCounter directly since it's ES module, 
-    // wait I didn't import TokenCounter at the top. I'll just use the old fallback for synchronous display.
-    const syncTokenEstimate = this.conversationHistory.reduce((sum, turn) => {
-      const text = turn.content || JSON.stringify(turn.result || turn.args || '');
-      return sum + Math.ceil(text.length / 4);
-    }, 0);
+    const { TokenCounter } = await import('../context/token-counter.js');
+    const used = TokenCounter.estimateHistoryTokens(this.conversationHistory);
+    const limit = this.contextManager?.maxTokens || 50000;
+    const pct = Math.min(100, Math.round((used / limit) * 100));
 
-    const chalk = (await import('chalk')).default;
-    
-    const tokenLimit = 50000;
-    const tokenPct = Math.round((syncTokenEstimate / tokenLimit) * 100);
-    const tokenColor = tokenPct > 80 ? chalk.red : tokenPct > 50 ? chalk.yellow : chalk.green;
-    
-    const message = [
-      chalk.dim('╭─ ') + chalk.bold('Context Overview') + chalk.dim(' ─────────────────────────────────────╮'),
-      chalk.dim('│') + ' Mode:            ' + (this.mode === 'plan' ? chalk.cyan('Plan Mode 🔒') : chalk.magenta('Auto Mode ⚡')) + ' '.repeat(this.mode === 'plan' ? 16 : 16) + chalk.dim('│'),
-      chalk.dim('│') + ' Workspace:       ' + chalk.blue(this.workspace.substring(0, 30) + (this.workspace.length > 30 ? '...' : ' '.repeat(30 - this.workspace.length))) + chalk.dim('│'),
-      chalk.dim('│') + ' Turns:           ' + chalk.white(this.conversationHistory.length.toString().padEnd(30)) + chalk.dim('│'),
-      chalk.dim('│') + ' Est. Tokens:     ' + tokenColor(`~${syncTokenEstimate.toLocaleString()} / ${tokenLimit.toLocaleString()}`).padEnd(30) + chalk.dim('│'),
-      chalk.dim('│') + ' Pending Diffs:   ' + chalk.white(this.diffEngine.getPendingDiffs().length.toString().padEnd(30)) + chalk.dim('│'),
-      chalk.dim('│') + ' Applied Diffs:   ' + chalk.white(this.diffEngine.appliedDiffs.length.toString().padEnd(30)) + chalk.dim('│'),
-      chalk.dim('╰────────────────────────────────────────────────────────╯')
-    ].join('\n');
+    const turns = this.conversationHistory.length;
+    const pending = this.diffEngine.getPendingDiffs().length;
+    const applied = this.diffEngine.appliedDiffs.length;
 
-    return { message };
+    const rows = [
+      ['Mode', this.mode === 'plan' ? 'plan — every edit needs approval' : 'auto — safe edits apply on their own'],
+      ['Turns', `${turns}`],
+      ['Tokens', `~${used.toLocaleString()} / ${limit.toLocaleString()}  (${pct}%)`],
+      ['Diffs', `${pending} pending · ${applied} applied`],
+      ['Workspace', this.workspace],
+    ];
+
+    return {
+      message: `### 📊 Context\n\n`
+        + rows.map(([k, v]) => `  ${k.padEnd(10)} ${v}`).join('\n')
+        + `\n\n_\`/compact\` to summarise it · \`/clear\` to drop it_`,
+    };
   }
 
   /**

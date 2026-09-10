@@ -2,10 +2,12 @@ import React from 'react';
 import { exec } from 'child_process';
 import { Box, Text, useInput } from 'ink';
 import SelectInput from 'ink-select-input';
+import TextInput from 'ink-text-input';
 import { QuestionPrompt } from './QuestionPrompt.jsx';
 import { summarizeDiff, previewRows } from '../diff-preview.js';
 import { oneLine } from '../format.js';
 import { EFFORT_LEVELS, resolveEffort } from '../../core/effort.js';
+import { describeSettings, filterSettings } from '../../core/settings.js';
 import { listWorkspaceCandidates } from '../../core/workspaces.js';
 import { skillsDir } from '../../core/paths.js';
 import { FOCUS_INPUT } from '../constants.js';
@@ -18,6 +20,13 @@ import { FOCUS_INPUT } from '../constants.js';
  * approval that could be triggered by a stray 'y' in typed text is how edits
  * used to get applied without anyone agreeing to them.
  */
+/** `2026-09-10 14:32`, in the reader's own timezone. */
+function localStamp(when) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())} `
+    + `${pad(when.getHours())}:${pad(when.getMinutes())}`;
+}
+
 export function Menus({
   activeMenu,
   setActiveMenu,
@@ -195,6 +204,96 @@ export function Menus({
             </Box>
           );
         })()}
+
+        {/*
+          `/help` answers "what can I type?". This answers "how is this set up?",
+          which had no answer — it was spread across /config, /effort, /memory,
+          /allowlist and the status bar, one command per fact. Picking a row
+          runs the command that already owns that setting, so the page is a way
+          in rather than a second place to change things.
+        */}
+        {activeMenu?.type === 'settings' && (() => {
+          const rows = describeSettings(agentLoop);
+          const query = activeMenu.query || '';
+          const matches = filterSettings(rows, query);
+          // The list lives in Ink's repainted frame, so it is bounded and says
+          // how much it is not showing. See ui/constants.js.
+          const LIMIT = 8;
+          const hidden = Math.max(0, matches.length - LIMIT);
+          const width = Math.max(...rows.map((r) => r.label.length), 0);
+          const vwidth = Math.min(26, Math.max(...rows.map((r) => r.value.length), 0));
+
+          return (
+            <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+              <Text bold color="cyan">⚙️  Settings</Text>
+              <Box>
+                <Text dimColor>{'⌕ '}</Text>
+                <TextInput
+                  value={query}
+                  placeholder="filter…"
+                  onChange={(value) => setActiveMenu((m) => ({ ...m, query: value }))}
+                />
+              </Box>
+              {matches.length === 0 ? (
+                <Text dimColor>{`  nothing matches “${query}”`}</Text>
+              ) : (
+                <SelectInput
+                  limit={LIMIT}
+                  items={matches.map((row) => ({
+                    // Two columns, so the values read as a column rather than
+                    // as prose that happens to follow a label.
+                    label: `${row.label.padEnd(width)}   ${oneLine(row.value, 26).padEnd(vwidth)}`
+                      + `${row.hint ? `  ${row.hint}` : ''}`,
+                    value: row.run || '',
+                    key: row.label,
+                  }))}
+                  onSelect={(item) => {
+                    setActiveMenu(null);
+                    setFocus(FOCUS_INPUT);
+                    if (item.value) handleSubmit(item.value);
+                  }}
+                />
+              )}
+              {hidden > 0 ? <Text dimColor>{`  ↓ ${hidden} more — type to narrow`}</Text> : null}
+              <Text dimColor>type to filter · ↑↓ move · enter change · esc close</Text>
+            </Box>
+          );
+        })()}
+
+        {activeMenu?.type === 'plans' && (
+          <Box flexDirection="column" borderStyle="single" borderColor="blue" padding={1}>
+            <Text bold color="blue">
+              📐  {activeMenu.plans.length} past plan{activeMenu.plans.length === 1 ? '' : 's'}
+            </Text>
+            <Text dimColor wrap="wrap">
+              Each one was archived when the next replaced it. Enter opens it in your editor.
+            </Text>
+            <SelectInput
+              limit={10}
+              items={activeMenu.plans.map((plan) => ({
+                // Date first because that is how you look for one, then the
+                // heading, because a column of timestamps says nothing about
+                // which plan you actually want back.
+                // Local parts, not toISOString(): the stamp in the filename was
+                // written in local time, so converting it to UTC to display it
+                // moved every plan by the offset — a plan archived at 14:32
+                // listed itself as 09:02.
+                label: `${plan.when ? localStamp(plan.when) : '                '}`
+                  + `  ${oneLine(plan.title || plan.name, 52)}`,
+                value: plan.path,
+                key: plan.name,
+              }))}
+              onSelect={(item) => {
+                setActiveMenu(null);
+                setFocus(FOCUS_INPUT);
+                try {
+                  exec(`"${agentLoop.editor || 'code'}" "${item.value}" || open "${item.value}" || xdg-open "${item.value}"`);
+                } catch { /* no editor on this machine */ }
+              }}
+            />
+            <Text dimColor>↑↓ move · enter open · esc cancel</Text>
+          </Box>
+        )}
 
         {activeMenu?.type === 'logs' && (
           <Box flexDirection="column" borderStyle="single" borderColor="red" padding={1}>

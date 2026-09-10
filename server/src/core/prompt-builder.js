@@ -1016,3 +1016,20 @@ ${tier === 'pro' ? this._reminderLineForLevel(resolveEffort(modelConfig.effort).
     this.agentMdContent = this._loadAgentMd();
   }
 }
+
+/**
+ * Replace an inlined image with a note that one was sent.
+ *
+ * `/image` puts the whole file into the prompt as a base64 data URL, because
+ * the content script rebuilds it there into a real File and pastes it into the
+ * chat — there is no upload endpoint to use instead. That is fine going out and
+ * ruinous going into the record: the conversation history, both session files,
+ * every later compaction prompt and the retry objective would each carry a
+ * megabyte of base64 that no one can read and the model has already seen.
+ */
+export function stripImageData(text) {
+  return String(text ?? '').replace(
+    /<image_data>\n?data:[^\n]+\n?<\/image_data>/g,
+    '<image_data>(the image was delivered to the chat tab)</image_data>',
+  );
+}
