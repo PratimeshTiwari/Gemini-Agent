@@ -297,6 +297,60 @@ not limitations to route around:
 - **Two front-ends** — the terminal CLI and the Chrome side panel are both supported surfaces.
 - **One answer per turn** — never emit drafts or A/B alternatives for the user to pick between.
 
+## Direction
+
+Agreed 2026-09-10, not yet built. Recorded so the reasoning is not re-derived.
+
+**The problem being solved:** seven mechanisms exist for "tell the model about this project"
+(`AGENT.md`, `.agent/rules.md`, scoped `rules.md`, `skills/`, `memory.json`, `mistakes.md`,
+`contextFolders`) with six different discovery rules between them. The count of *rules* is the
+mess, not the count of files.
+
+**The target:** two axes, one mechanism each.
+
+| axis | question | mechanism |
+| --- | --- | --- |
+| scope | who does this apply to? | **where the file is** — walk up from the code, nearest wins |
+| cost | always in context, or on request? | **which file** — `AGENT.md` vs `.agent/skills/` |
+
+Repo-specific knowledge is *not* a skill. A skill's contract is "read me when my description
+matches"; repo conventions match *always* when you are in that repo, and encoding "always" as
+"when relevant" hands the model a judgement it will sometimes get wrong — after it has already
+edited something. The test: *should the agent know this before its first action in this repo?*
+Yes → `AGENT.md`. Fine to discover later → skill.
+
+Memory is **scoped and never walked** (`.agent/<scope>/memory.md`), kept separate from
+`AGENT.md` so that file can always be trusted to say what the human wrote. Promoting a learned
+fact to a standing instruction is a manual edit, deliberately.
+
+| Phase | Change | Removes |
+| --- | --- | --- |
+| 0 | `codeDir`; `AGENT.md` and skills read from the code location, not the workspace; watcher scoped | — (bug fixes) |
+| 1 | Delete `semantic_search` + `workspace-indexer` + `workspace-summarizer` + dead `ContextManager` code | ~290 lines, `madge`, the startup index build |
+| 2 | One instruction surface: `AGENT.md`, walked | `rules.md`, `mistakesPath`, `/init-skills`, `contextFolders`, `/context` |
+| 3 | Memory as `.agent/<scope>/memory.md`, index-only in the prompt | the write-only trap |
+| 4 | One model picker, five valid states, `/reasoning` → `/effort` | `reasoningEffort`, `_effortToTier` |
+| 5 | Keep `--scope` and derived resolution; delete the runtime switcher | `/scope`, its picker, `setScope`, the reload path |
+| 6 | Per-model extension lock; derive topology from `modelConfig` | `topology` as a knob, `/mode`, the mode menu |
+
+**Why `semantic_search` goes (phase 1).** Measured: its tokenizer splits on non-alphanumerics
+only, so `getUserById` is one token and the query `user` can never match it — broken for the
+query type that dominates code search. A broken tool is worse than a missing one, because the
+model reaches for it and concludes the code is not there. Even repaired it is keyword matching
+that `grep_search` already does better, and it costs a full-repo read at every startup. The
+madge dependency graph dies with it: it is read only inside `search()`.
+
+**Why subagents stay but change (phase 6).** `isParallel` fans the `ask_*` calls out with
+`Promise.all`, but every one queues behind a single global `isExtensionBusy` lock, so they run
+strictly one at a time — the concurrency is in the JavaScript and nowhere else. Worse, the
+extension addresses tabs by URL pattern rather than identity, so two concurrent *same-model*
+requests race for one tab and can interleave two prompts into one conversation. Cross-model
+review is genuinely valuable and is the reason three bridges exist; same-model review is not.
+A per-model lock makes the first real, and deriving topology from `modelConfig` makes the
+second unrepresentable instead of silently broken. Multiple tabs of the *same* model are out of
+scope: it needs tab identity threaded through the whole bridge, to buy something a second model
+already provides.
+
 ## Gotchas
 
 - **`server/src/index.js` is the bin and does nothing but re-spawn `main.js` under `tsx`** —
