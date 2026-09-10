@@ -167,11 +167,11 @@ with no configuration:
 
 ```
 ~/.agent/skills/                    yours, everywhere
-/work/coindcx/.agent/skills/        every repo under coindcx
-/work/coindcx/api/.agent/skills/    just this repo  ← wins
+/work/base-repo/.agent/skills/        every repo under base-repo
+/work/base-repo/api/.agent/skills/    just this repo  ← wins
 ```
 
-That is what makes a monorepo work: put a skill in `/work/coindcx/.agent/skills/` and every
+That is what makes a monorepo work: put a skill in `/work/base-repo/.agent/skills/` and every
 repo underneath picks it up. `/skills dir add` stays for skills kept outside the tree
 entirely — a shared git repo of them, say.
 

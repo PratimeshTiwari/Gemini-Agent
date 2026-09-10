@@ -187,17 +187,17 @@ existing `.agent/`, the way git finds `.git`. The first hit is the **root**; the
 down to the workspace is the **scope**.
 
 ```
-/coindcx/.agent/             root — shared by every repo
+/base-repo/.agent/             root — shared by every repo
 ├── rules.md  skills/  mistakes.md  config.json     inherited
 ├── repo-1/   artifacts/ state/ sessions/ logs/     this repo only
 │             rules.md (appended)  config.json (overrides)
 └── repo-2/ …
-/coindcx/repo-1/             the code, with no .agent of its own
+/base-repo/repo-1/             the code, with no .agent of its own
 ```
 
 Nothing found — the ordinary single-repo case — and the root is `<workspace>/.agent` with an
-empty scope, byte-identical to the old behaviour. Opening `/coindcx` and opening
-`/coindcx/repo-1` land on the same state, because both walks end at the same root;
+empty scope, byte-identical to the old behaviour. Opening `/base-repo` and opening
+`/base-repo/repo-1` land on the same state, because both walks end at the same root;
 `workspaceSlug` is keyed on the resolved state dir for exactly that reason, so siblings don't
 collide on one history file.
 

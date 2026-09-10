@@ -134,7 +134,7 @@ test('skillCatalogue', async (t) => {
 
 test('skillSearchPath — the monorepo case', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mono-'));
-  const group = path.join(root, 'coindcx');
+  const group = path.join(root, 'base-repo');
   const repo = path.join(group, 'api');
   fs.mkdirSync(path.join(repo, '.agent/skills'), { recursive: true });
   fs.mkdirSync(path.join(group, '.agent/skills'), { recursive: true });

@@ -8,10 +8,10 @@ import {
   clearPathCache, homeDir, AGENT_DIR,
 } from './paths.js';
 
-/** /tmp/<x>/coindcx/{.agent,repo-1,repo-2} */
+/** /tmp/<x>/base-repo/{.agent,repo-1,repo-2} */
 function monorepo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mono-'));
-  const group = path.join(root, 'coindcx');
+  const group = path.join(root, 'base-repo');
   fs.mkdirSync(path.join(group, AGENT_DIR), { recursive: true });
   for (const r of ['repo-1', 'repo-2']) fs.mkdirSync(path.join(group, r), { recursive: true });
   return { root, group, repo1: path.join(group, 'repo-1'), repo2: path.join(group, 'repo-2') };

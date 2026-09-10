@@ -10,8 +10,8 @@
  *
  *     ~/.agent/skills/                  yours, everywhere
  *     /work/.agent/skills/              every repo under /work
- *     /work/coindcx/.agent/skills/      every repo under coindcx
- *     /work/coindcx/api/.agent/skills/  just this repo
+ *     /work/base-repo/.agent/skills/      every repo under base-repo
+ *     /work/base-repo/api/.agent/skills/  just this repo
  *
  * Nearest wins, so a repo overrides its parent and the parent overrides your
  * personal set — without renaming anything or pointing at directories by hand.

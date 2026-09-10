@@ -19,9 +19,9 @@
  * `workspace` used to mean two things at once — where state lives, and what the
  * agent is working on. In a monorepo those come apart:
  *
- *     /coindcx/.agent/            one state root for the whole group
- *     /coindcx/.agent/repo-1/     everything specific to repo-1
- *     /coindcx/repo-1/            the code itself, with no .agent of its own
+ *     /base-repo/.agent/            one state root for the whole group
+ *     /base-repo/.agent/repo-1/     everything specific to repo-1
+ *     /base-repo/repo-1/            the code itself, with no .agent of its own
  *
  * So resolution walks *up* from the workspace looking for an existing
  * `.agent/`, the way git finds `.git`. The first one found is the **root**, and
@@ -29,7 +29,7 @@
  * the ordinary single-repo case — and the root is `<workspace>/.agent` with an
  * empty scope, which is exactly the old behaviour.
  *
- * The useful consequence: opening `/coindcx` and opening `/coindcx/repo-1` land
+ * The useful consequence: opening `/base-repo` and opening `/base-repo/repo-1` land
  * on the same state, because both walks end at the same root.
  */
 
@@ -112,7 +112,7 @@ export function resolveState(workspace) {
 /**
  * The active scope, when the user has chosen one explicitly.
  *
- * Opening `/coindcx` and asking the agent to work on repo-1 cannot be inferred
+ * Opening `/base-repo` and asking the agent to work on repo-1 cannot be inferred
  * from the workspace — the workspace is the group. `--scope` and `/scope` set
  * this; it overrides whatever the walk derived.
  */
@@ -249,8 +249,8 @@ export const legacyHomeDir = () => path.join(os.homedir(), '.gemini-agent');
  */
 export const workspaceSlug = (workspace) => {
   // Keyed on the resolved state directory, not the workspace path. Opening
-  // /coindcx with --scope repo-1 and opening /coindcx/repo-1 are the same
-  // project and must share one history file; /coindcx with repo-1 and with
+  // /base-repo with --scope repo-1 and opening /base-repo/repo-1 are the same
+  // project and must share one history file; /base-repo with repo-1 and with
   // repo-2 are different projects and must not.
   const identity = agentDir(workspace);
   const hash = crypto.createHash('md5').update(identity).digest('hex').slice(0, 8);
