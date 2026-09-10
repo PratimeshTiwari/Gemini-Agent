@@ -123,6 +123,8 @@ export class GitHubEventHandler extends EventEmitter {
       // machine often has several, and "0 PRs watched" reads very differently
       // once you can see it is watching as the wrong one.
       username: this.poller?.username || null,
+      // ISO date, or null for a token GitHub reports no expiry for.
+      tokenExpiry: this.poller?.tokenExpiry || null,
       ciWatchEnabled: this.config.enableCIWatch,
       pollInterval: `${this.config.pollIntervalMs / 1000}s`,
       planDir: this.config.planOutputDir,

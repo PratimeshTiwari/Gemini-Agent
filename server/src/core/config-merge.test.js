@@ -25,7 +25,6 @@ describe('AgentLoop._saveConfig', () => {
     loop.topology = 'duo';
     loop.modelConfig = { modelTier: 'pro' };
     loop.commandRules = { enabled: true, allow: [], block: [] };
-    loop.contextFolders = [];
     return loop;
   };
 

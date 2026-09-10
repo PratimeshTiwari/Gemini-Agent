@@ -4,7 +4,7 @@
 
 import { describe, it, test } from 'node:test';
 import assert from 'node:assert';
-import { oneLine, summarizeResult, clampForDisplay, formatCommandResult } from './format.js';
+import { oneLine, summarizeResult, clampForDisplay, formatCommandResult, formatTokenExpiry } from './format.js';
 
 describe('oneLine', () => {
   it('collapses whitespace to a single line', () => {
@@ -109,5 +109,46 @@ describe('formatCommandResult — a shell result should look like a shell', () =
     assert.equal(formatCommandResult({ path: '.', totalFiles: 8 }), null);
     assert.equal(formatCommandResult('plain string'), null);
     assert.equal(formatCommandResult(null), null);
+  });
+});
+
+describe('formatTokenExpiry', () => {
+  const now = Date.parse('2026-09-10T12:00:00Z');
+  const inDays = (n) => new Date(now + n * 86400000).toISOString();
+
+  it('says ok when GitHub reports no expiry at all', () => {
+    assert.deepEqual(formatTokenExpiry(null, false, now), { label: 'token ok', tone: 'green' });
+  });
+
+  it('says ok while the expiry is comfortably far off', () => {
+    assert.deepEqual(formatTokenExpiry(inDays(60), false, now), { label: 'token ok', tone: 'green' });
+  });
+
+  it('counts down inside the last week, when it becomes a task', () => {
+    assert.deepEqual(formatTokenExpiry(inDays(3), false, now), {
+      label: 'token expires in 3d', tone: 'yellow',
+    });
+  });
+
+  it('calls out the last day', () => {
+    assert.equal(formatTokenExpiry(inDays(0.5), false, now).label, 'token expires today');
+  });
+
+  it('says expired once the date has passed', () => {
+    assert.deepEqual(formatTokenExpiry(inDays(-1), false, now), {
+      label: 'token expired', tone: 'red',
+    });
+  });
+
+  // A revoked token and a lapsed one both come back as 401. Only the date can
+  // tell them apart, and once the token is refused the date is beside the point.
+  it('a refused token outranks whatever the date said', () => {
+    assert.deepEqual(formatTokenExpiry(inDays(60), true, now), {
+      label: 'token rejected', tone: 'red',
+    });
+  });
+
+  it('survives a date it cannot parse', () => {
+    assert.equal(formatTokenExpiry('not a date', false, now).tone, 'green');
   });
 });

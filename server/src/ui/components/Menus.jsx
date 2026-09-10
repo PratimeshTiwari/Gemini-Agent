@@ -1,9 +1,10 @@
 import React from 'react';
 import { exec } from 'child_process';
-import { Box, Text } from 'ink';
+import { Box, Text, useInput } from 'ink';
 import SelectInput from 'ink-select-input';
 import { QuestionPrompt } from './QuestionPrompt.jsx';
 import { summarizeDiff, previewRows } from '../diff-preview.js';
+import { oneLine } from '../format.js';
 import { listWorkspaceCandidates } from '../../core/workspaces.js';
 import { skillsDir } from '../../core/paths.js';
 import { FOCUS_INPUT } from '../constants.js';
@@ -27,6 +28,20 @@ export function Menus({
   setHistory,
   setInput,
 }) {
+  // Every menu's footer promised `esc cancel` and nothing listened: the agent's
+  // own key bindings go inert while a modal is up, and SelectInput knows only
+  // the arrows and Enter. So escape lands here, and only here — one step back
+  // where a menu has steps, closed otherwise.
+  useInput((_char, key) => {
+    if (!key.escape) return;
+    if (activeMenu?.type === 'allowlist' && activeMenu.view) {
+      setActiveMenu({ ...activeMenu, view: activeMenu.view === 'confirm' ? 'list' : null, pending: null });
+      return;
+    }
+    setActiveMenu(null);
+    setFocus(FOCUS_INPUT);
+  }, { isActive: !!activeMenu });
+
   return (
     <>
         {activeMenu?.type === 'ask_question' && (
@@ -233,18 +248,102 @@ export function Menus({
         {activeMenu?.type === 'allowlist' && (() => {
           const rules = activeMenu.rules;
           const on = rules.enabled !== false;
-          // Every row does something. A rule listed here is selectable *because*
-          // selecting it removes it — a list you can only look at needs a second
-          // command to act on, which is what the old text output forced.
+          const all = [
+            ...rules.allow.map((c) => ({ cmd: c, kind: 'allow' })),
+            ...rules.block.map((c) => ({ cmd: c, kind: 'block' })),
+          ];
+
+          const close = () => { setActiveMenu(null); setFocus(FOCUS_INPUT); };
+
+          // ── Confirm ────────────────────────────────────────────────
+          // A rule can be a paragraph of shell — a compound git command with
+          // quoted echoes in it — and one keypress used to delete it outright
+          // with nothing shown but a truncated line. So the full text is spelled
+          // out here, wrapped, before anything is removed.
+          if (activeMenu.view === 'confirm' && activeMenu.pending) {
+            const { cmd, kind } = activeMenu.pending;
+            return (
+              <Box flexDirection="column" borderStyle="single" borderColor="yellow" padding={1}>
+                <Text bold color="yellow">🛡️  Remove this rule?</Text>
+                <Box marginY={1} paddingLeft={2}>
+                  <Text color={kind === 'allow' ? 'green' : 'red'} wrap="wrap">
+                    {kind === 'allow' ? '✅ ' : '⛔ '}{cmd}
+                  </Text>
+                </Box>
+                <Text dimColor wrap="wrap">
+                  {kind === 'allow'
+                    ? 'The agent will ask before running this again.'
+                    : 'The agent will be allowed to propose this again.'}
+                </Text>
+                <SelectInput
+                  items={[
+                    { label: '🗑️   Yes, remove it', value: 'yes' },
+                    { label: '↩️   No, keep it', value: 'no' },
+                  ]}
+                  onSelect={(item) => {
+                    if (item.value === 'no') {
+                      setActiveMenu({ ...activeMenu, view: 'list', pending: null });
+                      return;
+                    }
+                    close();
+                    handleSubmit(`/allowlist remove ${cmd}`);
+                  }}
+                />
+                <Text dimColor>↑↓ move · enter choose · esc back</Text>
+              </Box>
+            );
+          }
+
+          // ── The list ───────────────────────────────────────────────
+          // One row per rule, truncated to one line. Untruncated, a compound
+          // command wraps to four or five rows and a dozen rules push the live
+          // frame past the viewport — which is what makes Ink clear and repaint
+          // the whole terminal on every render. See ui/constants.js.
+          if (activeMenu.view === 'list') {
+            return (
+              <Box flexDirection="column" borderStyle="single" borderColor="yellow" padding={1}>
+                <Text bold color="yellow">
+                  🛡️  {all.length} command rule{all.length === 1 ? '' : 's'}
+                </Text>
+                <Text dimColor wrap="wrap">Pick one to remove it. You will be asked to confirm.</Text>
+                <SelectInput
+                  limit={10}
+                  items={[
+                    ...all.map(({ cmd, kind }) => ({
+                      label: `${kind === 'allow' ? '✅' : '⛔'}  ${oneLine(cmd, 58)}`,
+                      value: cmd,
+                      key: `${kind}:${cmd}`,
+                    })),
+                    { label: '←   Back', value: '\u0000back', key: 'back' },
+                  ]}
+                  onSelect={(item) => {
+                    if (item.value === '\u0000back') {
+                      setActiveMenu({ ...activeMenu, view: null, pending: null });
+                      return;
+                    }
+                    const rule = all.find((r) => r.cmd === item.value);
+                    setActiveMenu({ ...activeMenu, view: 'confirm', pending: rule });
+                  }}
+                />
+                <Text dimColor>↑↓ move · enter remove · esc back</Text>
+              </Box>
+            );
+          }
+
+          // ── The menu ───────────────────────────────────────────────
+          // The rules used to be listed right here, so opening /allowlist to
+          // toggle it meant reading every rule you had ever added. What belongs
+          // on the first screen is the four things you can do.
           const items = [
             { label: on ? '⛔  Disable — ask before every command' : '✅  Enable — let allowed commands run',
               value: on ? 'disable' : 'enable' },
             { label: '＋  Allow a command…', value: '\u0000add' },
             { label: '＋  Block a command…', value: '\u0000block' },
-            ...rules.allow.map((c) => ({ label: `✅  ${c}`, value: `remove ${c}` })),
-            ...rules.block.map((c) => ({ label: `⛔  ${c}`, value: `remove ${c}` })),
-            ...(rules.allow.length + rules.block.length > 0
-              ? [{ label: '🧹  Clear every rule', value: 'clear' }]
+            ...(all.length > 0
+              ? [
+                { label: `📋  View commands (${all.length})`, value: '\u0000list' },
+                { label: '🧹  Clear every rule', value: 'clear' },
+              ]
               : []),
           ];
 
@@ -253,14 +352,15 @@ export function Menus({
               <Text bold color="yellow">🛡️  Command rules — {on ? 'enabled' : 'disabled'}</Text>
               <Text dimColor wrap="wrap">
                 Allowed commands run without asking. Blocked ones are refused outright.
-                Pick a rule to remove it.
               </Text>
               <SelectInput
-                limit={12}
                 items={items}
                 onSelect={(item) => {
-                  setActiveMenu(null);
-                  setFocus(FOCUS_INPUT);
+                  if (item.value === '\u0000list') {
+                    setActiveMenu({ ...activeMenu, view: 'list' });
+                    return;
+                  }
+                  close();
                   if (item.value === '\u0000add') { setInput('/allowlist add '); return; }
                   if (item.value === '\u0000block') { setInput('/allowlist block '); return; }
                   handleSubmit(`/allowlist ${item.value}`);

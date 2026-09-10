@@ -99,8 +99,11 @@ export function migrateWorkspace(workspace) {
     // .gemini/ — config, memory, context, approval
     [w('.gemini', 'config.json'), paths.configPath(workspace)],
     [w('.gemini', 'memory.json'), paths.memoryPath(workspace)],
-    [w('.gemini', 'rules.md'), paths.rulesPath(workspace)],
-    [w('.gemini', 'agent_mistakes.md'), paths.mistakesPath(workspace)],
+    // rules.md was the old instruction surface; AGENT.md is the only one now.
+    // move() never clobbers, so a project that already has an AGENT.md keeps it.
+    [w('.gemini', 'rules.md'), path.join(paths.codeDir(workspace), 'AGENT.md')],
+    // Nothing reads the mistakes log any more. Kept where the user can find it.
+    [w('.gemini', 'agent_mistakes.md'), paths.artifactPath(workspace, 'mistakes.md')],
     [w('.gemini', 'context'), paths.contextDir(workspace)],
     [w('.gemini', 'plan_approval.json'), paths.planApprovalPath(workspace)],
     // human-facing artifacts, from both the old .gemini/ and the workspace root
@@ -215,6 +218,27 @@ export function migrateHome(workspace) {
   return items;
 }
 
+/**
+ * Files that used to be read as instructions and no longer are.
+ *
+ * `rules.md` and `mistakes.md` were two of the several places a project could
+ * tell the model something; `AGENT.md`, walked up from the code, is the only
+ * one now. These are not moved — `rules.md` is hand-written and `AGENT.md` is
+ * usually tracked in git, so appending to it would put an unasked-for diff in
+ * the user's repo. They are named once at startup instead, and the user
+ * decides what is still worth keeping.
+ *
+ * @returns {string[]} absolute paths of retired files that are still present
+ */
+export function retiredInstructionFiles(workspace) {
+  const candidates = [
+    path.join(paths.sharedAgentDir(workspace), 'rules.md'),
+    path.join(paths.agentDir(workspace), 'rules.md'),
+    path.join(paths.sharedAgentDir(workspace), 'mistakes.md'),
+  ];
+  return [...new Set(candidates)].filter((f) => fs.existsSync(f));
+}
+
 /** Run both migrations and print a single summary line. */
 export function runMigrations(workspace) {
   const { migrated, items } = migrateWorkspace(workspace);
@@ -225,6 +249,15 @@ export function runMigrations(workspace) {
     console.log(
       `📦 Migrated ${all.length} item${all.length === 1 ? '' : 's'} into ${paths.AGENT_DIR}/ ` +
         `(was .gemini, .gemini-agent, .agent-github-plans)`,
+    );
+  }
+
+  const retired = retiredInstructionFiles(workspace);
+  if (retired.length > 0) {
+    const names = retired.map((f) => path.relative(workspace, f)).join(', ');
+    console.log(
+      `ℹ️  No longer read: ${names}. Project instructions now live in AGENT.md ` +
+        `next to the code — move anything you still want, then delete ${retired.length === 1 ? 'it' : 'them'}.`,
     );
   }
 

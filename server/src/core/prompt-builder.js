@@ -13,7 +13,7 @@
 
 import path from 'path';
 import * as paths from './paths.js';
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import os from 'os';
 import { resolve, relative, join, dirname } from 'path';
 import { CodeMinifier } from '../context/code-minifier.js';
@@ -76,11 +76,6 @@ export class PromptBuilder {
       // Workspace context removed to save tokens, rely on `search_files` tool instead.
       if (this.agentMdContent) {
         parts.push(`<agent_instructions>\n${this.agentMdContent}\n</agent_instructions>`);
-      }
-
-      const workspaceRules = this._loadWorkspaceRules();
-      if (workspaceRules) {
-        parts.push(`<workspace_rules>\n${workspaceRules}\n</workspace_rules>`);
       }
 
       // Names and one-line descriptions only. The bodies stay on disk and are
@@ -251,13 +246,8 @@ If the user asks you to modify yourself, you can read/write files directly in \`
 Model tier: ${modelTier}${modelTier === 'pro' ? ` (reasoning level: ${reasoningLevel})` : ''}
 </self_awareness>`;
 
-    const contextSummary = this._loadContextFolders();
-
-
-
     const combined = `
 ${selfAwareness}
-${contextSummary}
 ${coreInstructions}
 
 ${reasoningInstructions}
@@ -373,9 +363,8 @@ Your job is to execute the task using your read-only tools if necessary and retu
 - When running commands, ensure the \`cwd\` is correct.
 
 ## 3. Documentation & Context Maintenance
-- **Routing**: If provided a \`<workspace_context_summary>\`, use it as an index. If a user asks about a specific flow, check this summary to see which \`.md\` file contains the details, then use \`read_file\` to read that specific file before acting.
-- **Self-Correction & Auto-Learning (Agentic RAG)**: If the user states that a documented flow is wrong, you MUST: (1) Ask clarifying questions if the claim is vague. (2) Verify the claim by reading the actual source code. (3) Use \`edit_file\` to correct the context \`.md\` file so it matches reality. (4) Once verified against the codebase, use the \`manage_memory\` tool to store this verified fact in your long-term Agentic RAG memory so you don't make the same mistake twice.
-- **Mistakes Log**: If you make a logic error, append a note to \`.agent/mistakes.md\`. Before writing to this log, ensure the correction is a VERIFIED FACT backed by code.
+- **Project instructions**: \`AGENT.md\` is where a project's standing rules live, walked from the code upward. If the user tells you a convention that should hold for every future turn, offer to add it there — do not keep it only in your own memory.
+- **Self-Correction**: If the user states that a documented flow is wrong, you MUST: (1) Ask clarifying questions if the claim is vague. (2) Verify the claim by reading the actual source code. (3) Use \`edit_file\` to correct the document so it matches reality. (4) Once verified against the codebase, use the \`manage_memory\` tool to store the fact so you don't make the same mistake twice.
 
 ${modelTier === 'pro' ? `## 4. Communication
 - Be exceptionally concise. Skip greetings and filler.
@@ -948,18 +937,11 @@ ${tier === 'pro' ? this._reminderLineForLevel(this._normalizeLevel(modelConfig.r
   }
 
   /**
-   * Read the folders registered with `/context add`.
-   *
-   * Every .md file under them is injected as repo context. Bounded hard: this
-   * lands in the system prompt on turn 0 and every Nth turn, so an unbounded
-   * folder would blow the context window (and trip Gemini's repetition filter).
-   */
-  /**
    * Extra skill directories from config.json.
    *
-   * Read from disk rather than passed in, the same way `contextFolders` is:
-   * `/skills add` writes the config and the next prompt picks it up, with no
-   * second copy of the list to keep in sync.
+   * Read from disk rather than passed in: `/skills dir add` writes the config
+   * and the next prompt picks it up, with no second copy of the list to keep
+   * in sync.
    */
   _configuredSkillFolders() {
     try {
@@ -968,91 +950,6 @@ ${tier === 'pro' ? this._reminderLineForLevel(this._normalizeLevel(modelConfig.r
     } catch {
       return [];
     }
-  }
-
-  _loadContextFolders() {
-    const MAX_TOTAL = 24000; // characters across all files
-    const MAX_FILES = 40;
-
-    let folders = [];
-    try {
-      const cfg = JSON.parse(readFileSync(paths.configPath(this.workspace), 'utf8'));
-      folders = Array.isArray(cfg.contextFolders) ? cfg.contextFolders : [];
-    } catch {
-      return '';
-    }
-    if (folders.length === 0) return '';
-
-    const collected = [];
-    let total = 0;
-    let truncated = false;
-
-    const walk = (dir, depth) => {
-      if (depth > 3 || collected.length >= MAX_FILES || total >= MAX_TOTAL) return;
-      let entries;
-      try {
-        entries = readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const entry of entries) {
-        if (collected.length >= MAX_FILES || total >= MAX_TOTAL) {
-          truncated = true;
-          return;
-        }
-        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          walk(full, depth + 1);
-        } else if (entry.name.endsWith('.md')) {
-          try {
-            let body = readFileSync(full, 'utf8');
-            if (total + body.length > MAX_TOTAL) {
-              body = body.slice(0, Math.max(0, MAX_TOTAL - total));
-              truncated = true;
-            }
-            total += body.length;
-            collected.push(`### ${path.relative(this.workspace, full) || entry.name}\n${body}`);
-          } catch {
-            /* skip unreadable file */
-          }
-        }
-      }
-    };
-
-    for (const folder of folders) {
-      const abs = path.isAbsolute(folder) ? folder : path.resolve(this.workspace, folder);
-      if (existsSync(abs)) walk(abs, 0);
-    }
-
-    if (collected.length === 0) return '';
-    const note = truncated ? '\n_(context truncated to fit the window)_' : '';
-    return `\n<repo_context>\n${collected.join('\n\n')}${note}\n</repo_context>\n`;
-  }
-
-  /**
-   * Workspace rules: the group's, then this repo's.
-   *
-   * Both, not one or the other — a repo adds to the house rules rather than
-   * replacing them, which is the whole point of having a shared root. The two
-   * resolve to the same file outside a group, so it is read once there.
-   */
-  _loadWorkspaceRules() {
-    const shared = paths.rulesPath(this.workspace);
-    const scoped = paths.scopedRulesPath(this.workspace);
-    const files = shared === scoped ? [shared] : [shared, scoped];
-
-    const parts = [];
-    for (const file of files) {
-      try {
-        if (!existsSync(file)) continue;
-        const body = readFileSync(file, 'utf-8').trim();
-        if (body) parts.push(body);
-      } catch {
-        /* unreadable rules must not take the prompt down with them */
-      }
-    }
-    return parts.join('\n\n');
   }
 
   /**

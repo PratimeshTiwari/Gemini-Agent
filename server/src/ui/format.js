@@ -110,6 +110,34 @@ export function clampForDisplay(value, maxLines = 15, maxChars = 1200) {
 }
 
 /**
+ * The state of the GitHub token, as one short chip.
+ *
+ * "Is my token still good?" is the question the dashboard could not answer.
+ * A lapsed personal access token and a revoked one both surface as the same
+ * 401, and by then the poller has already stopped — so the useful moment to
+ * say something is while the token still works and the expiry date is known.
+ *
+ * @param {string|null} expiry - ISO date GitHub reported, or null for no expiry
+ * @param {boolean} rejected - the token has already been refused
+ * @returns {{ label: string, tone: 'green'|'yellow'|'red' }}
+ */
+export function formatTokenExpiry(expiry, rejected = false, now = Date.now()) {
+  if (rejected) return { label: 'token rejected', tone: 'red' };
+  if (!expiry) return { label: 'token ok', tone: 'green' };
+
+  const when = expiry instanceof Date ? expiry.getTime() : new Date(expiry).getTime();
+  if (Number.isNaN(when)) return { label: 'token ok', tone: 'green' };
+
+  const days = Math.floor((when - now) / 86400000);
+  if (days < 0) return { label: 'token expired', tone: 'red' };
+  if (days === 0) return { label: 'token expires today', tone: 'red' };
+  // A week is the point where it becomes something to do rather than something
+  // to know; before that, "ok" is the whole answer and the date is noise.
+  if (days <= 7) return { label: `token expires in ${days}d`, tone: 'yellow' };
+  return { label: 'token ok', tone: 'green' };
+}
+
+/**
  * A poll timestamp as something a person reads at a glance.
  *
  * The dashboard was printing the raw ISO string, which is both unreadable and

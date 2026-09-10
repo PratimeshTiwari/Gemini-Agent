@@ -58,22 +58,20 @@ export async function handleSlashCommand(query, {
           '  /scope [repo]     - Work on one repo in a group that shares a .agent/',
           '  /workspace <path> - Change the active workspace (checked before it is set)',
           '  /set-workspace    - Pick a workspace from a list of nearby folders',
-          '  /memory           - View current agent memory context',
-          '  /context          - Show current context window usage',
+          '  /memory           - Turn long-term memory on or off',
+          '  /context          - Show what is in the context window',
           '  /compact          - Compact history to save tokens',
-          '  /clear            - Clear local history',
-          '  /new              - Start a new chat session',
+          '  /clear            - Forget this conversation, keep the browser chat',
+          '  /new              - Fresh session, and a fresh chat in the browser too',
           '  /undo             - Undo the last step/action',
           '  /skills           - List, create and open skills (.agent/skills/*.md)',
           '  /skills dir       - Show or add directories skills are loaded from',
-          '  /init-skills      - Create workspace rules (.agent/rules.md)',
           '',
           '### 🛠️ System & Tools',
           '  /github           - Run GitHub specific commands (e.g., /github refresh)',
-          '  /image            - Attach an image (e.g., /image path/to/img.png)',
-          '  /paste-image      - Attach image directly from clipboard (macOS only)',
+          '  /image            - Attach an image — a path, or bare for the clipboard',
           '  /logs             - What has been failing, grouped by flow',
-          '  /agent-dir        - Open the agent data directory',
+          '  /agent-dir        - Point the workspace at the agent\'s own source',
           '  /restart          - Restart the server',
           '  /exit             - Quit the agent'
         ].join('\n')
@@ -351,28 +349,15 @@ export async function handleSlashCommand(query, {
       return;
     }
 
-    if (command === 'init-skills') {
-      const { resolve } = await import('path');
-      const { existsSync, mkdirSync, writeFileSync } = await import('fs');
-      const rulesPath = paths.rulesPath(agentLoop.workspace);
-      paths.ensureParent(rulesPath);
-      
-      let msg = '';
-      if (!existsSync(rulesPath)) {
-        writeFileSync(rulesPath, `# Workspace Rules\n\nAdd any custom instructions, architectural rules, or context specific to this project here.\n`, 'utf-8');
-        msg = `✅ Created workspace memory at: ${rulesPath}\nEdit this file to teach the agent custom skills!`;
-      } else {
-        msg = `⚠️ Workspace rules already exist at: ${rulesPath}`;
-      }
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: msg, isLocal: true }]);
-      setIsProcessing(false);
-      return;
-    }
-
     if (command === 'image' || command === 'paste-image') {
       let finalFilePath = '';
       let ext = '';
-      if (command === 'paste-image') {
+      // `/image` with a path attaches that file; with nothing after it, the
+      // thing you meant is the screenshot you just took. Two commands for one
+      // idea is one too many, so the bare form reads the clipboard and
+      // `/paste-image` survives only as the name people already learned.
+      const fromClipboard = command === 'paste-image' || args.length === 0;
+      if (fromClipboard) {
         if (process.platform !== 'darwin') {
            setHistory(prev => [...prev, { role: 'assistant', content: '⚠️ Clipboard image paste is only supported on macOS.' }]);
            setIsProcessing(false); return;

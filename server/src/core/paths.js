@@ -217,15 +217,6 @@ export const sessionsDirLocal = (workspace) => path.join(agentDir(workspace), 's
 export const localSessionPath = (workspace) => path.join(sessionsDirLocal(workspace), 'history.jsonl');
 export const tmpDir = (workspace) => path.join(agentDir(workspace), 'tmp');
 /**
- * House rules for everything under the root. A scope adds to these rather than
- * replacing them — see `scopedRulesPath`.
- */
-export const rulesPath = (workspace) => path.join(sharedAgentDir(workspace), 'rules.md');
-
-/** Rules for the active scope only, appended to the shared ones. */
-export const scopedRulesPath = (workspace) => path.join(agentDir(workspace), 'rules.md');
-
-/**
  * Where `/skills` keeps one markdown file per skill.
  *
  * Shared across the whole root: a skill written for the group applies to every
@@ -234,7 +225,6 @@ export const scopedRulesPath = (workspace) => path.join(agentDir(workspace), 'ru
  */
 export const skillsDir = (workspace) => path.join(sharedAgentDir(workspace), 'skills');
 export const skillPath = (workspace, name) => path.join(skillsDir(workspace), `${name}.md`);
-export const mistakesPath = (workspace) => path.join(sharedAgentDir(workspace), 'mistakes.md');
 export const logPath = (workspace) => path.join(logsDir(workspace), 'agent.log');
 /** Structured failure log, one JSON object per line. See core/error-log.js. */
 export const errorLogPath = (workspace) => path.join(logsDir(workspace), 'errors.jsonl');

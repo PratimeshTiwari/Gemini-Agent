@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A local coding agent that has **no LLM API client**. Inference happens by driving a real
 browser tab: the Node server sends a prompt over WebSocket to a Chrome extension, a content
-script types it into gemini.google.com / chatgpt.com / claude.ai, scrapes the streamed reply,
+script types it into gemini.google.com / chatgpt.com, scrapes the streamed reply,
 and sends the text back. Every architectural oddity below follows from that.
 
 npm workspaces: `server/` (brain + CLI UI), `extension/` (MV3 bridge), plus a standalone
@@ -61,8 +61,8 @@ server/src/
 ├── core/             # agent-loop, prompt-builder, diff-engine, risk-classifier,
 │                     # task-manager, paths, migrate, workspaces
 ├── bridge/           # websocket-server (the Chrome-extension transport)
-├── context/          # RAG + token budget: workspace-indexer, code-minifier,
-│                     # token-counter, context-manager, memory-manager
+├── context/          # token budget: code-minifier, token-counter,
+│                     # context-manager, memory-manager
 ├── github/           # PR agent: poller, comment-classifier, ci-log-parser, plan-generator
 ├── mcp/              # mcp-server.js + tools/
 ├── storage/  watcher/
@@ -153,8 +153,7 @@ persistent allow/block rules live in `commandRules`  (`/allowlist`).
 
 ### Context engine
 
-`context/` — `workspace-indexer` (structural map via `madge`), `code-minifier`,
-`token-counter`, `context-manager`, `memory-manager`. `CodeMinifier.minifyJson` is on the hot
+`context/` — `code-minifier`, `token-counter`, `context-manager`, `memory-manager`. `CodeMinifier.minifyJson` is on the hot
 path: `PromptBuilder.buildToolResultBatch` embeds every tool result in the next prompt, and
 serialising them compact rather than pretty-printed is ~40% fewer characters there.
 
@@ -188,11 +187,13 @@ down to the workspace is the **scope**.
 
 ```
 /base-repo/.agent/             root — shared by every repo
-├── rules.md  skills/  mistakes.md  config.json     inherited
+├── skills/  config.json                            inherited
 ├── repo-1/   artifacts/ state/ sessions/ logs/     this repo only
-│             rules.md (appended)  config.json (overrides)
+│             config.json (overrides)
 └── repo-2/ …
+/base-repo/AGENT.md            instructions for every repo under it
 /base-repo/repo-1/             the code, with no .agent of its own
+/base-repo/repo-1/AGENT.md     instructions for this repo — nearest wins
 ```
 
 Nothing found — the ordinary single-repo case — and the root is `<workspace>/.agent` with an
@@ -217,7 +218,7 @@ walking at `$HOME`; `paths.test.js` covers it.
 | `<ws>/.agent/state/` | `editor.json` (VS Code companion), `github.json`, `plan-approval.json` |
 | `<ws>/.agent/github-pr-plans/` | GitHub PR agent output |
 | `<ws>/.agent/logs/errors.jsonl` | structured failure log — one JSON object per line |
-| `<ws>/.agent/backups/`, `context/`, `logs/`, `tmp/`, `rules.md`, `mistakes.md` | see `paths.js` |
+| `<ws>/.agent/backups/`, `context/`, `logs/`, `tmp/` | see `paths.js` |
 | `<ws>/.agent/sessions/history.jsonl` | conversation history, local copy |
 | `~/.agent/workspaces/<name>-<hash>/history.jsonl` | the durable copy of the same history |
 
@@ -303,7 +304,7 @@ Agreed 2026-09-10, not yet built. Recorded so the reasoning is not re-derived.
 
 **The problem being solved:** seven mechanisms exist for "tell the model about this project"
 (`AGENT.md`, `.agent/rules.md`, scoped `rules.md`, `skills/`, `memory.json`, `mistakes.md`,
-`contextFolders`) with six different discovery rules between them. The count of *rules* is the
+`contextFolders` — five of the seven are gone as of phase 2) with six different discovery rules between them. The count of *rules* is the
 mess, not the count of files.
 
 **The target:** two axes, one mechanism each.
@@ -328,11 +329,24 @@ fact to a standing instruction is a manual edit, deliberately.
 | 0 | `codeDir`; `AGENT.md` and skills read from the code location, not the workspace; watcher scoped | — (bug fixes) | **done** `5513557` |
 | 1 | Delete `semantic_search` + `workspace-indexer` + `workspace-summarizer` + dead `ContextManager` code | ~290 lines, `madge`, the startup index build | **done** `0b93bf6` |
 | 7 | Two bridges only; drop the Claude bridge, `swarm`, `ask_reasoner` | ~520 lines, 14 DOM selectors | **done** `8e60a24` |
-| 2 | One instruction surface: `AGENT.md`, walked | `rules.md`, `mistakesPath`, `/init-skills`, `contextFolders`, `/context` | next |
-| 3 | Memory as `.agent/<scope>/memory.md`, index-only in the prompt | the write-only trap | |
+| 2 | One instruction surface: `AGENT.md`, walked | `rules.md`, `mistakesPath`, `/init-skills`, `contextFolders`, `/context add\|remove\|list` | **done** |
+| 3 | Memory as `.agent/<scope>/memory.md`, index-only in the prompt | the write-only trap | next |
 | 4 | One model picker, five valid states, `/reasoning` → `/effort` | `reasoningEffort`, `_effortToTier` | |
 | 5 | Keep `--scope` and derived resolution; delete the runtime switcher | `/scope`, its picker, `setScope`, the reload path | |
 | 6 | Per-model extension lock; derive topology from `modelConfig` | `topology` as a knob, `/mode`, the mode menu | |
+
+**What phase 2 kept (phase 2).** Bare `/context` survives as what its name says — a report of
+what is in the window. Only `add|remove|list` went: registering folders of `.md` files was a
+second way to give the model standing instructions, and that is the thing being removed, not
+the ability to ask what the prompt currently costs.
+
+Retired files are **named, never moved**. `.agent/rules.md` and `.agent/mistakes.md` stop being
+read, and `runMigrations` prints one line saying so (`retiredInstructionFiles` in `core/migrate.js`).
+Folding them into `AGENT.md` automatically was the obvious move and is wrong: `AGENT.md` is
+usually tracked in git, so the agent would be writing an unasked-for diff into the user's repo on
+startup — and CLAUDE.md's own rule is that `AGENT.md` can always be trusted to say what the human
+wrote. The pre-`.agent/` migration path is the exception: `.gemini/rules.md` moves to `AGENT.md`
+because `move()` refuses to clobber, so it only lands where there is no `AGENT.md` to disturb.
 
 **Why `semantic_search` goes (phase 1).** Measured: its tokenizer splits on non-alphanumerics
 only, so `getUserById` is one token and the query `user` can never match it — broken for the

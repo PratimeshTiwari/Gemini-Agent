@@ -2,7 +2,7 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
-import { formatPollTime, oneLine } from '../format.js';
+import { formatPollTime, formatTokenExpiry, oneLine } from '../format.js';
 import { KeyHints } from './KeyHints.jsx';
 
 /**
@@ -28,7 +28,7 @@ export function GithubTab({ agentLoop, wsServer, github, maxRows }) {
     : github.view === 'avoid_words'
       ? <AvoidWords github={github} maxRows={maxRows} />
       : github.view === 'pr_explorer'
-        ? <PrExplorer github={github} maxRows={maxRows} />
+        ? <PrExplorer agentLoop={agentLoop} github={github} maxRows={maxRows} />
         : <Activity agentLoop={agentLoop} github={github} maxRows={maxRows} />;
 
   return (
@@ -147,7 +147,37 @@ function AvoidWords({ github, maxRows }) {
   );
 }
 
-function PrExplorer({ github, maxRows }) {
+/**
+ * Who the agent is on GitHub, and whether it still can be.
+ *
+ * Drawn above every view that has a token, because the two facts that explain
+ * an empty dashboard — the wrong account, and a token that has lapsed — were
+ * both invisible from the PR explorer, which is where you go when the list
+ * looks wrong.
+ */
+function GithubStatus({ agentLoop, github }) {
+  const status = agentLoop?.githubHandler?.getStatus?.() || {};
+  const token = formatTokenExpiry(status.tokenExpiry, github?.authRejected);
+  const watched = status.prsWatched || 0;
+
+  return (
+    <Text wrap="truncate">
+      {status.username
+        ? <Text color="cyan" bold>@{status.username}</Text>
+        : <Text dimColor>connecting…</Text>}
+      <Text dimColor>{'  ·  '}</Text>
+      <Text color={token.tone}>{token.label}</Text>
+      <Text dimColor>{'  ·  '}{watched} PR{watched === 1 ? '' : 's'} watched</Text>
+      <Text dimColor>{'  ·  '}CI watch </Text>
+      <Text color={status.ciWatchEnabled ? 'green' : 'gray'}>
+        {status.ciWatchEnabled ? 'on' : 'off'}
+      </Text>
+      <Text dimColor>{'  ·  '}polled {formatPollTime(status.lastPollTime)}</Text>
+    </Text>
+  );
+}
+
+function PrExplorer({ agentLoop, github, maxRows }) {
   const {
     explorerMode, loadingPrs, loadingPrComments, prList, prComments,
     selectedPrIdx, selectedPrCommentIdx,
@@ -164,8 +194,9 @@ function PrExplorer({ github, maxRows }) {
     const view = slice(prComments, selectedPrCommentIdx);
     return (
       <Box flexDirection="column" marginTop={1}>
+        <GithubStatus agentLoop={agentLoop} github={github} />
         <Text bold color="magenta" wrap="truncate">🧭 PR #{pr?.number} — {pr?.title}</Text>
-        <KeyHints hints={[['⏎', 'send to the agent'], ['esc', 'back']]} />
+        <KeyHints hints={[['↑↓', 'move'], ['⏎', 'send to the agent'], ['esc', 'back']]} />
         {loadingPrComments ? <Text dimColor><Spinner type="dots" /> Loading comments…</Text> : null}
         {!loadingPrComments && prComments.length === 0 ? <Text dimColor>No comments on this PR.</Text> : null}
         {view.items.map((c, i) => {
@@ -189,8 +220,9 @@ function PrExplorer({ github, maxRows }) {
   const view = slice(prList, selectedPrIdx);
   return (
     <Box flexDirection="column" marginTop={1}>
+      <GithubStatus agentLoop={agentLoop} github={github} />
       <Text bold color="magenta">🧭 PR explorer</Text>
-      <KeyHints hints={[['↑↓', 'move'], ['⏎', 'open comments'], ['esc', 'back']]} />
+      <KeyHints hints={[['↑↓', 'move'], ['⏎', 'open comments'], ['r', 'refresh'], ['esc', 'back']]} />
       {loadingPrs ? <Text dimColor><Spinner type="dots" /> Loading PRs…</Text> : null}
       {!loadingPrs && prList.length === 0 ? <Text dimColor>No open PRs found.</Text> : null}
       {view.items.map((pr, i) => {
@@ -207,23 +239,11 @@ function PrExplorer({ github, maxRows }) {
 
 function Activity({ agentLoop, github, maxRows }) {
   const { activity, selectedPlanId, expandedComments } = github;
-  const status = agentLoop.githubHandler?.getStatus?.() || {};
-  const watched = status.prsWatched || 0;
   const recent = activity.slice().reverse().slice(0, Math.max(1, Math.floor((maxRows - 6) / 2)));
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Text wrap="wrap">
-        {status.username
-          ? <Text color="cyan" bold>@{status.username}<Text dimColor> · </Text></Text>
-          : <Text dimColor>connecting… · </Text>}
-        <Text bold>{watched}</Text>
-        <Text dimColor> PR{watched === 1 ? '' : 's'} watched · CI watch </Text>
-        <Text bold color={agentLoop.githubHandler?.config?.enableCIWatch ? 'green' : 'gray'}>
-          {agentLoop.githubHandler?.config?.enableCIWatch ? 'on' : 'off'}
-        </Text>
-        <Text dimColor> · polled {formatPollTime(status.lastPollTime)}</Text>
-      </Text>
+      <GithubStatus agentLoop={agentLoop} github={github} />
 
       {agentLoop.githubHandler?._currentAnalysis && (
         <Text color="yellow" wrap="truncate">
