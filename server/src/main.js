@@ -156,11 +156,7 @@ async function main() {
 
   const taskManager = new TaskManager(config.workspace);
   
-  // Initialize WorkspaceIndexer for Background RAG
-  const { WorkspaceIndexer } = await import('./context/workspace-indexer.js');
-  const workspaceIndexer = new WorkspaceIndexer(config.workspace);
   // Start building the index asynchronously in the background
-  workspaceIndexer.buildIndex();
 
 
   const agentLoop = new AgentLoop({
@@ -174,7 +170,6 @@ async function main() {
     continueSession: config.continue,
     agentSourceDir,
     taskManager,
-    workspaceIndexer,
   });
 
   const fileWatcher = new FileWatcher(codeDir(config.workspace), agentLoop);

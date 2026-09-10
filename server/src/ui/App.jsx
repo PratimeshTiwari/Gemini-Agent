@@ -689,11 +689,12 @@ export function App({ agentLoop, wsServer }) {
           </Text>
         </Box>
         <Box flexDirection="row" justifyContent="space-between" width="100%">
+          {/* No 'mode' hint: the plan/auto chip above the prompt already says
+              which mode you are in and how to cycle it. */}
           <KeyHints hints={[
             ['^t', 'terminal'],
             ['^e', verbose ? 'collapse' : 'expand'],
             ['^u', 'clear'],
-            ['⇧⇥', 'mode'],
           ]} />
           <Text dimColor>
             {runningTasks > 0 ? <Text color="yellow">{runningTasks} bg · </Text> : ''}

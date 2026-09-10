@@ -50,7 +50,7 @@ const EXTENSION_RESPONSE_TIMEOUT = 7 * 60 * 1000;
 const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n```/gi;
 
 export class AgentLoop {
-  constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome, continueSession = false, agentSourceDir, taskManager, workspaceIndexer }) {
+  constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome, continueSession = false, agentSourceDir, taskManager }) {
     this.workspace = workspace;
     this.mcpServer = mcpServer;
     this.promptBuilder = promptBuilder;
@@ -60,7 +60,6 @@ export class AgentLoop {
     this.configHome = configHome;
     this.agentSourceDir = agentSourceDir;
     this.taskManager = taskManager;
-    this.workspaceIndexer = workspaceIndexer;
 
 
     // Storage & Context
@@ -578,7 +577,6 @@ export class AgentLoop {
       this.contextManager.workspacePath = workspace;
       if (this.contextManager.summarizer) this.contextManager.summarizer.workspacePath = workspace;
     }
-    if (this.workspaceIndexer) this.workspaceIndexer.workspace = workspace;
 
     this.workspaceSummary = '';        // stale for the new project
     this.promptBuilder?.resetPromptState?.();
@@ -1207,7 +1205,6 @@ export class AgentLoop {
             editor: this.editor,
             taskManager: this.taskManager,
             onTaskAlert: (hit) => this.handleTaskAlert(hit),
-            workspaceIndexer: this.workspaceIndexer,
           });
         } else {
           result = result || { success: false, error: 'User rejected command execution.' };
@@ -1246,7 +1243,6 @@ export class AgentLoop {
         result = await this.mcpServer.executeTool(call.name, call.args, {
           editor: this.editor,
           taskManager: this.taskManager,
-          workspaceIndexer: this.workspaceIndexer,
         });
       }
 
@@ -1607,7 +1603,7 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
           result = { success: false, error: `Tool ${call.name} not permitted for subagents.` };
         } else {
           result = await this.mcpServer.executeTool(call.name, call.args, {
-            editor: this.editor, taskManager: this.taskManager, workspaceIndexer: this.workspaceIndexer,
+            editor: this.editor, taskManager: this.taskManager,
           });
         }
         toolResults.push({ name: call.name, result: result.result || result.error });
@@ -1732,7 +1728,6 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
               result = await this.mcpServer.executeTool(call.name, call.args, {
                 editor: this.editor,
                 taskManager: this.taskManager,
-                workspaceIndexer: this.workspaceIndexer,
               });
             } catch (e) {
               result = { success: false, error: e.message };

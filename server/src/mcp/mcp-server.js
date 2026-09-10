@@ -16,7 +16,6 @@ import { runCommand } from './tools/run-command.js';
 import { openInEditor } from './tools/open-in-editor.js';
 import { runBackground } from './tools/run-background.js';
 import { manageTask } from './tools/manage-task.js';
-import semanticSearch from './tools/semantic-search.js';
 import getEditorState from './tools/get-editor-state.js';
 import getDiagnostics from './tools/get-diagnostics.js';
 import { logError } from '../core/error-log.js';
@@ -124,12 +123,6 @@ const TOOL_DEFINITIONS = [
       pattern: { type: 'string', description: 'For watch: a regex to look for in the output. Omit to use the built-in failure patterns (error, failed, exception, traceback, EADDRINUSE, Cannot find module, ...).', required: false },
     },
     handler: manageTask,
-  },
-  {
-    name: semanticSearch.name,
-    description: semanticSearch.description,
-    parameters: semanticSearch.schema.properties,
-    handler: semanticSearch.execute,
   },
   {
     name: getEditorState.name,

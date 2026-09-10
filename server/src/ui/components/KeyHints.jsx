@@ -20,7 +20,7 @@ export function KeyHints({ hints }) {
     <Box flexDirection="row" flexWrap="wrap">
       {hints.map(([key, label], i) => (
         <Text key={key + label}>
-          {i > 0 ? <Text dimColor>   </Text> : null}
+          {i > 0 ? <Text dimColor>{'  ·  '}</Text> : null}
           <Text color="cyan">{key}</Text>
           <Text dimColor> {label}</Text>
         </Text>

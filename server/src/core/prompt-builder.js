@@ -251,18 +251,9 @@ If the user asks you to modify yourself, you can read/write files directly in \`
 Model tier: ${modelTier}${modelTier === 'pro' ? ` (reasoning level: ${reasoningLevel})` : ''}
 </self_awareness>`;
 
-    // Load workspace context summary if it exists
-    let contextSummary = '';
-    const localContextPath = paths.contextSummaryPath(this.workspace);
-    const globalContextPath = paths.globalContextPath(this.workspace);
-    
-    if (existsSync(localContextPath)) {
-      contextSummary = `\n<workspace_context_summary>\n${readFileSync(localContextPath, 'utf8')}\n</workspace_context_summary>\n`;
-    } else if (existsSync(globalContextPath)) {
-      contextSummary = `\n<workspace_context_summary>\n${readFileSync(globalContextPath, 'utf8')}\n</workspace_context_summary>\n`;
-    }
+    const contextSummary = this._loadContextFolders();
 
-    contextSummary += this._loadContextFolders();
+
 
     const combined = `
 ${selfAwareness}
@@ -758,7 +749,6 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
 ## manage_memory — Store/remove memory. Args: action ("add"|"remove"), fact? (string), index? (number)
 ## run_background — Spawn background process. Args: command (string), cwd? (string)
 ## manage_task — Manage background tasks. Args: action ("status"|"read_logs"|"send_input"|"kill"|"list"), taskId? (string)
-## semantic_search — Conceptual code search. Args: query (string), topK? (number)
 ## get_editor_state — Get current editor state. No args.
 ## ask_subagent — Delegate to Gemini subagent. Args: prompt (string)
 ## ask_researcher — Delegate read-only codebase exploration. Args: prompt (string)
@@ -875,12 +865,6 @@ Parameters:
   - taskId (string, optional): Task ID (required for all actions except list)
   - lines (number, optional): Number of log lines to read (default: 50, for read_logs)
   - input (string, optional): Text to send to stdin (required for send_input)
-
-## semantic_search
-Search the workspace using a background RAG index. Finds code chunks conceptually related to your query, even if exact keywords don't match perfectly.
-Parameters:
-  - query (string, required): The search query or concept (e.g. "authentication logic")
-  - topK (number, optional): Number of results to return (default: 5)
 
 ## get_editor_state
 Gets the user's current editor state (active file, cursor position, and visible text) if the VS Code companion extension is installed. Use this to understand what the user is currently looking at.
