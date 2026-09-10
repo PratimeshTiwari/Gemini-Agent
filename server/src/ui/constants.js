@@ -5,7 +5,7 @@
 export /** Slash commands offered by the palette. Keep in sync with the /help output. */
 const SLASH_COMMANDS = [
   { name: 'help', desc: 'Show all available commands' },
-  { name: 'mode', desc: 'Change agent topology (Single, Duo, Swarm)' },
+  { name: 'mode', desc: 'Solo, or Duo with a reviewer on the other model' },
   { name: 'model', desc: 'Switch model tier (Flash, Flash Thinking, Pro)' },
   { name: 'reasoning', desc: 'How hard Pro plans before acting (Brief, Standard, Deep)' },
   { name: 'allowlist', desc: 'Manage auto-approved/blocked command rules' },

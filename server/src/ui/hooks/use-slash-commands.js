@@ -46,7 +46,7 @@ export async function handleSlashCommand(query, {
           "  :stop             - Immediately cancel the agent's current generation",
           '',
           '### 🧠 AI & LLM Settings',
-          '  /mode             - Change agent topology (Single, Duo, Swarm)',
+          '  /mode             - Solo, or Duo with a reviewer on the other model',
           '  /model            - Switch model tier (Flash, Flash Thinking, Pro)',
           '  /reasoning        - How hard Pro plans before acting (Brief, Standard, Deep)',
           '  /allowlist        - Manage auto-approved/blocked command rules',

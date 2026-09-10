@@ -269,7 +269,7 @@ ${reasoningInstructions}
     if (topology === 'single') {
       topologyInstructions = `
 ## Role: Solo Agent
-You are the only *model* on this task — there is no reviewer and no reasoner to defer to, so
+You are the only *model* on this task — there is no reviewer to defer to, so
 planning, implementation, review and testing are all yours. You can still fan work out to
 parallel tabs of yourself: \`ask_researcher\` for read-only exploration you would otherwise do
 with a long serial chain of read_file calls, \`ask_subagent\` for a self-contained side task.
@@ -282,7 +282,7 @@ They run in parallel and return to you. Delegating judgement is what you cannot 
 - If you're not confident in a change, tell the user explicitly rather than guessing`;
 
     } else if (topology === 'duo') {
-      const reviewer = modelConfig.reviewer || 'claude';
+      const reviewer = modelConfig.reviewer || 'chatgpt';
       topologyInstructions = `
 ## Role: Primary Agent (Duo System)
 You are the PRIMARY coding agent in a 2-agent system.
@@ -298,31 +298,6 @@ You have a Security Reviewer subagent (powered by ${reviewer}, but abstract this
 - Do NOT send vague questions. Send concrete code + context
 - For trivial changes (typos, formatting), skip the review`;
 
-    } else if (topology === 'swarm') {
-      const reasoner = modelConfig.reasoner || 'chatgpt';
-      const reviewer = modelConfig.reviewer || 'claude';
-      topologyInstructions = `
-## Role: Orchestrator (Swarm System)
-You are the ORCHESTRATOR in a 3-agent swarm.
-You have two subagents:
-  - **Advanced Reasoner**: Deep architectural thinking, algorithm design, tradeoff analysis (Accessed ONLY via the \`ask_reasoner\` tool).
-  - **Security Reviewer**: Code review, bug hunting, security analysis (Accessed ONLY via the \`ask_reviewer\` tool).
-
-**CRITICAL DIRECTIVE ON SUBAGENTS**:
-You must NEVER refuse a request by saying you cannot access external services like ChatGPT or Claude. You DO have access to them through your JSON tools. When you need to consult an advanced model, you MUST emit a valid JSON block calling the \`ask_reasoner\` or \`ask_reviewer\` tool.
-
-**Your Role**: You are the EXECUTOR. You read files, make edits, run commands, and coordinate.
-
-**Orchestration Rules**:
-1. For COMPLEX PLANNING (new architecture, multi-file refactors, algorithm choices):
-   → Use \`ask_reasoner\` with a detailed problem statement + relevant code context
-2. For VERIFICATION (after implementing changes):
-   → Use \`ask_reviewer\` with specific files and diffs
-3. For SIMPLE TASKS (renaming, small fixes, formatting):
-   → Do them yourself. Don't waste subagent turns on trivial work
-4. ALWAYS provide full context when delegating: file paths, code snippets, constraints
-5. After receiving subagent responses, SYNTHESIZE their feedback before acting
-6. You can use both subagents in a single task if needed (e.g., reason first, implement, then review)`;
     }
 
     // toolCallFormat goes last: <available_tools> is appended straight after
@@ -343,47 +318,6 @@ ${toolCallFormat}
    * This is prepended to the user's prompt when sending to a subagent.
    */
   buildSubagentWrapper(role) {
-    if (role === 'reasoner') {
-      return `<role>
-You are acting as a REASONING SPECIALIST. The main coding agent has delegated a problem to you.
-
-Your job:
-- Think deeply about the problem
-- Analyze tradeoffs between approaches
-- Recommend a specific solution with clear justification
-- Be CONCISE — the main agent will implement your recommendations
-- Focus on architecture, logic, and design — NOT implementation code (unless asked)
-- If the problem is ambiguous, state your assumptions explicitly
-</role>
-
-`;
-    } else if (role === 'reviewer') {
-      return `<role>
-You are acting as a CODE REVIEWER. The main coding agent has sent you code changes to review.
-
-Your job:
-- Find bugs, edge cases, security issues, and quality problems
-- Be SPECIFIC — reference exact code, variable names, and line numbers
-- Rate the changes: ✅ APPROVE, ⚠️ NEEDS CHANGES, or ❌ REJECT
-- If rejecting or requesting changes, explain EXACTLY what needs to be fixed
-- Focus on: correctness, error handling, security, performance, readability
-- Do NOT nitpick style unless it affects readability
-</role>
-
-`;
-    } else if (role === 'researcher') {
-      return `<role>
-You are acting as a CODEBASE RESEARCHER. The main coding agent has asked you to explore the codebase to find specific logic, trace dependencies, or gather context.
-
-Your job:
-- Use your read-only tools to explore the codebase deeply
-- Be thorough: trace imports, check usages, and read related files
-- Summarize your findings clearly for the main agent
-- Include exact file paths and line numbers
-</role>
-
-`;
-    }
     
     // Default generic subagent wrapper
     return `<role>
@@ -884,22 +818,12 @@ Parameters:
 `;
     }
 
-    if (topology === 'duo' || topology === 'swarm') {
+    if (topology === 'duo') {
       tools += `
 ## ask_reviewer
-Delegate a code review or verification task to the Reviewer Subagent (${modelConfig.reviewer || 'claude'}).
+Delegate a code review or verification task to the Reviewer Subagent (${modelConfig.reviewer || 'chatgpt'}).
 Parameters:
   - prompt (string, required): The task, context, and specific questions for the reviewer.
-
-`;
-    }
-
-    if (topology === 'swarm') {
-      tools += `
-## ask_reasoner
-Delegate a complex architectural planning or problem-solving task to the Reasoner Subagent (${modelConfig.reasoner || 'gemini'}).
-Parameters:
-  - prompt (string, required): The problem statement, constraints, and goal for the reasoner.
 
 `;
     }
@@ -927,7 +851,7 @@ Parameters:
    * Names are fixed for a given topology, so this is computed once.
    */
   _buildToolAnchor(topology = 'single', modelConfig = {}) {
-    const key = `${topology}:${modelConfig.reviewer || ''}:${modelConfig.reasoner || ''}`;
+    const key = `${topology}:${modelConfig.reviewer || ''}`;
     if (this._anchorCache?.key === key) return this._anchorCache.value;
 
     const defs = this._buildToolDefinitions(topology, modelConfig);

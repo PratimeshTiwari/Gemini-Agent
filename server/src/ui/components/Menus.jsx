@@ -113,7 +113,6 @@ export function Menus({
               items={[
                 { label: `Single (Gemini only)${agentLoop.topology === 'single' ? '  ← (Current)' : ''}`, value: 'single' },
                 { label: `Duo (Gemini + Reviewer)${agentLoop.topology === 'duo' ? '  ← (Current)' : ''}`, value: 'duo' },
-                { label: `Swarm (Gemini + Reasoner + Reviewer)${agentLoop.topology === 'swarm' ? '  ← (Current)' : ''}`, value: 'swarm' }
               ]}
               onSelect={async (item) => {
                 setActiveMenu(null);
@@ -174,7 +173,6 @@ export function Menus({
                 { label: 'View Current Config', value: 'view' },
                 { label: 'Main Agent', value: 'main' },
                 { label: 'Reviewer Subagent', value: 'reviewer' },
-                { label: 'Reasoner Subagent', value: 'reasoner' }
               ]}
               onSelect={async (item) => {
                 if (item.value === 'view') {
@@ -197,7 +195,6 @@ export function Menus({
               items={[
                 { label: 'Google Gemini', value: 'gemini' },
                 { label: 'ChatGPT', value: 'chatgpt' },
-                { label: 'Claude', value: 'claude' }
               ]}
               onSelect={async (item) => {
                 const role = activeMenu.role;

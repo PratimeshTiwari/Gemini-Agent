@@ -73,11 +73,10 @@ export class AgentLoop {
 
     // State defaults
     this.mode = 'plan'; // 'plan' | 'auto'
-    this.topology = 'single'; // 'single' | 'duo' | 'swarm'
+    this.topology = 'single'; // 'single' | 'duo' — derived from modelConfig.reviewer
     this.modelConfig = {
       main: 'gemini',
-      reviewer: 'claude',
-      reasoner: 'chatgpt',
+      reviewer: 'chatgpt',
       reasoningEffort: 'high',
       modelTier: 'pro',
       reasoningLevel: 'standard' // 'brief' | 'standard' | 'deep' — pro tier only
@@ -613,13 +612,13 @@ export class AgentLoop {
       case 'mode':
         if (args?.[0]) {
           const newTopology = args[0].toLowerCase();
-          if (['single', 'duo', 'swarm'].includes(newTopology)) {
+          if (['single', 'duo'].includes(newTopology)) {
             this.topology = newTopology;
             this._saveConfig();
             this.promptBuilder.resetPromptState();
             return { message: `🌐 Switched to Agent Topology: ${newTopology.toUpperCase()}` };
           }
-          return { message: `❌ Invalid mode. Use: single, duo, or swarm.` };
+          return { message: `❌ Invalid mode. Use: single or duo.` };
         }
         return { message: `Current Agent Topology: ${this.topology}` };
 
@@ -627,13 +626,13 @@ export class AgentLoop {
         if (args?.length === 2) {
           const role = args[0].toLowerCase();
           const model = args[1].toLowerCase();
-          if (['main', 'reviewer', 'reasoner'].includes(role) && ['gemini', 'chatgpt', 'claude'].includes(model)) {
+          if (['main', 'reviewer'].includes(role) && ['gemini', 'chatgpt'].includes(model)) {
             this.modelConfig[role] = model;
             this._saveConfig();
             this.promptBuilder.resetPromptState();
             return { message: `✅ Assigned ${model} to ${role} role.` };
           }
-          return { message: `❌ Invalid args. Usage: /config <role> <model>\nRoles: main, reviewer, reasoner\nModels: gemini, chatgpt, claude` };
+          return { message: `❌ Invalid args. Usage: /config <role> <model>\nRoles: main, reviewer\nModels: gemini, chatgpt` };
         }
         
         // No args given -> format the current config string cleanly
@@ -1152,7 +1151,7 @@ export class AgentLoop {
 
     for (let i = 0; i < toolCalls.length; i++) {
       const call = toolCalls[i];
-      const isParallel = ['ask_researcher', 'ask_reviewer', 'ask_reasoner', 'ask_subagent'].includes(call.name);
+      const isParallel = ['ask_researcher', 'ask_reviewer', 'ask_subagent'].includes(call.name);
 
       const executePromise = (async () => {
         // Notify side panel about tool call
@@ -1248,7 +1247,7 @@ export class AgentLoop {
             timestamp: Date.now(),
           });
         });
-      } else if (call.name === 'ask_reviewer' || call.name === 'ask_reasoner' || call.name === 'ask_researcher' || call.name === 'ask_subagent') {
+      } else if (call.name === 'ask_reviewer' || call.name === 'ask_researcher' || call.name === 'ask_subagent') {
         const role = call.name.split('_')[1];
         const targetModel = this.modelConfig[role] || 'gemini'; // default to gemini for subagents if not set
         
@@ -1737,7 +1736,7 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
         let result;
         
         if (call.name === 'ask_subagent') {
-          // Provide workspace context and strictly enforce Gemini model for subagent swarming
+          // Provide workspace context and strictly enforce Gemini for nested subagents
           const subPrompt = call.args.prompt;
           const contextMsg = `[System: You are running in workspace root: ${this.workspace}. Use tools to explore.]`;
           const sessionResult = await this._runSubAgentSession('subagent', `${contextMsg}\n\nUser Prompt: ${subPrompt}`, 'gemini');

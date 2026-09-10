@@ -4,13 +4,11 @@ import { ws } from './socket.js';
 const MODEL_URLS = {
   'gemini': 'https://gemini.google.com/*',
   'chatgpt': 'https://chatgpt.com/*',
-  'claude': 'https://claude.ai/*'
 };
 
 const MODEL_SCRIPTS = {
   'gemini': 'content-scripts/gemini-bridge.js',
   'chatgpt': 'content-scripts/chatgpt-bridge.js',
-  'claude': 'content-scripts/claude-bridge.js',
 };
 
 export async function broadcastTabStatus() {
@@ -87,7 +85,7 @@ export async function ensureModelTab(targetModel = 'gemini') {
   console.log(`[Agent CLI] No ${targetModel} tab found. Auto-reopening in a new tab...`);
   const openUrl = targetModel === 'gemini' 
     ? 'https://gemini.google.com/app' 
-    : (targetModel === 'chatgpt' ? 'https://chatgpt.com' : (targetModel === 'claude' ? 'https://claude.ai' : targetUrl.replace('/*', '')));
+    : (targetModel === 'chatgpt' ? 'https://chatgpt.com' : targetUrl.replace('/*', ''));
 
   const newTab = await chrome.tabs.create({ url: openUrl, active: true });
 

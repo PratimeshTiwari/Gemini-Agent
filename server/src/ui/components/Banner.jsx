@@ -20,8 +20,7 @@ export function Banner({ agentLoop, agentNameAscii }) {
             {(() => {
               const topology = agentLoop.topology || 'single';
               const roles = ['main'];
-              if (topology === 'duo' || topology === 'swarm') roles.push('reviewer');
-              if (topology === 'swarm') roles.push('reasoner');
+              if (topology === 'duo') roles.push('reviewer');
               return [...new Set(roles.map((r) => agentLoop.modelConfig?.[r]).filter(Boolean))].join(', ') || 'gemini';
             })()}
             {agentLoop.githubHandler?.poller?.username ? `  ·  github @${agentLoop.githubHandler.poller.username}` : ''}

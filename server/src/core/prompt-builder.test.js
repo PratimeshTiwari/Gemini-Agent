@@ -148,7 +148,7 @@ describe('PromptBuilder — the advertised tool set matches the dispatchable one
   });
 
   test('the reminder index cannot drift from the definitions', () => {
-    for (const topology of ['single', 'duo', 'swarm']) {
+    for (const topology of ['single', 'duo']) {
       const pb = new PromptBuilder(ws, ws);
       const defs = names(pb._buildToolDefinitions(topology, {}));
       const index = pb._buildToolIndex(topology, {});
@@ -162,8 +162,16 @@ describe('PromptBuilder — the advertised tool set matches the dispatchable one
     const pb = new PromptBuilder(ws, ws);
     assert.ok(!names(pb._buildToolDefinitions('single', {})).includes('ask_reviewer'));
     assert.ok(names(pb._buildToolDefinitions('duo', {})).includes('ask_reviewer'));
-    assert.ok(!names(pb._buildToolDefinitions('duo', {})).includes('ask_reasoner'));
-    assert.ok(names(pb._buildToolDefinitions('swarm', {})).includes('ask_reasoner'));
+  });
+
+  test('ask_reasoner is gone, in every topology', () => {
+    // Swarm needed three distinct models to be worth anything, and there are
+    // only two bridges. Advertising a tool that cannot be routed is how the
+    // model ends up calling something that silently goes nowhere.
+    const pb = new PromptBuilder(ws, ws);
+    for (const topology of ['single', 'duo']) {
+      assert.ok(!names(pb._buildToolDefinitions(topology, {})).includes('ask_reasoner'));
+    }
   });
 });
 
