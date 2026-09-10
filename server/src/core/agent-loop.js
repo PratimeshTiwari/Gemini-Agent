@@ -513,41 +513,6 @@ export class AgentLoop {
   }
 
   /**
-   * Switch which repo inside the group the agent is working on.
-   *
-   * Only meaningful when the workspace sits under a shared `.agent/` — see
-   * paths.resolveState. The scope decides where state, sessions, artifacts and
-   * config live, so changing it is closer to opening a different project than
-   * to changing a setting: the conversation belongs to the old scope and the
-   * new one has its own history.
-   *
-   * @returns {string} a message for the transcript.
-   */
-  setScope(scope) {
-    const previous = paths.getActiveScope(this.workspace);
-    const next = paths.setActiveScope(scope);
-    if (previous === (next || '')) {
-      return `Already working on: ${next || '(the workspace root)'}`;
-    }
-
-    // Everything below is keyed on the resolved .agent directory, which has
-    // just moved.
-    this.sessionStore = new SessionStore(this.workspace);
-    this.conversationHistory = this.sessionStore.loadHistory();
-    this.memoryManager = new MemoryManager(this.workspace);
-    this.contextManager = new ContextManager(this.workspace, this.memoryManager);
-    this._loadConfig();
-    this.promptBuilder?.resetPromptState?.();
-    this.workspaceSummary = '';
-
-    const target = next ? path.join(this.workspace, next) : this.workspace;
-    return `🎯 Now working on **${next || 'the workspace root'}**\n\n`
-      + `Code: \`${target}\`\nState: \`${paths.agentDir(this.workspace)}\`\n`
-      + `Shared with the other repos: \`${paths.sharedAgentDir(this.workspace)}\`\n\n`
-      + `${this.conversationHistory.length} turn${this.conversationHistory.length === 1 ? '' : 's'} of history loaded for this scope.`;
-  }
-
-  /**
    * Point the agent at another directory.
    *
    * The workspace is duplicated across half a dozen collaborators, so this is

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import * as paths from '../../core/paths.js';
 import { createSkill, listSkills, skillSearchPath } from '../../core/skills.js';
 import { readErrors, summarizeErrors, clearErrors, FLOWS } from '../../core/error-log.js';
-import { resolveWorkspaceInput, validateWorkspace, listScopes } from '../../core/workspaces.js';
+import { resolveWorkspaceInput, validateWorkspace } from '../../core/workspaces.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -54,7 +54,6 @@ export async function handleSlashCommand(query, {
           '  /auto             - Switch to Auto Mode (auto-applies safe edits)',
           '',
           '### 📁 Workspace & Context',
-          '  /scope [repo]     - Work on one repo in a group that shares a .agent/',
           '  /workspace <path> - Change the active workspace (checked before it is set)',
           '  /set-workspace    - Pick a workspace from a list of nearby folders',
           '  /memory           - What the agent has learned (on|off|forget <n>)',
@@ -147,41 +146,27 @@ export async function handleSlashCommand(query, {
       return;
     }
 
+    // Scope is chosen at launch, not switched mid-session. It decides where
+    // state, sessions and config live, so changing it is closer to opening a
+    // different project than to changing a setting — the conversation on screen
+    // belongs to the old scope, and the switcher used to rebuild the session
+    // store underneath it while those turns were still being displayed.
+    // The name still answers, because "unknown command" teaches nothing.
     if (command === 'scope' || command === 'repo') {
-      const scopes = listScopes(agentLoop.workspace);
-      const target = args.join(' ').trim();
-
-      if (scopes.length === 0) {
-        setHistory(prev => [...prev, { role: 'user', content: query }, {
-          role: 'assistant',
-          isLocal: true,
-          content: 'This workspace has its own `.agent/`, so there is nothing to scope between.\n\n'
-            + 'Scopes exist when several repos share one `.agent/` from a parent folder — put '
-            + '`.agent/` in the folder above your repos and open that folder (or any repo inside it).',
-        }]);
-        setIsProcessing(false);
-        return;
-      }
-
-      if (target) {
-        const match = scopes.find((sc) => sc.name === target)
-          || scopes.find((sc) => sc.name.toLowerCase() === target.toLowerCase());
-        if (!match) {
-          setHistory(prev => [...prev, { role: 'user', content: query }, {
-            role: 'assistant', isLocal: true,
-            content: `❌ No repo called \`${target}\` here.\nAvailable: ${scopes.map((sc) => sc.name).join(', ')}`,
-          }]);
-          setIsProcessing(false);
-          return;
-        }
-        const message = agentLoop.setScope(match.name);
-        setHistory([...agentLoop.conversationHistory, { role: 'assistant', content: message, isLocal: true }]);
-        resetScreen();
-        setIsProcessing(false);
-        return;
-      }
-
-      setActiveMenu({ type: 'scope', scopes, workspace: agentLoop.workspace });
+      const active = paths.getActiveScope(agentLoop.workspace);
+      const { discovered, base } = paths.resolveState(agentLoop.workspace);
+      setHistory(prev => [...prev, { role: 'user', content: query }, {
+        role: 'assistant',
+        isLocal: true,
+        content: discovered && active
+          ? `🎯 Working on **${active}**, inside the group at \`${base}\`.\n\n`
+            + 'Scope is set when the agent starts — `agent-cli --scope <repo>`, or just open '
+            + 'the repo directly. Switching it mid-session would swap the history out from '
+            + 'under the conversation you are looking at.'
+          : 'This workspace has its own `.agent/`, so there is nothing to scope between.\n\n'
+            + 'Scopes exist when several repos share one `.agent/` from a parent folder. Put '
+            + '`.agent/` in the folder above your repos, then start with `--scope <repo>`.',
+      }]);
       setIsProcessing(false);
       return;
     }

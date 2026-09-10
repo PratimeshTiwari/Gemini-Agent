@@ -202,9 +202,10 @@ empty scope, byte-identical to the old behaviour. Opening `/base-repo` and openi
 `workspaceSlug` is keyed on the resolved state dir for exactly that reason, so siblings don't
 collide on one history file.
 
-Scope is **explicit, never inferred from which files the agent touches**: `--scope repo-1`,
-`/scope`, shown in the status bar. Tools stay rooted at the workspace so cross-repo work is
-still possible — only state, sessions and config are scoped.
+Scope is **explicit, never inferred from which files the agent touches**, and **chosen at
+launch**: `--scope repo-1`, or just open the repo directly. Shown in the status bar. Tools stay
+rooted at the workspace so cross-repo work is still possible — only state, sessions and config
+are scoped. `/scope` still answers, but only to say where you are and how to change it.
 
 **The landmine:** `homeDir()` is `~/.agent`. A naive upward walk from any project under `$HOME`
 finds it and would adopt the global home as a project root, pooling every project's state and
@@ -334,8 +335,8 @@ fact to a standing instruction is a manual edit, deliberately.
 | 2 | One instruction surface: `AGENT.md`, walked | `rules.md`, `mistakesPath`, `/init-skills`, `contextFolders`, `/context add\|remove\|list` | **done** |
 | 3 | Memory as `.agent/<scope>/memory.md`, bounded in the prompt | the write-only trap | **done** |
 | 4 | One model picker, five valid states, `/reasoning` → `/effort` | `reasoningEffort`, `_effortToTier`, `modelTier`, `reasoningLevel` as stored keys | **done** |
-| 5 | Keep `--scope` and derived resolution; delete the runtime switcher | `/scope`, its picker, `setScope`, the reload path | next |
-| 6 | Per-model extension lock; derive topology from `modelConfig` | `topology` as a knob, `/mode`, the mode menu | |
+| 5 | Keep `--scope` and derived resolution; delete the runtime switcher | `/scope`'s picker, `setScope`, `listScopes`, the reload path | **done** |
+| 6 | Per-model extension lock; derive topology from `modelConfig` | `topology` as a knob, `/mode`, the mode menu | next |
 
 **What phase 2 kept (phase 2).** Bare `/context` survives as what its name says — a report of
 what is in the window. Only `add|remove|list` went: registering folders of `.md` files was a
@@ -384,6 +385,15 @@ they contradict (the tier is what the prompt actually branched on). It is delibe
 config *from disk* rather than the merged object: the default `modelConfig` already carries
 `effort: 'standard'`, and folding the merge let that default shadow every legacy key — a bug the
 pty probe caught and `config-merge.test.js` now covers.
+
+**Why the scope switcher goes (phase 5).** `setScope` rebuilt `SessionStore`, the conversation
+history, `MemoryManager`, `ContextManager` and the prompt state in one call — its own doc comment
+said switching scope "is closer to opening a different project than to changing a setting". That
+is the argument against having it as a setting: the transcript on screen belongs to the old
+scope, and the switcher swapped the history out from under those turns while they were still
+being displayed. `--scope` at launch and the derived walk reach the same place with no such
+window. The name still answers, read-only, because a group user typing `/scope` and getting
+"unknown command" learns nothing about `--scope`.
 
 **Why `semantic_search` goes (phase 1).** Measured: its tokenizer splits on non-alphanumerics
 only, so `getUserById` is one token and the query `user` can never match it — broken for the
