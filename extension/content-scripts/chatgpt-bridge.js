@@ -74,6 +74,58 @@ let lastActivityTime = 0;
 let activityCheckTimer = null;
 let currentRequestData = null;
 
+/**
+ * Talking to the extension, when the extension may no longer be there.
+ *
+ * Reloading the extension orphans every content script already running in a
+ * page: the page keeps executing this code, but its link to the extension is
+ * severed and **`chrome.runtime.sendMessage` throws synchronously** —
+ * `Uncaught Error: Extension context invalidated.` A `.catch()` does not catch
+ * it, because nothing was ever returned to reject.
+ *
+ * That is how a reload silently broke a live turn: Gemini answered, the scrape
+ * worked, `onResponseComplete` called `sendMessage`, it threw, and the agent
+ * sat on "Thinking…" until the five-minute watchdog. Nothing said why.
+ *
+ * So every call goes through here. When the context is gone we stop the timers
+ * and observers this page owns rather than throwing once per tick forever — and
+ * the service worker re-injects a fresh copy on startup, which is what actually
+ * repairs the tab.
+ */
+let bridgeInvalidated = false;
+const onInvalidated = [];
+
+/** The id disappears the moment this context is orphaned. */
+function bridgeAlive() {
+  try {
+    return !bridgeInvalidated && Boolean(chrome.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+function invalidate() {
+  if (bridgeInvalidated) return;
+  bridgeInvalidated = true;
+  console.warn('[Agent CLI] Extension was reloaded; this content script is orphaned. '
+    + 'A fresh one is injected on the extension\'s next start, or reload this tab.');
+  for (const stop of onInvalidated) {
+    try { stop(); } catch {}
+  }
+}
+
+/** Send, or quietly give up. Never throws, never rejects. */
+function safeSend(message) {
+  if (!bridgeAlive()) { invalidate(); return Promise.resolve(undefined); }
+  try {
+    const p = chrome.runtime.sendMessage(message);
+    return p && typeof p.catch === 'function' ? p.catch(() => undefined) : Promise.resolve(undefined);
+  } catch (err) {
+    if (/context invalidated/i.test(err?.message || '')) invalidate();
+    return Promise.resolve(undefined);
+  }
+}
+
 // ── DOM Helpers ─────────────────────────────────────────────────────
 
 /**
@@ -295,7 +347,7 @@ function startResponseObserver() {
         streamingUpdateTimer = setInterval(() => {
           if (lastResponseText && lastResponseText !== lastStreamedText) {
             lastStreamedText = lastResponseText;
-            chrome.runtime.sendMessage({
+            safeSend({
               type: 'gemini_response_stream',
               payload: {
                 content: lastResponseText,
@@ -325,7 +377,7 @@ function startResponseObserver() {
       console.warn('[ChatGPT Bridge] Absolute max timeout reached (5 min)');
       clearInterval(streamingUpdateTimer);
       stopResponseObserver();
-      chrome.runtime.sendMessage({
+      safeSend({
         type: 'gemini_response',
         payload: {
           content: lastResponseText || '[No response received — max timeout reached]',
@@ -453,7 +505,7 @@ function extractTextContent(element) {
 function onResponseComplete(responseText) {
   stopResponseObserver();
 
-  chrome.runtime.sendMessage({
+  safeSend({
     type: 'gemini_response',
     payload: {
       content: responseText,
@@ -521,15 +573,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 console.log('[ChatGPT Bridge] Content script loaded on:', window.location.href);
 
 // Notify service worker that we're ready
-chrome.runtime.sendMessage({
+safeSend({
   type: 'content_script_ready',
   payload: {
     url: window.location.href,
     model: 'chatgpt',
     timestamp: Date.now(),
   },
-}).catch(() => {
-  // Service worker may not be ready yet
 });
 
 /**
@@ -542,6 +592,7 @@ const CONNECT_NUDGE_MS = 3000;
 let keepAlivePort = null;
 
 function connectToServiceWorker() {
+  if (!bridgeAlive()) return;
   try {
     keepAlivePort = chrome.runtime.connect({ name: 'keepAlive' });
     keepAlivePort.onDisconnect.addListener(() => {
@@ -553,6 +604,7 @@ function connectToServiceWorker() {
 }
 connectToServiceWorker();
 
-setInterval(() => {
-  chrome.runtime.sendMessage({ type: 'connect' }).catch(() => {});
+const nudgeTimer = setInterval(() => {
+  safeSend({ type: 'connect' });
 }, CONNECT_NUDGE_MS);
+onInvalidated.push(() => clearInterval(nudgeTimer));

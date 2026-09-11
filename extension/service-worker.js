@@ -50,6 +50,24 @@
     "gemini": "content-scripts/gemini-bridge.js",
     "chatgpt": "content-scripts/chatgpt-bridge.js"
   };
+  async function reinjectModelTabs() {
+    for (const [model, targetUrl] of Object.entries(MODEL_URLS)) {
+      const file = MODEL_SCRIPTS[model];
+      if (!file) continue;
+      let tabs = [];
+      try {
+        tabs = await chrome.tabs.query({ url: targetUrl });
+      } catch {
+        continue;
+      }
+      for (const tab of tabs) {
+        try {
+          await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [file] });
+        } catch {
+        }
+      }
+    }
+  }
   async function broadcastTabStatus() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const connectedModels = [];
@@ -435,4 +453,5 @@
     }
   });
   connectWebSocket();
+  reinjectModelTabs();
 })();

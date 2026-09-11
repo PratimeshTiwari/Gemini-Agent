@@ -134,5 +134,11 @@ export function looksLikeProviderError(text) {
     /\ban error (?:has )?occurred\b/i,
     /\bunable to (?:complete|process) (?:your |the )?(?:request|response)\b/i,
     /\bI'?m (?:having trouble|not able) (?:responding|to respond)\b/i,
+    // Gemini's refusal. Observed in the wild: a turn came back as "I'm having a
+    // hard time fulfilling your request. Can I help you with something else
+    // instead?" — structurally identical to a finished answer, so without this
+    // it becomes the turn's result and the work is silently lost.
+    /\bhaving a hard time fulfilling\b/i,
+    /\bcan I help you with something else\b/i,
   ].some((re) => re.test(trimmed));
 }

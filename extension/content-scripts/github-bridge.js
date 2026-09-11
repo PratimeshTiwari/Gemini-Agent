@@ -10,6 +10,22 @@
  * This just provides faster detection when the user is already on GitHub.
  */
 
+/**
+ * Same guard as the model bridges: after an extension reload this page keeps
+ * running but `chrome.runtime.sendMessage` throws synchronously. See the long
+ * note in `gemini-bridge.js`.
+ */
+function safeSendGh(message) {
+  try {
+    if (!chrome.runtime?.id) return Promise.resolve(undefined);
+    const p = chrome.runtime.sendMessage(message);
+    return p && typeof p.catch === 'function' ? p.catch(() => undefined) : Promise.resolve(undefined);
+  } catch {
+    return Promise.resolve(undefined);
+  }
+}
+
+
 // ── State ────────────────────────────────────────────────────────────
 let observer = null;
 let lastSeenCommentIds = new Set();
@@ -215,7 +231,7 @@ function checkForNewComments() {
 
       // Send to background service worker
       try {
-        chrome.runtime.sendMessage({
+        safeSendGh({
           type: 'github_pr_comment',
           payload: {
             pr: currentPR,
@@ -252,7 +268,7 @@ function initialize() {
 
   // Notify the background about the PR we're viewing
   try {
-    chrome.runtime.sendMessage({
+    safeSendGh({
       type: 'github_pr_viewing',
       payload: { pr: currentPR },
     });

@@ -11,6 +11,45 @@ const MODEL_SCRIPTS = {
   'chatgpt': 'content-scripts/chatgpt-bridge.js',
 };
 
+/**
+ * Re-inject the bridge into model tabs that are already open.
+ *
+ * Reloading the extension orphans every content script already running: the
+ * page keeps executing, but its link to the extension is severed and
+ * `chrome.runtime.sendMessage` throws. The symptom is the worst kind — the tab
+ * looks fine, Gemini answers normally, and the reply simply never arrives. One
+ * live turn was lost to exactly this: the CLI sat on "Thinking…" for the full
+ * watchdog with no explanation anywhere.
+ *
+ * The content script now notices and goes quiet, but going quiet is not
+ * repairing. This is the repair: on every worker start, put a fresh copy into
+ * the tabs that are already open. Chrome gives the new copy its own isolated
+ * world, so it does not collide with the orphaned one, and the orphan has
+ * already stopped its own timers by then.
+ *
+ * Failures are ignored per tab on purpose — a restricted or discarded tab is
+ * not a reason to skip the rest.
+ */
+export async function reinjectModelTabs() {
+  for (const [model, targetUrl] of Object.entries(MODEL_URLS)) {
+    const file = MODEL_SCRIPTS[model];
+    if (!file) continue;
+    let tabs = [];
+    try {
+      tabs = await chrome.tabs.query({ url: targetUrl });
+    } catch {
+      continue;
+    }
+    for (const tab of tabs) {
+      try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [file] });
+      } catch {
+        // Discarded, restricted, or mid-navigation. The next start tries again.
+      }
+    }
+  }
+}
+
 export async function broadcastTabStatus() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   
