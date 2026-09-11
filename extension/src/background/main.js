@@ -1,7 +1,7 @@
 import { connectWebSocket } from './socket.js';
 import { sendToServer } from './messaging.js';
 import { getState } from './state.js';
-import { broadcastTabStatus } from './content.js';
+import { broadcastTabStatus, reinjectModelTabs } from './content.js';
 
 // Open side panel on extension icon click
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -12,7 +12,7 @@ chrome.tabs.onRemoved.addListener(() => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' && tab.url && (tab.url.includes('gemini.google.com') || tab.url.includes('chatgpt.com') || tab.url.includes('claude.ai'))) {
+  if (changeInfo.status === 'complete' && tab.url && (tab.url.includes('gemini.google.com') || tab.url.includes('chatgpt.com'))) {
     broadcastTabStatus();
   }
 });
@@ -66,7 +66,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 // Connect on install/startup
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('🤖 Gemini Agent extension installed');
+  console.log('🤖 Agent CLI extension installed');
   connectWebSocket();
 });
 
@@ -83,3 +83,8 @@ chrome.runtime.onConnect.addListener((port) => {
 
 // Try to connect immediately
 connectWebSocket();
+
+// And repair any tab whose content script this worker's start just orphaned.
+// See reinjectModelTabs: without it, a reload of the extension leaves open
+// Gemini tabs looking healthy while every reply is silently dropped.
+reinjectModelTabs();

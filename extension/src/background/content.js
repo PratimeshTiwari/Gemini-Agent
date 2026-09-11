@@ -4,14 +4,51 @@ import { ws } from './socket.js';
 const MODEL_URLS = {
   'gemini': 'https://gemini.google.com/*',
   'chatgpt': 'https://chatgpt.com/*',
-  'claude': 'https://claude.ai/*'
 };
 
 const MODEL_SCRIPTS = {
   'gemini': 'content-scripts/gemini-bridge.js',
   'chatgpt': 'content-scripts/chatgpt-bridge.js',
-  'claude': 'content-scripts/claude-bridge.js',
 };
+
+/**
+ * Re-inject the bridge into model tabs that are already open.
+ *
+ * Reloading the extension orphans every content script already running: the
+ * page keeps executing, but its link to the extension is severed and
+ * `chrome.runtime.sendMessage` throws. The symptom is the worst kind — the tab
+ * looks fine, Gemini answers normally, and the reply simply never arrives. One
+ * live turn was lost to exactly this: the CLI sat on "Thinking…" for the full
+ * watchdog with no explanation anywhere.
+ *
+ * The content script now notices and goes quiet, but going quiet is not
+ * repairing. This is the repair: on every worker start, put a fresh copy into
+ * the tabs that are already open. Chrome gives the new copy its own isolated
+ * world, so it does not collide with the orphaned one, and the orphan has
+ * already stopped its own timers by then.
+ *
+ * Failures are ignored per tab on purpose — a restricted or discarded tab is
+ * not a reason to skip the rest.
+ */
+export async function reinjectModelTabs() {
+  for (const [model, targetUrl] of Object.entries(MODEL_URLS)) {
+    const file = MODEL_SCRIPTS[model];
+    if (!file) continue;
+    let tabs = [];
+    try {
+      tabs = await chrome.tabs.query({ url: targetUrl });
+    } catch {
+      continue;
+    }
+    for (const tab of tabs) {
+      try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [file] });
+      } catch {
+        // Discarded, restricted, or mid-navigation. The next start tries again.
+      }
+    }
+  }
+}
 
 export async function broadcastTabStatus() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -31,6 +68,17 @@ export async function broadcastTabStatus() {
     payload: { connectedModels },
   });
 }
+
+/**
+ * Why the last attempt to reach a tab failed.
+ *
+ * The bridge logs whatever the extension reports, and the extension reported
+ * only "failed after multiple retries" — so `/logs extension` could say that
+ * something in the browser broke and nothing about what. This carries the
+ * actual DOM-side message out to the terminal, which is the only place anyone
+ * is looking when a selector on gemini.google.com changes.
+ */
+let lastTabFailure = null;
 
 async function trySendToTab(tab, message, targetModel) {
   let originalActiveTabId = null;
@@ -54,6 +102,7 @@ async function trySendToTab(tab, message, targetModel) {
     success = true;
   } catch (firstErr) {
     console.warn(`[Service Worker] First attempt failed for ${targetModel} tab ${tab.id}:`, firstErr.message);
+    lastTabFailure = { stage: 'send', message: firstErr.message };
     
     const scriptPath = MODEL_SCRIPTS[targetModel];
     if (scriptPath) {
@@ -65,6 +114,7 @@ async function trySendToTab(tab, message, targetModel) {
         success = true;
       } catch (secondErr) {
         console.warn(`[Service Worker] Second attempt failed for ${targetModel} tab ${tab.id}:`, secondErr.message);
+        lastTabFailure = { stage: 'reinject', message: secondErr.message };
       }
     }
   }
@@ -84,10 +134,10 @@ export async function ensureModelTab(targetModel = 'gemini') {
   }
 
   // No tab found: automatically reopen in a new tab
-  console.log(`[Gemini Agent] No ${targetModel} tab found. Auto-reopening in a new tab...`);
+  console.log(`[Agent CLI] No ${targetModel} tab found. Auto-reopening in a new tab...`);
   const openUrl = targetModel === 'gemini' 
     ? 'https://gemini.google.com/app' 
-    : (targetModel === 'chatgpt' ? 'https://chatgpt.com' : (targetModel === 'claude' ? 'https://claude.ai' : targetUrl.replace('/*', '')));
+    : (targetModel === 'chatgpt' ? 'https://chatgpt.com' : targetUrl.replace('/*', ''));
 
   const newTab = await chrome.tabs.create({ url: openUrl, active: true });
 
@@ -126,7 +176,10 @@ export async function injectPromptIntoModel(payload) {
   const targetUrl = MODEL_URLS[targetModel];
 
   if (!targetUrl) {
-    const errorMsg = { type: 'error', payload: { message: `❌ Unsupported model: ${targetModel}` } };
+    const errorMsg = {
+      type: 'error',
+      payload: { op: 'unsupported_model', stage: 'route', targetModel, message: `❌ Unsupported model: ${targetModel}` },
+    };
     broadcastToSidePanel(errorMsg);
     sendToServer(errorMsg);
     return;
@@ -145,7 +198,7 @@ export async function injectPromptIntoModel(payload) {
     // Primary Agent: Find existing tab or auto-reopen if none is found
     let tabs = await chrome.tabs.query({ url: targetUrl });
     if (tabs.length === 0) {
-      console.log(`[Gemini Agent] No active ${targetModel} tab found. Auto-reopening...`);
+      console.log(`[Agent CLI] No active ${targetModel} tab found. Auto-reopening...`);
       sendToServer({
         type: 'status',
         payload: { message: `🌐 Reopening ${targetModel} in a new tab...` }
@@ -159,7 +212,13 @@ export async function injectPromptIntoModel(payload) {
     if (tabs.length === 0) {
       const errorMsg = {
         type: 'error',
-        payload: { message: `❌ Failed to open ${targetModel} tab automatically. Please open https://gemini.google.com/app manually.` },
+        payload: {
+          op: 'no_tab',
+          stage: 'open_tab',
+          targetModel,
+          url: targetUrl,
+          message: `❌ Failed to open ${targetModel} tab automatically. Please open https://gemini.google.com/app manually.`,
+        },
       };
       broadcastToSidePanel(errorMsg);
       sendToServer(errorMsg);
@@ -175,8 +234,18 @@ export async function injectPromptIntoModel(payload) {
   if (!success) {
     const errorMsg = {
       type: 'error',
-      payload: { message: `Failed to communicate with ${targetModel} tab after multiple retries. Please hard-refresh the tab (Cmd+Shift+R) and try again!` },
+      payload: {
+        op: 'tab_unreachable',
+        stage: lastTabFailure?.stage || 'send',
+        targetModel,
+        url: targetUrl,
+        detail: lastTabFailure?.message,
+        message: `Failed to communicate with ${targetModel} tab after multiple retries`
+          + `${lastTabFailure?.message ? ` — ${lastTabFailure.message}` : ''}`
+          + '. Hard-refresh the tab (Cmd+Shift+R) and try again.',
+      },
     };
+    lastTabFailure = null;
     broadcastToSidePanel(errorMsg);
     sendToServer(errorMsg);
   }
@@ -199,7 +268,7 @@ export async function triggerNewChatInModel(payload) {
       await chrome.tabs.sendMessage(tabs[i].id, { type: 'new_chat', payload });
       break;
     } catch (err) {
-      console.warn(`[Gemini Agent] Failed to send new_chat to ${targetModel} tab ${tabs[i].id}:`, err);
+      console.warn(`[Agent CLI] Failed to send new_chat to ${targetModel} tab ${tabs[i].id}:`, err);
     }
   }
 }

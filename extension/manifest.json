@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Gemini Agent Bridge",
+  "name": "Agent CLI Bridge",
   "version": "1.1.0",
-  "description": "Connects the local Gemini Agent CLI to your gemini.google.com session.",
+  "description": "Connects the local Agent CLI to your gemini.google.com session.",
   "permissions": [
     "tabs",
     "storage",
@@ -13,7 +13,6 @@
   "host_permissions": [
     "https://gemini.google.com/*",
     "https://chatgpt.com/*",
-    "https://claude.ai/*",
     "https://github.com/*"
   ],
   "side_panel": {
@@ -24,23 +23,30 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://gemini.google.com/*"],
-      "js": ["content-scripts/gemini-bridge.js"],
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "content-scripts/gemini-bridge.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://chatgpt.com/*"],
-      "js": ["content-scripts/chatgpt-bridge.js"],
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "content-scripts/chatgpt-bridge.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://claude.ai/*"],
-      "js": ["content-scripts/claude-bridge.js"],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": ["https://github.com/*"],
-      "js": ["content-scripts/github-bridge.js"],
+      "matches": [
+        "https://github.com/*"
+      ],
+      "js": [
+        "content-scripts/github-bridge.js"
+      ],
       "run_at": "document_idle"
     }
   ],

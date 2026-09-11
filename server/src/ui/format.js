@@ -110,6 +110,34 @@ export function clampForDisplay(value, maxLines = 15, maxChars = 1200) {
 }
 
 /**
+ * The state of the GitHub token, as one short chip.
+ *
+ * "Is my token still good?" is the question the dashboard could not answer.
+ * A lapsed personal access token and a revoked one both surface as the same
+ * 401, and by then the poller has already stopped — so the useful moment to
+ * say something is while the token still works and the expiry date is known.
+ *
+ * @param {string|null} expiry - ISO date GitHub reported, or null for no expiry
+ * @param {boolean} rejected - the token has already been refused
+ * @returns {{ label: string, tone: 'green'|'yellow'|'red' }}
+ */
+export function formatTokenExpiry(expiry, rejected = false, now = Date.now()) {
+  if (rejected) return { label: 'token rejected', tone: 'red' };
+  if (!expiry) return { label: 'token ok', tone: 'green' };
+
+  const when = expiry instanceof Date ? expiry.getTime() : new Date(expiry).getTime();
+  if (Number.isNaN(when)) return { label: 'token ok', tone: 'green' };
+
+  const days = Math.floor((when - now) / 86400000);
+  if (days < 0) return { label: 'token expired', tone: 'red' };
+  if (days === 0) return { label: 'token expires today', tone: 'red' };
+  // A week is the point where it becomes something to do rather than something
+  // to know; before that, "ok" is the whole answer and the date is noise.
+  if (days <= 7) return { label: `token expires in ${days}d`, tone: 'yellow' };
+  return { label: 'token ok', tone: 'green' };
+}
+
+/**
  * A poll timestamp as something a person reads at a glance.
  *
  * The dashboard was printing the raw ISO string, which is both unreadable and
@@ -127,4 +155,79 @@ export function formatPollTime(value, now = Date.now()) {
   return new Date(then).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
-export { marked };
+/**
+ * A shell result as a terminal block rather than a JSON dump.
+ *
+ * `run_command` returns `{exitCode, stdout, stderr, command, cwd}`, and the
+ * expanded row used to print that object verbatim — escaped newlines, quoted
+ * keys and all, so a page of output arrived as one unreadable line. What the
+ * user wants to see is what they would have seen in a shell.
+ *
+ * @returns {string|null} null when this is not a shell result, so the caller
+ *   can fall back to the generic renderer.
+ */
+export function formatCommandResult(result, maxLines = 20) {
+  if (!result || typeof result !== 'object') return null;
+  const isShellResult = typeof result.exitCode === 'number'
+    && ('stdout' in result || 'stderr' in result);
+  if (!isShellResult) return null;
+
+  const lines = [];
+  if (result.command) lines.push(`$ ${result.command}`);
+
+  const body = [result.stdout, result.stderr].filter((p) => p && p.trim()).join('\n').trimEnd();
+  if (body) {
+    lines.push(clampForDisplay(body, maxLines, maxLines * 200));
+  } else if (!result.timedOut) {
+    lines.push('(no output)');
+  }
+
+  if (result.timedOut) {
+    lines.push('⏱ timed out');
+  } else if (result.exitCode !== 0) {
+    // The exit code is the whole point of showing this expanded, and it is the
+    // easiest thing to lose in a wall of output.
+    lines.push(`✗ exit ${result.exitCode}`);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Markdown for a transcript row, memoised by source text.
+ *
+ * `marked.parse` is not cheap and a turn re-renders whenever anything in the
+ * live frame ticks, so parsing the same reply on every frame showed up as
+ * tearing. The cache is bounded and keyed on the raw content — the same string
+ * always produces the same rendering.
+ *
+ * The two regexes run before marked because `marked-terminal` mangles inline
+ * bold inside list items, so bold is pre-baked as raw SGR (see CLAUDE.md).
+ */
+const RENDER_CACHE = new Map();
+const RENDER_CACHE_MAX = 200;
+
+export function renderMarkdown(content) {
+  const source = content || '';
+  const hit = RENDER_CACHE.get(source);
+  if (hit !== undefined) return hit;
+
+  let out;
+  try {
+    out = marked
+      .parse(source
+        .replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m')
+        .replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m'))
+      .trim();
+  } catch {
+    out = source;
+  }
+
+  // Oldest-first eviction: Map preserves insertion order, so the first key is
+  // the least recently added.
+  if (RENDER_CACHE.size >= RENDER_CACHE_MAX) {
+    RENDER_CACHE.delete(RENDER_CACHE.keys().next().value);
+  }
+  RENDER_CACHE.set(source, out);
+  return out;
+}

@@ -12,6 +12,7 @@
 import { EventEmitter } from 'events';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { resolve, dirname } from 'path';
+import { logError } from '../core/error-log.js';
 
 export class GitHubPoller extends EventEmitter {
   /**
@@ -30,6 +31,12 @@ export class GitHubPoller extends EventEmitter {
     this.pollTimer = null;
     this.isPolling = false;
     this.username = null; // Resolved on first poll
+    // When the token expires, as GitHub itself reports it. A personal access
+    // token that has lapsed looks exactly like one that was never valid — a
+    // 401 with "Bad credentials" — so the only way to say "expired" rather
+    // than "rejected" is to have read the date while the token still worked.
+    // Null means GitHub sent no expiry: a classic token set to never expire.
+    this.tokenExpiry = null;
 
     // State: watermarks per PR to avoid reprocessing
     this.stateFile = resolve(workspace, config.stateFile);
@@ -130,7 +137,21 @@ export class GitHubPoller extends EventEmitter {
       });
 
     } catch (err) {
-      this.emit('error', { message: `Poll failed: ${err.message}`, stack: err.stack });
+      // A token that has been revoked or expired will fail identically on every
+      // future tick. `start()` already treats a 401 as terminal; polling has to
+      // as well, or the loop reports "Bad credentials" every interval forever —
+      // which is what it did, straight into the terminal.
+      if (/\b401\b|Bad credentials/i.test(err.message)) {
+        this.stop();
+        logError(this.workspace, { flow: 'github', op: 'poll', message: `Auth rejected: ${err.message}` });
+        this.emit('auth_rejected', {
+          message: 'GitHub rejected the token (401 Bad credentials). PR watching is off. '
+            + 'Open the GitHub tab (ctrl+o) and paste a new token, or run `/github remove-token`.',
+        });
+      } else {
+        logError(this.workspace, { flow: 'github', op: 'poll', message: err.message, detail: err.stack });
+        this.emit('error', { message: `Poll failed: ${err.message}`, stack: err.stack });
+      }
     } finally {
       this.isPolling = false;
     }
@@ -181,7 +202,10 @@ export class GitHubPoller extends EventEmitter {
         });
       }
     } catch (err) {
-      console.error("Failed to fetch comments for PR:", err.message);
+      logError(this.workspace, {
+        flow: 'github', op: 'fetch_comments',
+        message: `Failed to fetch comments for PR: ${err.message}`, detail: err.stack,
+      });
     }
     
     // Sort by created_at descending (newest first)
@@ -393,6 +417,15 @@ export class GitHubPoller extends EventEmitter {
       headers: this._headers(),
     });
 
+    // Sent on every authenticated request for a token that has an expiry.
+    // Free to read, and it turns "your token stopped working" into "your token
+    // expires on Friday" — the difference between a surprise and a task.
+    const expiry = response.headers.get('github-authentication-token-expiration');
+    if (expiry) {
+      const when = new Date(expiry.replace(' UTC', 'Z').replace(' ', 'T'));
+      if (!Number.isNaN(when.getTime())) this.tokenExpiry = when.toISOString();
+    }
+
     if (!response.ok) {
       const body = await response.text().catch(() => '');
       throw new Error(`GitHub API ${response.status}: ${response.statusText} — ${body.substring(0, 200)}`);
@@ -418,7 +451,10 @@ export class GitHubPoller extends EventEmitter {
         return JSON.parse(readFileSync(this.stateFile, 'utf-8'));
       }
     } catch (err) {
-      console.warn(`⚠️ Failed to load GitHub state: ${err.message}`);
+      logError(this.workspace, {
+        flow: 'github', op: 'load_state',
+        message: `Failed to load GitHub state: ${err.message}`,
+      });
     }
     return { commentWatermarks: {}, seenCIRuns: {} };
   }
@@ -431,7 +467,10 @@ export class GitHubPoller extends EventEmitter {
       }
       writeFileSync(this.stateFile, JSON.stringify(this.state, null, 2), 'utf-8');
     } catch (err) {
-      console.warn(`⚠️ Failed to save GitHub state: ${err.message}`);
+      logError(this.workspace, {
+        flow: 'github', op: 'save_state',
+        message: `Failed to save GitHub state: ${err.message}`,
+      });
     }
   }
 }

@@ -1,5 +1,5 @@
 /**
- * Gemini Agent — Side Panel JavaScript
+ * Agent CLI — Side Panel JavaScript
  *
  * Agent terminal UI: handles user input, displays messages,
  * renders diffs with accept/reject, and manages slash commands.

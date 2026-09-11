@@ -38,8 +38,21 @@ export function parseTurnActions(turn) {
     const msg = turn.steps[sIdx];
 
     if (msg.role === 'assistant' || msg.role === 'agent') {
-      const thinkMatch = msg.content.match(/<think>([\s\S]*?)<\/think>/);
-      let cleanContent = msg.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+      // `<thought>`, not `<think>`. Every tier's prompt asks for `<thought>` —
+      // it is the one thing allowed to precede a tool call — and this matched
+      // `<think>`, a tag nothing ever asks for. So the model's reasoning was
+      // never recognised as reasoning: it went straight into the transcript as
+      // raw `<thought>…</thought>`, which is most of what "the output comes out
+      // messy with symbols" was.
+      //
+      // Both spellings, and all of them: a pro turn routinely emits several,
+      // and a non-global replace left every block after the first in the prose.
+      const THOUGHT = /<(think|thought)>([\s\S]*?)<\/\1>/gi;
+      const thoughts = [...msg.content.matchAll(THOUGHT)].map((m) => m[2].trim()).filter(Boolean);
+      let cleanContent = msg.content.replace(THOUGHT, '').trim();
+      // An unclosed block — the reply was cut off mid-thought — would otherwise
+      // leave a bare opening tag and swallow the rest of the message.
+      cleanContent = cleanContent.replace(/<(think|thought)>[\s\S]*$/i, '').trim();
       // The trailing "(128KB)" that /image writes has to be part of the match,
       // not left behind: the whole match is what gets cut out of the prose.
       const imgMatch = cleanContent.match(
@@ -56,14 +69,14 @@ export function parseTurnActions(turn) {
         });
       }
 
-      if (thinkMatch) {
+      thoughts.forEach((content, i) => {
         actions.push({
           type: 'think',
-          id: `turn_${turn.id}_act_${sIdx}_think`,
-          content: thinkMatch[1].trim(),
-          msg
+          id: `turn_${turn.id}_act_${sIdx}_think_${i}`,
+          content,
+          msg,
         });
-      }
+      });
 
       if (cleanContent) {
         finalMessages.push({

@@ -1,4 +1,4 @@
-# Gemini Agent Server
+# Agent CLI Server
 
 A local orchestration engine that acts as the bridge between your filesystem and the Gemini Web UI. It provides powerful agentic coding capabilities directly in your local terminal.
 
@@ -32,6 +32,6 @@ npx /path/to/Gemini-Agent/server --workspace .
 
 ## Features
 - **Context Engine:** Automatically tracks tokens, minifies code, and chunks ASTs using Acorn to keep the LLM context lean.
-- **Session Persistence:** Conversation histories are automatically saved to `~/.gemini-agent/sessions/`. You can close and reopen the terminal without losing your chat.
+- **Session Persistence:** Conversation histories are automatically saved to `~/.agent/workspaces/<name>-<hash>/history.jsonl`. You can close and reopen the terminal without losing your chat.
 - **Workspace File Watcher:** Modifying files externally (e.g. in VS Code) automatically notifies the agent to keep its context fresh.
 - **Skills Framework:** Built-in modular skills that the agent can execute securely.

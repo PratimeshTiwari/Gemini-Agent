@@ -16,6 +16,29 @@
 
 import { WebSocketServer as WS } from 'ws';
 import { randomUUID } from 'crypto';
+import { logError } from '../core/error-log.js';
+
+/**
+ * Loopback only. Not `localhost`, which resolves through the hosts file and has
+ * been pointed elsewhere on machines with unusual DNS setups.
+ */
+const LOOPBACK = '127.0.0.1';
+
+/**
+ * Who may open a socket here.
+ *
+ * A Chrome extension sends `chrome-extension://<id>`; Firefox sends
+ * `moz-extension://`. A connection with *no* Origin is a non-browser client —
+ * curl, a test, another process — and is allowed, because the browser is the
+ * only thing that can be tricked into connecting on someone else's behalf. A
+ * page on a website sends its own origin and is refused.
+ */
+const EXTENSION_ORIGIN = /^(chrome-extension|moz-extension|safari-web-extension):\/\//i;
+
+export function isAllowedOrigin(origin) {
+  if (!origin) return true;              // not a browser page
+  return EXTENSION_ORIGIN.test(origin);
+}
 
 export class WebSocketServer {
   constructor({ port, agentLoop, githubHandler }) {
@@ -53,15 +76,49 @@ export class WebSocketServer {
     this.agentLoop.setBackgroundCallbacks(backgroundCallbacks);
   }
 
+  /**
+   * Start listening — on the loopback interface only, for the extension only.
+   *
+   * `new WS({ port })` binds to `::`, every interface. Verified, not assumed.
+   * That put a socket on the office LAN, the café wifi and the hotel network
+   * which accepts `user_message` and runs shell commands on this machine, with
+   * no authentication of any kind. Two things close that, both free:
+   *
+   *  - `host: '127.0.0.1'` — nothing off this machine can reach it at all.
+   *  - an Origin check — a *web page* in the user's own browser can open
+   *    `ws://127.0.0.1:7777` and would arrive over loopback like anything else.
+   *    Browsers cannot forge `Origin`, and the extension's is
+   *    `chrome-extension://<id>`, so requiring that shuts the page out.
+   *
+   * What remains: another process running as the same user on this machine can
+   * still connect. That needs a shared secret the extension can read, which
+   * needs a setup step — noted in CLAUDE.md → What's next rather than guessed at.
+   */
   async start() {
     return new Promise((resolve, reject) => {
-      this.wss = new WS({ port: this.port });
+      this.wss = new WS({
+        port: this.port,
+        host: LOOPBACK,
+        verifyClient: ({ origin, req }, done) => {
+          if (isAllowedOrigin(origin)) return done(true);
+          logError(this.agentLoop?.workspace, {
+            flow: 'bridge',
+            op: 'rejected_origin',
+            message: `Refused a connection from origin ${origin || '(none)'}`,
+          });
+          // 403, and say why: a silent drop here reads as "the bridge is down".
+          done(false, 403, 'Only the Agent CLI browser extension may connect');
+        },
+      });
 
       this.wss.on('connection', (ws, req) => {
         this._handleConnection(ws, req);
       });
 
       this.wss.on('listening', () => {
+        // When the socket opened, so the extension's arrival can be timed
+        // against it. See `extensionConnectMs` below.
+        this.listeningAt = Date.now();
         resolve();
       });
 
@@ -94,7 +151,10 @@ export class WebSocketServer {
         const message = JSON.parse(data.toString());
         await this._handleMessage(clientId, message);
       } catch (err) {
-        console.error(`❌ Error handling message from ${clientId}:`, err.message);
+        logError(this.agentLoop?.workspace, {
+          flow: 'bridge', op: 'handle_message',
+          message: err.message, detail: err.stack, meta: { clientId },
+        });
         this._send(ws, {
           id: randomUUID(),
           type: 'error',
@@ -109,7 +169,10 @@ export class WebSocketServer {
     });
 
     ws.on('error', (err) => {
-      console.error(`❌ Client error (${clientId}):`, err.message);
+      logError(this.agentLoop?.workspace, {
+        flow: 'bridge', op: 'client_error',
+        message: err.message, meta: { clientId },
+      });
     });
 
     // Send welcome message
@@ -135,6 +198,25 @@ export class WebSocketServer {
     // Identify client type from first message
     if (payload?.clientType && client.type === 'unknown') {
       client.type = payload.clientType;
+
+      /**
+       * How long the extension took to notice this server, in milliseconds.
+       *
+       * Recorded because "the connection got slower" was reported from use and
+       * could not be checked from inside the product. Measured in headless
+       * Chrome the reconnect cadence is exactly 30.0s — `chrome.alarms` clamps
+       * to a 30-second floor and the extension's backoff capped at exactly that
+       * floor, so the whole ladder was a constant. Whether the fix for that
+       * helps in a *real* browser is the number this row exists to answer.
+       *
+       * First extension only: later reconnects are a different question and
+       * overwriting this would lose the startup figure, which is the one people
+       * mean.
+       */
+      if (client.type === 'extension' && this.extensionConnectMs === undefined && this.listeningAt) {
+        this.extensionConnectMs = Date.now() - this.listeningAt;
+        if (this.agentLoop) this.agentLoop.extensionConnectMs = this.extensionConnectMs;
+      }
     }
 
     switch (type) {
@@ -181,9 +263,26 @@ export class WebSocketServer {
         break;
 
       case 'error':
-        // Extension reported an error (e.g. failed to inject). The turn is
-        // dead, so hand the bridge lock back — otherwise every later prompt
-        // queues behind a request that will never be answered.
+        // Written down before anything else. This is the only report we get
+        // from inside the browser tab, and until now it was handled and thrown
+        // away — a selector that changed on gemini.google.com looked, from the
+        // terminal, like the agent simply going quiet.
+        // Content scripts run in the page and cannot set fields on this
+        // payload — it reaches here as a bare message — so they prefix the
+        // stage in brackets and it is lifted back out into `op`. Without it a
+        // changed selector on gemini.google.com arrived as "failed", which is
+        // the one thing you already knew.
+        const tagged = /^\[([a-z_]+)\]\s*/i.exec(payload?.message || '');
+        logError(this.agentLoop?.workspace, {
+          flow: 'extension',
+          op: payload?.op || tagged?.[1] || payload?.stage || 'unknown',
+          message: (payload?.message || payload?.error || 'Extension reported an error')
+            .replace(/^\[[a-z_]+\]\s*/i, ''),
+          detail: payload?.detail || payload?.stack,
+          meta: { targetModel: payload?.targetModel, url: payload?.url, stage: payload?.stage },
+        });
+        // The turn is dead, so hand the bridge lock back — otherwise every
+        // later prompt queues behind a request that will never be answered.
         this.agentLoop.isProcessing = false;
         this.agentLoop.abortExtensionWork();
         if (this.agentLoop.callbacks) {
@@ -227,20 +326,43 @@ export class WebSocketServer {
         break;
 
       case 'github_pr_viewing':
-        // User is viewing a PR page
+        // Which PR the browser is looking at. Recorded on the client, not
+        // printed: this is routine traffic on a MutationObserver, and a
+        // console.log here writes straight into the frame Ink is repainting —
+        // three copies of "User viewing PR #13" in the transcript was exactly
+        // that. The GitHub tab is where this belongs if it is ever surfaced.
         if (payload?.pr) {
-          console.log(`  [GitHub Bridge] User viewing PR #${payload.pr.number} on ${payload.pr.full_name}`);
+          this.viewingPR = { number: payload.pr.number, repo: payload.pr.full_name };
         }
         break;
 
       default:
-        console.warn(`⚠️ Unknown message type: ${type}`);
+        logError(this.agentLoop?.workspace, {
+          flow: 'bridge', op: 'unknown_message',
+          message: `Unknown message type: ${type}`,
+        });
     }
   }
 
   // ── GitHub Event Wiring ─────────────────────────────────────────
 
   _wireGitHubEvents() {
+    // Errors reach the UI through the same queue as everything else. They used
+    // to be console.error'd from main.js, which writes straight into the frame
+    // Ink is repainting: the message corrupts the layout and is gone on the
+    // next render.
+    const pushError = (data, fatal) => {
+      this.pendingGitHubNotifications.push({
+        id: randomUUID(),
+        type: fatal ? 'github_auth_rejected' : 'github_error',
+        payload: data,
+        timestamp: Date.now(),
+      });
+      if (this.pendingGitHubNotifications.length > 200) this.pendingGitHubNotifications.shift();
+    };
+    this.githubHandler.on('error', (data) => pushError(data, false));
+    this.githubHandler.on('auth_rejected', (data) => pushError(data, true));
+
     this.githubHandler.on('notification', (data) => {
       const msg = {
         id: randomUUID(),

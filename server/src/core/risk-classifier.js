@@ -8,6 +8,8 @@
 import fs from 'fs';
 import { configPath as configPathFor } from './paths.js';
 import path from 'path';
+import os from 'os';
+import { splitCommands, binaryOf, redirectTargets } from './shell-split.js';
 
 // Files that are always considered high-risk to modify
 const SENSITIVE_FILE_PATTERNS = [
@@ -25,6 +27,38 @@ const SENSITIVE_FILE_PATTERNS = [
   /ci\//,
   /deploy/i,
 ];
+
+/** Ordering, so the worst segment of a command line can win. */
+const RANK = { safe: 0, risky: 1, critical: 2 };
+
+/**
+ * Binaries that cannot change anything on their own.
+ *
+ * `sed` and `awk` are deliberately absent: `sed -i` edits in place and `awk`
+ * can open files for writing, and neither is visible in the first word.
+ */
+const READ_ONLY_BINARIES = new Set([
+  'ls', 'cat', 'grep', 'find', 'echo', 'pwd', 'whoami', 'head', 'tail',
+  'less', 'more', 'rg', 'ag', 'wc', 'file', 'stat', 'dirname', 'basename',
+  'which', 'type', 'date', 'env', 'printenv', 'uname', 'df', 'du', 'tree', 'sleep', 'true', 'false',
+]);
+
+/** `find` actions that turn a search into arbitrary execution. */
+const FIND_EXECUTES = /(^|\s)-(exec|execdir|ok|okdir|delete|fprint\w*)(\s|$)/;
+
+const READ_ONLY_GIT = new Set([
+  'status', 'log', 'diff', 'show', 'branch', 'remote', 'blame', 'describe',
+  'rev-parse', 'rev-list', 'ls-files', 'ls-remote', 'shortlog', 'config',
+]);
+
+/** Never auto-approved, wherever they run. */
+const PRIVILEGE_BINARIES = new Set(['sudo', 'su', 'doas', 'pkexec', 'runas']);
+
+/** Keep a reason readable when it quotes the offending segment. */
+const truncate = (text, max = 60) => {
+  const flat = String(text).replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+};
 
 export class RiskClassifier {
   constructor(workspacePath) {
@@ -142,43 +176,121 @@ export class RiskClassifier {
     return SENSITIVE_FILE_PATTERNS.some(pattern => pattern.test(filePath));
   }
 
+  /**
+   * How risky is a shell command?
+   *
+   * The whole command line, not its first word. This used to read
+   * `command.split(/\s+/)[0]`, so `echo hi; rm -rf /tmp/x` was an `echo` and
+   * auto mode ran it without asking. Every operator was invisible: `;`, `&&`,
+   * `||`, a pipe, a redirection, a `$(…)`. See core/shell-split.js.
+   *
+   * Every segment is classified and the **worst one wins**. A command line is
+   * exactly as safe as its most dangerous part, and there is no useful sense in
+   * which `grep x . || npm publish` is a read-only grep.
+   */
   _classifyCommand(args) {
     const { command, cwd } = args;
-    if (!command) return { level: 'risky', reason: 'Empty command' };
+    if (!command || !String(command).trim()) return { level: 'risky', reason: 'Empty command' };
 
-    const cmdStr = command.trim();
-    const binary = cmdStr.split(/\s+/)[0].toLowerCase();
-    
-    // Read-only commands
-    const safeBinaries = ['ls', 'cat', 'grep', 'find', 'echo', 'pwd', 'whoami', 'head', 'tail', 'less', 'more', 'rg', 'ag', 'awk', 'sed'];
-    // sed can mutate if it uses -i, but usually in a pipeline it's read-only. Let's be stricter.
-    const strictSafeBinaries = ['ls', 'cat', 'grep', 'find', 'echo', 'pwd', 'whoami', 'head', 'tail', 'less', 'more', 'rg', 'ag'];
+    const segments = splitCommands(command);
+    if (segments.length === 0) return { level: 'risky', reason: 'Empty command' };
 
-    if (strictSafeBinaries.includes(binary)) {
-      return { level: 'safe', reason: 'Read-only shell command' };
+    const verdicts = segments.map((segment) => this._classifySegment(segment, cwd));
+    const rank = Math.max(...verdicts.map((v) => RANK[v.level]));
+    const level = Object.keys(RANK).find((k) => RANK[k] === rank);
+    if (level === 'safe') return { level, reason: 'Read-only shell command' };
+
+    // Name the parts that are actually the problem — all of them at the worst
+    // level, not just the first one found. Reporting the first meant
+    // `sleep 1 & rm -rf /tmp/x` blamed `sleep 1`, which reads as harmless and
+    // sends the user looking in the wrong place.
+    const blamed = verdicts.filter((v) => RANK[v.level] === rank);
+    const reason = blamed[0].reason;
+    if (segments.length === 1) return { level, reason };
+
+    const quoted = blamed.slice(0, 2).map((v) => `\`${truncate(v.segment, 40)}\``).join(', ');
+    const more = blamed.length > 2 ? `, +${blamed.length - 2} more` : '';
+    return { level, reason: `${reason} — ${quoted}${more}` };
+  }
+
+  /** One command, already separated from its neighbours. */
+  _classifySegment(segment, cwd) {
+    const binary = binaryOf(segment);
+    const tag = (level, reason) => ({ level, reason, segment });
+
+    // Privilege escalation is never auto-approved, wherever it runs.
+    if (PRIVILEGE_BINARIES.has(binary)) {
+      return tag('critical', `Runs as another user (\`${binary}\`)`);
+    }
+
+    // A read-only binary writing through a redirection is not read-only.
+    // `cat key.pub > ~/.ssh/authorized_keys` is a `cat` to anything that only
+    // looks at the first word.
+    // `redirectTargets`, not "has a redirection": `2>&1` duplicates a file
+    // descriptor and writes nothing, and `< input` reads. Only a named output
+    // target turns a read-only binary into a writer.
+    const targets = redirectTargets(segment);
+    if (targets.length > 0) {
+      // Where it writes decides how bad it is. The cwd says nothing here:
+      // `cat key > ~/.ssh/authorized_keys` runs perfectly happily from inside
+      // the workspace.
+      const outside = targets.find((t) => !this._insideWorkspace(t));
+      if (outside) {
+        return tag('critical', `Writes outside the workspace (\`${truncate(outside, 40)}\`)`);
+      }
+      return this._scopedMutation(segment, cwd, 'Redirects output to a file');
+    }
+
+    if (READ_ONLY_BINARIES.has(binary)) {
+      // `find` is read-only right up until the flag that makes it not.
+      if (binary === 'find' && FIND_EXECUTES.test(segment)) {
+        return this._scopedMutation(segment, cwd, '`find` with an executing or deleting action');
+      }
+      return tag('safe', 'Read-only shell command');
     }
 
     if (binary === 'git') {
-      const gitSubcommand = cmdStr.split(/\s+/)[1]?.toLowerCase();
-      const safeGit = ['status', 'log', 'diff', 'show', 'branch', 'remote'];
-      if (safeGit.includes(gitSubcommand)) {
-        return { level: 'safe', reason: 'Read-only git command' };
-      }
+      const sub = segment.trim().split(/\s+/)[1]?.toLowerCase();
+      if (READ_ONLY_GIT.has(sub)) return tag('safe', 'Read-only git command');
     }
 
-    // Mutating commands need directory scoping check
+    return this._scopedMutation(segment, cwd, 'Mutating shell command');
+  }
+
+  /**
+   * A mutation is worse outside the workspace than inside it.
+   *
+   * Inside, the diff engine's backups and `/undo` are a safety net. Outside,
+   * nothing is, so it is `critical` unless the user has said otherwise.
+   */
+  _scopedMutation(segment, cwd, reason) {
     const execCwd = cwd || this.workspacePath;
-    const isInsideWorkspace = execCwd.startsWith(this.workspacePath);
+    const inside = this.workspacePath && String(execCwd).startsWith(this.workspacePath);
 
-    if (!isInsideWorkspace) {
-      // Check whitelist from .gemini/config.json
-      if (this._isAllowedGlobal(cmdStr)) {
-        return { level: 'risky', reason: 'Allowed global mutating command' };
+    if (!inside) {
+      if (this._isAllowedGlobal(segment)) {
+        return { level: 'risky', reason: `${reason} (allowed outside the workspace)`, segment };
       }
-      return { level: 'critical', reason: 'Global system modification outside workspace' };
+      return { level: 'critical', reason: `${reason}, outside the workspace`, segment };
     }
+    return { level: 'risky', reason, segment };
+  }
 
-    return { level: 'risky', reason: 'Mutating shell command within workspace' };
+  /**
+   * Is this path inside the workspace?
+   *
+   * `~` is expanded because a redirection to `~/.bashrc` is exactly the case
+   * this exists to catch, and the shell would have expanded it before the file
+   * was ever opened.
+   */
+  _insideWorkspace(target) {
+    if (!this.workspacePath) return false;
+    const expanded = target.startsWith('~')
+      ? path.join(os.homedir(), target.slice(1))
+      : target;
+    const abs = path.resolve(this.workspacePath, expanded);
+    const root = path.resolve(this.workspacePath);
+    return abs === root || abs.startsWith(`${root}${path.sep}`);
   }
 
   _isAllowedGlobal(cmdStr) {

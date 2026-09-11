@@ -1,6 +1,28 @@
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { exec } from 'child_process';
+import * as paths from '../../core/paths.js';
 import { FOCUS_INPUT } from '../constants.js';
+
+/**
+ * Keep the plan that is about to be replaced.
+ *
+ * `artifacts/plan.md` is one file the agent overwrites, so asking for a second
+ * plan destroyed the first — including one you were part-way through
+ * reviewing. Copy, not move: the live path has to keep working for the editor
+ * that may already have it open.
+ */
+function archivePlan(workspace, planPath) {
+  try {
+    if (!fs.existsSync(planPath)) return;
+    const dir = paths.ensureDir(paths.planArchiveDir(workspace));
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    fs.copyFileSync(planPath, path.join(dir, `${stamp}-${path.basename(planPath)}`));
+  } catch {
+    /* an archive that fails must not stop the plan being written */
+  }
+}
 
 /**
  * The bridge AgentLoop calls back into while a turn runs.
@@ -61,6 +83,7 @@ export function buildAgentCallbacks({
             if (last.success && (last.name === 'create_file' || last.name === 'edit_file' || last.name === 'write_to_file')) {
               const pathArg = last.args?.path || last.args?.TargetFile;
               if (pathArg && (pathArg.endsWith('implementation_plan.md') || pathArg.endsWith('plan.md')) && agentLoop.mode === 'plan') {
+                archivePlan(agentLoop.workspace, paths.artifactPath(agentLoop.workspace, path.basename(pathArg)));
                 setPlanReviewReady(true);
               }
               if (pathArg && pathArg.endsWith('walkthrough.md')) {

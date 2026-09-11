@@ -2,6 +2,15 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as paths from '../../core/paths.js';
+import { createSkill, listSkills, skillSearchPath } from '../../core/skills.js';
+import { readErrors, summarizeErrors, clearErrors, FLOWS } from '../../core/error-log.js';
+import { listPlans } from '../../core/plan-archive.js';
+import { listCommandDays, readCommands } from '../../core/command-log.js';
+import { resolveWorkspaceInput, validateWorkspace } from '../../core/workspaces.js';
+import { SLASH_COMMANDS } from '../constants.js';
+import { oneLine } from '../format.js';
+import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
+import { canPickFolder, pickFolder } from '../folder-picker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -14,7 +23,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 export async function handleSlashCommand(query, {
   agentLoop,
-  mouseTracking,
   wsServer,
   resetScreen,
   setActiveMenu,
@@ -26,49 +34,30 @@ export async function handleSlashCommand(query, {
     const command = parts[0].toLowerCase();
     const args = parts.slice(1);
 
-    if (command === 'shortcuts' || command === 'help') {
-      const shortcutsMessage = {
+    // Generated from SLASH_COMMANDS, not written out beside it. The hand-kept
+    // copy had drifted twice — listing /init-skills and /paste-image after both
+    // were gone, and describing /memory as "view memory" while it toggled it —
+    // because nothing made the two lists agree.
+    if (command === 'help' || command === 'shortcuts') {
+      const width = Math.max(...SLASH_COMMANDS.map((c) => c.name.length));
+      setHistory(prev => [...prev, { role: 'user', content: query }, {
         role: 'assistant',
         isLocal: true,
         content: [
-          '### ⌨️ UI & Navigation',
-          '  [Tab]             - Toggle focus between Chat Input and Tool Executions',
-          '  [Up/Down]         - Navigate between tool executions or CLI tabs',
-          '  [Enter]           - Expand/Minimize raw output of tools, or Open GitHub Plan',
-          '  [Ctrl+T]          - Toggle the Agent Terminal at the bottom of the screen',
-          '  [Ctrl+O]          - Toggle between Agent Chat and GitHub PR Dashboard',
-          "  :stop             - Immediately cancel the agent's current generation",
+          '### ⌨️  Keys',
+          '  shift+tab   plan ⇄ auto',
+          '  ctrl+e      expand or collapse every step',
+          '  ctrl+t      shell',
+          '  ctrl+o      GitHub dashboard',
+          '  ctrl+u      clear the input   ·   ctrl+w   delete the last word',
+          '  esc         stop the run, or close a menu',
           '',
-          '### 🧠 AI & LLM Settings',
-          '  /mode             - Change agent topology (Single, Duo, Swarm)',
-          '  /model            - Switch model tier (Flash, Flash Thinking, Pro)',
-          '  /reasoning        - How hard Pro plans before acting (Brief, Standard, Deep)',
-          '  /allowlist        - Manage auto-approved/blocked command rules',
-          '  /config           - Configure models for specific roles',
-          '  /plan             - Switch to Plan Mode (requires approval for edits)',
-          '  /auto             - Switch to Auto Mode (auto-applies safe edits)',
+          '### ⌨️  Commands',
+          ...SLASH_COMMANDS.map((c) => `  /${c.name.padEnd(width)}   ${c.desc}`),
           '',
-          '### 📁 Workspace & Context',
-          '  /workspace <path> - Change the active workspace',
-          '  /memory           - View current agent memory context',
-          '  /context          - Show current context window usage',
-          '  /compact          - Compact history to save tokens',
-          '  /clear            - Clear local history',
-          '  /new              - Start a new chat session',
-          '  /undo             - Undo the last step/action',
-          '  /init-skills      - Create workspace rules (.agent/rules.md)',
-          '',
-          '### 🛠️ System & Tools',
-          '  /github           - Run GitHub specific commands (e.g., /github refresh)',
-          '  /image            - Attach an image (e.g., /image path/to/img.png)',
-          '  /paste-image      - Attach image directly from clipboard (macOS only)',
-          '  /mouse            - Toggle mouse tracking (off restores text selection)',
-          '  /agent-dir        - Open the agent data directory',
-          '  /restart          - Restart the server',
-          '  /exit             - Quit the agent'
-        ].join('\n')
-      };
-      setHistory(prev => [...prev, { role: 'user', content: query }, shortcutsMessage]);
+          '_Typing `/` filters this same list as you go. `/settings` shows what is configured._',
+        ].join('\n'),
+      }]);
       setIsProcessing(false);
       return;
     }
@@ -80,16 +69,28 @@ export async function handleSlashCommand(query, {
       return;
     }
 
+    // Exit with the code src/index.js watches for, and it relaunches us. The
+    // old version touched index.js's mtime, which does something only under
+    // `tsx --watch` and nothing under `agent-cli` — where it printed
+    // "Restarting server..." and stayed exactly where it was.
     if (command === 'restart') {
-      const indexPath = path.resolve(__dirname, '../..', 'index.js');
-      const now = new Date();
-      try {
-        fs.utimesSync(indexPath, now, now);
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '🔄 Restarting server...', isLocal: true }]);
-      } catch (err) {
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '❌ Failed to restart server: ' + err.message, isLocal: true }]);
+      if (!process.env.AGENT_CLI_SUPERVISED) {
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant',
+          isLocal: true,
+          content: 'This process has no supervisor to restart it — it was started directly '
+            + 'rather than through `agent-cli`.\n\nQuit with `/exit` and start it again.',
+        }]);
+        setIsProcessing(false);
+        return;
       }
+      setHistory(prev => [...prev, { role: 'user', content: query }, {
+        role: 'assistant', content: '🔄 Restarting…', isLocal: true,
+      }]);
       setIsProcessing(false);
+      // Let the frame paint, then leave. Ink restores the terminal on exit,
+      // which is why this is an ordinary exit rather than an exec in place.
+      setTimeout(() => process.exit(75), 120);
       return;
     }
 
@@ -113,48 +114,373 @@ export async function handleSlashCommand(query, {
       return;
     }
 
-    if (command === 'mode') {
-      setActiveMenu({ type: 'mode' });
+    // Only the bare form opens the picker. `/config reviewer none` used to open
+    // it too and throw the arguments away, so the command was unusable typed.
+    if (command === 'config' && args.length === 0) {
+      setActiveMenu({ type: 'config' });
       setIsProcessing(false);
       return;
     }
 
-    if (command === 'config') {
-      setActiveMenu({ type: 'config_role' });
+    // /model and /reasoning were two knobs with five meaningful combinations.
+    // Both names still work — typing one you have used for months and being
+    // told it does not exist is a worse trade than one line of redirection.
+    if ((command === 'effort' || command === 'model' || command === 'reasoning') && args.length === 0) {
+      setActiveMenu({ type: 'effort' });
       setIsProcessing(false);
       return;
     }
 
-    if (command === 'model') {
-      setActiveMenu({ type: 'model' });
+    if (command === 'allowlist' && args.length === 0) {
+      setActiveMenu({ type: 'allowlist', rules: agentLoop.commandRules });
       setIsProcessing(false);
       return;
     }
 
-    if (command === 'reasoning' && args.length === 0) {
-      setActiveMenu({ type: 'reasoning' });
+    // Scope is chosen at launch, not switched mid-session. It decides where
+    // state, sessions and config live, so changing it is closer to opening a
+    // different project than to changing a setting — the conversation on screen
+    // belongs to the old scope, and the switcher used to rebuild the session
+    // store underneath it while those turns were still being displayed.
+    // The name still answers, because "unknown command" teaches nothing.
+    if (command === 'scope' || command === 'repo') {
+      const active = paths.getActiveScope(agentLoop.workspace);
+      const { discovered, base } = paths.resolveState(agentLoop.workspace);
+      setHistory(prev => [...prev, { role: 'user', content: query }, {
+        role: 'assistant',
+        isLocal: true,
+        content: discovered && active
+          ? `🎯 Working on **${active}**, inside the group at \`${base}\`.\n\n`
+            + 'Scope is set when the agent starts — `agent-cli --scope <repo>`, or just open '
+            + 'the repo directly. Switching it mid-session would swap the history out from '
+            + 'under the conversation you are looking at.'
+          : 'This workspace has its own `.agent/`, so there is nothing to scope between.\n\n'
+            + 'Scopes exist when several repos share one `.agent/` from a parent folder. Put '
+            + '`.agent/` in the folder above your repos, then start with `--scope <repo>`.',
+      }]);
       setIsProcessing(false);
       return;
     }
 
-    if (command === 'mouse') {
-      const arg = (args[0] || '').toLowerCase();
-      let msg;
-      if (!mouseTracking?.supported) {
-        msg = '⚠️ This terminal does not report mouse events.';
-      } else if (arg === 'on' || (arg === '' && !mouseTracking.enabled)) {
-        mouseTracking.enable();
-        msg = 'Mouse tracking **on** — rows, slash commands and menus are clickable.\n\n'
-          + 'While it is on the terminal hands the mouse to the app: drag-select needs '
-          + 'Option or Shift held, and the wheel no longer scrolls scrollback. '
-          + '`/mouse off` gives them back.';
-      } else {
-        mouseTracking.disable();
-        msg = 'Mouse tracking **off** — text selection and scrollback are back. '
-          + 'Rows still open with Ctrl+E.';
+    // Plans were archived to .agent/artifacts/plans/ and nothing listed them,
+    // so they piled up somewhere no command would show them — which is its own
+    // way of losing the plan you wanted back.
+    if (command === 'settings' || command === 'config-all') {
+      // Snapshot on the way in, so leaving can say what changed. Settings apply
+      // as they are picked, so this is the only record of what they were.
+      setActiveMenu({
+        type: 'settings',
+        query: '',
+        group: SETTING_GROUPS[0],
+        at: 0,
+        baseline: describeSettings(agentLoop),
+      });
+      setIsProcessing(false);
+      return;
+    }
+
+    // What the agent has actually run on this machine. Nothing reads this back
+    // into a prompt — it is for the person whose computer it is.
+    if (command === 'commands' || command === 'audit') {
+      const day = (args[0] || '').trim();
+      const days = listCommandDays(agentLoop.workspace);
+
+      if (days.length === 0) {
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant', isLocal: true,
+          content: 'No commands run yet in this workspace.\n\n'
+            + 'Every shell command the agent runs — and every one it is blocked from running — '
+            + 'is appended to `.agent/logs/commands/<date>.jsonl`.',
+        }]);
+        setIsProcessing(false);
+        return;
       }
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: msg, isLocal: true }]);
+
+      if (day) {
+        const entries = readCommands(agentLoop.workspace, day);
+        const icon = { ran: '✔', blocked: '⛔', rejected: '✖' };
+        const lines = entries.map((e) => {
+          const time = new Date(e.at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+          return `  ${icon[e.outcome] || '·'} \`${time}\` ${oneLine(e.command, 70)}`
+            + (e.outcome === 'ran' ? '' : ` _(${e.outcome})_`);
+        });
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant', isLocal: true,
+          content: `### 🧾 ${day} — ${entries.length} command${entries.length === 1 ? '' : 's'}\n\n`
+            + (lines.join('\n') || '  _(none)_'),
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      setActiveMenu({ type: 'commands', days, workspace: agentLoop.workspace });
       setIsProcessing(false);
+      return;
+    }
+
+    if (command === 'plans') {
+      const plans = listPlans(agentLoop.workspace);
+      if (plans.length === 0) {
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant',
+          isLocal: true,
+          content: 'No past plans yet.\n\nEach plan is copied to `.agent/artifacts/plans/` when '
+            + 'the next one replaces it, so this fills up as you go.',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+      setActiveMenu({ type: 'plans', plans });
+      setIsProcessing(false);
+      return;
+    }
+
+    if (command === 'logs' || command === 'errors') {
+      const arg = (args[0] || '').toLowerCase();
+
+      if (arg === 'clear') {
+        const n = clearErrors(agentLoop.workspace);
+        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `🧹 Cleared ${n} logged failure${n === 1 ? '' : 's'}.`, isLocal: true }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      // `/logs <flow>` drills into one; bare `/logs` answers "what is breaking?"
+      if (arg && FLOWS[arg]) {
+        const entries = readErrors(agentLoop.workspace, { flow: arg, limit: 15 });
+        const body = entries.length === 0
+          ? `Nothing logged for **${arg}**.`
+          : entries.map((e) => {
+            const when = new Date(e.time).toLocaleTimeString();
+            const repeat = e.repeatedSince ? ` _(+${e.repeatedSince} more like it)_` : '';
+            const detail = e.detail ? `\n    \`${String(e.detail).split('\n')[0].slice(0, 120)}\`` : '';
+            return `  ${when} **${e.op || '—'}** — ${e.message}${repeat}${detail}`;
+          }).join('\n');
+        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `### 🩺 ${arg} — ${FLOWS[arg]}\n${body}`, isLocal: true }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      const summary = summarizeErrors(agentLoop.workspace);
+      // A summary you can act on. Picking a flow drills into it; picking clear
+      // clears it — rather than printing a list and a set of commands to type.
+      if (summary.total > 0 && !arg) {
+        setActiveMenu({ type: 'logs', summary });
+        setIsProcessing(false);
+        return;
+      }
+      let content;
+      if (summary.total === 0) {
+        content = '### 🩺 Failures\nNothing has failed since the log was last cleared.';
+      } else {
+        const rows = summary.byFlow.map((f) => {
+          const when = new Date(f.last).toLocaleTimeString();
+          return `  **${f.flow}** ${String(f.count).padStart(3)}  _${f.label}_\n`
+            + `      last ${when} — ${f.lastMessage}`;
+        }).join('\n');
+        content = `### 🩺 ${summary.total} failure${summary.total === 1 ? '' : 's'} logged\n${rows}\n\n`
+          + `_\`/logs <flow>\` for detail · \`/logs clear\` to reset · full log in \`.agent/logs/errors.jsonl\`_`;
+      }
+      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content, isLocal: true }]);
+      setIsProcessing(false);
+      return;
+    }
+
+    if (command === 'skills' || command === 'skill') {
+      const action = (args[0] || '').toLowerCase();
+
+      // Point the agent at a directory of skills you keep elsewhere.
+      if (action === 'dir' || action === 'folder') {
+        const sub = (args[1] || '').toLowerCase();
+        const target = args.slice(2).join(' ').trim();
+
+        // `/skills dir add` with nothing after it: the case where you are adding
+        // a folder is the case where you do not remember its path, and every
+        // desktop already answers that question well.
+        let chosen = target;
+        if (sub === 'add' && !chosen) {
+          if (!canPickFolder()) {
+            setHistory(prev => [...prev, { role: 'user', content: query }, {
+              role: 'assistant', isLocal: true,
+              content: 'Usage: `/skills dir add <path>`\n\n'
+                + '_(A folder chooser would open here, but this machine has no dialog available — '
+                + 'on Linux that usually means `zenity` or `kdialog` is not installed.)_',
+            }]);
+            setIsProcessing(false);
+            return;
+          }
+          chosen = await pickFolder('Choose a folder of skills');
+          if (!chosen) {
+            setHistory(prev => [...prev, { role: 'user', content: query }, {
+              role: 'assistant', content: 'Cancelled.', isLocal: true,
+            }]);
+            setIsProcessing(false);
+            return;
+          }
+        }
+
+        if (sub === 'add' && chosen) {
+          const target = chosen;
+          const abs = resolveWorkspaceInput(target, agentLoop.workspace);
+          const problem = validateWorkspace(abs);
+          if (problem) {
+            setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ ${problem}`, isLocal: true }]);
+            setIsProcessing(false);
+            return;
+          }
+          if (!agentLoop.skillFolders.includes(abs)) {
+            agentLoop.skillFolders.push(abs);
+            agentLoop._saveConfig();
+            agentLoop.promptBuilder?.resetPromptState?.();
+          }
+          const found = listSkills(agentLoop.workspace, agentLoop.skillFolders).length;
+          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `✅ Watching \`${abs}\` for skills — ${found} skill${found === 1 ? '' : 's'} visible now.`, isLocal: true }]);
+          setIsProcessing(false);
+          return;
+        }
+
+        if ((sub === 'remove' || sub === 'rm') && target) {
+          const abs = resolveWorkspaceInput(target, agentLoop.workspace);
+          const before = agentLoop.skillFolders.length;
+          agentLoop.skillFolders = agentLoop.skillFolders.filter((f) => f !== abs && f !== target);
+          const changed = agentLoop.skillFolders.length !== before;
+          if (changed) {
+            agentLoop._saveConfig();
+            agentLoop.promptBuilder?.resetPromptState?.();
+          }
+          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: changed ? `🗑️ Stopped watching \`${abs}\`.` : `Not a skill folder: \`${target}\``, isLocal: true }]);
+          setIsProcessing(false);
+          return;
+        }
+
+        const dirs = skillSearchPath(agentLoop.workspace, agentLoop.skillFolders)
+          .map((d, i) => `  ${i + 1}. \`${d}\`${i === 0 ? ' _(this project)_' : i === 1 ? ' _(yours, all projects)_' : ''}`);
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant',
+          isLocal: true,
+          content: `### 📁 Skill folders, searched in order\n${dirs.join('\n')}\n\n`
+            + `Add one with \`/skills dir add <path>\`${canPickFolder() ? ' — or bare, to pick one from a dialog' : ''}, `
+            + 'drop one with `/skills dir remove <path>`.\n'
+            + 'The first folder to define a name wins, so a project can override a personal skill.',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      if (action === 'new' || action === 'add' || action === 'create') {
+        const isGlobal = (args[1] || '').toLowerCase() === '--global';
+        const nameParts = isGlobal ? args.slice(2) : args.slice(1);
+        const result = createSkill(agentLoop.workspace, nameParts.join(' '), { global: isGlobal });
+        if (!result.ok) {
+          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ ${result.error}`, isLocal: true }]);
+          setIsProcessing(false);
+          return;
+        }
+        // Open it straight away: a scaffold nobody edits is worse than nothing.
+        try {
+          const { exec } = await import('child_process');
+          exec(`"${agentLoop.editor || 'code'}" "${result.file}" || open "${result.file}" || xdg-open "${result.file}"`);
+        } catch (e) { /* no editor here; the path is in the message */ }
+        // The catalogue is part of the system prompt, so it has to be re-sent.
+        agentLoop.promptBuilder?.resetPromptState?.();
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant',
+          isLocal: true,
+          content: `✅ Created skill **${result.name}**\n\n\`${result.file}\`\n\n`
+            + 'Fill in the `description` — it is the only part always in the prompt, and it is '
+            + 'what the agent matches against to decide whether to read the rest.',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      const skills = listSkills(agentLoop.workspace, agentLoop.skillFolders);
+      if (action === 'list' || args.length > 0) {
+        const body = skills.length === 0
+          ? 'No skills yet. Create one with `/skills new <name>`.'
+          : skills.map((sk) => `  • **${sk.name}** — ${sk.description || '_(no description)_'}\n    \`${sk.relative}\``).join('\n');
+        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `### 🧩 Skills\n${body}`, isLocal: true }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      setActiveMenu({ type: 'skills', skills, workspace: agentLoop.workspace });
+      setIsProcessing(false);
+      return;
+    }
+
+    /**
+     * One command for one noun.
+     *
+     * There were three: `/workspace` printed a report, `/set-workspace` opened a
+     * picker, and an internal `switch-workspace` did the actual restart — and
+     * `/workspace <path>` **silently ignored the path**, printing the report and
+     * doing nothing, which is the worst kind of no-op because it looks like it
+     * worked.
+     *
+     * This is the shape phase 6 settled on for `/config`: the current state is
+     * the screen's heading rather than a separate command that navigates away to
+     * print what the screen could have shown. `/workspace` opens that screen;
+     * `/workspace <path>` skips it. `/set-workspace` still answers — muscle
+     * memory and the old hint text both point at it — but it is out of the
+     * palette, because the point was to stop offering two doors to one room.
+     */
+    if (command === 'workspace' || command === 'set-workspace') {
+      const target = args.join(' ').trim();
+      if (!target) {
+        setActiveMenu({ type: 'workspace', current: agentLoop.workspace });
+        setIsProcessing(false);
+        return;
+      }
+      await switchWorkspace(target);
+      return;
+    }
+
+    // Chosen from the picker above. The process leaves and comes back pointing
+    // at the new directory, because every collaborator keyed on the workspace —
+    // the session store, memory, config, the allowlist — is rebuilt by a
+    // restart and was *not* rebuilt by the in-place switch this replaces.
+    /**
+     * Leave, and come back pointing somewhere else.
+     *
+     * A restart rather than an in-place switch because every collaborator keyed
+     * on the workspace — the session store, memory, config, the command
+     * allowlist — is rebuilt by a restart and was *not* rebuilt by the in-place
+     * version this replaced. See CLAUDE.md → P1.
+     */
+    async function switchWorkspace(raw) {
+      const target = resolveWorkspaceInput(raw);
+      const problem = validateWorkspace(target);
+      if (problem) {
+        setHistory(prev => [...prev, { role: 'assistant', content: `❌ ${problem}`, isLocal: true }]);
+        setIsProcessing(false);
+        return;
+      }
+      if (!process.env.AGENT_CLI_SUPERVISED) {
+        setHistory(prev => [...prev, {
+          role: 'assistant',
+          isLocal: true,
+          content: 'This process has no supervisor to restart it.\n\n'
+            + `Quit with \`/exit\` and start again: \`agent-cli --workspace ${target}\``,
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+      try {
+        const { writeFileSync } = await import('fs');
+        writeFileSync(paths.ensureParent(paths.nextWorkspacePath()), target, 'utf8');
+      } catch (err) {
+        setHistory(prev => [...prev, { role: 'assistant', content: `❌ Could not hand over: ${err.message}`, isLocal: true }]);
+        setIsProcessing(false);
+        return;
+      }
+      setHistory(prev => [...prev, { role: 'assistant', content: `📂 Restarting in \`${target}\`…`, isLocal: true }]);
+      setIsProcessing(false);
+      setTimeout(() => process.exit(75), 120);
+    }
+
+    if (command === 'switch-workspace') {
+      await switchWorkspace(args.join(' '));
       return;
     }
 
@@ -164,28 +490,15 @@ export async function handleSlashCommand(query, {
       return;
     }
 
-    if (command === 'init-skills') {
-      const { resolve } = await import('path');
-      const { existsSync, mkdirSync, writeFileSync } = await import('fs');
-      const rulesPath = paths.rulesPath(agentLoop.workspace);
-      paths.ensureParent(rulesPath);
-      
-      let msg = '';
-      if (!existsSync(rulesPath)) {
-        writeFileSync(rulesPath, `# Workspace Rules\n\nAdd any custom instructions, architectural rules, or context specific to this project here.\n`, 'utf-8');
-        msg = `✅ Created workspace memory at: ${rulesPath}\nEdit this file to teach the agent custom skills!`;
-      } else {
-        msg = `⚠️ Workspace rules already exist at: ${rulesPath}`;
-      }
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: msg, isLocal: true }]);
-      setIsProcessing(false);
-      return;
-    }
-
     if (command === 'image' || command === 'paste-image') {
       let finalFilePath = '';
       let ext = '';
-      if (command === 'paste-image') {
+      // `/image` with a path attaches that file; with nothing after it, the
+      // thing you meant is the screenshot you just took. Two commands for one
+      // idea is one too many, so the bare form reads the clipboard and
+      // `/paste-image` survives only as the name people already learned.
+      const fromClipboard = command === 'paste-image' || args.length === 0;
+      if (fromClipboard) {
         if (process.platform !== 'darwin') {
            setHistory(prev => [...prev, { role: 'assistant', content: '⚠️ Clipboard image paste is only supported on macOS.' }]);
            setIsProcessing(false); return;
@@ -239,21 +552,33 @@ export async function handleSlashCommand(query, {
 
 
     // Handle standard agent loop commands
-    const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'model', 'reasoning', 'allowlist', 'github'];
+    const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'effort', 'model', 'reasoning', 'allowlist', 'github'];
     if (validAgentCommands.includes(command)) {
-      const result = await agentLoop.handleSlashCommand(command, args);
-      
-      if (command === 'clear' || command === 'undo' || command === 'compact') {
-        const newHistory = [...agentLoop.conversationHistory];
-        if (result && result.message) {
-          newHistory.push({ role: 'assistant', content: result.message });
+      // A command that throws must still hand the prompt back. Without this the
+      // rejection escaped, `setIsProcessing(false)` below never ran, and the CLI
+      // sat spinning with nothing on screen — which is exactly how a `/compact`
+      // on a fresh session presented itself.
+      try {
+        const result = await agentLoop.handleSlashCommand(command, args);
+
+        if (command === 'clear' || command === 'undo' || command === 'compact') {
+          const newHistory = [...agentLoop.conversationHistory];
+          if (result && result.message) {
+            newHistory.push({ role: 'assistant', content: result.message, isLocal: true });
+          }
+          setHistory(newHistory);
+        } else if (result && result.message) {
+          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: result.message, isLocal: true }]);
         }
-        setHistory(newHistory);
-      } else if (result && result.message) {
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: result.message }]);
+      } catch (err) {
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant',
+          isLocal: true,
+          content: `❌ \`/${command}\` failed: ${err?.message || err}`,
+        }]);
       }
     } else {
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ Unrecognized command: \`/${command}\`\nType \`/help\` to see the list of available commands.` }]);
+      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ No such command: \`/${command}\`\nType \`/\` on its own to see what there is.`, isLocal: true }]);
     }
     setIsProcessing(false);
     return;

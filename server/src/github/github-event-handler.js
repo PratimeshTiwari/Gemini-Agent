@@ -119,6 +119,12 @@ export class GitHubEventHandler extends EventEmitter {
   getStatus() {
     return {
       ...this.stats,
+      // Which account the token actually belongs to. Worth showing: a work
+      // machine often has several, and "0 PRs watched" reads very differently
+      // once you can see it is watching as the wrong one.
+      username: this.poller?.username || null,
+      // ISO date, or null for a token GitHub reports no expiry for.
+      tokenExpiry: this.poller?.tokenExpiry || null,
       ciWatchEnabled: this.config.enableCIWatch,
       pollInterval: `${this.config.pollIntervalMs / 1000}s`,
       planDir: this.config.planOutputDir,
@@ -344,5 +350,8 @@ CRITICAL: Do NOT run \`git checkout\` or switch branches. The user may have unsa
     // ── Forward status/error events ────────────────────────────────
     this.poller.on('status', (data) => this.emit('status', data));
     this.poller.on('error', (data) => this.emit('error', data));
+    // Terminal auth failure: surfaced so the UI can ask for a new token rather
+    // than leaving the dashboard sitting at "0 PRs watched · polled never".
+    this.poller.on('auth_rejected', (data) => this.emit('auth_rejected', data));
   }
 }

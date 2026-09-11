@@ -13,9 +13,14 @@
 
 import path from 'path';
 import * as paths from './paths.js';
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import os from 'os';
-import { resolve, relative } from 'path';
+import { resolve, relative, join, dirname } from 'path';
+import { CodeMinifier } from '../context/code-minifier.js';
+import { skillCatalogue } from './skills.js';
+import { resolveEffort } from './effort.js';
+import { prompt } from './prompt-loader.js';
+import { parseMemory, readMemoryEnabled } from '../context/memory-manager.js';
 
 // How often to send the condensed reminder, counted in MESSAGES pushed to the tab —
 // not user turns. One user turn can be a dozen tool round-trips, so a turn-based
@@ -76,9 +81,21 @@ export class PromptBuilder {
         parts.push(`<agent_instructions>\n${this.agentMdContent}\n</agent_instructions>`);
       }
 
-      const workspaceRules = this._loadWorkspaceRules();
-      if (workspaceRules) {
-        parts.push(`<workspace_rules>\n${workspaceRules}\n</workspace_rules>`);
+      // What the agent learned here on earlier runs. This is the half that was
+      // missing: `manage_memory` wrote facts to disk and no prompt ever carried
+      // them, so the model paid a tool call per fact and got nothing back.
+      const memory = this._loadMemory();
+      if (memory) {
+        parts.push(`<memory>\n${memory}\n</memory>`);
+      }
+
+      // Names and one-line descriptions only. The bodies stay on disk and are
+      // fetched with read_file when the model judges one relevant, so writing
+      // twenty skills costs twenty lines of prompt rather than twenty files of
+      // it — which matters when the prompt is retyped into a browser tab.
+      const skills = skillCatalogue(this.workspace, this._configuredSkillFolders());
+      if (skills) {
+        parts.push(`<skills>\n${skills}\n</skills>`);
       }
       parts.push(`</system_state>`);
 
@@ -100,7 +117,10 @@ export class PromptBuilder {
       if (objective && objective.trim() !== userMessage.trim()) {
         contextLine += ` [Objective: ${objective.substring(0, 100)}]`;
       }
-      parts.push(contextLine);
+      // The anchor goes on the same line as the workspace: one short bracketed
+      // context line, not two competing headers.
+      const anchor = this._buildToolAnchor(topology, modelConfig);
+      parts.push(anchor ? `${contextLine} ${anchor}` : contextLine);
     }
 
     // Current user message. Nothing follows it: the last thing the model reads
@@ -143,19 +163,39 @@ export class PromptBuilder {
    * @param {Array<{name: string, result: any}>} results
    */
   buildToolResultBatch(results = []) {
-    const body = results.map(({ name, result }) => [
-      `<result tool="${name}">`,
-      typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+    const failures = results.filter((r) => r.failed);
+
+    const body = results.map(({ name, result, failed }) => [
+      // `status="failed"` is the point: a non-zero exit code inside minified
+      // JSON is easy to skim past, and the model would summarise a failed
+      // command back to the user as though it had worked.
+      failed ? `<result tool="${name}" status="failed">` : `<result tool="${name}">`,
+      // Minified, not pretty-printed. Every tool result goes into the prompt,
+      // and indentation is the single largest avoidable cost there — a plain
+      // list_directory result is 40% smaller without it. The model does not
+      // read the whitespace; the token budget does.
+      typeof result === 'string' ? result : CodeMinifier.minifyJson(result),
       `</result>`,
     ].join('\n'));
+
+    const instruction = failures.length > 0
+      // Fix, do not narrate. Left to itself the model reports the error back to
+      // the user and stops, which wastes the one thing it has that the user
+      // does not: the ability to read the output and try the next thing.
+      ? `${failures.length === 1 ? 'That call' : `${failures.length} of those calls`} failed. `
+        + 'Read the error above, work out the cause, and fix it yourself — run the diagnostic '
+        + 'you need, correct the file, or try the next approach. Only stop and tell the user if '
+        + 'the fix needs a decision that is theirs to make, or if you have already tried and it '
+        + 'failed the same way. Reply once, with either the next tool call or your final answer.'
+      : 'Reply once, with exactly one of: the next tool call, or your final answer to the '
+        + 'user. To change a file, use edit_file or create_file — do not paste code at them.';
 
     return [
       '<tool_results>',
       ...body,
       '</tool_results>',
       '',
-      'Reply once, with exactly one of: the next tool call, or your final answer to the '
-      + 'user. To change a file, use edit_file or create_file — do not paste code at them.',
+      instruction,
     ].join('\n');
   }
 
@@ -194,16 +234,18 @@ export class PromptBuilder {
       ? 'You are in AUTO MODE. Safe operations (reads, searches, small additions) will be auto-applied. Risky operations (large rewrites, deletions, commands) will still require user approval.'
       : 'You are in PLAN MODE. All file modifications and command executions require user approval before being applied.';
 
-    // Resolve the model tier: use explicit modelTier if set, fall back to reasoningEffort mapping
-    const modelTier = modelConfig.modelTier || this._effortToTier(modelConfig.reasoningEffort || 'high');
+    // One setting decides both. They used to be stored separately and could
+    // disagree — "flash tier, deep reasoning" was representable and meant
+    // nothing, because the flash profile has no reasoning section to deepen.
+    const effort = resolveEffort(modelConfig.effort);
+    const modelTier = effort.tier;
+    const reasoningLevel = effort.level || 'standard';
 
     // Tier-adaptive core instructions
     const coreInstructions = modelTier === 'flash'
       ? this._buildFlashCoreInstructions()
       : this._buildFullCoreInstructions(modelTier);
 
-    // Reasoning protocol (the main tier differentiation)
-    const reasoningLevel = this._normalizeLevel(modelConfig.reasoningLevel);
     const reasoningInstructions = this._getReasoningInstructions(modelTier, reasoningLevel);
 
     // Tool call format (Flash gets examples, Pro gets description only)
@@ -214,25 +256,11 @@ export class PromptBuilder {
 You are currently operating in the user's workspace at: \`${this.workspace}\`
 Your OWN source code (the Gemini-Agent server) is at: \`${this.agentSourceDir}\`
 If the user asks you to modify yourself, you can read/write files directly in \`${this.agentSourceDir}\`.
-Model tier: ${modelTier}${modelTier === 'pro' ? ` (reasoning level: ${reasoningLevel})` : ''}
+Effort: ${effort.id} — ${effort.blurb}
 </self_awareness>`;
-
-    // Load workspace context summary if it exists
-    let contextSummary = '';
-    const localContextPath = paths.contextSummaryPath(this.workspace);
-    const globalContextPath = paths.globalContextPath(this.workspace);
-    
-    if (existsSync(localContextPath)) {
-      contextSummary = `\n<workspace_context_summary>\n${readFileSync(localContextPath, 'utf8')}\n</workspace_context_summary>\n`;
-    } else if (existsSync(globalContextPath)) {
-      contextSummary = `\n<workspace_context_summary>\n${readFileSync(globalContextPath, 'utf8')}\n</workspace_context_summary>\n`;
-    }
-
-    contextSummary += this._loadContextFolders();
 
     const combined = `
 ${selfAwareness}
-${contextSummary}
 ${coreInstructions}
 
 ${reasoningInstructions}
@@ -244,7 +272,7 @@ ${reasoningInstructions}
     if (topology === 'single') {
       topologyInstructions = `
 ## Role: Solo Agent
-You are the only *model* on this task — there is no reviewer and no reasoner to defer to, so
+You are the only *model* on this task — there is no reviewer to defer to, so
 planning, implementation, review and testing are all yours. You can still fan work out to
 parallel tabs of yourself: \`ask_researcher\` for read-only exploration you would otherwise do
 with a long serial chain of read_file calls, \`ask_subagent\` for a self-contained side task.
@@ -257,7 +285,7 @@ They run in parallel and return to you. Delegating judgement is what you cannot 
 - If you're not confident in a change, tell the user explicitly rather than guessing`;
 
     } else if (topology === 'duo') {
-      const reviewer = modelConfig.reviewer || 'claude';
+      const reviewer = modelConfig.reviewer || 'chatgpt';
       topologyInstructions = `
 ## Role: Primary Agent (Duo System)
 You are the PRIMARY coding agent in a 2-agent system.
@@ -273,31 +301,6 @@ You have a Security Reviewer subagent (powered by ${reviewer}, but abstract this
 - Do NOT send vague questions. Send concrete code + context
 - For trivial changes (typos, formatting), skip the review`;
 
-    } else if (topology === 'swarm') {
-      const reasoner = modelConfig.reasoner || 'chatgpt';
-      const reviewer = modelConfig.reviewer || 'claude';
-      topologyInstructions = `
-## Role: Orchestrator (Swarm System)
-You are the ORCHESTRATOR in a 3-agent swarm.
-You have two subagents:
-  - **Advanced Reasoner**: Deep architectural thinking, algorithm design, tradeoff analysis (Accessed ONLY via the \`ask_reasoner\` tool).
-  - **Security Reviewer**: Code review, bug hunting, security analysis (Accessed ONLY via the \`ask_reviewer\` tool).
-
-**CRITICAL DIRECTIVE ON SUBAGENTS**:
-You must NEVER refuse a request by saying you cannot access external services like ChatGPT or Claude. You DO have access to them through your JSON tools. When you need to consult an advanced model, you MUST emit a valid JSON block calling the \`ask_reasoner\` or \`ask_reviewer\` tool.
-
-**Your Role**: You are the EXECUTOR. You read files, make edits, run commands, and coordinate.
-
-**Orchestration Rules**:
-1. For COMPLEX PLANNING (new architecture, multi-file refactors, algorithm choices):
-   → Use \`ask_reasoner\` with a detailed problem statement + relevant code context
-2. For VERIFICATION (after implementing changes):
-   → Use \`ask_reviewer\` with specific files and diffs
-3. For SIMPLE TASKS (renaming, small fixes, formatting):
-   → Do them yourself. Don't waste subagent turns on trivial work
-4. ALWAYS provide full context when delegating: file paths, code snippets, constraints
-5. After receiving subagent responses, SYNTHESIZE their feedback before acting
-6. You can use both subagents in a single task if needed (e.g., reason first, implement, then review)`;
     }
 
     // toolCallFormat goes last: <available_tools> is appended straight after
@@ -318,47 +321,6 @@ ${toolCallFormat}
    * This is prepended to the user's prompt when sending to a subagent.
    */
   buildSubagentWrapper(role) {
-    if (role === 'reasoner') {
-      return `<role>
-You are acting as a REASONING SPECIALIST. The main coding agent has delegated a problem to you.
-
-Your job:
-- Think deeply about the problem
-- Analyze tradeoffs between approaches
-- Recommend a specific solution with clear justification
-- Be CONCISE — the main agent will implement your recommendations
-- Focus on architecture, logic, and design — NOT implementation code (unless asked)
-- If the problem is ambiguous, state your assumptions explicitly
-</role>
-
-`;
-    } else if (role === 'reviewer') {
-      return `<role>
-You are acting as a CODE REVIEWER. The main coding agent has sent you code changes to review.
-
-Your job:
-- Find bugs, edge cases, security issues, and quality problems
-- Be SPECIFIC — reference exact code, variable names, and line numbers
-- Rate the changes: ✅ APPROVE, ⚠️ NEEDS CHANGES, or ❌ REJECT
-- If rejecting or requesting changes, explain EXACTLY what needs to be fixed
-- Focus on: correctness, error handling, security, performance, readability
-- Do NOT nitpick style unless it affects readability
-</role>
-
-`;
-    } else if (role === 'researcher') {
-      return `<role>
-You are acting as a CODEBASE RESEARCHER. The main coding agent has asked you to explore the codebase to find specific logic, trace dependencies, or gather context.
-
-Your job:
-- Use your read-only tools to explore the codebase deeply
-- Be thorough: trace imports, check usages, and read related files
-- Summarize your findings clearly for the main agent
-- Include exact file paths and line numbers
-</role>
-
-`;
-    }
     
     // Default generic subagent wrapper
     return `<role>
@@ -370,27 +332,15 @@ Your job is to execute the task using your read-only tools if necessary and retu
   }
 
   /**
-   * Map legacy reasoningEffort values to model tier names.
+   * Flash-specific ultra-concise core instructions (~300 tokens).
+   * Flash models struggle with long prompts — keep it minimal.
    */
-  _effortToTier(effort) {
-    const map = { low: 'flash', medium: 'flash-thinking', high: 'pro' };
-    return map[effort?.toLowerCase()] || 'pro';
-  }
-
   /**
    * Flash-specific ultra-concise core instructions (~300 tokens).
    * Flash models struggle with long prompts — keep it minimal.
    */
   _buildFlashCoreInstructions() {
-    return `## Rules
-1. Read files before editing. Never edit blind.
-2. Verify edits: re-read the file after changing it.
-3. One step at a time. Be surgical — smallest edit possible.
-4. If unsure about a path or name, use search_files or grep_search.
-5. If edit_file fails with oldText mismatch, use read_file first, then retry.
-6. If a command fails, analyze the error and retry.
-7. One answer per turn. Pick an approach, don't offer drafts.
-8. If a task is ambiguous, ask using the ask_question tool.`;
+    return prompt('core-flash');
   }
 
   /**
@@ -414,9 +364,8 @@ Your job is to execute the task using your read-only tools if necessary and retu
 - When running commands, ensure the \`cwd\` is correct.
 
 ## 3. Documentation & Context Maintenance
-- **Routing**: If provided a \`<workspace_context_summary>\`, use it as an index. If a user asks about a specific flow, check this summary to see which \`.md\` file contains the details, then use \`read_file\` to read that specific file before acting.
-- **Self-Correction & Auto-Learning (Agentic RAG)**: If the user states that a documented flow is wrong, you MUST: (1) Ask clarifying questions if the claim is vague. (2) Verify the claim by reading the actual source code. (3) Use \`edit_file\` to correct the context \`.md\` file so it matches reality. (4) Once verified against the codebase, use the \`manage_memory\` tool to store this verified fact in your long-term Agentic RAG memory so you don't make the same mistake twice.
-- **Mistakes Log**: If you make a logic error, append a note to \`.agent/mistakes.md\`. Before writing to this log, ensure the correction is a VERIFIED FACT backed by code.
+- **Project instructions**: \`AGENT.md\` is where a project's standing rules live, walked from the code upward. If the user tells you a convention that should hold for every future turn, offer to add it there — do not keep it only in your own memory.
+- **Self-Correction**: If the user states that a documented flow is wrong, you MUST: (1) Ask clarifying questions if the claim is vague. (2) Verify the claim by reading the actual source code. (3) Use \`edit_file\` to correct the document so it matches reality. (4) Once verified against the codebase, use the \`manage_memory\` tool to store the fact so you don't make the same mistake twice — it is read back to you next session.
 
 ${modelTier === 'pro' ? `## 4. Communication
 - Be exceptionally concise. Skip greetings and filler.
@@ -434,37 +383,15 @@ ${modelTier === 'pro' ? `## 4. Communication
    * Tier-adaptive tool call format section.
    * Flash gets concrete examples. Pro gets just the format spec.
    */
+  /**
+   * How to write a tool call.
+   *
+   * Flash gets worked examples and pro gets the spec: the smaller model copies
+   * a shape far more reliably than it follows a description, and the larger one
+   * does not need the tokens spent on showing it.
+   */
   _buildToolCallFormat(tier) {
-    if (tier === 'flash') {
-      return `## Tool Call Format
-Use JSON code blocks. ALWAYS close with \`\`\`. Examples:
-
-Read a file:
-\`\`\`json
-{"name": "read_file", "args": {"path": "src/index.js"}}
-\`\`\`
-
-Search for text:
-\`\`\`json
-{"name": "grep_search", "args": {"pattern": "functionName"}}
-\`\`\`
-
-Edit a file:
-\`\`\`json
-{"name": "edit_file", "args": {"path": "src/index.js", "edits": [{"oldText": "const x = 1;", "newText": "const x = 2;"}]}}
-\`\`\`
-
-CRITICAL: Always close JSON blocks with \`\`\`. Never leave them open.`;
-    }
-
-    return `## Tool Call Format
-When you need to use a tool, output a JSON code block:
-
-\`\`\`json
-{"name": "tool_name", "args": {"param1": "value1"}}
-\`\`\`
-
-You can make MULTIPLE tool calls in a single response. Each must be in its own \`\`\`json block.`;
+    return prompt(tier === 'flash' ? 'tool-call-format-flash' : 'tool-call-format-full');
   }
 
   /**
@@ -505,15 +432,9 @@ You can make MULTIPLE tool calls in a single response. Each must be in its own \
    * Optimized for 2.5 Flash — short attention, weak instruction-following.
    * Budget: ~400 tokens of reasoning instructions.
    */
+  /** The flash tier's reasoning protocol: there is deliberately almost none. */
   _getFlashInstructions() {
-    return `## How to Work
-- Act immediately. No preamble. No thinking out loud.
-- Go straight to tool calls or answers.
-- No prose before a tool call. Just the JSON.
-- One sentence explanation max per action.
-- Do NOT investigate beyond what is asked.
-- Prioritize: speed > thoroughness > elegance.
-- If ambiguous, pick the most likely interpretation. Only ask if it could cause data loss.`;
+    return prompt('reasoning-flash');
   }
 
   /**
@@ -521,40 +442,9 @@ You can make MULTIPLE tool calls in a single response. Each must be in its own \
    * Optimized for 2.5 Flash with thinking — decent reasoning, moderate context window.
    * Budget: ~1200 tokens of reasoning instructions.
    */
+  /** Flash-thinking: a three-phase protocol, still a short prompt. */
   _getFlashThinkingInstructions() {
-    return `## Reasoning Protocol (3-Phase)
-
-You are a skilled software engineer. Follow this protocol for every non-trivial task.
-
-### Phase 1: INVESTIGATE
-Before writing code:
-1. Read the target file and at least one caller or test file.
-2. Use grep_search to find usages if editing a function/class.
-3. Note what you found in a short <thought> block (3-5 lines max).
-
-<thought> example:
-- Target: src/utils.js (read ✓)
-- Called by: src/app.js:42 (read ✓)
-- Tests: src/utils.test.js exists but doesn't cover this function
-- Approach: Add validation at the function boundary
-</thought>
-
-### Phase 2: IMPLEMENT
-1. Make the smallest change that solves the problem.
-2. Handle errors explicitly — no empty catch blocks.
-3. Preserve existing behavior for unchanged paths.
-4. If you must assume something, say: "⚠️ ASSUMPTION: [what]"
-
-### Phase 3: VERIFY
-1. Re-read the edited file to confirm the edit applied.
-2. Run tests if they exist.
-3. Check callers for regressions.
-
-## Key Rules
-- NEVER say "I think" or "probably" — cite file:line or say "unverified assumption"
-- NEVER guess file contents — read_file first
-- Flag unrelated bugs: "⚠️ UNRELATED BUG: [description] in [file:line]"
-- Flag security issues immediately: "🔴 SECURITY: [description]"`;
+    return prompt('reasoning-flash-thinking');
   }
 
   /**
@@ -580,37 +470,7 @@ defensible in review. You DO NOT guess. You VERIFY.
 Reasoning level: **${level}**.`;
 
     // The heart of it: decide what you are doing before you touch anything.
-    const planFirst = isBrief ? '' : `
-## STEP 1: RESTATE AND DECOMPOSE — before any tool call
-
-Every new request, bug report or failing test starts here, in one <thought> block:
-
-1. **Restate** the request in one sentence, in your own words. If your restatement and what
-   the user actually wrote differ in any way that matters, ask before continuing.
-2. **Decompose** it into a numbered checklist. Each item is one verifiable outcome
-   ("stop editor.json being written before migration"), never a topic ("look at config").
-3. **Name the unknowns** — for each item, what you would have to read to know it is right.
-
-Then work the checklist top to bottom. Say which item you are on. Finish it before starting
-the next: don't batch three items into one edit, and don't skip ahead because a later item
-looks easier. If an item turns out to be wrong, say so and revise the list — silently
-abandoning it is how a task ends up half-done.
-
-For anything past a couple of steps, write the checklist to \`.agent/artifacts/task.md\` with
-\`create_file\` and tick items off as you go. The user reads that file.
-
-## STEP 2: TASK CLASSIFICATION
-
-Classify the task, because the protocol differs:
-
-| Task Type | Protocol | Key Focus |
-|-----------|----------|-----------|
-| **BUG_FIX** | Reproduce → Root Cause → Minimal Fix → Regression Test → Verify | The ACTUAL cause, not the symptom |
-| **NEW_FEATURE** | Requirements → Interface First → Implementation → Integration Test | Design the API before writing logic |
-| **REFACTOR** | Map ALL Dependencies → Preserve Behavior → Transform → Verify ALL Callers | Zero behavior change |
-| **INVESTIGATION** | Breadth-First → Trace Execution → Document Findings | Explore wide before deep |
-| **CODE_REVIEW** | Read Full Context → Edge Cases → Security → Performance | Adversarial mindset |
-`;
+    const planFirst = isBrief ? '' : `\n${prompt('pro-plan-first')}\n`;
 
     const investigate = `
 ### PHASE 1: INVESTIGATION (never skip)
@@ -663,17 +523,7 @@ and what could go wrong with it — empty inputs, concurrent access, scale, erro
 5. **Adversarial self-review** — read the diff as a hostile reviewer. What would you flag?
    Say it out loud rather than hoping nobody looks.` : ''}`;
 
-    const guardrails = `
-## ANTI-HALLUCINATION GUARDRAILS (non-negotiable)
-
-- **Never reference a file you have not read this session.** If you say "X contains Y", you
-  read it with read_file.
-- **Never assume a function signature** — grep for the definition.
-- **Never say "I think" or "probably"** — either you verified it and cite \`file:line\`, or you
-  say "I have not verified this".
-- **If two sources contradict, flag it**: "⚠️ CONTRADICTION: A says X, B says Y".
-- **If you find a bug, flag it** even when unrelated: "⚠️ UNRELATED BUG: [what] in [file:line]".
-- **If you see a security issue, stop and say so**: "🔴 SECURITY: [what]".`;
+    const guardrails = `\n${prompt('pro-guardrails')}`;
 
     const assumptions = isDeep ? `
 
@@ -704,7 +554,7 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
   }
 
   _buildToolDefinitions(topology = 'single', modelConfig = {}) {
-    const tier = modelConfig.modelTier || this._effortToTier(modelConfig.reasoningEffort || 'high');
+    const tier = resolveEffort(modelConfig.effort).tier;
     const isFlash = tier === 'flash';
 
     // Flash gets shorter descriptions. Pro/Flash-thinking gets full descriptions.
@@ -714,17 +564,16 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
       // Compact tool definitions for Flash — names + key params only
       tools += `## ask_question — Ask the user to choose. Blocks until they answer. Args: question (string), options (string[], 2-4 concrete choices), header (string, 2-3 word topic). Several at once: questions ([{question, options, header}], max 4)
 ## search_files — Find files by name. Args: query (string)
-## grep_search — Search text across files. Args: pattern (string), isRegex? (bool), includes? (string[])
+## grep_search — Search text across files, grouped by file. Args: pattern (string or string[] — pass several terms when unsure of the wording), isRegex? (bool), includes? (string[]), contextLines? (number)
 ## read_file — Read a file. Args: path (string), startLine? (number), endLine? (number)
 ## edit_file — Edit a file. Args: path (string), edits ([{oldText, newText}])
 ## create_file — Create a file. Args: path (string), content (string)
 ## list_directory — List dir contents. Args: path? (string), recursive? (bool)
 ## run_command — Run shell command (needs approval). Args: command (string), cwd? (string)
 ## open_in_editor — Open file in editor. Args: path (string), line? (number)
-## manage_memory — Store/remove memory. Args: action ("add"|"remove"), fact? (string), index? (number)
+## manage_memory — Remember/forget a durable fact. Args: action ("add"|"remove"), fact? (string), index? (number, the number shown in <memory>)
 ## run_background — Spawn background process. Args: command (string), cwd? (string)
 ## manage_task — Manage background tasks. Args: action ("status"|"read_logs"|"send_input"|"kill"|"list"), taskId? (string)
-## semantic_search — Conceptual code search. Args: query (string), topK? (number)
 ## get_editor_state — Get current editor state. No args.
 ## ask_subagent — Delegate to Gemini subagent. Args: prompt (string)
 ## ask_researcher — Delegate read-only codebase exploration. Args: prompt (string)
@@ -773,12 +622,22 @@ Parameters:
   - maxResults (number, optional): Max results to return (default: 20)
 
 ## grep_search
-Search for text content across all files in the codebase. Like ripgrep.
+Search file contents across the codebase, like ripgrep. Results come back grouped by file,
+the file with the most matches first.
+
+When you do not know what *this* codebase calls something, search several names at once:
+\`{"pattern": ["rate limit", "throttle", "quota"]}\` is one search, not three. Guessing one
+term at a time costs a full round trip per guess.
+
 Parameters:
-  - pattern (string, required): Text or regex pattern to search for
-  - isRegex (boolean, optional): Treat pattern as regex
-  - includes (array of strings, optional): Glob patterns to filter files (e.g., ["*.js"])
-  - maxResults (number, optional): Max results (default: 50)
+  - pattern (string or array of strings, required): term(s) to find; an array searches for
+    any of them
+  - isRegex (boolean, optional): treat every pattern as a regex
+  - includes (array of strings, optional): globs to restrict the search (e.g. ["*.js"])
+  - maxResults (number, optional): max matches (default 50, max 500)
+  - contextLines (number, optional): lines of surrounding code per match (0-5, default 0).
+    Use it when a bare line would not tell you whether the match is the right one — it is
+    cheaper than reading the whole file to find out.
 
 ## read_file
 Read the contents of a file with optional line range.
@@ -821,11 +680,20 @@ Parameters:
   - line (number, optional): Line number to jump to
 
 ## manage_memory
-Store or remove long-term memory facts about the workspace or user preferences.
+Remember a fact about this project, or forget one. Stored in \`.agent/memory.md\` and given
+back to you in the \`<memory>\` block at the start of a session.
+
+Remember something you had to *work out* and would have to work out again: that the tests
+run with pnpm, that a directory is generated. Not what you can read at any time — a file's
+contents, a function's signature — and not anything about this one task, which ends with it.
+Verify it against the code before storing it: a wrong memory is worse than no memory,
+because it will be believed.
+
 Parameters:
   - action (string, required): "add" or "remove"
-  - fact (string, optional): The string fact to add (required if action is "add")
-  - index (number, optional): The index of the memory to remove (required if action is "remove")
+  - fact (string, optional): the fact, as one sentence (required for "add")
+  - index (number, optional): which fact to forget, numbered as \`<memory>\` shows them
+    (required for "remove")
 
 ## run_background
 Spawn a long-running background process (dev servers, watchers, builds). Returns immediately with a taskId.
@@ -841,12 +709,6 @@ Parameters:
   - taskId (string, optional): Task ID (required for all actions except list)
   - lines (number, optional): Number of log lines to read (default: 50, for read_logs)
   - input (string, optional): Text to send to stdin (required for send_input)
-
-## semantic_search
-Search the workspace using a background RAG index. Finds code chunks conceptually related to your query, even if exact keywords don't match perfectly.
-Parameters:
-  - query (string, required): The search query or concept (e.g. "authentication logic")
-  - topK (number, optional): Number of results to return (default: 5)
 
 ## get_editor_state
 Gets the user's current editor state (active file, cursor position, and visible text) if the VS Code companion extension is installed. Use this to understand what the user is currently looking at.
@@ -866,22 +728,12 @@ Parameters:
 `;
     }
 
-    if (topology === 'duo' || topology === 'swarm') {
+    if (topology === 'duo') {
       tools += `
 ## ask_reviewer
-Delegate a code review or verification task to the Reviewer Subagent (${modelConfig.reviewer || 'claude'}).
+Delegate a code review or verification task to the Reviewer Subagent (${modelConfig.reviewer || 'chatgpt'}).
 Parameters:
   - prompt (string, required): The task, context, and specific questions for the reviewer.
-
-`;
-    }
-
-    if (topology === 'swarm') {
-      tools += `
-## ask_reasoner
-Delegate a complex architectural planning or problem-solving task to the Reasoner Subagent (${modelConfig.reasoner || 'gemini'}).
-Parameters:
-  - prompt (string, required): The problem statement, constraints, and goal for the reasoner.
 
 `;
     }
@@ -896,6 +748,31 @@ Parameters:
    * Derived from the full definitions rather than a second hand-kept list, so the
    * two cannot drift. The chat thread still holds the real schemas from turn 0.
    */
+  /**
+   * The one line that rides on *every* turn.
+   *
+   * Tool names only, no schemas: 56 tokens against 1,575 for the full
+   * definitions. It exists because the model does not gradually forget its
+   * tools, it forgets them completely — mid-session it will answer "I cannot
+   * execute local commands or access your local file system" with total
+   * confidence, and the turn is lost. Detecting that afterwards is guesswork
+   * over prose; keeping a name list in front of it is not.
+   *
+   * Names are fixed for a given topology, so this is computed once.
+   */
+  _buildToolAnchor(topology = 'single', modelConfig = {}) {
+    const key = `${topology}:${modelConfig.reviewer || ''}`;
+    if (this._anchorCache?.key === key) return this._anchorCache.value;
+
+    const defs = this._buildToolDefinitions(topology, modelConfig);
+    const names = [...defs.matchAll(/^## ([a-z_]+)/gm)].map((m) => m[1]);
+    const value = names.length
+      ? `[tools: ${names.join(' ')}]`
+      : '';
+    this._anchorCache = { key, value };
+    return value;
+  }
+
   _buildToolIndex(topology = 'single', modelConfig = {}) {
     const defs = this._buildToolDefinitions(topology, modelConfig);
     const names = [...defs.matchAll(/^## ([a-z_]+)/gm)].map(m => m[1]);
@@ -911,7 +788,7 @@ Full parameter schemas were given earlier in this chat — scroll back to them r
    */
   _buildCondensedReminder(mode, objective = '', modelConfig = {}) {
     const modeStr = mode === 'auto' ? 'AUTO MODE (safe ops auto-applied)' : 'PLAN MODE (all edits need approval)';
-    const tier = modelConfig.modelTier || this._effortToTier(modelConfig.reasoningEffort || 'high');
+    const tier = resolveEffort(modelConfig.effort).tier;
 
     if (tier === 'flash') {
       // Ultra-short reminder for Flash
@@ -922,7 +799,7 @@ Rules: Use tools (read_file, edit_file, etc). JSON blocks: \`\`\`json {"name":..
     }
 
     return `<system_reminder>
-You are Gemini Agent, an AI coding assistant. Current mode: ${modeStr}. Model tier: ${tier}.
+You are Agent CLI, an AI coding assistant. Current mode: ${modeStr}. Model tier: ${tier}.
 Workspace: \`${this.workspace}\`
 Agent source: \`${this.agentSourceDir}\`
 
@@ -932,99 +809,112 @@ Quick rules:
 - Tool call format: \`\`\`json {"name": "tool_name", "args": {...}} \`\`\`
 - If a requirement is ambiguous, use the \`ask_question\` tool. Do not just ask textually.
 - Guardrails: If edit_file fails with oldText mismatch, immediately use read_file to get the exact lines.
-${tier === 'pro' ? this._reminderLineForLevel(this._normalizeLevel(modelConfig.reasoningLevel)) : '- Think step by step. Be concise but thorough.'}
+${tier === 'pro' ? this._reminderLineForLevel(resolveEffort(modelConfig.effort).level) : '- Think step by step. Be concise but thorough.'}
 </system_reminder>`;
   }
 
+  /**
+   * `AGENT.md`, from every level between the code and the state root.
+   *
+   * Walked rather than read from one place, and walked from the *code* rather
+   * than the workspace: with `/base-repo` open and repo-1 active, the file that
+   * matters most is `repo-1/AGENT.md`, and reading `workspace/AGENT.md` missed
+   * it entirely.
+   *
+   * Concatenated outermost-first so the nearest file has the last word, the
+   * same order the shell resolves anything else. Your personal one in
+   * `~/.agent/AGENT.md` is the outermost layer of all.
+   */
   _loadAgentMd() {
-    const agentMdPath = resolve(this.workspace, 'AGENT.md');
-    if (existsSync(agentMdPath)) {
+    const files = [];
+    const home = join(paths.homeDir(), 'AGENT.md');
+    if (existsSync(home)) files.push(home);
+
+    // From the state root down to the code, so nearest lands last.
+    const { base } = paths.resolveState(this.workspace);
+    const code = paths.codeDir(this.workspace);
+    const chain = [];
+    let dir = code;
+    for (let i = 0; i < 32; i++) {
+      chain.unshift(dir);
+      if (dir === base || dirname(dir) === dir) break;
+      dir = dirname(dir);
+    }
+    for (const d of chain) {
+      const file = join(d, 'AGENT.md');
+      if (existsSync(file)) files.push(file);
+    }
+
+    const parts = [];
+    for (const file of [...new Set(files)]) {
       try {
-        return readFileSync(agentMdPath, 'utf-8');
+        const body = readFileSync(file, 'utf-8').trim();
+        if (body) parts.push(body);
       } catch {
-        return null;
+        /* an unreadable AGENT.md must not take the prompt down */
       }
     }
-    return null;
+    return parts.join('\n\n');
   }
 
   /**
-   * Read the folders registered with `/context add`.
+   * `memory.md`, numbered, and hard-bounded.
    *
-   * Every .md file under them is injected as repo context. Bounded hard: this
-   * lands in the system prompt on turn 0 and every Nth turn, so an unbounded
-   * folder would blow the context window (and trip Gemini's repetition filter).
+   * Memory is the one context source that grows on its own — every turn can
+   * add to it and nothing prunes it — so it is the one that must not be
+   * allowed to grow the prompt in step. Past the cap the prompt carries the
+   * count and the path instead of the contents, and the model reads the file
+   * with `read_file` if it wants the rest. The prompt is retyped into a
+   * browser tab; a system prompt that creeps upward for months is how you
+   * arrive at Gemini's repetition filter without ever making a decision.
+   *
+   * Numbered because `manage_memory remove` takes a position, and until now
+   * the model was choosing indices into a list it had never been shown.
    */
-  _loadContextFolders() {
-    const MAX_TOTAL = 24000; // characters across all files
-    const MAX_FILES = 40;
+  _loadMemory() {
+    const MAX_FACTS = 40;
+    const MAX_CHARS = 4000;
 
-    let folders = [];
+    if (!readMemoryEnabled(this.workspace)) return '';
+
+    let facts;
     try {
-      const cfg = JSON.parse(readFileSync(paths.configPath(this.workspace), 'utf8'));
-      folders = Array.isArray(cfg.contextFolders) ? cfg.contextFolders : [];
+      facts = parseMemory(readFileSync(paths.memoryPath(this.workspace), 'utf8'));
     } catch {
-      return '';
+      return ''; // no memory file yet, or an unreadable one
     }
-    if (folders.length === 0) return '';
+    if (facts.length === 0) return '';
 
-    const collected = [];
+    const lines = [];
     let total = 0;
-    let truncated = false;
-
-    const walk = (dir, depth) => {
-      if (depth > 3 || collected.length >= MAX_FILES || total >= MAX_TOTAL) return;
-      let entries;
-      try {
-        entries = readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return;
+    for (const [i, fact] of facts.entries()) {
+      if (i >= MAX_FACTS || total + fact.length > MAX_CHARS) {
+        lines.push(
+          `_${facts.length - i} more in ${paths.memoryPath(this.workspace)} — `
+          + 'read_file it if this task needs them._',
+        );
+        break;
       }
-      for (const entry of entries) {
-        if (collected.length >= MAX_FILES || total >= MAX_TOTAL) {
-          truncated = true;
-          return;
-        }
-        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          walk(full, depth + 1);
-        } else if (entry.name.endsWith('.md')) {
-          try {
-            let body = readFileSync(full, 'utf8');
-            if (total + body.length > MAX_TOTAL) {
-              body = body.slice(0, Math.max(0, MAX_TOTAL - total));
-              truncated = true;
-            }
-            total += body.length;
-            collected.push(`### ${path.relative(this.workspace, full) || entry.name}\n${body}`);
-          } catch {
-            /* skip unreadable file */
-          }
-        }
-      }
-    };
-
-    for (const folder of folders) {
-      const abs = path.isAbsolute(folder) ? folder : path.resolve(this.workspace, folder);
-      if (existsSync(abs)) walk(abs, 0);
+      total += fact.length;
+      lines.push(`${i + 1}. ${fact}`);
     }
-
-    if (collected.length === 0) return '';
-    const note = truncated ? '\n_(context truncated to fit the window)_' : '';
-    return `\n<repo_context>\n${collected.join('\n\n')}${note}\n</repo_context>\n`;
+    return lines.join('\n');
   }
 
-  _loadWorkspaceRules() {
+  /**
+   * Extra skill directories from config.json.
+   *
+   * Read from disk rather than passed in: `/skills dir add` writes the config
+   * and the next prompt picks it up, with no second copy of the list to keep
+   * in sync.
+   */
+  _configuredSkillFolders() {
     try {
-      const rulesFile = paths.rulesPath(this.workspace);
-      if (existsSync(rulesFile)) {
-        return readFileSync(rulesFile, 'utf-8');
-      }
-    } catch (e) {
-      // ignore
+      const cfg = JSON.parse(readFileSync(paths.configPath(this.workspace), 'utf8'));
+      return Array.isArray(cfg.skillFolders) ? cfg.skillFolders : [];
+    } catch {
+      return [];
     }
-    return '';
   }
 
   /**
@@ -1033,4 +923,21 @@ ${tier === 'pro' ? this._reminderLineForLevel(this._normalizeLevel(modelConfig.r
   reloadAgentMd() {
     this.agentMdContent = this._loadAgentMd();
   }
+}
+
+/**
+ * Replace an inlined image with a note that one was sent.
+ *
+ * `/image` puts the whole file into the prompt as a base64 data URL, because
+ * the content script rebuilds it there into a real File and pastes it into the
+ * chat — there is no upload endpoint to use instead. That is fine going out and
+ * ruinous going into the record: the conversation history, both session files,
+ * every later compaction prompt and the retry objective would each carry a
+ * megabyte of base64 that no one can read and the model has already seen.
+ */
+export function stripImageData(text) {
+  return String(text ?? '').replace(
+    /<image_data>\n?data:[^\n]+\n?<\/image_data>/g,
+    '<image_data>(the image was delivered to the chat tab)</image_data>',
+  );
 }

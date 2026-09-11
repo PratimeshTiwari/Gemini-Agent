@@ -10,7 +10,6 @@
 
 // ── Constants & State ───────────────────────────────────────────────
 
-const WS_URL = 'ws://localhost:7777';
 const RESPONSE_IDLE_TIMEOUT = 15000; // 15s of no new text = response complete
 const RESPONSE_ACTIVITY_TIMEOUT = 60000; // 60s of no new text during streaming = consider done
 const RESPONSE_MAX_TIMEOUT = 300000; // 5 min absolute max (safety net)
@@ -18,7 +17,6 @@ const RESPONSE_MAX_TIMEOUT = 300000; // 5 min absolute max (safety net)
 // scrape that matches nothing used to sit here for the full 5 minutes with no
 // signal at all. Give up much sooner when there is still nothing to report.
 const NO_RESPONSE_TIMEOUT = 45000;
-const RECONNECT_BASE = 1000;
 
 // ── Anti-Throttling Hack ─────────────────────────────────────────────
 // Chrome drastically throttles setTimeout and requestAnimationFrame in background tabs.
@@ -112,6 +110,58 @@ let activityCheckTimer = null;
 let currentRequestData = null;
 let sawGenerating = false;
 
+/**
+ * Talking to the extension, when the extension may no longer be there.
+ *
+ * Reloading the extension orphans every content script already running in a
+ * page: the page keeps executing this code, but its link to the extension is
+ * severed and **`chrome.runtime.sendMessage` throws synchronously** —
+ * `Uncaught Error: Extension context invalidated.` A `.catch()` does not catch
+ * it, because nothing was ever returned to reject.
+ *
+ * That is how a reload silently broke a live turn: Gemini answered, the scrape
+ * worked, `onResponseComplete` called `sendMessage`, it threw, and the agent
+ * sat on "Thinking…" until the five-minute watchdog. Nothing said why.
+ *
+ * So every call goes through here. When the context is gone we stop the timers
+ * and observers this page owns rather than throwing once per tick forever — and
+ * the service worker re-injects a fresh copy on startup, which is what actually
+ * repairs the tab.
+ */
+let bridgeInvalidated = false;
+const onInvalidated = [];
+
+/** The id disappears the moment this context is orphaned. */
+function bridgeAlive() {
+  try {
+    return !bridgeInvalidated && Boolean(chrome.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+function invalidate() {
+  if (bridgeInvalidated) return;
+  bridgeInvalidated = true;
+  console.warn('[Agent CLI] Extension was reloaded; this content script is orphaned. '
+    + 'A fresh one is injected on the extension\'s next start, or reload this tab.');
+  for (const stop of onInvalidated) {
+    try { stop(); } catch {}
+  }
+}
+
+/** Send, or quietly give up. Never throws, never rejects. */
+function safeSend(message) {
+  if (!bridgeAlive()) { invalidate(); return Promise.resolve(undefined); }
+  try {
+    const p = chrome.runtime.sendMessage(message);
+    return p && typeof p.catch === 'function' ? p.catch(() => undefined) : Promise.resolve(undefined);
+  } catch (err) {
+    if (/context invalidated/i.test(err?.message || '')) invalidate();
+    return Promise.resolve(undefined);
+  }
+}
+
 // ── DOM Helpers ─────────────────────────────────────────────────────
 
 /**
@@ -152,7 +202,7 @@ async function injectPrompt(text) {
   try {
     const input = findElement(SELECTORS.inputField);
     if (!input) {
-      throw new Error('Could not find Gemini input field');
+      throw new Error('[find_input] Could not find the Gemini input field — the editor selector has probably changed');
     }
 
     // Record how many responses exist BEFORE we send
@@ -250,7 +300,7 @@ async function injectPrompt(text) {
       // Wait a moment to see if the fallbacks worked by checking if input cleared
       await new Promise(r => setTimeout(r, 1000));
       if (input.textContent.trim().length > 0) {
-        throw new Error("Failed to submit prompt: Send button never became active (Image upload might be stuck).");
+        throw new Error("[send_button] Send button never became active — an image upload may be stuck, or the button selector has changed");
       }
     }
 
@@ -344,7 +394,7 @@ function startResponseObserver() {
         streamingUpdateTimer = setInterval(() => {
           if (lastResponseText && lastResponseText !== lastStreamedText) {
             lastStreamedText = lastResponseText;
-            chrome.runtime.sendMessage({
+            safeSend({
               type: 'gemini_response_stream',
               payload: {
                 content: lastResponseText,
@@ -424,7 +474,7 @@ function startResponseObserver() {
       console.warn(`[Gemini Bridge] ${diagnosis}`);
       clearInterval(streamingUpdateTimer);
       stopResponseObserver();
-      chrome.runtime.sendMessage({
+      safeSend({
         type: 'gemini_response',
         payload: { content: diagnosis, complete: false, timedOut: true },
       });
@@ -436,7 +486,7 @@ function startResponseObserver() {
       console.warn('[Gemini Bridge] Absolute max timeout reached (5 min)');
       clearInterval(streamingUpdateTimer);
       stopResponseObserver();
-      chrome.runtime.sendMessage({
+      safeSend({
         type: 'gemini_response',
         payload: {
           content: lastResponseText || '[No response received — max timeout reached]',
@@ -601,7 +651,7 @@ function onResponseComplete(responseText) {
   stopResponseObserver();
 
   // Send to service worker
-  chrome.runtime.sendMessage({
+  safeSend({
     type: 'gemini_response',
     payload: {
       content: responseText,
@@ -672,30 +722,55 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // ── Initialization ──────────────────────────────────────────────────
-console.log('[Gemini Agent] Content script loaded on:', window.location.href);
+console.log('[Agent CLI] Content script loaded on:', window.location.href);
 
 // Notify service worker that we're ready
-chrome.runtime.sendMessage({
+safeSend({
   type: 'content_script_ready',
   payload: {
     url: window.location.href,
     timestamp: Date.now(),
   },
-}).catch(() => {
-  // Service worker may not be ready yet
 });
 
-// Keep the service worker alive by holding a persistent port connection open
+/**
+ * Keep the bridge connected, from the one place that is allowed to persist.
+ *
+ * The service worker cannot do this for itself. Measured in Chrome 152 against
+ * the real extension, refusing every handshake so each attempt is visible: the
+ * server sees exactly **two attempts in 75 seconds, 30.0s apart** — and the same
+ * 30.0s whether the worker schedules `setTimeout` retries, pings
+ * `chrome.runtime.getPlatformInfo()` every five seconds, or holds this port
+ * open. Chrome terminates the idle worker regardless, its timers die with it,
+ * and `chrome.alarms` clamps to a 30-second floor. That floor was the entire
+ * reconnect cadence.
+ *
+ * A content script is not a service worker. It lives as long as its page, so it
+ * can hold the clock. `chrome.runtime.sendMessage` *wakes* the worker, which is
+ * the part a port does not do — so this nudges rather than waits.
+ *
+ * It is well targeted: this only runs in a model tab, and without a model tab
+ * there is nothing for the bridge to connect *for*. The worker returns early
+ * when the socket is already open, so the steady-state cost is one no-op
+ * message every few seconds.
+ */
+const CONNECT_NUDGE_MS = 3000;
 let keepAlivePort = null;
+
 function connectToServiceWorker() {
+  if (!bridgeAlive()) return;
   try {
     keepAlivePort = chrome.runtime.connect({ name: 'keepAlive' });
     keepAlivePort.onDisconnect.addListener(() => {
-      // Reconnect after a short delay if the port drops
       setTimeout(connectToServiceWorker, 1000);
     });
   } catch (err) {
-    // Context invalidated
+    // Context invalidated — the extension was reloaded under this page.
   }
 }
 connectToServiceWorker();
+
+const nudgeTimer = setInterval(() => {
+  safeSend({ type: 'connect' });
+}, CONNECT_NUDGE_MS);
+onInvalidated.push(() => clearInterval(nudgeTimer));

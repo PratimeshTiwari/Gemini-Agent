@@ -1,38 +1,33 @@
 {
-  "name": "gemini-agent-server",
+  "name": "agent-cli-server",
   "version": "1.0.0",
   "description": "Local agent server with MCP tools and context engine",
   "type": "module",
   "main": "src/index.js",
   "bin": {
     "agent": "./src/index.js",
-    "gemini-agent": "./src/index.js"
+    "agent-cli": "./src/index.js"
   },
   "scripts": {
     "start": "tsx src/index.js --workspace ../",
     "dev": "tsx --watch src/index.js --workspace ../",
-    "test": "node --test \"src/**/*.test.js\""
+    "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {
-    "@ink-tools/ink-mouse": "^2.1.0",
     "@inquirer/prompts": "^8.6.0",
-    "acorn": "^8.18.0",
     "chalk": "^6.0.0",
     "chokidar": "^4.0.0",
     "diff": "^7.0.0",
     "fast-glob": "^3.3.0",
     "figlet": "^1.11.4",
     "ink": "^7.1.1",
-    "ink-gradient": "^4.0.1",
     "ink-select-input": "^6.2.0",
     "ink-spinner": "^5.0.0",
     "ink-text-input": "^6.0.0",
-    "madge": "^8.0.0",
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0",
     "react": "^19.2.8",
     "ws": "^8.18.0",
-    "xterm-mouse": "^1.0.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {

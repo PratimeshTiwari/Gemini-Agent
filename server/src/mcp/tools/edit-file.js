@@ -40,7 +40,7 @@ export async function editFile(args, context) {
   return {
     diffId: diff.id,
     filePath: diff.filePath,
-    status: 'pending_approval',
+    status: 'proposed',
     patch: diff.patch,
     hunkCount: diff.hunks.length,
     hunks: diff.hunks.map(h => ({

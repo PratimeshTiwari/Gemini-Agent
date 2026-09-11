@@ -16,3 +16,6 @@ build/
 .gemini/
 .gemini-agent/
 .agent-github-plans/
+
+# Editor settings — the companion is installed from the .vsix, not recommended by id.
+.vscode/

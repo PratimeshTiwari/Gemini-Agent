@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
 /**
- * Gemini Agent — Local Agent Server
+ * Agent CLI — Local Agent Server
  *
  * Entry point: starts the WebSocket server, initializes MCP tools,
  * and connects the agent loop.
  *
- * Usage (installed as both `agent` and `gemini-agent`):
+ * Usage (installed as both `agent` and `agent-cli`):
  *   agent                    # Uses cwd as workspace root
  *   agent --workspace /path  # Explicit workspace root
  *   agent --port 7777        # Custom port (default: 7777)
@@ -15,7 +15,7 @@
  */
 
 import { resolve, dirname } from 'path';
-import { homeDir, ensureDir } from './core/paths.js';
+import { homeDir, ensureDir, setActiveScope, resolveState, codeDir } from './core/paths.js';
 import { runMigrations } from './core/migrate.js';
 import { existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -34,6 +34,7 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const config = {
     workspace: process.cwd(),
+    scope: null,
     port: 7777,
     continue: false,
     sessions: false,
@@ -48,6 +49,10 @@ function parseArgs() {
       case '--workspace':
       case '-w':
         config.workspace = resolve(args[++i]);
+        break;
+      case '--scope':
+      case '-s':
+        config.scope = args[++i];
         break;
       case '--port':
       case '-p':
@@ -85,13 +90,14 @@ function parseArgs() {
 function printHelp() {
   console.log(`
 ╔══════════════════════════════════════════════════════════╗
-║               🤖 Gemini Agent Server                    ║
+║                  🤖 Agent CLI Server                     ║
 ╚══════════════════════════════════════════════════════════╝
 
-Usage: agent [options]          (alias: gemini-agent)
+Usage: agent [options]          (alias: agent-cli)
 
 Options:
   --workspace, -w <path>   Set workspace root (default: cwd)
+  --scope, -s <name>       Work on one repo inside a group that shares a .agent/
   --port, -p <number>      WebSocket port (default: 7777)
   --continue, -c           Resume most recent session
   --resume <session-id>    Resume a specific session
@@ -103,7 +109,7 @@ Options:
 
 Environment:
   EDITOR                   Default editor command (fallback: 'code')
-  GEMINI_AGENT_HOME        Agent home directory (default: ~/.agent)
+  AGENT_CLI_HOME           Agent home directory (default: ~/.agent)
   GITHUB_TOKEN             GitHub PAT for PR comment watching (required for --github)
 `);
 }
@@ -123,6 +129,10 @@ async function main() {
   // Fold any pre-.agent state (.gemini, .gemini-agent, .agent-github-plans and
   // the old ~/.gemini-agent home) into .agent/. Must run BEFORE ensureConfigDir,
   // which would otherwise create the home directory the migration wants to fill.
+  // Before anything reads a path. The scope decides where .agent state lives,
+  // and migration is the first thing to touch it.
+  if (config.scope) setActiveScope(config.scope);
+
   runMigrations(config.workspace);
 
   const configHome = ensureConfigDir();
@@ -146,11 +156,7 @@ async function main() {
 
   const taskManager = new TaskManager(config.workspace);
   
-  // Initialize WorkspaceIndexer for Background RAG
-  const { WorkspaceIndexer } = await import('./context/workspace-indexer.js');
-  const workspaceIndexer = new WorkspaceIndexer(config.workspace);
   // Start building the index asynchronously in the background
-  workspaceIndexer.buildIndex();
 
 
   const agentLoop = new AgentLoop({
@@ -164,10 +170,9 @@ async function main() {
     continueSession: config.continue,
     agentSourceDir,
     taskManager,
-    workspaceIndexer,
   });
 
-  const fileWatcher = new FileWatcher(config.workspace, agentLoop);
+  const fileWatcher = new FileWatcher(codeDir(config.workspace), agentLoop);
   fileWatcher.start();
 
   // ── GitHub PR Comment Agent ──────────────────────────────────────
@@ -184,16 +189,11 @@ async function main() {
       agentLoop,
     });
 
-    // Wire GitHub events to console output (errors only, status is handled by UI)
-    githubHandler.on('status', ({ message }) => {
-      // console.log(`  [GitHub] ${message}`);
-    });
-    githubHandler.on('error', ({ message }) => {
-      console.error(`  [GitHub] ❌ ${message}`);
-    });
-    githubHandler.on('notification', ({ message }) => {
-      console.log(`  [GitHub] ${message}`);
-    });
+    // Nothing is printed here on purpose. These events arrive while the Ink UI
+    // owns the terminal, and console output lands inside the frame Ink is
+    // repainting — it breaks the layout and vanishes on the next render. The
+    // WebSocket server forwards them to the GitHub tab instead
+    // (`_wireGitHubEvents`), which is the surface that can actually show them.
 
     // Connect to agent loop for /github slash commands
     agentLoop.githubHandler = githubHandler;

@@ -9,12 +9,42 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
-import { looksLikeMultipleDrafts } from './drift-detector.js';
+import { looksLikeMultipleDrafts, looksLikeCapabilityDenial, looksLikeProviderError } from './drift-detector.js';
+import { logError } from './error-log.js';
+import { logCommand } from './command-log.js';
+
+/**
+ * How many times to re-ask when the *provider* errors rather than the model.
+ * These are transient by nature, so a couple of attempts clears almost all of
+ * them; more than that and something is actually wrong with the tab.
+ */
+const MAX_PROVIDER_RETRIES = 2;
+
+/**
+ * How many consecutive rounds may end with a failing tool call before the loop
+ * stops and asks. Four is enough for "run it, read the error, fix it, run it
+ * again" and short enough that a genuinely stuck command does not burn a
+ * session.
+ */
+const MAX_FAILED_ROUNDS = 4;
+
+/** The first useful line of a failed tool result, for the give-up message. */
+function oneLineError(result) {
+  if (typeof result === 'string') return result.split('\n')[0].slice(0, 160);
+  const text = result?.stderr || result?.error || result?.stdout || '';
+  const line = String(text).split('\n').find((l) => l.trim()) || 'no output';
+  return line.slice(0, 160);
+}
 import * as paths from './paths.js';
+import { resolveEffort, effortFromConfig } from './effort.js';
+import { handleSlashCommand as runSlashCommand } from './slash-commands.js';
+import { stripImageData } from './prompt-builder.js';
+import { validateWorkspace } from './workspaces.js';
 import { z } from 'zod';
 import { SessionStore } from '../storage/session-store.js';
 import { ContextManager } from '../context/context-manager.js';
 import { MemoryManager } from '../context/memory-manager.js';
+import { ExtensionLock } from '../bridge/extension-lock.js';
 
 
 // Backstop for a prompt the extension never answers. Longer than the content
@@ -25,7 +55,7 @@ const EXTENSION_RESPONSE_TIMEOUT = 7 * 60 * 1000;
 const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n```/gi;
 
 export class AgentLoop {
-  constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome, continueSession = false, agentSourceDir, taskManager, workspaceIndexer }) {
+  constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome, continueSession = false, agentSourceDir, taskManager }) {
     this.workspace = workspace;
     this.mcpServer = mcpServer;
     this.promptBuilder = promptBuilder;
@@ -35,7 +65,6 @@ export class AgentLoop {
     this.configHome = configHome;
     this.agentSourceDir = agentSourceDir;
     this.taskManager = taskManager;
-    this.workspaceIndexer = workspaceIndexer;
 
 
     // Storage & Context
@@ -49,14 +78,13 @@ export class AgentLoop {
 
     // State defaults
     this.mode = 'plan'; // 'plan' | 'auto'
-    this.topology = 'single'; // 'single' | 'duo' | 'swarm'
     this.modelConfig = {
       main: 'gemini',
-      reviewer: 'claude',
-      reasoner: 'chatgpt',
-      reasoningEffort: 'high',
-      modelTier: 'pro',
-      reasoningLevel: 'standard' // 'brief' | 'standard' | 'deep' — pro tier only
+      // No reviewer is what makes the topology single. It used to be its own
+      // setting, so "duo" could be on with nowhere to route a review to, and
+      // "single" could be on while a reviewer sat configured and unused.
+      reviewer: null,
+      effort: 'standard' // one of core/effort.js's five rungs
     };
     
     this.commandRules = {
@@ -66,7 +94,9 @@ export class AgentLoop {
     };
 
     // Extra folders whose .md files are injected as repo context each session.
-    this.contextFolders = [];
+    // Extra directories searched for skills, on top of <ws>/.agent/skills and
+    // ~/.agent/skills. Set with `/skills add <dir>`.
+    this.skillFolders = [];
     
     this._loadConfig();
     this.conversationHistory = this.sessionStore.loadHistory();
@@ -74,10 +104,25 @@ export class AgentLoop {
     this.queuedUserMessage = null;
     this.callbacks = null;
     this.isProcessing = false;
-    this.extensionQueue = [];
-    this.isExtensionBusy = false;
-    this.extensionWatchdog = null;
-    this.pendingSubagents = new Map(); // Maps requestId -> { resolve, reject }
+    // One in-flight prompt per model, not one for the whole bridge — see
+    // bridge/extension-lock.js.
+    this.extensionLock = new ExtensionLock({
+      send: (payload) => this.callbacks?.injectPrompt?.(payload),
+      onStall: (model) => this._onExtensionStall(model),
+      timeoutMs: EXTENSION_RESPONSE_TIMEOUT,
+    });
+    this.pendingSubagents = new Map(); // requestId -> { resolve, reject, targetModel }
+
+    // Characters the browser thread is actually holding.
+    //
+    // The estimate used to be built from `conversationHistory`, which is only
+    // the *user and agent messages we kept a copy of*. What the tab holds is
+    // everything ever typed into it — the system prompt, 1,575 tokens of tool
+    // definitions, AGENT.md, memory, skills, every tool result fed back — and
+    // none of that was counted, so a session reading "~200 tokens" had sent
+    // twenty thousand. Counted where it crosses the bridge, which is the only
+    // place that cannot be wrong about it.
+    this.contextChars = 0;
     this.githubHandler = null; // Set externally after initialization
 
     // Workspace summary (generated dynamically by context manager)
@@ -125,23 +170,38 @@ export class AgentLoop {
       });
       // Fire and forget, runs in the background
       this._compactHistory().catch(err => {
-        console.warn('Auto-compaction failed:', err);
+        logError(this.workspace, {
+          flow: 'agent', op: 'auto_compact',
+          message: `Auto-compaction failed: ${err.message}`, detail: err.stack,
+        });
       });
     }
 
     try {
-      // Add user message to history
+      // The image goes to the bridge, never into the record. `/image` inlines
+      // the whole file as a base64 data URL so the content script can rebuild
+      // it as a real File and paste it — but stored verbatim that put ~1.4x the
+      // file's bytes into conversationHistory, into history.jsonl *twice*
+      // (local and home), into every compaction prompt, and into currentObjective,
+      // which is what a provider-error retry re-sends. One screenshot poisoned
+      // the rest of the session.
+      const remembered = stripImageData(content);
       const turn = {
         role: 'user',
-        content,
+        content: remembered,
         timestamp: Date.now(),
       };
       this.conversationHistory.push(turn);
       this.sessionStore.appendTurn(turn);
 
-      // Workspace summary injection removed
-
-      this.currentObjective = content;
+      // Retries re-send this. The attachment is already in the browser's own
+      // conversation by then, so re-pasting it would duplicate the upload.
+      this.currentObjective = remembered;
+      // One tool-amnesia retry per user turn; see handleGeminiResponse.
+      this._deniedToolsOnce = false;
+      // Auto-heal budget, per user turn.
+      this._failedRounds = 0;
+      this._providerRetries = 0;
 
       // Build the full prompt
       const prompt = this.promptBuilder.buildPrompt({
@@ -156,7 +216,10 @@ export class AgentLoop {
       await this._sendToGemini(prompt, callbacks);
 
     } catch (err) {
-      console.error(err.stack);
+      logError(this.workspace, {
+        flow: 'agent', op: 'handle_user_message',
+        message: err.message, detail: err.stack,
+      });
       callbacks.sendToPanel({
         id: randomUUID(),
         type: 'error',
@@ -177,7 +240,10 @@ export class AgentLoop {
     // Allow subagent responses through even when main agent isn't processing —
     // background GitHub tasks use _executeSubagent without setting isProcessing.
     if (!this.isProcessing && !isSubagent) {
-      console.warn('[Agent Loop] Received Gemini response but agent is no longer processing (likely stopped).');
+      logError(this.workspace, {
+        flow: 'agent', op: 'stale_response',
+        message: 'Response arrived after the turn had stopped',
+      });
       this._releaseExtension();
       return;
     }
@@ -186,21 +252,31 @@ export class AgentLoop {
       this.callbacks = this._backgroundCallbacks;
     }
     if (!this.callbacks) {
-      console.warn('⚠️ Received Gemini response but no callbacks registered');
+      logError(this.workspace, {
+        flow: 'agent', op: 'no_callbacks',
+        message: 'Response arrived with no callbacks registered',
+      });
       return;
     }
 
     if (isSubagent) {
       if (complete) {
+        // Read the lane before handling the response — handleSubagentResponse
+        // deletes the pending entry, and with it the only record of which tab
+        // this reply came from.
+        const lane = this.pendingSubagents.get(requestId)?.targetModel;
         this.handleSubagentResponse(requestId, content, payload.subagentUrl);
-        this._releaseExtension();
+        this._releaseExtension(lane);
       }
       return;
     }
 
     if (!complete) {
       if (payload.timedOut) {
-        console.warn('⚠️ Gemini response timed out');
+        logError(this.workspace, {
+          flow: 'agent', op: 'response_timeout',
+          message: 'The browser tab stopped streaming before the reply finished',
+        });
         this.callbacks.sendToPanel({
           id: randomUUID(),
           type: 'agent_response',
@@ -214,6 +290,7 @@ export class AgentLoop {
     }
 
     // Request complete
+    this.contextChars += (content || '').length;
     this._releaseExtension();
 
     // (Auto-compaction is now handled silently via background subagents, so the old isCompacting logic is removed from here)
@@ -229,10 +306,22 @@ export class AgentLoop {
       // The single-response rule no longer rides on every message; it is
       // re-asserted when the model actually breaks it.
       if (looksLikeMultipleDrafts(cleanContent)) {
+        // Logged because the other two detectors are and this one was not, so
+        // there was no evidence it had ever fired — which is exactly the state
+        // in which you cannot tell a detector that works from one that does
+        // nothing. `/logs agent` answers it now.
+        logError(this.workspace, {
+          flow: 'agent', op: 'multiple_drafts',
+          message: cleanContent.trim().slice(0, 200),
+        });
         this.promptBuilder.noteDrift();
       }
     } catch (err) {
-      console.warn('⚠️ JSON Parse Error. Self-correcting...', err.message);
+      logError(this.workspace, {
+        flow: 'agent', op: 'parse_tool_calls',
+        message: `Malformed tool call: ${err.message}`,
+        detail: content?.slice(0, 1500),
+      });
       // A tool call the model could not format is the clearest signal its grip
       // on the instructions has slipped. Bring the reminder forward.
       this.promptBuilder.noteDrift();
@@ -264,6 +353,73 @@ export class AgentLoop {
       
       this._sendToGemini('Please correct the previous JSON formatting error.', this.callbacks);
       return;
+    }
+
+    // The provider errored rather than the model answering. Re-ask: this is a
+    // transient failure of the tab, and the user should not have to notice it.
+    if (toolCalls.length === 0 && looksLikeProviderError(cleanContent)) {
+      this._providerRetries = (this._providerRetries || 0) + 1;
+      logError(this.workspace, {
+        flow: 'agent', op: 'provider_error',
+        message: cleanContent.trim().slice(0, 200),
+        meta: { attempt: this._providerRetries },
+      });
+      if (this._providerRetries <= MAX_PROVIDER_RETRIES && this.currentObjective) {
+        this._notify(`⚠️ Gemini returned an error — retrying (${this._providerRetries}/${MAX_PROVIDER_RETRIES})…`);
+        this._sendToGemini(this.promptBuilder.buildPrompt({
+          userMessage: this.currentObjective,
+          mode: this.mode,
+          topology: this.topology,
+          modelConfig: this.modelConfig,
+          objective: this.currentObjective,
+        }), this.callbacks);
+        return;
+      }
+    }
+
+    // The model has forgotten it has tools and refused the task outright. This
+    // is the cost of only sending the system prompt every Nth turn: usually it
+    // remembers, and when it does not the whole turn is wasted on a confident
+    // refusal. Re-send the full prompt and retry the request instead of handing
+    // the user a dead end to retype.
+    //
+    // Once per turn. If it denies its tools again with the definitions right
+    // there in front of it, retrying will not help and the reply is the honest
+    // thing to show.
+    if (toolCalls.length === 0 && looksLikeCapabilityDenial(cleanContent)) {
+      if (!this._deniedToolsOnce && this.currentObjective) {
+        this._deniedToolsOnce = true;
+        logError(this.workspace, {
+          flow: 'agent', op: 'tool_amnesia',
+          message: 'Model denied having tools; re-sent the definitions',
+          detail: cleanContent.slice(0, 400),
+        });
+        this.promptBuilder.resetPromptState(); // next prompt carries the tool definitions
+
+        this.callbacks.sendToPanel({
+          id: randomUUID(),
+          type: 'status',
+          payload: { message: '🧰 Model forgot its tools — resending the tool definitions...' },
+          timestamp: Date.now(),
+        });
+
+        const note = {
+          role: 'system',
+          content: '[System: the model denied having tools; the full tool definitions were re-sent and the request retried.]',
+          timestamp: Date.now(),
+        };
+        this.conversationHistory.push(note);
+        this.sessionStore.appendTurn(note);
+
+        this._sendToGemini(this.promptBuilder.buildPrompt({
+          userMessage: this.currentObjective,
+          mode: this.mode,
+          topology: this.topology,
+          modelConfig: this.modelConfig,
+          objective: this.currentObjective,
+        }), this.callbacks);
+        return;
+      }
     }
 
     // Show the response text (without tool call blocks) in the side panel
@@ -306,7 +462,10 @@ export class AgentLoop {
       this.pendingSubagents.delete(requestId);
       resolve({ success: true, result: content, url });
     } else {
-      console.warn(`⚠️ Received subagent response for unknown requestId: ${requestId}`);
+      logError(this.workspace, {
+        flow: 'agent', op: 'unknown_subagent',
+        message: `Subagent reply for an unknown requestId: ${requestId}`,
+      });
     }
   }
 
@@ -360,338 +519,65 @@ export class AgentLoop {
   /**
    * Handle slash commands.
    */
+  /**
+   * A watched background task logged something that looks broken.
+   *
+   * This is the self-healing entry point, and the only path that starts a turn
+   * without the user typing. A dev server that dies three minutes after launch
+   * is invisible otherwise: the agent has finished its turn, nothing is
+   * polling, and the next thing anyone notices is the app not working.
+   *
+   * Ignored while a turn is already running — the agent is mid-thought, the
+   * failing lines are in the task's buffer, and interrupting it to insert an
+   * unrelated prompt is how two turns end up interleaved in one browser tab.
+   * The watch stays disarmed either way, so this fires once per fault.
+   */
+  handleTaskAlert(hit) {
+    if (this.isProcessing || !this.callbacks) return;
+
+    const prompt = [
+      `A background task you started has failed. Task ${hit.taskId}: \`${hit.command}\``,
+      '',
+      `Matched line (${hit.stream}): ${hit.line}`,
+      '',
+      'Recent output:',
+      hit.context,
+      '',
+      'Diagnose it and fix it. Read the files involved, make the change, and restart the task '
+      + 'if that is what it needs. If the cause is something only the user can resolve, say so '
+      + 'plainly and stop rather than guessing.',
+    ].join('\n');
+
+    const turn = {
+      role: 'user',
+      content: `[Watched task ${hit.taskId} failed: ${hit.line}]`,
+      timestamp: Date.now(),
+    };
+    this.conversationHistory.push(turn);
+    this.sessionStore.appendTurn(turn);
+
+    this.isProcessing = true;
+    this.currentObjective = `Fix the failure in background task ${hit.taskId}`;
+    this._deniedToolsOnce = false;
+    this._failedRounds = 0;
+
+    this._notify(`🔧 Task ${hit.taskId} failed — investigating…`);
+    this._sendToGemini(this.promptBuilder.buildPrompt({
+      userMessage: prompt,
+      mode: this.mode,
+      topology: this.topology,
+      modelConfig: this.modelConfig,
+      objective: this.currentObjective,
+    }), this.callbacks);
+  }
+
+  /**
+   * Slash commands live in ./slash-commands.js. Kept as a method because
+   * every caller in the UI reaches for it here, and moving the call sites
+   * would be a second change riding on a move.
+   */
   async handleSlashCommand(command, args) {
-    switch (command) {
-      case 'plan':
-        this.mode = 'plan';
-        return { message: '🔒 Switched to Plan Mode. All edits require approval.' };
-
-      case 'auto':
-        this.mode = 'auto';
-        return { message: '⚡ Switched to Auto Mode. Safe edits will be auto-applied.' };
-
-      case 'memory':
-        if (args?.[0]) {
-          const action = args[0].toLowerCase();
-          if (action === 'on') {
-            this.memoryManager.memoryEnabled = true;
-            return { message: '🧠 Long-Term Memory is now ON.' };
-          } else if (action === 'off') {
-            this.memoryManager.memoryEnabled = false;
-            return { message: '🧠 Long-Term Memory is now OFF.' };
-          }
-        }
-        const state = this.memoryManager.toggleMemory();
-        return { message: `🧠 Long-Term Memory is now ${state ? 'ON' : 'OFF'}.` };
-
-      case 'mode':
-        if (args?.[0]) {
-          const newTopology = args[0].toLowerCase();
-          if (['single', 'duo', 'swarm'].includes(newTopology)) {
-            this.topology = newTopology;
-            this._saveConfig();
-            this.promptBuilder.resetPromptState();
-            return { message: `🌐 Switched to Agent Topology: ${newTopology.toUpperCase()}` };
-          }
-          return { message: `❌ Invalid mode. Use: single, duo, or swarm.` };
-        }
-        return { message: `Current Agent Topology: ${this.topology}` };
-
-      case 'config':
-        if (args?.length === 2) {
-          const role = args[0].toLowerCase();
-          const model = args[1].toLowerCase();
-          if (['main', 'reviewer', 'reasoner'].includes(role) && ['gemini', 'chatgpt', 'claude'].includes(model)) {
-            this.modelConfig[role] = model;
-            this._saveConfig();
-            this.promptBuilder.resetPromptState();
-            return { message: `✅ Assigned ${model} to ${role} role.` };
-          }
-          return { message: `❌ Invalid args. Usage: /config <role> <model>\nRoles: main, reviewer, reasoner\nModels: gemini, chatgpt, claude` };
-        }
-        
-        // No args given -> format the current config string cleanly
-        const configStr = Object.entries(this.modelConfig)
-          .map(([r, m]) => `  ${r.charAt(0).toUpperCase() + r.slice(1)} Agent: ${m}`)
-          .join('\n');
-        return { message: `Current Agent Topology: ${this.topology.toUpperCase()}\nCurrent Model Config:\n${configStr}` };
-
-      case 'clear':
-        this.conversationHistory = [];
-        this.sessionStore.clear();
-        this.promptBuilder.resetPromptState();
-        return { message: '🧹 Conversation history cleared.' };
-
-      case 'context': {
-        const action = (args?.[0] || '').toLowerCase();
-        const target = args?.slice(1).join(' ').trim();
-
-        if (action === 'add') {
-          if (!target) return { message: 'Usage: `/context add <folder>` (relative to the workspace, or absolute)' };
-          const abs = path.isAbsolute(target) ? target : path.resolve(this.workspace, target);
-          if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
-            return { message: `❌ Not a folder: ${abs}` };
-          }
-          const rel = path.relative(this.workspace, abs) || '.';
-          const stored = rel.startsWith('..') ? abs : rel;
-          if (this.contextFolders.includes(stored)) {
-            return { message: `Already a context folder: **${stored}**` };
-          }
-          this.contextFolders.push(stored);
-          this._saveConfig();
-          this.promptBuilder?.resetPromptState?.();
-          return { message: `✅ Added context folder: **${stored}**\nIts \`.md\` files are injected on the next turn.` };
-        }
-
-        if (action === 'remove' || action === 'rm') {
-          if (!target) return { message: 'Usage: `/context remove <folder>`' };
-          const before = this.contextFolders.length;
-          this.contextFolders = this.contextFolders.filter((f) => f !== target);
-          if (this.contextFolders.length === before) {
-            return { message: `Not a context folder: **${target}**\nCurrent: ${this.contextFolders.join(', ') || '(none)'}` };
-          }
-          this._saveConfig();
-          this.promptBuilder?.resetPromptState?.();
-          return { message: `🗑️ Removed context folder: **${target}**` };
-        }
-
-        if (action === 'list') {
-          if (this.contextFolders.length === 0) {
-            return { message: 'No context folders configured.\nAdd one with `/context add <folder>`.' };
-          }
-          const lines = this.contextFolders.map((f) => {
-            const abs = path.isAbsolute(f) ? f : path.resolve(this.workspace, f);
-            const n = fs.existsSync(abs) ? this._countContextFiles(abs) : 0;
-            return `  • ${f} ${fs.existsSync(abs) ? `(${n} .md file${n === 1 ? '' : 's'})` : '(missing)'}`;
-          });
-          return { message: `**Context folders:**\n${lines.join('\n')}` };
-        }
-
-        const info = await this._getContextInfo();
-        const folderNote = this.contextFolders.length
-          ? `\n\n**Context folders:** ${this.contextFolders.join(', ')}`
-          : '\n\nNo context folders configured — add one with `/context add <folder>`.';
-        return { ...info, message: `${info.message}${folderNote}\n_Commands: /context add|remove|list_` };
-      }
-
-      case 'compact': {
-        const focus = args?.join(' ') || '';
-        return await this._compactHistory(focus);
-      }
-
-      case 'undo': {
-        const result = this.diffEngine.undo();
-        return result;
-      }
-
-      case 'agent-dir': {
-        const newWorkspace = this.agentSourceDir || this.workspace;
-        this.workspace = newWorkspace;
-        
-        if (this.mcpServer) this.mcpServer.workspace = newWorkspace;
-        if (this.promptBuilder) this.promptBuilder.workspace = newWorkspace;
-        if (this.diffEngine) this.diffEngine.workspace = newWorkspace;
-        if (this.contextManager) {
-          this.contextManager.workspacePath = newWorkspace;
-          this.contextManager.summarizer.workspacePath = newWorkspace;
-        }
-        // this.workspaceSummary removed
-        return { message: `📂 Workspace changed to agent source: ${this.workspace}` };
-      }
-
-      case 'workspace':
-        if (args?.[0]) {
-          const newWorkspace = args[0];
-          this.workspace = newWorkspace;
-          
-          // Update all child components with the new workspace path
-          if (this.mcpServer) this.mcpServer.workspace = newWorkspace;
-          if (this.promptBuilder) this.promptBuilder.workspace = newWorkspace;
-          if (this.diffEngine) this.diffEngine.workspace = newWorkspace;
-          
-          // Note: SessionStore and ContextManager currently base off workspace in constructor,
-          // so we should update them too.
-          if (this.contextManager) {
-            this.contextManager.workspacePath = newWorkspace;
-            this.contextManager.summarizer.workspacePath = newWorkspace;
-          }
-          // We don't change SessionStore to avoid saving current history into another project's session.
-          // In a full implementation, we might reload the history from the new project.
-          
-           this.workspaceSummary = ''; // Clear stale summary so it regenerates
-
-          return { message: `📂 Workspace changed to: ${this.workspace}` };
-        }
-        return { message: `📂 Current workspace: ${this.workspace}` };
-
-      case 'model': {
-        const tiers = {
-          'flash': { modelTier: 'flash', reasoningEffort: 'low', label: '⚡ Flash (Fast)', browserHint: 'Gemini Flash' },
-          'flash-thinking': { modelTier: 'flash-thinking', reasoningEffort: 'medium', label: '🧠 Flash Thinking', browserHint: 'Gemini Flash (Thinking)' },
-          'pro': { modelTier: 'pro', reasoningEffort: 'high', label: '🔬 Pro (Deep Reasoning)', browserHint: 'Gemini Pro' },
-        };
-        const tierKey = args?.[0]?.toLowerCase();
-        if (tierKey && tiers[tierKey]) {
-          const tier = tiers[tierKey];
-          this.modelConfig.modelTier = tier.modelTier;
-          this.modelConfig.reasoningEffort = tier.reasoningEffort;
-          this._saveConfig();
-          this.promptBuilder.resetPromptState();
-          return { message: `${tier.label}\n\n📌 Prompt profile switched to **${tier.modelTier.toUpperCase()}**.\n💡 Make sure your Gemini browser tab is set to **${tier.browserHint}** for best results.` };
-        }
-        const current = this.modelConfig.modelTier || 'pro';
-        return { message: `🤖 Current model tier: **${current.toUpperCase()}**\n\nAvailable tiers:\n  ⚡ \`/model flash\` — Ultra-fast, minimal reasoning (use with Flash)\n  🧠 \`/model flash-thinking\` — Moderate reasoning (use with Flash Thinking)\n  🔬 \`/model pro\` — Full principal-engineer protocol (use with Pro)` };
-      }
-
-      case 'reasoning': {
-        const levels = {
-          brief: { label: '🏃 Brief', blurb: 'Investigate → Implement → Verify. For small, well-understood edits.' },
-          standard: { label: '🪜 Standard', blurb: 'Restate and decompose into a checklist first, then the 4-phase protocol.' },
-          deep: { label: '🔭 Deep', blurb: 'Standard, plus approach enumeration, risk analysis and an adversarial self-review.' },
-        };
-        const wanted = args?.[0]?.toLowerCase();
-        if (wanted && levels[wanted]) {
-          this.modelConfig.reasoningLevel = wanted;
-          this._saveConfig();
-          this.promptBuilder.resetPromptState();
-          const tierNote = (this.modelConfig.modelTier || 'pro') === 'pro'
-            ? ''
-            : `\n\n⚠️ You are on the ${(this.modelConfig.modelTier || 'pro').toUpperCase()} tier, where reasoning levels do nothing. Switch with \`/model pro\`.`;
-          return { message: `${levels[wanted].label} reasoning\n\n${levels[wanted].blurb}${tierNote}` };
-        }
-        const now = this.modelConfig.reasoningLevel || 'standard';
-        const list = Object.entries(levels)
-          .map(([key, v]) => `  ${v.label} \`/reasoning ${key}\`${key === now ? '  ← current' : ''}\n      ${v.blurb}`)
-          .join('\n');
-        return { message: `🧭 Reasoning level: **${now.toUpperCase()}** (pro tier only)\n\n${list}` };
-      }
-
-      case 'allowlist': {
-        if (args?.[0] === 'clear') {
-          this.commandRules.allow = [];
-          this.commandRules.block = [];
-          this._saveConfig();
-          return { message: '✅ Command allowlist and blocklist cleared.' };
-        } else if (args?.[0] === 'remove' && args[1]) {
-          const cmdToRemove = args.slice(1).join(' ');
-          this.commandRules.allow = this.commandRules.allow.filter(c => c !== cmdToRemove);
-          this.commandRules.block = this.commandRules.block.filter(c => c !== cmdToRemove);
-          this._saveConfig();
-          return { message: `✅ Removed \`${cmdToRemove}\` from rules.` };
-        } else if (args?.[0] === 'enable') {
-          this.commandRules.enabled = true;
-          this._saveConfig();
-          return { message: '✅ Command allowlist is now **enabled**.' };
-        } else if (args?.[0] === 'disable') {
-          this.commandRules.enabled = false;
-          this._saveConfig();
-          return { message: '⛔ Command allowlist is now **disabled**. All commands will prompt for approval.' };
-        }
-        let msg = `🛡️ **Command Rules** (Status: ${this.commandRules.enabled !== false ? '✅ Enabled' : '⛔ Disabled'})\n\n`;
-        msg += '**Allowed Commands:**\n';
-        msg += this.commandRules.allow.length > 0 ? this.commandRules.allow.map(cmd => `  - \`${cmd}\``).join('\n') : '  *(None)*';
-        msg += '\n\n**Blocked Commands:**\n';
-        msg += this.commandRules.block.length > 0 ? this.commandRules.block.map(cmd => `  - \`${cmd}\``).join('\n') : '  *(None)*';
-        msg += '\n\n**Commands:**\n  `/allowlist enable` or `/allowlist disable`\n  `/allowlist remove <command>`\n  `/allowlist clear`';
-        return { message: msg };
-      }
-
-      case 'github': {
-        const subCommand = args?.[0]?.toLowerCase();
-
-        if (subCommand === 'remove-token') {
-          delete process.env.GITHUB_TOKEN;
-          this.modelConfig.githubToken = '';
-          this._saveConfig();
-          if (this.githubHandler) {
-            this.githubHandler.stop();
-            this.githubHandler = null;
-          }
-          return { message: '🗑️ GitHub token removed. Set GITHUB_TOKEN and restart to reconnect.' };
-        }
-
-        if (!this.githubHandler) {
-          return { message: '⚠️ GitHub Agent not initialized. Set GITHUB_TOKEN env var and restart.' };
-        }
-
-        switch (subCommand) {
-          case 'plans': {
-            const plans = this.githubHandler.listPlans();
-            if (plans.length === 0) {
-              return { message: '📋 No plan files generated yet. Waiting for PR comments...' };
-            }
-            const planList = plans.map(p =>
-              `  📄 ${p.fileName} (modified: ${p.lastModified.toLocaleString()})`
-            ).join('\n');
-            return { message: `📋 Generated Plans (${plans.length}):\n${planList}` };
-          }
-
-          case 'refresh': {
-            this.githubHandler.refresh().catch(err => {
-              console.error(`[GitHub] Refresh error: ${err.message}`);
-            });
-            return { message: '🔄 Forcing immediate GitHub poll...' };
-          }
-
-          case 'ci-watch': {
-            const toggle = args?.[1]?.toLowerCase();
-            if (toggle === 'on') {
-              this.githubHandler.setCIWatch(true);
-              return { message: '✅ CI failure watching enabled.' };
-            } else if (toggle === 'off') {
-              this.githubHandler.setCIWatch(false);
-              return { message: '⛔ CI failure watching disabled. Only comments will be tracked.' };
-            }
-            const ciStatus = this.githubHandler.config.enableCIWatch;
-            return { message: `🔧 CI Watch is currently: **${ciStatus ? 'ON' : 'OFF'}**\nUsage: \`/github ci-watch <on|off>\`` };
-          }
-
-          case 'clear-state': {
-            const stateFile = paths.githubStatePath(this.workspace);
-            if (fs.existsSync(stateFile)) {
-              fs.unlinkSync(stateFile);
-            }
-            if (this.githubHandler && this.githubHandler.poller) {
-               this.githubHandler.poller.state = { commentWatermarks: {}, seenCIRuns: {} };
-               this.githubHandler.refresh();
-            }
-            return { message: '🗑️ GitHub Poller state cleared! Rescanning...' };
-          }
-
-          case 'stats': {
-            if (!this.githubHandler) {
-              return { message: 'GitHub integration is currently disabled. Please setup your token first.' };
-            }
-            // Show status
-            const status = this.githubHandler.getStatus();
-            const statusLines = [
-              `📊 GitHub Agent Status:`,
-              `  PRs Watched: ${status.prsWatched}`,
-              `  Total Polls: ${status.totalPolls}`,
-              `  Comments Processed: ${status.totalCommentsProcessed}`,
-              `  CI Failures Processed: ${status.totalCIFailuresProcessed}`,
-              `  Plans Generated: ${status.totalPlansGenerated}`,
-              `  CI Watch: ${status.ciWatchEnabled ? '✅ ON' : '⛔ OFF'}`,
-              `  Poll Interval: ${status.pollInterval}`,
-              `  Last Poll: ${status.lastPollTime || 'Never'}`,
-              `  Plan Directory: ${status.planDir}`,
-              ``,
-              `  Commands: /github plans | /github refresh | /github ci-watch <on|off> | /github clear-state | /github remove-token | /github stats`,
-            ];
-            return { message: statusLines.join('\n') };
-          }
-          default: {
-            if (!subCommand) {
-              return { message: 'Usage: /github <plans|refresh|ci-watch|clear-state|remove-token|stats>' };
-            }
-            return { message: `❌ Unknown github command: '${subCommand}'\nUsage: /github <plans|refresh|ci-watch|clear-state|remove-token|stats>` };
-          }
-        }
-      }
-
-      default:
-        return { message: `Unknown command: /${command}. Available: /plan, /auto, /clear, /context, /compact, /undo, /workspace, /agent-dir, /model, /allowlist, /github` };
-    }
+    return runSlashCommand(this, command, args);
   }
 
   // ── Private Methods ──────────────────────────────────────────────
@@ -757,17 +643,60 @@ export class AgentLoop {
     }
   }
 
+  /**
+   * Load config, shared settings first and the scope's own on top.
+   *
+   * In a group layout the root's config.json holds what every repo inherits —
+   * the model, the topology, the command allowlist — and each repo's own file
+   * overrides only what it needs. Outside a group the two are the same file and
+   * this is exactly what it always was.
+   */
   _loadConfig() {
-    const configPath = paths.configPath(this.workspace);
-    if (fs.existsSync(configPath)) {
+    const shared = paths.sharedConfigPath(this.workspace);
+    const scoped = paths.configPath(this.workspace);
+    // Same path when there is no scope; reading it twice would be harmless but
+    // pointless.
+    const files = shared === scoped ? [scoped] : [shared, scoped];
+
+    for (const file of files) {
+      if (!fs.existsSync(file)) continue;
       try {
-        const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        if (data.topology) this.topology = data.topology;
-        if (data.modelConfig) this.modelConfig = { ...this.modelConfig, ...data.modelConfig };
+        const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (data.modelConfig) {
+          // modelTier / reasoningLevel / reasoningEffort collapse into one rung.
+          // Folded on read rather than written back, so an older build sharing
+          // the same config keeps working off the keys it understands.
+          // Folded from what is *on disk*, not from the merge: the default
+          // modelConfig already carries `effort: 'standard'`, and merging first
+          // let that default shadow the legacy keys it was supposed to read —
+          // so every pre-/effort config resolved to standard whatever it said.
+          const merged = { ...this.modelConfig, ...data.modelConfig };
+          merged.effort = effortFromConfig(data.modelConfig);
+          delete merged.modelTier;
+          delete merged.reasoningLevel;
+          delete merged.reasoningEffort;
+          this.modelConfig = merged;
+        }
         if (data.commandRules) this.commandRules = { ...this.commandRules, ...data.commandRules };
-        if (Array.isArray(data.contextFolders)) this.contextFolders = data.contextFolders;
+        if (Array.isArray(data.skillFolders)) this.skillFolders = data.skillFolders;
+        // `topology` used to be stored beside `modelConfig` and could contradict
+        // it. Folded into the one thing it was ever describing: is there a
+        // second model to review with?
+        if (data.topology === 'single') {
+          this.modelConfig.reviewer = null;
+        } else if (data.topology === 'duo' && !this.modelConfig.reviewer) {
+          this.modelConfig.reviewer = this.mainModel === 'gemini' ? 'chatgpt' : 'gemini';
+        }
+        // The memory toggle used to live only in the MemoryManager instance, so
+        // /memory off lasted until you quit. PromptBuilder reads the same key
+        // off disk when it decides whether to recall anything.
+        if (typeof data.memoryEnabled === 'boolean' && this.memoryManager) {
+          this.memoryManager.memoryEnabled = data.memoryEnabled;
+        }
       } catch (err) {
-        console.warn(`⚠️ Failed to load ${paths.AGENT_DIR}/config.json:`, err.message);
+        logError(this.workspace, {
+          flow: 'context', op: 'load_config', message: `${file}: ${err.message}`,
+        });
       }
     }
   }
@@ -786,55 +715,81 @@ export class AgentLoop {
       } catch {
         /* absent or unparseable: start from nothing rather than refuse to save */
       }
+      // `topology` is not written: it is derived from modelConfig.reviewer, and
+      // a derived value in a config file is one someone will edit and be
+      // ignored for editing.
+      const { topology: _dropped, ...rest } = existing;
       fs.writeFileSync(configPath, JSON.stringify({
-        ...existing,
-        topology: this.topology,
+        ...rest,
         modelConfig: this.modelConfig,
         commandRules: this.commandRules,
-        contextFolders: this.contextFolders
+        skillFolders: this.skillFolders,
+        memoryEnabled: this.memoryManager ? this.memoryManager.memoryEnabled : true,
       }, null, 2));
     } catch (err) {
-      console.warn('⚠️ Failed to save config:', err.message);
+      logError(this.workspace, {
+        flow: 'agent', op: 'save_config',
+        message: `Failed to save config: ${err.message}`, detail: err.stack,
+      });
     }
   }
 
+
+  /**
+   * Roughly how many tokens the browser thread is carrying.
+   *
+   * Everything typed into the tab and everything scraped back, not just the
+   * turns we kept — see `contextChars`. Four characters per token is the same
+   * approximation `TokenCounter` uses; the point of this number is "am I near
+   * the wall", and a better tokenizer would not change that answer.
+   */
+  get contextTokens() {
+    return Math.round(this.contextChars / 4);
+  }
+
+  /** The model the main conversation runs on. Subagents name their own. */
+  get mainModel() {
+    return this.modelConfig.main || 'gemini';
+  }
+
+  /**
+   * Solo, or a reviewer on the other model.
+   *
+   * Derived rather than stored. As a knob of its own it could disagree with
+   * the thing it describes: duo with no reviewer configured advertised
+   * `ask_reviewer` to the model with nowhere to send it, and single with a
+   * reviewer configured left a second tab wired up and never used. A review by
+   * the same model is not offered — same blind spots review nothing — so
+   * "is there another model?" is the whole question.
+   */
+  get topology() {
+    const reviewer = this.modelConfig.reviewer;
+    return reviewer && reviewer !== this.mainModel ? 'duo' : 'single';
+  }
 
   _enqueueExtensionRequest(payload) {
-    this.extensionQueue.push(payload);
-    this._processExtensionQueue();
-  }
-
-  _processExtensionQueue() {
-    if (this.isExtensionBusy || this.extensionQueue.length === 0) return;
-    this.isExtensionBusy = true;
-    const payload = this.extensionQueue.shift();
-    this._armExtensionWatchdog();
-    if (this.callbacks && this.callbacks.injectPrompt) {
-      this.callbacks.injectPrompt(payload);
-    }
+    this.extensionLock.enqueue(payload);
   }
 
   /**
-   * One browser tab, one in-flight prompt: `isExtensionBusy` is the lock.
-   * Every path that ends a turn has to hand it back, or the queue wedges for
-   * the rest of the session and later prompts vanish into it silently.
+   * Hand a model's tab back so the next prompt for it can go.
+   *
+   * Takes the model rather than guessing it: the lock is per lane now, and
+   * releasing the wrong one leaves the right one wedged for the rest of the
+   * session with later prompts vanishing into it silently.
    */
-  _releaseExtension() {
-    this._clearExtensionWatchdog();
-    this.isExtensionBusy = false;
-    this._processExtensionQueue();
+  _releaseExtension(model = this.mainModel) {
+    this.extensionLock.release(model);
   }
 
   /**
-   * Give up on the in-flight request and drop anything queued behind it.
-   * Used when a turn dies rather than completes — an injection error, a
-   * user stop, an exception while building the prompt. The queued prompts
-   * belong to that dead turn, so replaying them would be wrong.
+   * Give up on everything in flight and drop what was queued behind it.
+   * Used when a turn dies rather than completes — an injection error, a user
+   * stop, an exception while building the prompt. The queued prompts belong to
+   * that dead turn, so replaying them would be wrong.
    */
   abortExtensionWork() {
-    this._clearExtensionWatchdog();
-    this.extensionQueue.length = 0;
-    this.isExtensionBusy = false;
+    this.extensionLock.abortAll();
     this.pendingGeminiResponse = null;
   }
 
@@ -844,40 +799,31 @@ export class AgentLoop {
    * — an asleep service worker, a tab with no bridge — where nothing would come
    * back and the CLI would sit on "Thinking..." forever.
    */
-  _armExtensionWatchdog() {
-    this._clearExtensionWatchdog();
-    this.extensionWatchdog = setTimeout(() => {
-      this.extensionWatchdog = null;
-      if (!this.isExtensionBusy) return;
-      console.warn('[Agent Loop] No response from the extension bridge; releasing it.');
-      this.isProcessing = false;
-      if (this.callbacks) {
-        this.callbacks.sendToPanel({
-          id: randomUUID(),
-          type: 'error',
-          payload: {
-            message:
-              'No response from the browser bridge. Check that the extension is loaded ' +
-              'and a gemini.google.com tab is open, then try again.',
-          },
-          timestamp: Date.now(),
-        });
-      }
-      this.abortExtensionWork();
-    }, EXTENSION_RESPONSE_TIMEOUT);
-    this.extensionWatchdog.unref?.();
-  }
-
-  _clearExtensionWatchdog() {
-    if (this.extensionWatchdog) {
-      clearTimeout(this.extensionWatchdog);
-      this.extensionWatchdog = null;
+  _onExtensionStall(model) {
+    logError(this.workspace, {
+      flow: 'agent', op: 'extension_stall',
+      message: `No response from the ${model} tab; releasing it`, meta: { model },
+    });
+    this.isProcessing = false;
+    if (this.callbacks) {
+      this.callbacks.sendToPanel({
+        id: randomUUID(),
+        type: 'error',
+        payload: {
+          message:
+            `No response from the ${model} tab. Check that the extension is loaded `
+            + 'and that tab is open, then try again.',
+        },
+        timestamp: Date.now(),
+      });
     }
+    this.abortExtensionWork();
   }
 
   async _sendToGemini(prompt, callbacks) {
     // Create a promise that will be resolved when we get the Gemini response
     this.pendingGeminiResponse = true;
+    this.contextChars += prompt.length;
 
     this._enqueueExtensionRequest({
       prompt,
@@ -900,7 +846,7 @@ export class AgentLoop {
 
     for (let i = 0; i < toolCalls.length; i++) {
       const call = toolCalls[i];
-      const isParallel = ['ask_researcher', 'ask_reviewer', 'ask_reasoner', 'ask_subagent'].includes(call.name);
+      const isParallel = ['ask_researcher', 'ask_reviewer', 'ask_subagent'].includes(call.name);
 
       const executePromise = (async () => {
         // Notify side panel about tool call
@@ -939,6 +885,12 @@ export class AgentLoop {
       
       if (call.name === 'run_command' && risk.level === 'critical') {
         result = { success: false, error: `❌ Command blocked by Security Constraints: ${risk.reason}` };
+        // Blocked commands are the most worth recording, not the least: what the
+        // agent *tried* to do is the interesting half of an audit log.
+        logCommand(this.workspace, {
+          command: call.args.command, cwd: call.args.cwd || this.workspace,
+          outcome: 'blocked', reason: risk.reason, risk: risk.level,
+        });
       } else if (call.name === 'run_command') {
         const commandToRun = call.args.command;
         let isApproved = false;
@@ -976,10 +928,21 @@ export class AgentLoop {
           result = await this.mcpServer.executeTool(call.name, call.args, {
             editor: this.editor,
             taskManager: this.taskManager,
-            workspaceIndexer: this.workspaceIndexer,
+            onTaskAlert: (hit) => this.handleTaskAlert(hit),
+          });
+          // A command that *succeeded* is the one worth auditing — `git push
+          // --force` does not fail, so the failure log never sees it.
+          logCommand(this.workspace, {
+            command: commandToRun, cwd: call.args.cwd || this.workspace,
+            outcome: 'ran', risk: risk.level,
+            exitCode: result?.result?.exitCode,
           });
         } else {
           result = result || { success: false, error: 'User rejected command execution.' };
+          logCommand(this.workspace, {
+            command: commandToRun, cwd: call.args.cwd || this.workspace,
+            outcome: 'rejected', reason: result?.error, risk: risk.level,
+          });
         }
       } else if (call.name === 'ask_question') {
         result = await new Promise((resolve) => {
@@ -996,18 +959,29 @@ export class AgentLoop {
             timestamp: Date.now(),
           });
         });
-      } else if (call.name === 'ask_reviewer' || call.name === 'ask_reasoner' || call.name === 'ask_researcher' || call.name === 'ask_subagent') {
+      } else if (call.name === 'ask_reviewer' || call.name === 'ask_researcher' || call.name === 'ask_subagent') {
         const role = call.name.split('_')[1];
         const targetModel = this.modelConfig[role] || 'gemini'; // default to gemini for subagents if not set
         
         result = await this._runSubAgentSession(role, call.args.prompt || call.args.query, targetModel);
       } else if (call.name === 'manage_memory') {
         if (call.args.action === 'add') {
-          const success = this.memoryManager.addMemory(call.args.fact);
-          result = { result: success ? `Added memory: ${call.args.fact}` : `Failed to add memory or memory is disabled.` };
+          if (!this.memoryManager.isMemoryEnabled()) {
+            // Said plainly, because "failed" made the model retry the same
+            // call. Memory being off is a decision, not a transient error.
+            result = { result: 'Memory is turned off for this workspace (`/memory on` re-enables it). Nothing was stored.' };
+          } else {
+            const added = this.memoryManager.addMemory(call.args.fact);
+            result = { result: added ? `Remembered: ${call.args.fact}` : 'Already remembered — nothing to do.' };
+          }
+          this.promptBuilder?.resetPromptState?.();
         } else if (call.args.action === 'remove') {
-          const success = this.memoryManager.removeMemory(call.args.index);
-          result = { result: success ? `Removed memory at index ${call.args.index}` : `Failed to remove memory (invalid index or disabled).` };
+          const which = call.args.index ?? call.args.position;
+          const removed = this.memoryManager.removeMemory(which);
+          result = removed
+            ? { result: `Forgot #${which}.` }
+            : { error: `No memory at #${which}. The numbers are the ones in <memory>; re-read them before removing.` };
+          this.promptBuilder?.resetPromptState?.();
         } else {
           result = { error: 'Invalid action. Use "add" or "remove".' };
         }
@@ -1015,7 +989,6 @@ export class AgentLoop {
         result = await this.mcpServer.executeTool(call.name, call.args, {
           editor: this.editor,
           taskManager: this.taskManager,
-          workspaceIndexer: this.workspaceIndexer,
         });
       }
 
@@ -1028,6 +1001,11 @@ export class AgentLoop {
         call_id: call.id || randomUUID(),
         name: call.name,
         result: truncatedResult,
+        // Carried through so the result envelope can say plainly that this one
+        // failed. A non-zero exit buried in minified JSON is easy for the model
+        // to skim past and summarise as if it had worked.
+        failed: result.success === false
+          || (typeof result.result?.exitCode === 'number' && result.result.exitCode !== 0),
       };
 
       const callTurn = {
@@ -1071,6 +1049,24 @@ export class AgentLoop {
         if (!needsApproval) {
           // Auto-apply safe edits
           const applyResult = this.diffEngine.acceptDiff(diffResult.diffId);
+
+          // Tell the model what actually happened. create_file and edit_file
+          // both return `status: 'pending_approval'` because that is true at
+          // the moment they build the diff — but when the edit is auto-applied
+          // (a .md file in plan mode, a safe edit in auto mode) nobody ever
+          // asks, and the model faithfully reported "waiting for your approval"
+          // about a file that was already on disk. The user then goes looking
+          // for a prompt that does not exist.
+          toolResults[i] = {
+            call_id: call.id || randomUUID(),
+            name: call.name,
+            result: {
+              filePath: diffResult.filePath,
+              status: 'applied',
+              message: `Applied to ${diffResult.filePath}. No approval was needed — do not tell the user it is pending.`,
+            },
+          };
+
           this.callbacks.sendToPanel({
             id: randomUUID(),
             type: 'diff_auto_applied',
@@ -1118,6 +1114,51 @@ export class AgentLoop {
       }
     }
     await Promise.all(executionPromises);
+
+    // Auto-healing has to be bounded, or a command that cannot succeed — a
+    // missing binary, a service that is down, a permission the user has to
+    // grant — turns into the model retrying variations of it until the token
+    // budget is gone. Consecutive *failing* rounds are the thing to count:
+    // progress resets it, so a long run that keeps succeeding never trips.
+    const anyFailed = toolResults.some((r) => r?.failed);
+    this._failedRounds = anyFailed ? (this._failedRounds || 0) + 1 : 0;
+
+    if (this._failedRounds >= MAX_FAILED_ROUNDS) {
+      this._failedRounds = 0;
+      for (const r of toolResults.filter((x) => x?.failed)) {
+        logError(this.workspace, {
+          flow: 'tool', op: r.name,
+          message: oneLineError(r.result),
+          meta: { gaveUpAfter: MAX_FAILED_ROUNDS },
+        });
+      }
+      const summary = toolResults
+        .filter((r) => r?.failed)
+        .map((r) => `  • ${r.name}: ${oneLineError(r.result)}`)
+        .join('\n');
+
+      const stopTurn = {
+        role: 'assistant',
+        isLocal: true,
+        content: `🛑 Stopped after ${MAX_FAILED_ROUNDS} rounds of failing commands — `
+          + 'this needs you rather than another attempt.\n\n'
+          + `${summary}\n\n`
+          + 'Tell me what to try next, or fix the underlying problem and say "retry".',
+        timestamp: Date.now(),
+      };
+      this.conversationHistory.push(stopTurn);
+      this.sessionStore.appendTurn(stopTurn);
+
+      this.isProcessing = false;
+      this.callbacks.sendToPanel({
+        id: randomUUID(),
+        type: 'agent_response',
+        payload: { content: stopTurn.content },
+        timestamp: Date.now(),
+      });
+      this._releaseExtension();
+      return;
+    }
 
     // Send tool results back to Gemini for continuation. One message, however
     // many results it carries — the refresh cadence counts messages pushed to
@@ -1208,14 +1249,11 @@ export class AgentLoop {
   async _executeSubagent(targetModel, prompt) {
     return new Promise((resolve, reject) => {
       const requestId = randomUUID();
-      this.pendingSubagents.set(requestId, { resolve, reject });
+      this.pendingSubagents.set(requestId, { resolve, reject, targetModel });
 
-      this.callbacks.sendToPanel({
-        id: randomUUID(),
-        type: 'status',
-        payload: { message: `🤖 [${targetModel}] Thinking...`, status: `waiting_for_${targetModel}` },
-        timestamp: Date.now(),
-      });
+      // Subagents also run for /compact and background GitHub work, neither of
+      // which has a user turn's callbacks attached.
+      this._notify(`🤖 [${targetModel}] Thinking...`);
 
       this._enqueueExtensionRequest({
         prompt,
@@ -1229,8 +1267,7 @@ export class AgentLoop {
       setTimeout(() => {
         if (this.pendingSubagents.has(requestId)) {
           this.pendingSubagents.delete(requestId);
-          this.isExtensionBusy = false;
-          this._processExtensionQueue();
+          this._releaseExtension(targetModel);
           resolve({ success: false, error: `${targetModel} timeout after 5 minutes.` });
         }
       }, 300000);
@@ -1311,7 +1348,7 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
           result = { success: false, error: `Tool ${call.name} not permitted for subagents.` };
         } else {
           result = await this.mcpServer.executeTool(call.name, call.args, {
-            editor: this.editor, taskManager: this.taskManager, workspaceIndexer: this.workspaceIndexer,
+            editor: this.editor, taskManager: this.taskManager,
           });
         }
         toolResults.push({ name: call.name, result: result.result || result.error });
@@ -1324,6 +1361,7 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
 
   async runHeadlessTask(prompt, systemInstruction = null) {
     const localHistory = [];
+    let providerRetries = 0;
 
     const baseSystem = `You are a headless background agent running inside the user's code workspace.
 You have access to a local MCP tool server. You MUST use tools to explore the codebase before drawing conclusions.
@@ -1390,6 +1428,22 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
         continue;
       }
 
+      // Gemini's own failure message arrives through the same path as a real
+      // reply, with no tool calls and some prose — structurally identical to a
+      // finished answer. Left alone it became `lastCleanContent` and was
+      // written to disk as the PR plan.
+      if (toolCalls.length === 0 && looksLikeProviderError(cleanContent)) {
+        providerRetries++;
+        if (providerRetries <= MAX_PROVIDER_RETRIES) {
+          localHistory.push({
+            role: 'system',
+            content: '[System: the previous response was a provider error, not an answer. Retrying the same request.]',
+          });
+          continue;
+        }
+        return { success: false, error: `Gemini kept returning an error: ${cleanContent.trim()}` };
+      }
+
       // Track the last non-empty clean content as the candidate final plan
       if (cleanContent.trim()) {
         lastCleanContent = cleanContent.trim();
@@ -1404,7 +1458,7 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
         let result;
         
         if (call.name === 'ask_subagent') {
-          // Provide workspace context and strictly enforce Gemini model for subagent swarming
+          // Provide workspace context and strictly enforce Gemini for nested subagents
           const subPrompt = call.args.prompt;
           const contextMsg = `[System: You are running in workspace root: ${this.workspace}. Use tools to explore.]`;
           const sessionResult = await this._runSubAgentSession('subagent', `${contextMsg}\n\nUser Prompt: ${subPrompt}`, 'gemini');
@@ -1419,7 +1473,6 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
               result = await this.mcpServer.executeTool(call.name, call.args, {
                 editor: this.editor,
                 taskManager: this.taskManager,
-                workspaceIndexer: this.workspaceIndexer,
               });
             } catch (e) {
               result = { success: false, error: e.message };
@@ -1439,53 +1492,58 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
     return { success: true, result: `## 🧠 AI Context Analysis\n\n${finalOutput}`, turns: turnCount };
   }
 
-  /** Count .md files under a context folder (recursive, bounded). */
-  _countContextFiles(dir, depth = 0) {
-    if (depth > 3) return 0;
-    let n = 0;
-    try {
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) n += this._countContextFiles(full, depth + 1);
-        else if (entry.name.endsWith('.md')) n += 1;
-      }
-    } catch {
-      /* unreadable folder */
-    }
-    return n;
+  /**
+   * What is in the context window right now.
+   *
+   * Plain markdown, not a hand-drawn box. The box was built by padding strings
+   * with `padEnd` — but those strings carried chalk's ANSI escapes and an emoji,
+   * so the padding counted escape bytes and code units rather than the columns
+   * the terminal actually draws. Every row came out a different width and the
+   * right border zig-zagged. Nothing here needs to be aligned to a border that
+   * cannot be aligned.
+   */
+  async _getContextInfo() {
+    const used = this.contextTokens;
+    const limit = this.contextManager?.maxTokens || 50000;
+    const pct = Math.min(100, Math.round((used / limit) * 100));
+
+    const turns = this.conversationHistory.length;
+    const pending = this.diffEngine.getPendingDiffs().length;
+    const applied = this.diffEngine.appliedDiffs.length;
+
+    const rows = [
+      ['Mode', this.mode === 'plan' ? 'plan — every edit needs approval' : 'auto — safe edits apply on their own'],
+      ['Turns', `${turns}`],
+      ['Tokens', `~${used.toLocaleString()} / ${limit.toLocaleString()}  (${pct}%)`
+        + '   — everything sent to the tab, not just these turns'],
+      ['Diffs', `${pending} pending · ${applied} applied`],
+      ['Workspace', this.workspace],
+    ];
+
+    return {
+      message: `### 📊 Context\n\n`
+        + rows.map(([k, v]) => `  ${k.padEnd(10)} ${v}`).join('\n')
+        + `\n\n_\`/compact\` to summarise it · \`/clear\` to drop it_`,
+    };
   }
 
-  async _getContextInfo() {
-    const historyTokenEstimate = this.contextManager 
-      ? import('../context/token-counter.js').then(m => m.TokenCounter.estimateHistoryTokens(this.conversationHistory)) 
-      : 0; // Token counting is now offloaded, but we can do a rough fallback:
-    
-    // For synchronous stats, we'll just require TokenCounter directly since it's ES module, 
-    // wait I didn't import TokenCounter at the top. I'll just use the old fallback for synchronous display.
-    const syncTokenEstimate = this.conversationHistory.reduce((sum, turn) => {
-      const text = turn.content || JSON.stringify(turn.result || turn.args || '');
-      return sum + Math.ceil(text.length / 4);
-    }, 0);
-
-    const chalk = (await import('chalk')).default;
-    
-    const tokenLimit = 50000;
-    const tokenPct = Math.round((syncTokenEstimate / tokenLimit) * 100);
-    const tokenColor = tokenPct > 80 ? chalk.red : tokenPct > 50 ? chalk.yellow : chalk.green;
-    
-    const message = [
-      chalk.dim('╭─ ') + chalk.bold('Context Overview') + chalk.dim(' ─────────────────────────────────────╮'),
-      chalk.dim('│') + ' Mode:            ' + (this.mode === 'plan' ? chalk.cyan('Plan Mode 🔒') : chalk.magenta('Auto Mode ⚡')) + ' '.repeat(this.mode === 'plan' ? 16 : 16) + chalk.dim('│'),
-      chalk.dim('│') + ' Workspace:       ' + chalk.blue(this.workspace.substring(0, 30) + (this.workspace.length > 30 ? '...' : ' '.repeat(30 - this.workspace.length))) + chalk.dim('│'),
-      chalk.dim('│') + ' Turns:           ' + chalk.white(this.conversationHistory.length.toString().padEnd(30)) + chalk.dim('│'),
-      chalk.dim('│') + ' Est. Tokens:     ' + tokenColor(`~${syncTokenEstimate.toLocaleString()} / ${tokenLimit.toLocaleString()}`).padEnd(30) + chalk.dim('│'),
-      chalk.dim('│') + ' Pending Diffs:   ' + chalk.white(this.diffEngine.getPendingDiffs().length.toString().padEnd(30)) + chalk.dim('│'),
-      chalk.dim('│') + ' Applied Diffs:   ' + chalk.white(this.diffEngine.appliedDiffs.length.toString().padEnd(30)) + chalk.dim('│'),
-      chalk.dim('╰────────────────────────────────────────────────────────╯')
-    ].join('\n');
-
-    return { message };
+  /**
+   * Push a status line to the UI, if anyone is listening.
+   *
+   * `this.callbacks` is only set while a *user turn* is running. Slash commands
+   * go straight to `handleSlashCommand`, so `/compact` on a fresh session found
+   * it null and threw on `this.callbacks.sendToPanel` — which the UI did not
+   * catch either, so the whole thing hung with nothing on screen.
+   */
+  _notify(message) {
+    const target = this.callbacks || this._backgroundCallbacks;
+    if (!target?.sendToPanel) return;
+    target.sendToPanel({
+      id: randomUUID(),
+      type: 'status',
+      payload: { message },
+      timestamp: Date.now(),
+    });
   }
 
   async _compactHistory(focus) {
@@ -1510,12 +1568,7 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
         return `[${turn.role.toUpperCase()}]: ${turn.content}`;
       }).join('\n\n');
 
-      this.callbacks.sendToPanel({
-        id: randomUUID(),
-        type: 'status',
-        payload: { message: '🧠 Compacting massive context window via Gemini LLM...' },
-        timestamp: Date.now(),
-      });
+      this._notify('🧠 Summarising the older turns in a browser tab…');
 
       const summaryPrompt = `You are a context compactor for an AI coding agent.
 Your job is to read the following conversation history and summarize it into a tight, dense block of text.
@@ -1548,15 +1601,34 @@ ${compactedSummary}`;
       this.conversationHistory = [compactedTurn, ...toKeep];
       this.sessionStore.saveHistory(this.conversationHistory);
       this.promptBuilder.resetPromptState();
+      // The thread starts again from the summary, so the count does too.
+      // Carrying the old total past this would leave the agent believing it was
+      // still full and compacting forever.
+      this._resetContextCount(
+        this.conversationHistory.reduce((n, t) => n + (t.content?.length || 0), 0),
+      );
 
-      this.callbacks.sendToPanel({
-        id: randomUUID(),
-        type: 'status',
-        payload: { message: llmResponse.success ? '✅ History successfully auto-compacted (Gemini Summary).' : '✅ History auto-compacted (Lightweight Fallback).' },
-        timestamp: Date.now(),
-      });
-      
-      return { message: '✅ History compacted.' };
+      // Say what actually happened. "✅ History compacted." told the user
+      // nothing — not how much went, not whether the model summarised it or the
+      // deterministic fallback did, and not where the summary went.
+      const approxTokens = (turns) => Math.round(
+        turns.reduce((sum, t) => sum + ((t.content?.length || 0) / 4), 0),
+      );
+      const before = approxTokens([...toCompact, ...toKeep]);
+      const after = this.contextTokens;
+      const how = llmResponse.success
+        ? 'summarised by the model'
+        : 'condensed locally (the model did not answer, so the deterministic fallback ran)';
+
+      return {
+        message: `✅ Compacted ${toCompact.length} turn${toCompact.length === 1 ? '' : 's'} into one summary, `
+          + `${how}.\n\n`
+          + `Kept the last ${toKeep.length} turns as they were. `
+          + `Context is roughly ${before.toLocaleString()} → ${after.toLocaleString()} tokens.\n\n`
+          + 'The summary is now the first turn of this conversation — it is in the transcript above '
+          + 'and saved to `.agent/sessions/history.jsonl`. The browser tab it was written in is '
+          + 'scratch space; nothing is left there.',
+      };
     } finally {
       this.isCompacting = false;
     }

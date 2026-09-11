@@ -74,6 +74,58 @@ let lastActivityTime = 0;
 let activityCheckTimer = null;
 let currentRequestData = null;
 
+/**
+ * Talking to the extension, when the extension may no longer be there.
+ *
+ * Reloading the extension orphans every content script already running in a
+ * page: the page keeps executing this code, but its link to the extension is
+ * severed and **`chrome.runtime.sendMessage` throws synchronously** —
+ * `Uncaught Error: Extension context invalidated.` A `.catch()` does not catch
+ * it, because nothing was ever returned to reject.
+ *
+ * That is how a reload silently broke a live turn: Gemini answered, the scrape
+ * worked, `onResponseComplete` called `sendMessage`, it threw, and the agent
+ * sat on "Thinking…" until the five-minute watchdog. Nothing said why.
+ *
+ * So every call goes through here. When the context is gone we stop the timers
+ * and observers this page owns rather than throwing once per tick forever — and
+ * the service worker re-injects a fresh copy on startup, which is what actually
+ * repairs the tab.
+ */
+let bridgeInvalidated = false;
+const onInvalidated = [];
+
+/** The id disappears the moment this context is orphaned. */
+function bridgeAlive() {
+  try {
+    return !bridgeInvalidated && Boolean(chrome.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+function invalidate() {
+  if (bridgeInvalidated) return;
+  bridgeInvalidated = true;
+  console.warn('[Agent CLI] Extension was reloaded; this content script is orphaned. '
+    + 'A fresh one is injected on the extension\'s next start, or reload this tab.');
+  for (const stop of onInvalidated) {
+    try { stop(); } catch {}
+  }
+}
+
+/** Send, or quietly give up. Never throws, never rejects. */
+function safeSend(message) {
+  if (!bridgeAlive()) { invalidate(); return Promise.resolve(undefined); }
+  try {
+    const p = chrome.runtime.sendMessage(message);
+    return p && typeof p.catch === 'function' ? p.catch(() => undefined) : Promise.resolve(undefined);
+  } catch (err) {
+    if (/context invalidated/i.test(err?.message || '')) invalidate();
+    return Promise.resolve(undefined);
+  }
+}
+
 // ── DOM Helpers ─────────────────────────────────────────────────────
 
 /**
@@ -114,7 +166,7 @@ async function injectPrompt(text) {
   try {
     const input = findElement(SELECTORS.inputField);
     if (!input) {
-      throw new Error('Could not find ChatGPT input field');
+      throw new Error('[find_input] Could not find the ChatGPT input field — the editor selector has probably changed');
     }
 
     // Record how many responses exist BEFORE we send
@@ -137,19 +189,51 @@ async function injectPrompt(text) {
 
       const dataTransfer = new DataTransfer();
 
-      // Strip image data
+      // Attach the image, rather than deleting it. This used to strip the
+      // <image_data> block and paste the remaining text, so `/image` against
+      // ChatGPT silently sent a prompt that talked about a screenshot nobody
+      // had been given. Same technique as the Gemini bridge: rebuild the data
+      // URL into a real File and let one paste event carry both.
       const imgRegex = /<image_data>\n(data:image\/[^;]+;base64,[^\n]+)\n<\/image_data>/;
-      text = text.replace(imgRegex, '').trim();
+      const imgMatch = text.match(imgRegex);
+      let hasImage = false;
 
-      dataTransfer.setData('text/plain', text);
+      if (imgMatch) {
+        text = text.replace(imgRegex, '').trim();
+        try {
+          const res = await fetch(imgMatch[1]);
+          const blob = await res.blob();
+          const ext = (blob.type.split('/')[1] || 'png');
+          dataTransfer.items.add(new File([blob], `image.${ext}`, { type: blob.type }));
+          hasImage = true;
+          console.log(`[ChatGPT Bridge] Attached image file: image.${ext} (${Math.round(blob.size / 1024)}KB)`);
+        } catch (err) {
+          // The prompt still goes; the model is told the image did not.
+          console.error('[ChatGPT Bridge] Failed to convert image data URL to Blob', err);
+          text = `${text}\n\n(An image was attached but could not be delivered to this tab.)`;
+        }
+      }
+
+      if (text) {
+        dataTransfer.setData('text/plain', text);
+      }
+
       const pasteEvent = new ClipboardEvent('paste', {
         clipboardData: dataTransfer,
         bubbles: true,
         cancelable: true,
       });
 
+      input.focus();
       const pasteHandled = !input.dispatchEvent(pasteEvent);
+
+      // The upload is asynchronous; sending before it lands drops the file.
+      if (hasImage) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
       if (!pasteHandled && text) {
+        input.focus();
         document.execCommand('insertText', false, text);
       }
 
@@ -172,7 +256,7 @@ async function injectPrompt(text) {
       await new Promise(r => setTimeout(r, 1000));
       const currentText = input.tagName === 'TEXTAREA' ? input.value : input.textContent;
       if (currentText.trim().length > 0) {
-        throw new Error("Failed to submit prompt: Send button never became active.");
+        throw new Error("[send_button] Send button never became active — the button selector has probably changed");
       }
     }
 
@@ -263,7 +347,7 @@ function startResponseObserver() {
         streamingUpdateTimer = setInterval(() => {
           if (lastResponseText && lastResponseText !== lastStreamedText) {
             lastStreamedText = lastResponseText;
-            chrome.runtime.sendMessage({
+            safeSend({
               type: 'gemini_response_stream',
               payload: {
                 content: lastResponseText,
@@ -293,7 +377,7 @@ function startResponseObserver() {
       console.warn('[ChatGPT Bridge] Absolute max timeout reached (5 min)');
       clearInterval(streamingUpdateTimer);
       stopResponseObserver();
-      chrome.runtime.sendMessage({
+      safeSend({
         type: 'gemini_response',
         payload: {
           content: lastResponseText || '[No response received — max timeout reached]',
@@ -421,7 +505,7 @@ function extractTextContent(element) {
 function onResponseComplete(responseText) {
   stopResponseObserver();
 
-  chrome.runtime.sendMessage({
+  safeSend({
     type: 'gemini_response',
     payload: {
       content: responseText,
@@ -489,27 +573,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 console.log('[ChatGPT Bridge] Content script loaded on:', window.location.href);
 
 // Notify service worker that we're ready
-chrome.runtime.sendMessage({
+safeSend({
   type: 'content_script_ready',
   payload: {
     url: window.location.href,
     model: 'chatgpt',
     timestamp: Date.now(),
   },
-}).catch(() => {
-  // Service worker may not be ready yet
 });
 
-// Keep the service worker alive
+/**
+ * Keep the bridge connected — see the long note in `gemini-bridge.js`. In short:
+ * Chrome terminates the idle service worker and its timers die with it, so the
+ * only reconnect cadence was `chrome.alarms`' 30-second floor. A content script
+ * lives as long as its page, and `sendMessage` wakes the worker.
+ */
+const CONNECT_NUDGE_MS = 3000;
 let keepAlivePort = null;
+
 function connectToServiceWorker() {
+  if (!bridgeAlive()) return;
   try {
     keepAlivePort = chrome.runtime.connect({ name: 'keepAlive' });
     keepAlivePort.onDisconnect.addListener(() => {
       setTimeout(connectToServiceWorker, 1000);
     });
   } catch (err) {
-    // Context invalidated
+    // Context invalidated — the extension was reloaded under this page.
   }
 }
 connectToServiceWorker();
+
+const nudgeTimer = setInterval(() => {
+  safeSend({ type: 'connect' });
+}, CONNECT_NUDGE_MS);
+onInvalidated.push(() => clearInterval(nudgeTimer));

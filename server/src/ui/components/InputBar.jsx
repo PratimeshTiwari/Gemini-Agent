@@ -1,20 +1,34 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, usePaste } from 'ink';
 import TextInput from 'ink-text-input';
-import Spinner from 'ink-spinner';
-import { Clickable } from './Clickable.jsx';
+import { RunningLine } from './RunningLine.jsx';
 import { FOCUS_INPUT } from '../constants.js';
+import { applyPaste, nextPasteId } from '../paste.js';
+
+/** First `n` non-empty lines of an artifact, for the one-glance summary. */
+function head(text, n) {
+  return String(text || '')
+    .split('\n')
+    .filter((l) => l.trim())
+    .slice(0, n)
+    .join('\n');
+}
 
 /**
  * The bottom of the agent tab: the thinking line while a turn runs, then the
- * prompt itself with its slash palette and the plan/auto chip.
+ * prompt with its slash palette.
  *
- * The palette rows and the chip are clickable as well as keyboard-driven —
- * clicking a row submits it outright rather than only completing it.
+ * Everything here is bounded on purpose. It sits in Ink's repainted frame, so
+ * an unbounded row — the artifact dump this used to render in full — pushes the
+ * frame past the viewport and Ink starts clearing the terminal on every render.
+ *
+ * The text field is the only place keystrokes land. It is always mounted while
+ * the prompt is visible, so there is no state in which typing goes nowhere.
  */
 export function InputBar({
   activeMenu,
-  cycleMode,
+  addPaste,
+  artifacts,
   diffRequest,
   setPaletteSuppressed,
   elapsed,
@@ -27,7 +41,6 @@ export function InputBar({
   isToolRunningRef,
   mode,
   newlineRef,
-  setFocus,
   setInput,
   setSlashIdx,
   slashMatches,
@@ -36,105 +49,129 @@ export function InputBar({
   status,
   syncTokenEstimate,
   terminalOpen,
-  thinkingDisplayText,
+  pastes,
+  thinkingText,
+  verbose,
 }) {
+  const hasArtifacts = Boolean(artifacts?.task || artifacts?.walkthrough);
+  const promptVisible = !diffRequest && !terminalOpen && !activeMenu;
+
+  // Bracketed paste, which this hook turns on, is what separates "the user
+  // pasted forty lines" from "the user typed forty lines very fast". Ink routes
+  // the text here instead of through useInput, so a paste can never be
+  // misparsed as keystrokes — and a big one is folded to a marker rather than
+  // rendered at full height into a frame that must stay short.
+  usePaste((text) => {
+    const { value, paste } = applyPaste(input, text, nextPasteId(pastes));
+    setInput(value);
+    setPaletteSuppressed(true);
+    if (paste) addPaste(paste);
+  }, { isActive: promptVisible && focus === FOCUS_INPUT });
+
   return (
     <>
-      {/* Status Spinner */}
       {isProcessing && !diffRequest && (
         <Box flexDirection="column" marginBottom={1}>
           <Text color="cyan">
-            <Spinner type="dots" /> {isToolRunningRef.current ? status : (thinkingDisplayText || status)}
+            <RunningLine text={isToolRunningRef.current ? status : thinkingText} />
             <Text dimColor>
               {' ('}{elapsed}s
               {syncTokenEstimate > 0 ? ` · ↑ ${syncTokenEstimate >= 1000 ? `${(syncTokenEstimate / 1000).toFixed(1)}k` : syncTokenEstimate} tokens` : ''}
-              {')'}
+              {' · esc to stop)'}
             </Text>
           </Text>
           {isThinkingTooLong && (
-            <Text color="yellow">  (Taking a while... ensure Chrome is not minimized!)</Text>
+            <Text color="yellow">  (Taking a while — make sure the Chrome tab is not minimised)</Text>
           )}
         </Box>
       )}
 
-      {/* Main Input */}
-      {!diffRequest && !terminalOpen && !activeMenu && (
+      {/*
+        A blank row above the prompt. Without it the input box sits directly
+        against the last line of the transcript, and the two read as one block —
+        there is nothing to tell you where the agent stopped talking and where
+        you start typing. RESERVED_ROWS pays for this row; raising one without
+        the other is how the frame outgrows the viewport.
+      */}
+      {promptVisible && (
         <Box flexDirection="column" marginTop={1}>
-          {!extensionConnected && (
-            <Box marginBottom={1}>
-              <Text color="yellow">⚠️ Open a Gemini tab in Chrome — the extension is not connected</Text>
+          {hasArtifacts && !isProcessing && (
+            <Box flexDirection="column" marginBottom={1}>
+              <Text color="cyan">
+                {'▸ '}{[artifacts.task && 'task.md', artifacts.walkthrough && 'walkthrough.md'].filter(Boolean).join(' · ')}
+                <Text dimColor>{verbose ? '' : ' — ctrl+e to expand'}</Text>
+              </Text>
+              {verbose && artifacts.task && (
+                <Text dimColor wrap="wrap">{head(artifacts.task, 6)}</Text>
+              )}
+              {verbose && artifacts.walkthrough && (
+                <Text dimColor wrap="wrap">{head(artifacts.walkthrough, 6)}</Text>
+              )}
             </Box>
           )}
+
+          {!extensionConnected && (
+            <Text color="yellow">! Open a Gemini tab in Chrome — the extension is not connected</Text>
+          )}
+
           {slashOpen && (
-            <Box flexDirection="column" marginBottom={1} paddingX={1}>
+            <Box flexDirection="column" paddingX={1}>
               {slashMatches.map((cmd, idx) => (
-                <Clickable
-                  key={cmd.name}
-                  onClick={() => {
-                    setInput('');
-                    setSlashIdx(0);
-                    handleSubmit(`/${cmd.name}`);
-                  }}
-                  flexDirection="row"
-                >
-                  <Text color={idx === slashSelected ? 'cyan' : 'gray'} bold={idx === slashSelected}>
-                    {(idx === slashSelected ? '❯ ' : '  ') + `/${cmd.name}`.padEnd(16)}
-                  </Text>
+                <Text key={cmd.name} color={idx === slashSelected ? 'cyan' : 'gray'} bold={idx === slashSelected}>
+                  {(idx === slashSelected ? '❯ ' : '  ') + `/${cmd.name}`.padEnd(16)}
                   <Text dimColor>{cmd.desc}</Text>
-                </Clickable>
+                </Text>
               ))}
             </Box>
           )}
-          <Clickable
-            onClick={() => setFocus(FOCUS_INPUT)}
+
+          {/*
+            The border is the mode. Plan vs auto is the answer to "will this
+            edit happen without asking me?", and it used to be a yellow chip two
+            rows *below* the box it governs — the most consequential state on
+            screen rendered as a footnote, for two rows of frame budget. The
+            border is already the most visible line here and it costs nothing.
+          */}
+          <Box
             flexDirection="row"
             borderStyle="round"
-            borderColor={focus === FOCUS_INPUT ? 'cyan' : 'gray'}
+            borderColor={focus === FOCUS_INPUT ? (mode === 'plan' ? 'yellow' : 'cyan') : 'gray'}
             paddingX={1}
             width="100%"
           >
-            <Text bold color={focus === FOCUS_INPUT ? 'cyan' : 'gray'}>{'> '}</Text>
-            {focus === FOCUS_INPUT ? (
-              <TextInput
-                focus={focus === FOCUS_INPUT}
-                value={input}
-                onChange={(v) => {
-                  setInput(v);
-                  setSlashIdx(0);
-                  // Typing is what opens the palette; history recall is not.
-                  setPaletteSuppressed(false);
-                }}
-                onSubmit={(value) => {
-                  // TextInput's own useInput is registered before ours (child
-                  // effects run first), so it calls this before the key bindings
-                  // have seen the keystroke. Defer a tick to find out whether
-                  // that Enter was really a Shift+Enter asking for a newline.
-                  setTimeout(() => {
-                    if (newlineRef.current) {
-                      newlineRef.current = false;
-                      return;
-                    }
-                    if (slashOpen) {
-                      const picked = `/${slashMatches[slashSelected].name}`;
-                      setInput('');
-                      setSlashIdx(0);
-                      handleSubmit(picked);
-                      return;
-                    }
-                    handleSubmit(value);
-                  }, 0);
-                }}
-                placeholder="Ask anything, or / for commands"
-              />
-            ) : (
-              <Text dimColor>{input || 'Press Tab to focus input…'}</Text>
-            )}
-          </Clickable>
-          <Clickable onClick={cycleMode} paddingX={1}>
-            <Text color={mode === 'auto' ? 'green' : 'yellow'}>
-              ▶▶ {mode} mode on <Text dimColor>(shift+tab to cycle)</Text>
-            </Text>
-          </Clickable>
+            <Text bold color={focus === FOCUS_INPUT ? (mode === 'plan' ? 'yellow' : 'cyan') : 'gray'}>{'> '}</Text>
+            <TextInput
+              focus={focus === FOCUS_INPUT}
+              value={input}
+              onChange={(v) => {
+                setInput(v);
+                setSlashIdx(0);
+                // Typing is what opens the palette; history recall is not.
+                setPaletteSuppressed(false);
+              }}
+              onSubmit={(value) => {
+                // TextInput's own useInput is registered before ours (child
+                // effects run first), so it calls this before the key bindings
+                // have seen the keystroke. Defer a tick to find out whether
+                // that Enter was really a Shift+Enter asking for a newline.
+                setTimeout(() => {
+                  if (newlineRef.current) {
+                    newlineRef.current = false;
+                    return;
+                  }
+                  if (slashOpen) {
+                    const picked = `/${slashMatches[slashSelected].name}`;
+                    setInput('');
+                    setSlashIdx(0);
+                    handleSubmit(picked);
+                    return;
+                  }
+                  handleSubmit(value);
+                }, 0);
+              }}
+              placeholder="Ask anything, or / for commands"
+            />
+          </Box>
         </Box>
       )}
     </>

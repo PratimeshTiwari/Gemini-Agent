@@ -1,5 +1,5 @@
 {
-  "name": "gemini-agent",
+  "name": "agent-cli",
   "version": "1.0.0",
   "description": "Claude Code-style coding agent powered by Gemini Web",
   "private": true,
