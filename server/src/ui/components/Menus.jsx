@@ -7,11 +7,12 @@ import { QuestionPrompt } from './QuestionPrompt.jsx';
 import { summarizeDiff, previewRows } from '../diff-preview.js';
 import { oneLine } from '../format.js';
 import { canPickFolder, pickFolder } from '../folder-picker.js';
-import { readCommands } from '../../core/command-log.js';
+import { readCommands, listCommandDays } from '../../core/command-log.js';
 import { EFFORT_LEVELS, resolveEffort } from '../../core/effort.js';
 import { describeSettings, filterSettings, settingsChanged, SETTING_GROUPS } from '../../core/settings.js';
 import { listWorkspaceCandidates } from '../../core/workspaces.js';
 import { skillsDir } from '../../core/paths.js';
+import { skillSearchPath, listSkills } from '../../core/skills.js';
 import { FOCUS_INPUT } from '../constants.js';
 
 /**
@@ -397,6 +398,25 @@ export function Menus({
                       setActiveMenu({ type: 'allowlist', rules: agentLoop.commandRules, returnTo: back });
                       return;
                     }
+                    // Opened here rather than through handleSubmit, which is
+                    // what `returnTo` needs: a menu raised by a slash command
+                    // has no idea it was reached from the settings page, so
+                    // escape closed everything instead of stepping back one.
+                    if (item.value === '/skills') {
+                      setActiveMenu({
+                        type: 'skills',
+                        skills: listSkills(agentLoop.workspace, agentLoop.skillFolders || []),
+                        workspace: agentLoop.workspace,
+                        returnTo: back,
+                      });
+                      return;
+                    }
+                    if (item.value === '/commands') {
+                      const days = listCommandDays(agentLoop.workspace);
+                      if (days.length === 0) { setActiveMenu(null); setFocus(FOCUS_INPUT); handleSubmit(item.value); return; }
+                      setActiveMenu({ type: 'commands', days, workspace: agentLoop.workspace, returnTo: back });
+                      return;
+                    }
 
                     // A row that is simply a switch flips where it stands.
                     if (TOGGLES.has(item.value)) {
@@ -449,6 +469,7 @@ export function Menus({
                 setFocus(FOCUS_INPUT);
                 handleSubmit(`/commands ${item.value}`);
               }}
+              key="commands-days"
             />
             <Text dimColor>↑↓ move · enter open · esc cancel</Text>
           </Box>
@@ -643,41 +664,69 @@ export function Menus({
           );
         })()}
 
-        {activeMenu?.type === 'skills' && (
-          <Box flexDirection="column" borderStyle="single" borderColor="magenta" padding={1}>
-            <Text bold color="magenta">🧩 Skills</Text>
-            <Text dimColor wrap="wrap">
-              Markdown files the agent reads when their description matches the task.
-              Only the descriptions sit in the prompt.
-            </Text>
-            <SelectInput
-              limit={10}
-              items={[
-                ...activeMenu.skills.map((sk) => ({
-                  label: `  ${sk.name} — ${sk.description ? sk.description.slice(0, 48) : '(no description)'}`,
-                  value: `open:${sk.file}`,
-                })),
-                { label: '  + New skill…', value: 'new' },
-                { label: '  Open the skills folder', value: `open:${skillsDir(activeMenu.workspace)}` },
-              ]}
-              onSelect={(item) => {
-                setActiveMenu(null);
-                setFocus(FOCUS_INPUT);
-                if (item.value === 'new') {
-                  // Hand over a half-written command: the skill needs a name and
-                  // the prompt is already the place to type one.
-                  setInput('/skills new ');
-                  return;
-                }
-                const target = item.value.slice('open:'.length);
-                try {
-                  exec(`"${agentLoop.editor || 'code'}" "${target}" || open "${target}" || xdg-open "${target}"`);
-                } catch (e) { /* no editor on this machine */ }
-              }}
-            />
-            <Text dimColor>↑↓ move · enter open · esc cancel</Text>
-          </Box>
-        )}
+        {activeMenu?.type === 'skills' && (() => {
+          const skills = activeMenu.skills || [];
+          const folders = skillSearchPath(activeMenu.workspace, agentLoop.skillFolders || []);
+          // Padded, like every other list here. Names of different lengths
+          // against an unpadded description made this read as a ragged wall.
+          const nameWidth = Math.min(24, Math.max(...skills.map((sk) => sk.name.length), 0));
+          const back = () => {
+            if (activeMenu.returnTo) { setActiveMenu(activeMenu.returnTo); return true; }
+            setActiveMenu(null);
+            setFocus(FOCUS_INPUT);
+            return false;
+          };
+
+          return (
+            <Box flexDirection="column" borderStyle="single" borderColor="magenta" padding={1}>
+              <Text bold color="magenta">
+                🧩 Skills — {skills.length} across {folders.length} folder{folders.length === 1 ? '' : 's'}
+              </Text>
+              <Text dimColor wrap="wrap">
+                Markdown files the agent opens when their description matches the task. Only the
+                descriptions sit in the prompt, so writing more of them costs a line each.
+              </Text>
+              <SelectInput
+                limit={10}
+                items={[
+                  ...skills.map((sk) => ({
+                    label: `${sk.name.padEnd(nameWidth)}  ${oneLine(sk.description || '(no description)', 44)}`,
+                    value: `open:${sk.file}`,
+                    key: sk.file,
+                  })),
+                  { label: '＋  New skill…', value: 'new', key: '_new' },
+                  // The settings row is called "Skill folders" and used to open
+                  // a list with no way to reach them, which is what made this
+                  // screen feel half-finished.
+                  { label: `📁  Folders searched (${folders.length})…`, value: 'folders', key: '_folders' },
+                  { label: '📂  Open the skills folder', value: `open:${skillsDir(activeMenu.workspace)}`, key: '_dir' },
+                ]}
+                onSelect={(item) => {
+                  if (item.value === 'new') {
+                    back();
+                    setFocus(FOCUS_INPUT);
+                    // Hand over a half-written command: the skill needs a name
+                    // and the prompt is already the place to type one.
+                    setInput('/skills new ');
+                    return;
+                  }
+                  if (item.value === 'folders') {
+                    setActiveMenu(null);
+                    setFocus(FOCUS_INPUT);
+                    handleSubmit('/skills dir');
+                    return;
+                  }
+                  back();
+                  const target = item.value.slice('open:'.length);
+                  try {
+                    exec(`"${agentLoop.editor || 'code'}" "${target}" || open "${target}" || xdg-open "${target}"`);
+                  } catch (e) { /* no editor on this machine */ }
+                }}
+              />
+              <Text dimColor>↑↓ move · enter open · esc {activeMenu.returnTo ? 'back' : 'cancel'}</Text>
+            </Box>
+          );
+        })()}
 
         {activeMenu?.type === 'workspace' && (
           <Box flexDirection="column" borderStyle="single" borderColor="blue" padding={1}>

@@ -681,6 +681,14 @@ and groups by file (P2), and the reasoning for *not* adding an index is recorded
 decision was made from the architecture, not from measurement — the next codebase is the
 measurement.
 
+**The extension.** Chrome throttling of background tabs, the retry behaviour around it, and
+whatever else the bridge is papering over. Raised 2026-09-11, to be planned rather than patched.
+
+**`/skills` needs a proper look.** The list is aligned and reachable from settings now, and
+escape steps back — but the shape of the feature was not examined. `/skills dir` prints a
+four-entry search path; `skillFolders` is an escape hatch from config; creating one opens an
+editor. Whether that is the right set of moves is an open question, not a bug list.
+
 ### The fork
 
 The agent layer's ceiling is not code quality, it is the absence of a tool-call API. Three

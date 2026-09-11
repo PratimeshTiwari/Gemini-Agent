@@ -88,8 +88,15 @@ export function InputBar({
         </Box>
       )}
 
+      {/*
+        A blank row above the prompt. Without it the input box sits directly
+        against the last line of the transcript, and the two read as one block —
+        there is nothing to tell you where the agent stopped talking and where
+        you start typing. RESERVED_ROWS pays for this row; raising one without
+        the other is how the frame outgrows the viewport.
+      */}
       {promptVisible && (
-        <Box flexDirection="column">
+        <Box flexDirection="column" marginTop={1}>
           {hasArtifacts && !isProcessing && (
             <Box flexDirection="column" marginBottom={1}>
               <Text color="yellow">
