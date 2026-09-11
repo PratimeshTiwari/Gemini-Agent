@@ -119,3 +119,50 @@ describe('parseTurnActions — image attachments', () => {
     assert.strictEqual(new Set(ids).size, ids.length, `duplicate ids: ${ids.join(', ')}`);
   });
 });
+
+describe('parseTurnActions — the model\'s reasoning', () => {
+  const parse = (content) => parseTurnActions({ id: 1, steps: [{ role: 'assistant', content }] });
+
+  // Every tier's prompt asks for `<thought>`; this used to match `<think>`, a
+  // tag nothing asks for. So reasoning was never recognised as reasoning and
+  // went into the transcript as raw XML.
+  it('recognises the tag the prompt actually asks for', () => {
+    const { actions, finalMessages } = parse('<thought>weighing it up</thought>\nHere is the answer.');
+    assert.deepStrictEqual(actions.map((a) => a.type), ['think']);
+    assert.strictEqual(actions[0].content, 'weighing it up');
+    assert.strictEqual(finalMessages[0].content, 'Here is the answer.');
+  });
+
+  it('still recognises the older spelling', () => {
+    const { actions } = parse('<think>older</think>\nanswer');
+    assert.strictEqual(actions[0].content, 'older');
+  });
+
+  // A pro turn routinely emits several. A non-global replace left every block
+  // after the first sitting in the prose.
+  it('takes all of them, not just the first', () => {
+    const { actions, finalMessages } = parse(
+      '<thought>one</thought>\nfirst\n<thought>two</thought>\nsecond',
+    );
+    assert.deepStrictEqual(actions.map((a) => a.content), ['one', 'two']);
+    assert.ok(!finalMessages[0].content.includes('<thought>'));
+  });
+
+  it('gives each one its own row id', () => {
+    const { actions } = parse('<thought>a</thought>x<thought>b</thought>');
+    assert.strictEqual(new Set(actions.map((a) => a.id)).size, 2);
+  });
+
+  // A reply cut off mid-thought would otherwise leave a bare opening tag and
+  // everything after it in the transcript.
+  it('an unclosed block does not leak the tag into the prose', () => {
+    const { finalMessages } = parse('Here goes.\n<thought>I was interrupted');
+    assert.strictEqual(finalMessages[0].content, 'Here goes.');
+  });
+
+  it('a reply with no reasoning is untouched', () => {
+    const { actions, finalMessages } = parse('Just the answer.');
+    assert.deepStrictEqual(actions, []);
+    assert.strictEqual(finalMessages[0].content, 'Just the answer.');
+  });
+});
