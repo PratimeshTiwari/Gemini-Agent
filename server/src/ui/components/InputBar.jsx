@@ -1,7 +1,7 @@
 import React from 'react';
 import { Box, Text, usePaste } from 'ink';
 import TextInput from 'ink-text-input';
-import Spinner from 'ink-spinner';
+import { RunningLine } from './RunningLine.jsx';
 import { FOCUS_INPUT } from '../constants.js';
 import { applyPaste, attachedPastes, nextPasteId } from '../paste.js';
 
@@ -75,7 +75,7 @@ export function InputBar({
       {isProcessing && !diffRequest && (
         <Box flexDirection="column" marginBottom={1}>
           <Text color="cyan">
-            <Spinner type="dots" /> {isToolRunningRef.current ? status : thinkingText}
+            <RunningLine text={isToolRunningRef.current ? status : thinkingText} />
             <Text dimColor>
               {' ('}{elapsed}s
               {syncTokenEstimate > 0 ? ` · ↑ ${syncTokenEstimate >= 1000 ? `${(syncTokenEstimate / 1000).toFixed(1)}k` : syncTokenEstimate} tokens` : ''}
