@@ -29,6 +29,11 @@ agent a caller of the existing loop instead of a copy of it.** The parts that
 are genuinely its own — talking to GitHub, deciding what deserves a turn,
 writing the output — are good, tested where it matters, and should barely change.
 
+There is a second half, found while designing it and arguably the more valuable
+one: **the browser-tab contention everyone assumed was inherent is not.** The
+extension already isolates background work in its own tab. The server throws
+that away. See "Lanes are named, not per-model".
+
 ---
 
 ## Evidence
@@ -67,6 +72,17 @@ than its watermark. Twenty comments arriving together is ten minutes of cooldown
 alone, before any analysis time. During all of it, a prompt the user types
 queues behind work they did not ask for, and the only sign of it is one line on
 the GitHub tab naming the comment currently being analysed.
+
+**And the queueing is artificial** — see "Lanes are named, not per-model" below.
+The extension already puts background work in its own tab; it is
+`ExtensionLock._lane(model)` keying on the model that makes a GitHub turn and a
+user prompt share a queue.
+
+**Stopping your own turn stalls it.** `App.jsx:393` (Esc) calls
+`abortExtensionWork` → `abortAll`, which clears *every* lane's queue. Background
+work already in flight has a pending promise nothing resolves, so it sits on the
+five-minute safety timeout (`agent-loop.js:1267`) with `_isProcessingComment`
+stuck true the whole time.
 
 ### 3. Failures go to a file nothing reads
 
@@ -126,60 +142,152 @@ ever read back into a prompt.
 
 ---
 
-## The target
+## The decided architecture
 
-One mechanism per job. The column that matters is the last one: most of this
-feature does not change.
+Agreed 2026-09-12, after the framing question "on top, or separate?" turned out
+to be the wrong axis.
 
-| job | today | after |
+### Why it is messy: there was no seam
+
+`AgentLoop` bundles two unrelated things — **the conversation** (history,
+callbacks, the user's turn) and **the machinery** (send a prompt, parse tool
+calls, run them, retry, feed the results back). The GitHub agent needed the
+second and could not have it without the first, so it copied it. Every duplicate
+in the evidence above is a symptom of that one missing layer.
+
+The real duplication is narrower than it looks: `runHeadlessTask` already shares
+`_extractToolCalls`, `mcpServer.executeTool`, `riskClassifier` and
+`_executeSubagent`. What it duplicates is the **prompt strategy** and the **turn
+driver** — about ninety lines pretending to be a second agent.
+
+### Same process. Not a close call.
+
+The browser lane lives in this process, bound to one WebSocket to one extension.
+A separate process needs its own bridge, and then two extensions fight over the
+same tabs. The architecture rests on one process owning that connection.
+
+### One turn-runner, two schedulers
+
+```
+core/turn-runner.js   NEW — "prompt + tool set + budget → final text".
+                      No session, no UI, no GitHub. Mostly moved, not written:
+                      the overlap between runHeadlessTask and the main loop.
+core/agent-loop.js    the interactive scheduler: conversation state, callbacks.
+
+github/
+  poller.js           unchanged — genuinely its own thing
+  classifier.js       unchanged — pure, tested
+  ci-log-parser.js    unchanged (+ tests)
+  work-queue.js       NEW, extracted from event-handler: what to analyse, when
+  review-task.js      NEW: builds the prompt, calls turn-runner
+  plan-writer.js      renamed, so `/plans` and `/github plans` are not one word
+  index.js            the actual glue, ~80 lines
+```
+
+The two *loops* stay distinct, because they genuinely differ: the interactive one
+is stateful with a human waiting; the GitHub one is batch and stateless per
+comment. That difference is real. Everything **below** it is shared.
+
+### Lanes are named, not per-model — and the tab mechanism already exists
+
+This is the finding that reshaped the plan. The extension **already** creates a
+separate tab per background request (`src/background/content.js`, the
+`payload.isSubagent` branch), already captures the conversation id
+(`src/background/main.js:32`, `payload.subagentUrl = sender.tab.url` — the
+`/app/<hash>` URL), already sends it to the server, already resolves it into the
+subagent result — and **nothing reads it**. The same write-only shape as
+`getAllMemories` before phase 3.
+
+GitHub analysis already runs through that path: `runHeadlessTask` →
+`_executeSubagent` → `isSubagent: true` → a fresh tab. **It is already not using
+the user's tab.**
+
+So the contention is entirely artificial: `ExtensionLock._lane(model)` keys on
+the *model*, so a GitHub turn and a user prompt are both `gemini` and serialise —
+in the server, while the browser would have put them in two different tabs.
+
+The fix is one change in shape:
+
+| lane | tab | lifetime |
 | --- | --- | --- |
-| talk to GitHub | `github-poller.js` | **unchanged** — genuinely its own thing |
-| decide what deserves a turn | `comment-classifier.js` | **unchanged** — pure, tested |
-| parse CI logs | `ci-log-parser.js` | **unchanged**, plus tests |
-| write the output | `plan-generator.js` | unchanged, **renamed** so it is not `/plans` |
-| run an AI turn | `runHeadlessTask` — a second loop | the **existing** loop |
-| assemble the prompt | inline template in the handler | `PromptBuilder`, one tiered path |
-| declare tools | a third hand-kept list | the same source as every other caller |
-| record failures | `agent.log`, write-only | `error-log.js`, flow `github` |
-| pace the work | unbounded queue + fixed cooldown | bounded, **and visible in the status bar** |
-| pick the browser lane | hard-coded `'gemini'` | `modelConfig`, like every other caller |
+| `gemini:main` | the user's, addressed by **tab id** | the session |
+| `gemini:github` | a background tab | **fresh per analysis** |
+| `chatgpt:main` | the reviewer's | the session |
+| `gemini:subagent-N` | ephemeral | one request |
 
-**What "use the existing loop" means concretely.** Not that PR analysis becomes a
-user turn — it must stay headless and must not touch the transcript. It means
-`runHeadlessTask` stops carrying its own copy of the loop's decisions: the tool
-list comes from where every other tool list comes from, the prompt is built by
-`PromptBuilder` with a background profile, failures go to `error-log.js`, and the
-lane comes from `modelConfig`. The *loop* stays separate; the *duplication* goes.
+Fresh-per-analysis was chosen deliberately over a persistent GitHub tab: each
+comment starts clean, so context cannot bleed between unrelated PRs, and no
+conversation-length limit accumulates. It costs the ~4s tab setup already paid
+today.
+
+**`extension-lock.js`'s own caveat is half-right and should be rewritten.** It
+says two same-model requests "race for one tab". Subagents each get a fresh tab,
+so they do not race with each other. The real race is that the *main* path picks
+`tabs[tabs.length - 1]` — whatever tab is last — so a subagent's tab can be
+handed the user's prompt. Identity-based addressing removes it; the global lock
+only hides it.
+
+### Three extension bugs found on the way
+
+- **Focus theft is permanent.** `trySendToTab` captures `originalActiveTabId`,
+  uses it only to decide whether to switch, and never switches back. Every send
+  yanks the browser to a Gemini tab and leaves it there.
+- **Leaked tabs on failure.** `chrome.tabs.remove` runs only for a `complete`
+  response. A timeout or an error leaks the tab, and `runHeadlessTask` runs up to
+  ten turns.
+- **`tabs[tabs.length - 1]`** is non-deterministic once anything else makes tabs.
+
+### The open assumption
+
+Whether Google tolerates two concurrent conversations on one account — and
+whether Chrome's background-tab throttling breaks the backgrounded one — **is
+not knowable from the code and is being measured before this is built.** If
+parallel turns out not to work, the lane map is also where a concurrency cap
+would go, so it is a smaller design, not a different one.
 
 ---
 
 ## Phases
 
-Ordered so each is shippable alone, and so the risky one lands on a tested
-foundation rather than before it.
+Ordered so the tests land before the risk, and so the extension work — which is
+independently testable in a browser — comes before the refactor that depends on it.
 
-| # | phase | why this order | risk |
+| # | phase | why here | risk |
 | --- | --- | --- | --- |
-| 1 | Failures → `error-log.js` (flow `github`); delete the `agent.log` writes | two lines, and until it lands every later phase debugs blind | **low** |
-| 2 | Characterisation tests for `github-poller.js` and `ci-log-parser.js` against a stubbed API | nothing below is safe to attempt without them | low, slow |
-| 3 | Fix `GITHUB_REPOS` being overwritten; move repo detection out of the constructor | a named bug, and it makes phase 5 testable | low |
-| 4 | Split the queue out of the handler into its own module, with tests | it is a work queue, not glue; it is also where phase 6 has to change | medium |
-| 5 | Prompt assembly → `PromptBuilder`; tool list → one source | removes the third list, and the repetition-filter exposure | **medium-high** |
-| 6 | Bound the queue; route the lane through `modelConfig`; surface depth in the status bar | the user-visible half: work they did not ask for stops being invisible | medium |
-| 7 | Rename the artifact so `/plans` and `/github plans` are not one word | cosmetic, and it needs a migration for existing dirs | low |
+| 0 | **Measure parallel Gemini tabs** | the assumption the lane design rests on | — |
+| 1 | Failures → `error-log.js` (flow `github`); delete the `agent.log` writes | two lines, and until it lands every later phase debugs blind | low |
+| 2 | Characterisation tests: `github-poller.js`, `ci-log-parser.js`, stubbed API | nothing below is safe without them | low, slow |
+| 3 | Fix `GITHUB_REPOS`; move repo detection out of the constructor | a named bug; makes phase 7 testable | low |
+| 4 | Extension: lane→tabId map, restore focus, close tabs on failure, drop `tabs[length-1]` | self-contained, verifiable in a browser, fixes three bugs | medium |
+| 5 | `ExtensionLock`: key lanes by name, not model | tiny diff, unlocks parallelism — **needs phase 4 first** | medium |
+| 6 | Extract `core/turn-runner.js`; `runHeadlessTask` becomes a caller | removes the third tool list and the flat re-serialisation **by construction** | **high** |
+| 7 | Split `work-queue` / `review-task` / `plan-writer` out of the event handler | the `github/` restructure proper, on a tested base | medium |
+| 8 | Rename the plan artifact; migrate existing dirs | cosmetic, needs a migration | low |
 
-**Phase 5 is the one to be careful with.** It touches `prompt-builder.js`, which
-`CLAUDE.md` warns must never be bulk-edited with a regex and whose template
-literals turn a stray backtick into a `ReferenceError` from an unrelated
-function. Byte-for-byte comparison of the generated prompts before and after, the
-way the `prompts/*.md` move was verified — not a read-through.
+**Phase 6 is the careful one.** It touches `prompt-builder.js`, which `CLAUDE.md`
+warns must never be bulk-edited with a regex and whose template literals turn a
+stray backtick into a `ReferenceError` thrown from an unrelated function. Verify
+byte-for-byte, the way the `prompts/*.md` move was — not by reading it.
 
----
+**Phase 4 ships a build artifact.** `extension/service-worker.js` is committed
+and Chrome loads the bundle, not `src/background/`. `npm run build --workspace=extension`
+or the change does nothing.
 
 ## How to verify
 
-The GitHub agent cannot be exercised the way the UI was, because it needs a
-token, a repo with open PRs, and a browser tab. So:
+**Phase 0 is a manual browser test, and only the owner can run it.** Open two
+tabs at `gemini.google.com/app`. Send a slow prompt in the first, and within ~2
+seconds a *different* slow prompt in the second. Watch whether both stream to
+completion, whether either shows a rate-limit notice or an A/B modal, and whether
+either answer is contaminated by the other's prompt; confirm the two URLs are
+distinct `/app/<hash>` ids. Repeat three or four times, **including once with
+both tabs backgrounded** — that is the state the GitHub lane actually runs in,
+and Chrome throttles background tabs, which `CLAUDE.md` already lists as
+unexamined. A failure only when backgrounded is a throttling problem with a known
+shape, not a Google limit.
+
+The rest cannot be exercised the way the UI was, because it needs a token, a repo
+with open PRs, and a browser tab. So:
 
 1. **A stubbed API, not a live one.** `_apiGet` and the one raw `fetch` (the CI
    log download, `github-poller.js:350`) are the only two network calls; both
@@ -200,13 +308,12 @@ token, a repo with open PRs, and a browser tab. So:
 
 ## Open questions — the owner's call
 
-- **Should analysis be opt-in per comment rather than automatic?** Today every
-  non-noise comment on every watched PR spends browser turns automatically. The
-  PR explorer already has an explicit path (`forceAnalyzeComment`, Enter on a
-  comment). Automatic-by-default is the expensive half of this feature and the
-  half nobody asked for per-comment; making it explicit would remove most of
-  phase 6's pressure. **Not proposed** — it is a product decision, and it is the
-  one that most changes what this feature *is*.
+- **Should analysis be opt-in per comment rather than automatic?** Raised, and
+  deliberately **deferred**: it was the biggest lever while background work was
+  taxing the user's own tab, and a dedicated `gemini:github` lane removes most of
+  that pressure. Revisit after phase 5, when the cost of automatic analysis is
+  measurable rather than felt. The explicit path already exists either way
+  (`forceAnalyzeComment`, Enter on a comment in the PR explorer).
 - **Is the CI-failure path earning its keep?** 198 lines of log parsing plus the
   fetch, producing another markdown file. Untested, and the noisiest source of
   automatic work.
