@@ -12,107 +12,113 @@ where the baton is.
 
 ## State
 
-- Branch `v1-stable`. **Six commits unpushed**; `origin/v1-stable` is at
-  `df791f5`. The owner pushes by hand — do not push without being asked.
-- `main` is untouched at `68f76cd`. **None of this has been through a PR yet.** Work
-  merges into `main` through a PR only; the branches here are deliberate history, so
-  do not delete them and do not rewrite history.
-- Tests: `npm test` → **624 passing**, up from 295. They live in `server/test/` now,
-  mirroring `server/src/` directory for directory.
-- Commits carry the `Co-Authored-By` and `Claude-Session` trailers the harness asks
-  for. Older ones are inconsistent on purpose.
+- Branch `v1-stable`. **Seven commits unpushed**; `origin/v1-stable` is at
+  `c04b355`. The owner pushes by hand — do not push without being asked.
+- `main` is untouched at `68f76cd`. **None of this has been through a PR yet.**
+  Work merges into `main` through a PR only; the branches here are deliberate
+  history, so do not delete them and do not rewrite history.
+- Tests: `npm test` → **624 passing**, in `server/test/` mirroring `server/src/`.
+- Four plan files at the root, all evidence-led and none finished:
+  `UI-REDESIGN.md` (round one done, round two open), `EXTENSION-PLAN.md`
+  (phases 1–2 done but **unverified**), `GITHUB-AGENT-PLAN.md` (designed,
+  shelved by the owner), and this file.
 
-## Done this session
+## Done, session three (2026-09-11 → 12)
 
-**All six Direction phases** (2 → 3 → 4 → 5 → 6 here; 0, 1 and 7 came before), then
-four priority tiers. `CLAUDE.md` has the reasoning; the headlines:
-
-- **P0, security.** The auto-mode command classifier read `command.split(/\s+/)[0]`
-  and stopped, so `echo hi; rm -rf /tmp/x` classified as `safe` and ran with no
-  approval. The bridge bound to `::` — every interface — with no authentication.
-  `diff-engine.js` overwrote files with no tests, and writing them found backups
-  escaping the backup directory.
-- **P1, correctness.** Tool arguments are checked against the schema the prompt
-  promises (`zod` was installed and never imported). Workspace switching became a
-  restart, because `setWorkspace` left memory writing to the *old* project and the old
-  allowlist armed.
-- **P2.** Settings tabs; `grep_search` rebuilt for large repos; the ChatGPT bridge was
-  **deleting** attached images rather than sending them; static prompt prose moved to
-  `server/src/prompts/*.md`.
-- **P3.** VS Code terminal integration (companion 1.4.0), folder picker, tests moved,
-  a running-line animation, `agent-loop.js` 1,910 → 1,612, and a command audit log.
-
-**Found while looking, not on any plan:** `<thought>` blocks were printed as raw XML
-because the parser matched `<think>` and every prompt asks for `<thought>` — one word,
-and it was most of "the output comes out messy". The token counter summed local
-history and ignored the system prompt and tool definitions. `/restart` touched an
-mtime nothing watched. `/image` put base64 in the session files.
+- **The CLI redesign**, all eight items of `UI-REDESIGN.md`. Chrome went from 17
+  rows to one; seven colours became five roles; no emoji left in the live frame;
+  the mode moved onto the input border. `RESERVED_ROWS` is a **base of 9 plus the
+  conditional furniture**, not a constant — the slash palette is six rows a single
+  number could never be right about. Measured at four sizes in five states.
+- **The extension's reconnect cause**, found by measurement after the first
+  diagnosis was wrong. Everything below in "Known and unfixed".
+- **Context invalidation.** Reloading the extension orphaned every running
+  content script, and `chrome.runtime.sendMessage` throws *synchronously* — so a
+  reply was scraped and then dropped on the last step while the CLI sat on
+  "Thinking…". All three content scripts now route through `safeSend`, and the
+  worker re-injects into open tabs on start, so a reload heals itself.
+- **`looksLikeProviderError` learned Gemini's refusal** ("I'm having a hard time
+  fulfilling your request"), which is structurally identical to a finished answer
+  and would otherwise become the turn's result.
+- **`/workspace` is one command.** It was three names for one noun, and
+  `/workspace <path>` silently ignored the path.
+- **`.vscode/` deleted** — untracked, gitignored, and recommending an extension id
+  that is not on the marketplace.
 
 ## Next
 
-**The GitHub restructure is designed, not started.** `GITHUB-AGENT-PLAN.md` now
-carries the agreed architecture, not just the diagnosis. **Phase 0 is a manual
-browser test only the owner can run** — two Gemini tabs, concurrent prompts,
-including once backgrounded — and the lane design depends on the answer.
+**The owner's order: the extension first, then the UI quirks. GitHub is shelved.**
 
-**`GITHUB-AGENT-PLAN.md`** — the restructure, planned 2026-09-11, nothing built.
-The diagnosis is one sentence: it is a second agent, built beside the first
-rather than on top of it, so it re-derived its own loop (`runHeadlessTask`), its
-own system prompt, a **third** hand-kept tool list, its own prompt assembly —
-which re-sends the whole history every turn, opting out of the repetition-filter
-protection `PromptBuilder` exists for — its own failure log (`agent.log`, which
-nothing reads), and its own word for "plan".
+### Waiting on the owner — nothing below can be settled without these
 
-Most of the feature does not change: the poller, the classifier and the CI
-parser are genuinely its own thing. What goes is the duplication — via a new
-`core/turn-runner.js` that both schedulers call, decided 2026-09-12 over the
-cheaper fix-in-place.
+1. **Read `/settings` → Status → `Extension`** after reloading the extension and
+   hard-refreshing the Gemini tab. It shows how long the bridge took to find the
+   server. If it still reads ~30s, `EXTENSION-PLAN.md` says the answer is an
+   offscreen document, and that is the next build.
+2. **The two-tab Gemini test** (`GITHUB-AGENT-PLAN.md` → phase 0): two tabs,
+   concurrent prompts, once with both backgrounded. The lane design depends on it.
+3. `vscode-companion/cli-agent-companion-1.3.1.vsix` is still tracked next to
+   1.4.0. Undecided since session two.
 
-**The bigger finding is about tabs.** The browser contention everyone assumed was
-inherent is not: the extension *already* gives background work its own tab
-(`content.js`, the `isSubagent` branch) and already captures the `/app/<hash>`
-conversation id (`main.js:32`) — which the server resolves and then never reads.
-It is `ExtensionLock._lane(model)` keying on the model that makes a GitHub turn
-queue behind the user's prompt. Lanes become **named** (`gemini:main`,
-`gemini:github`), addressed by tab id. Three extension bugs fell out: focus is
-never restored after a send, tabs leak on any non-`complete` response, and the
-main path picks `tabs[tabs.length - 1]` — whatever tab is last.
+### `EXTENSION-PLAN.md` — 2 of 9 phases, and those two are unproven
 
-Nine phases now, ordered so the tests land before the risk and the extension work
-before the refactor that needs it. `GITHUB_REPOS` is silently ignored in any git
-repo with an origin, which is the one outright bug on the server side.
+| # | phase | state |
+| --- | --- | --- |
+| 1 | fast retry + keep the worker resident | **done, unverified** |
+| 2 | `127.0.0.1`, port overridable, dead constants gone | **done** |
+| 3 | tests for `src/background/` | not started |
+| 4 | fix the code-block scrape | not started — **blocks UI round two** |
+| 5 | structured trace events → `/logs extension` | not started |
+| 6 | one throttling mechanism; restore focus; close tabs on failure | not started |
+| 7 | selector discovery fallback | not started |
+| 8 | collapse the two bridges (~600 lines) | not started |
+| 9 | tab identity (lane → tabId) | not started |
 
-Then five things raised while the phases ran and parked until they were done. All are
-recorded in `CLAUDE.md` → `## What's next`:
+### `UI-REDESIGN.md` round two — neither started
 
-1. **The extension** — Chrome throttling of background tabs, the retry behaviour
-   around it, what the bridge papers over. To be planned, not patched.
-2. **`/skills` shape.** Its alignment and escape handling are fixed; whether a
-   four-entry search path plus `skillFolders` as a config escape hatch plus
-   editor-opening creation is the right set of moves was never examined.
-3. **Session logs as post-compaction recall.** Compaction replaces old turns with a
-   summary, but `sessions/history.jsonl` still holds every turn. Letting the model look
-   back into it turns "compaction ate the detail" into a lookup instead of asking
-   compaction to guess in advance what will matter. The strongest of these five.
-4. **Search on a genuinely large codebase.** `grep_search` takes several patterns,
-   context lines and groups by file now, and the reasoning for having no index is
-   written down — but it was decided from the architecture, not from measurement.
-5. **The API-backend fork.** Recorded as a decision, not a task: it contradicts the
-   standing "no API keys" line, and that call is the owner's.
+- **Code blocks.** Half is extension phase 4 (the `JavaScript` welded to the first
+  line is a scrape bug). The CLI half: un-indent so a drag-select copies clean
+  code, mark the block's edges, and `ctrl+y` to copy. There is no clickable copy
+  button and there cannot be — that needs mouse tracking, which is what would
+  take native selection away.
+- **Jitter.** Measured: **21.9 rows rewritten per tick, 12.5×/second** — the whole
+  visible frame. Ink does not diff by line. The fix is to shrink the live region:
+  commit each action to `<Static>` as it completes instead of holding the whole
+  turn live. ~8 rows instead of 22. Same seam that produced the scroll glitches
+  twice, so measure before and after.
+
+### `GITHUB-AGENT-PLAN.md` — shelved by the owner, 0 of 9
+
+Designed, not started. The diagnosis and the lane finding are worth keeping:
+the browser contention is **artificial** — the extension already gives background
+work its own tab, and `ExtensionLock._lane(model)` is what makes it queue.
+
+### Still parked from session two
+
+`/skills` shape; **session logs as post-compaction recall** (the strongest of
+these); search on a genuinely large codebase; the API-backend fork.
 
 ## Known and unfixed
 
-- **A local process running as the user can still reach the bridge.** Loopback binding
-  and the Origin check close the network and the browser. Closing this needs a shared
-  secret the extension can read, which needs a setup step — a UX decision.
-- **Context budgets (24k / 48k / 96k per rung) are guesses.** Better than the single
-  hardcoded 50,000 they replaced, still guesses.
-- **`multiple_drafts` has never been observed firing.** It logs now (`/logs agent`).
-  Read it after a week of real use and decide whether the detector earns its place.
-- **Tool definitions are still two hand-kept lists** that must agree with
-  `TOOL_DEFINITIONS`. Generating them was blocked on `ask_question`, `ask_subagent`,
-  `ask_researcher`, `ask_reviewer` and `manage_memory` being dispatched inside
-  `agent-loop.js`; the slash-command split unblocked it but it is not done.
+- **The extension reconnect fix is not proven.** The cause is: `chrome.alarms`
+  clamps to a 30-second floor and `RECONNECT_MAX` was *exactly* that floor, so the
+  1s/2s/4s/8s/16s ladder was a constant. Measured with the real extension in
+  headless Chrome: 13.6s to connect warm, 25.6s cold, **one** handshake each; and
+  refusing every handshake gives two attempts in 75s, gap exactly 30.0s. Four
+  different fixes were built and **none moved that number** — Chrome kills the
+  idle worker and takes its timers. Two of those four could not even be tested,
+  because Chrome match patterns cannot contain a port and the injection detector
+  was wrong anyway. Headless reclaims workers harder than a real browser, so the
+  Status row exists to answer it where it matters.
+- **`enableAntiThrottling` creates its `<audio>` element and never appends it to
+  the document.** The throttling defence has always been a detached node.
+- **A local process running as the user can still reach the bridge.** Needs a
+  shared secret the extension can read, which needs a setup step.
+- **Context budgets (24k / 48k / 96k per rung) are guesses.**
+- **`multiple_drafts` has never been observed firing** (`/logs agent`).
+- **Tool definitions are three hand-kept lists**, not two: `prompt-builder.js`
+  has two and `runHeadlessTask` in `agent-loop.js` has a third with a different
+  subset. Nobody had counted the third.
 
 ## Gotchas that actually bit, this session
 
