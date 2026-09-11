@@ -20,6 +20,7 @@
 
 import { resolveEffort } from './effort.js';
 import * as paths from './paths.js';
+import { countToday } from './command-log.js';
 
 /**
  * The tabs, in the order they are shown.
@@ -50,6 +51,7 @@ export function describeSettings(agentLoop) {
   const facts = memoryOn ? (agentLoop?.memoryManager?.getAllMemories?.() || []).length : 0;
   const scope = safe(() => paths.getActiveScope(agentLoop.workspace), '');
   const github = agentLoop?.githubHandler?.getStatus?.() || {};
+  const commandsToday = safe(() => countToday(agentLoop.workspace), 0);
 
   const history = agentLoop?.conversationHistory || [];
   // Everything the tab holds, not just the turns kept locally — see
@@ -136,6 +138,13 @@ export function describeSettings(agentLoop) {
       label: 'Agent name',
       value: mc.agentName || agentLoop?.agentName || 'Agent CLI',
       hint: 'shown in the banner',
+    },
+    {
+      group: 'Status',
+      label: 'Commands run',
+      value: `${commandsToday} today`,
+      hint: 'every shell command, kept per day — enter to read them',
+      run: '/commands',
     },
     {
       group: 'Status',

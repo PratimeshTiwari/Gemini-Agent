@@ -5,8 +5,10 @@ import * as paths from '../../core/paths.js';
 import { createSkill, listSkills, skillSearchPath } from '../../core/skills.js';
 import { readErrors, summarizeErrors, clearErrors, FLOWS } from '../../core/error-log.js';
 import { listPlans } from '../../core/plan-archive.js';
+import { listCommandDays, readCommands } from '../../core/command-log.js';
 import { resolveWorkspaceInput, validateWorkspace } from '../../core/workspaces.js';
 import { SLASH_COMMANDS } from '../constants.js';
+import { oneLine } from '../format.js';
 import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
 import { canPickFolder, pickFolder } from '../folder-picker.js';
 
@@ -173,6 +175,45 @@ export async function handleSlashCommand(query, {
         at: 0,
         baseline: describeSettings(agentLoop),
       });
+      setIsProcessing(false);
+      return;
+    }
+
+    // What the agent has actually run on this machine. Nothing reads this back
+    // into a prompt — it is for the person whose computer it is.
+    if (command === 'commands' || command === 'audit') {
+      const day = (args[0] || '').trim();
+      const days = listCommandDays(agentLoop.workspace);
+
+      if (days.length === 0) {
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant', isLocal: true,
+          content: 'No commands run yet in this workspace.\n\n'
+            + 'Every shell command the agent runs — and every one it is blocked from running — '
+            + 'is appended to `.agent/logs/commands/<date>.jsonl`.',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      if (day) {
+        const entries = readCommands(agentLoop.workspace, day);
+        const icon = { ran: '✔', blocked: '⛔', rejected: '✖' };
+        const lines = entries.map((e) => {
+          const time = new Date(e.at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+          return `  ${icon[e.outcome] || '·'} \`${time}\` ${oneLine(e.command, 70)}`
+            + (e.outcome === 'ran' ? '' : ` _(${e.outcome})_`);
+        });
+        setHistory(prev => [...prev, { role: 'user', content: query }, {
+          role: 'assistant', isLocal: true,
+          content: `### 🧾 ${day} — ${entries.length} command${entries.length === 1 ? '' : 's'}\n\n`
+            + (lines.join('\n') || '  _(none)_'),
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      setActiveMenu({ type: 'commands', days, workspace: agentLoop.workspace });
       setIsProcessing(false);
       return;
     }

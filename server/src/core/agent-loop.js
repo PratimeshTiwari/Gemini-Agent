@@ -11,6 +11,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import { looksLikeMultipleDrafts, looksLikeCapabilityDenial, looksLikeProviderError } from './drift-detector.js';
 import { logError } from './error-log.js';
+import { logCommand } from './command-log.js';
 
 /**
  * How many times to re-ask when the *provider* errors rather than the model.
@@ -860,6 +861,12 @@ export class AgentLoop {
       
       if (call.name === 'run_command' && risk.level === 'critical') {
         result = { success: false, error: `❌ Command blocked by Security Constraints: ${risk.reason}` };
+        // Blocked commands are the most worth recording, not the least: what the
+        // agent *tried* to do is the interesting half of an audit log.
+        logCommand(this.workspace, {
+          command: call.args.command, cwd: call.args.cwd || this.workspace,
+          outcome: 'blocked', reason: risk.reason, risk: risk.level,
+        });
       } else if (call.name === 'run_command') {
         const commandToRun = call.args.command;
         let isApproved = false;
@@ -899,8 +906,19 @@ export class AgentLoop {
             taskManager: this.taskManager,
             onTaskAlert: (hit) => this.handleTaskAlert(hit),
           });
+          // A command that *succeeded* is the one worth auditing — `git push
+          // --force` does not fail, so the failure log never sees it.
+          logCommand(this.workspace, {
+            command: commandToRun, cwd: call.args.cwd || this.workspace,
+            outcome: 'ran', risk: risk.level,
+            exitCode: result?.result?.exitCode,
+          });
         } else {
           result = result || { success: false, error: 'User rejected command execution.' };
+          logCommand(this.workspace, {
+            command: commandToRun, cwd: call.args.cwd || this.workspace,
+            outcome: 'rejected', reason: result?.error, risk: risk.level,
+          });
         }
       } else if (call.name === 'ask_question') {
         result = await new Promise((resolve) => {

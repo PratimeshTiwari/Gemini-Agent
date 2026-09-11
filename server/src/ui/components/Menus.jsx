@@ -7,6 +7,7 @@ import { QuestionPrompt } from './QuestionPrompt.jsx';
 import { summarizeDiff, previewRows } from '../diff-preview.js';
 import { oneLine } from '../format.js';
 import { canPickFolder, pickFolder } from '../folder-picker.js';
+import { readCommands } from '../../core/command-log.js';
 import { EFFORT_LEVELS, resolveEffort } from '../../core/effort.js';
 import { describeSettings, filterSettings, settingsChanged, SETTING_GROUPS } from '../../core/settings.js';
 import { listWorkspaceCandidates } from '../../core/workspaces.js';
@@ -424,6 +425,34 @@ export function Menus({
             </Box>
           );
         })()}
+
+        {activeMenu?.type === 'commands' && (
+          <Box flexDirection="column" borderStyle="single" borderColor="yellow" padding={1}>
+            <Text bold color="yellow">🧾  Commands run</Text>
+            <Text dimColor wrap="wrap">
+              Every shell command, and every one that was blocked. Kept per day, and never
+              read back into a prompt — this is for you, not for the model.
+            </Text>
+            <SelectInput
+              limit={10}
+              items={activeMenu.days.map((day) => {
+                const entries = readCommands(activeMenu.workspace, day);
+                const blocked = entries.filter((e) => e.outcome !== 'ran').length;
+                return {
+                  label: `${day}   ${String(entries.length).padStart(3)} command${entries.length === 1 ? ' ' : 's'}`
+                    + (blocked ? `   ${blocked} not run` : ''),
+                  value: day,
+                };
+              })}
+              onSelect={(item) => {
+                setActiveMenu(null);
+                setFocus(FOCUS_INPUT);
+                handleSubmit(`/commands ${item.value}`);
+              }}
+            />
+            <Text dimColor>↑↓ move · enter open · esc cancel</Text>
+          </Box>
+        )}
 
         {activeMenu?.type === 'plans' && (
           <Box flexDirection="column" borderStyle="single" borderColor="blue" padding={1}>

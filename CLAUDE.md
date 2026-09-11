@@ -228,6 +228,7 @@ walking at `$HOME`; `paths.test.js` covers it.
 | `<ws>/.agent/state/` | `editor.json` (VS Code companion), `github.json`, `plan-approval.json` |
 | `<ws>/.agent/github-pr-plans/` | GitHub PR agent output |
 | `<ws>/.agent/logs/errors.jsonl` | structured failure log — one JSON object per line |
+| `<ws>/.agent/logs/commands/<date>.jsonl` | every shell command run, blocked or rejected — an audit trail, never read back into a prompt |
 | `<ws>/.agent/backups/`, `context/`, `logs/`, `tmp/` | see `paths.js` |
 | `<ws>/.agent/sessions/history.jsonl` | conversation history, local copy |
 | `~/.agent/workspaces/<name>-<hash>/history.jsonl` | the durable copy of the same history |
@@ -275,6 +276,30 @@ than written, because a poller failing every tick used to bury everything else. 
 written as its own record marked `tally: true` when the window closes or the process exits —
 so a storm of 500 shows as 500, not 1, and the tally line is never miscounted as another
 occurrence.
+
+### The command log
+
+`core/command-log.js` appends every `run_command` to `<ws>/.agent/logs/commands/<date>.jsonl`,
+whether it ran, was blocked by the risk classifier, or was rejected at the approval prompt.
+`/commands` reads it back; the Status tab shows today's count.
+
+Nothing reads it into a prompt and nothing acts on it. It answers "what has this thing actually
+been doing on my computer?" for the person whose computer it is, and it is not covered by
+anything else here:
+
+- `errors.jsonl` records **failures**, by flow. `git push --force` does not fail, so the one
+  command you would most want to find is the one that log never sees.
+- `sessions/history.jsonl` has tool calls mixed into the conversation, and `/compact` replaces
+  older turns with a summary — the record you would want six weeks from now is the first thing
+  compaction throws away.
+
+One file per day, because that is how people look for this ("what did it do on Tuesday"), with
+a per-process session id inside so a day can be read back session by session. Append-only, and
+`logCommand` never throws: a failure to write the audit log must not fail the command.
+
+**Blocked commands are the most worth keeping, not the least.** What the agent *tried* to do is
+the interesting half — a `critical` verdict from the classifier is exactly the line someone
+would want to see later.
 
 ## Branching and PRs
 
