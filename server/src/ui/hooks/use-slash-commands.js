@@ -409,11 +409,30 @@ export async function handleSlashCommand(query, {
       return;
     }
 
-    // `/workspace` on its own reports; only `/set-workspace` offers the switch,
-    // and the switch is a restart.
-    if (command === 'set-workspace') {
-      setActiveMenu({ type: 'workspace', current: agentLoop.workspace });
-      setIsProcessing(false);
+    /**
+     * One command for one noun.
+     *
+     * There were three: `/workspace` printed a report, `/set-workspace` opened a
+     * picker, and an internal `switch-workspace` did the actual restart — and
+     * `/workspace <path>` **silently ignored the path**, printing the report and
+     * doing nothing, which is the worst kind of no-op because it looks like it
+     * worked.
+     *
+     * This is the shape phase 6 settled on for `/config`: the current state is
+     * the screen's heading rather than a separate command that navigates away to
+     * print what the screen could have shown. `/workspace` opens that screen;
+     * `/workspace <path>` skips it. `/set-workspace` still answers — muscle
+     * memory and the old hint text both point at it — but it is out of the
+     * palette, because the point was to stop offering two doors to one room.
+     */
+    if (command === 'workspace' || command === 'set-workspace') {
+      const target = args.join(' ').trim();
+      if (!target) {
+        setActiveMenu({ type: 'workspace', current: agentLoop.workspace });
+        setIsProcessing(false);
+        return;
+      }
+      await switchWorkspace(target);
       return;
     }
 
@@ -421,8 +440,16 @@ export async function handleSlashCommand(query, {
     // at the new directory, because every collaborator keyed on the workspace —
     // the session store, memory, config, the allowlist — is rebuilt by a
     // restart and was *not* rebuilt by the in-place switch this replaces.
-    if (command === 'switch-workspace') {
-      const target = args.join(' ').trim();
+    /**
+     * Leave, and come back pointing somewhere else.
+     *
+     * A restart rather than an in-place switch because every collaborator keyed
+     * on the workspace — the session store, memory, config, the command
+     * allowlist — is rebuilt by a restart and was *not* rebuilt by the in-place
+     * version this replaced. See CLAUDE.md → P1.
+     */
+    async function switchWorkspace(raw) {
+      const target = resolveWorkspaceInput(raw);
       const problem = validateWorkspace(target);
       if (problem) {
         setHistory(prev => [...prev, { role: 'assistant', content: `❌ ${problem}`, isLocal: true }]);
@@ -450,6 +477,10 @@ export async function handleSlashCommand(query, {
       setHistory(prev => [...prev, { role: 'assistant', content: `📂 Restarting in \`${target}\`…`, isLocal: true }]);
       setIsProcessing(false);
       setTimeout(() => process.exit(75), 120);
+    }
+
+    if (command === 'switch-workspace') {
+      await switchWorkspace(args.join(' '));
       return;
     }
 

@@ -11,7 +11,7 @@ import { readCommands, listCommandDays } from '../../core/command-log.js';
 import { EFFORT_LEVELS, resolveEffort } from '../../core/effort.js';
 import { describeSettings, filterSettings, settingsChanged, SETTING_GROUPS } from '../../core/settings.js';
 import { listWorkspaceCandidates } from '../../core/workspaces.js';
-import { skillsDir } from '../../core/paths.js';
+import { skillsDir, agentDir } from '../../core/paths.js';
 import { skillSearchPath, listSkills } from '../../core/skills.js';
 import { FOCUS_INPUT } from '../constants.js';
 
@@ -729,9 +729,10 @@ export function Menus({
         })()}
 
         {activeMenu?.type === 'workspace' && (
-          <Box flexDirection="column" borderStyle="single" borderColor="blue" padding={1}>
-            <Text bold color="cyan">Choose a workspace</Text>
-            <Text dimColor wrap="truncate-start">Currently: {activeMenu.current}</Text>
+          <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+            <Text bold color="cyan">Workspace</Text>
+            <Text dimColor wrap="truncate-start">Here:  {activeMenu.current}</Text>
+            <Text dimColor wrap="truncate-start">State: {agentDir(activeMenu.current)}</Text>
             <Text dimColor wrap="wrap">
               The agent restarts into it. This conversation belongs to the project you are
               leaving, and so do its memory, config and command rules.
@@ -753,17 +754,17 @@ export function Menus({
                 setFocus(FOCUS_INPUT);
                 if (item.value === '\u0000browse') {
                   const chosen = await pickFolder('Choose a project to work on');
-                  if (chosen && chosen !== activeMenu.current) handleSubmit(`/switch-workspace ${chosen}`);
+                  if (chosen && chosen !== activeMenu.current) handleSubmit(`/workspace ${chosen}`);
                   return;
                 }
                 if (item.value === '\u0000type') {
                   // Hand the user a half-written command rather than a second
                   // prompt of our own: the input line already knows how to edit.
-                  setInput('/switch-workspace ');
+                  setInput('/workspace ');
                   return;
                 }
                 if (item.value === activeMenu.current) return;
-                handleSubmit(`/switch-workspace ${item.value}`);
+                handleSubmit(`/workspace ${item.value}`);
               }}
             />
             <Text dimColor>↑↓ move · enter choose · esc cancel</Text>

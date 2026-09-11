@@ -158,19 +158,18 @@ export async function handleSlashCommand(loop, command, args) {
     // config — so after a switch the agent recalled the new project's memory
     // while writing facts into the old one's file, and the old project's
     // allowlist stayed armed. A restart rebinds everything; nothing else does.
-    case 'workspace':
+    // `/workspace` is handled in the UI layer now: it opens one screen whose
+    // heading is this report, and `/workspace <path>` restarts into that path.
+    // Only `/agent-dir` still lands here, and only to answer a different
+    // question — where the agent's *own source* is.
     case 'agent-dir': {
-      const here = command === 'agent-dir'
-        ? `\n\nThe agent's own source is at \`${loop.agentSourceDir}\`. You do not need to `
-          + 'switch to it — file tools take absolute paths, and the system prompt already '
-          + 'tells the model it may edit itself there.'
-        : '';
       return {
         message: `📂 Workspace: \`${loop.workspace}\`\n`
           + `   State:     \`${paths.agentDir(loop.workspace)}\`\n\n`
-          + 'Pick a different one with `/set-workspace`, which restarts into it — '
-          + 'or start there: `agent-cli --workspace <path>`.'
-          + here,
+          + `The agent's own source is at \`${loop.agentSourceDir}\`. You do not need to `
+          + 'switch to it — file tools take absolute paths, and the system prompt already '
+          + 'tells the model it may edit itself there.\n\n'
+          + 'To work somewhere else: `/workspace <path>`, which restarts into it.',
       };
     }
 
