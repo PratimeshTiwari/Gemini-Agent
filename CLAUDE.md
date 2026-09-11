@@ -534,11 +534,26 @@ dispatch paths still want scaffolding and are left for the split in P3.
   nowhere else. Typing searches *every* tab and says so, because making someone find the right
   tab before they can search is asking them to know the answer first. Escape clears a filter
   before it closes the page. `/context`'s numbers live on the Context tab too.
-- **`server/src/prompts/*.md`.** The point is not readability, it is that a prompt change is
-  invisible in a diff today — one word inside a template literal in a 1,035-line file. The
-  greedy-regex incident that ate three tool definitions twice is the same root cause. Tool
-  definitions stay in code and get *generated* from `TOOL_DEFINITIONS`: separating a schema
-  from its handler is how they drift.
+- **`server/src/prompts/*.md`** — *done, partly.* The point is not readability: a prompt change
+  was invisible in a diff, one word inside a template literal in a 1,000-line file, and that
+  file is the one with the never-bulk-edit-with-a-regex warning. Template literals also have
+  escaping rules that prose does not — a single stray backtick there surfaces as
+  `ReferenceError` from an unrelated function.
+
+  Only **static** prose moved (~116 lines, seven files): the flash and flash-thinking
+  protocols, both tool-call formats, the flash core rules, the pro guardrails and the
+  plan-first step. Anything the builder computes stays in JavaScript, because a markdown file
+  full of `${isBrief ? '2' : '3'}` is worse than what it replaced. The move was verified
+  byte-for-byte: all ten effort × topology prompt shapes came out identical, and one did not
+  at first — `trimEnd()` had eaten a trailing newline that the assembled prompt depended on.
+  `prompt-loader.test.js` guards it.
+
+  **Not done: generating the tool definitions from `TOOL_DEFINITIONS`.** It cannot be done as
+  described, because `ask_question`, `ask_subagent`, `ask_researcher`, `ask_reviewer` and
+  `manage_memory` are dispatched in `agent-loop.js` and are not in that array at all. Generating
+  needs those declared somewhere first, which is really part of splitting `agent-loop.js` (P3).
+  Until then `_buildToolDefinitions` stays two hand-kept lists that must agree with the array —
+  which is exactly the drift the tests in `prompt-builder.test.js` exist to catch.
 - **Extension error richness** — *done.* The bridge already read `payload.op`/`stage`; nothing
   sent them. Service-worker errors now carry `op`, `stage`, `targetModel` and the DOM-side
   message that actually failed. Content scripts run in the page and cannot set fields on that
@@ -557,7 +572,7 @@ dispatch paths still want scaffolding and are left for the split in P3.
   stopped counting": ripgrep's `--max-count` caps *per file*, so without the spare there is
   never a surplus to notice. See "Search, and why there is still no index".
 
-### P3 — after
+### P3 — after · next
 
 - VS Code terminal shell integration: engine `^1.80.0` → `^1.93.0`, then repackage the `.vsix`.
   `watch_task` already exists to receive it.

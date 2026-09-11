@@ -19,6 +19,7 @@ import { resolve, relative, join, dirname } from 'path';
 import { CodeMinifier } from '../context/code-minifier.js';
 import { skillCatalogue } from './skills.js';
 import { resolveEffort } from './effort.js';
+import { prompt } from './prompt-loader.js';
 import { parseMemory, readMemoryEnabled } from '../context/memory-manager.js';
 
 // How often to send the condensed reminder, counted in MESSAGES pushed to the tab —
@@ -334,16 +335,12 @@ Your job is to execute the task using your read-only tools if necessary and retu
    * Flash-specific ultra-concise core instructions (~300 tokens).
    * Flash models struggle with long prompts — keep it minimal.
    */
+  /**
+   * Flash-specific ultra-concise core instructions (~300 tokens).
+   * Flash models struggle with long prompts — keep it minimal.
+   */
   _buildFlashCoreInstructions() {
-    return `## Rules
-1. Read files before editing. Never edit blind.
-2. Verify edits: re-read the file after changing it.
-3. One step at a time. Be surgical — smallest edit possible.
-4. If unsure about a path or name, use search_files or grep_search.
-5. If edit_file fails with oldText mismatch, use read_file first, then retry.
-6. If a command fails, analyze the error and retry.
-7. One answer per turn. Pick an approach, don't offer drafts.
-8. If a task is ambiguous, ask using the ask_question tool.`;
+    return prompt('core-flash');
   }
 
   /**
@@ -386,37 +383,15 @@ ${modelTier === 'pro' ? `## 4. Communication
    * Tier-adaptive tool call format section.
    * Flash gets concrete examples. Pro gets just the format spec.
    */
+  /**
+   * How to write a tool call.
+   *
+   * Flash gets worked examples and pro gets the spec: the smaller model copies
+   * a shape far more reliably than it follows a description, and the larger one
+   * does not need the tokens spent on showing it.
+   */
   _buildToolCallFormat(tier) {
-    if (tier === 'flash') {
-      return `## Tool Call Format
-Use JSON code blocks. ALWAYS close with \`\`\`. Examples:
-
-Read a file:
-\`\`\`json
-{"name": "read_file", "args": {"path": "src/index.js"}}
-\`\`\`
-
-Search for text:
-\`\`\`json
-{"name": "grep_search", "args": {"pattern": "functionName"}}
-\`\`\`
-
-Edit a file:
-\`\`\`json
-{"name": "edit_file", "args": {"path": "src/index.js", "edits": [{"oldText": "const x = 1;", "newText": "const x = 2;"}]}}
-\`\`\`
-
-CRITICAL: Always close JSON blocks with \`\`\`. Never leave them open.`;
-    }
-
-    return `## Tool Call Format
-When you need to use a tool, output a JSON code block:
-
-\`\`\`json
-{"name": "tool_name", "args": {"param1": "value1"}}
-\`\`\`
-
-You can make MULTIPLE tool calls in a single response. Each must be in its own \`\`\`json block.`;
+    return prompt(tier === 'flash' ? 'tool-call-format-flash' : 'tool-call-format-full');
   }
 
   /**
@@ -457,15 +432,9 @@ You can make MULTIPLE tool calls in a single response. Each must be in its own \
    * Optimized for 2.5 Flash — short attention, weak instruction-following.
    * Budget: ~400 tokens of reasoning instructions.
    */
+  /** The flash tier's reasoning protocol: there is deliberately almost none. */
   _getFlashInstructions() {
-    return `## How to Work
-- Act immediately. No preamble. No thinking out loud.
-- Go straight to tool calls or answers.
-- No prose before a tool call. Just the JSON.
-- One sentence explanation max per action.
-- Do NOT investigate beyond what is asked.
-- Prioritize: speed > thoroughness > elegance.
-- If ambiguous, pick the most likely interpretation. Only ask if it could cause data loss.`;
+    return prompt('reasoning-flash');
   }
 
   /**
@@ -473,40 +442,9 @@ You can make MULTIPLE tool calls in a single response. Each must be in its own \
    * Optimized for 2.5 Flash with thinking — decent reasoning, moderate context window.
    * Budget: ~1200 tokens of reasoning instructions.
    */
+  /** Flash-thinking: a three-phase protocol, still a short prompt. */
   _getFlashThinkingInstructions() {
-    return `## Reasoning Protocol (3-Phase)
-
-You are a skilled software engineer. Follow this protocol for every non-trivial task.
-
-### Phase 1: INVESTIGATE
-Before writing code:
-1. Read the target file and at least one caller or test file.
-2. Use grep_search to find usages if editing a function/class.
-3. Note what you found in a short <thought> block (3-5 lines max).
-
-<thought> example:
-- Target: src/utils.js (read ✓)
-- Called by: src/app.js:42 (read ✓)
-- Tests: src/utils.test.js exists but doesn't cover this function
-- Approach: Add validation at the function boundary
-</thought>
-
-### Phase 2: IMPLEMENT
-1. Make the smallest change that solves the problem.
-2. Handle errors explicitly — no empty catch blocks.
-3. Preserve existing behavior for unchanged paths.
-4. If you must assume something, say: "⚠️ ASSUMPTION: [what]"
-
-### Phase 3: VERIFY
-1. Re-read the edited file to confirm the edit applied.
-2. Run tests if they exist.
-3. Check callers for regressions.
-
-## Key Rules
-- NEVER say "I think" or "probably" — cite file:line or say "unverified assumption"
-- NEVER guess file contents — read_file first
-- Flag unrelated bugs: "⚠️ UNRELATED BUG: [description] in [file:line]"
-- Flag security issues immediately: "🔴 SECURITY: [description]"`;
+    return prompt('reasoning-flash-thinking');
   }
 
   /**
@@ -532,37 +470,7 @@ defensible in review. You DO NOT guess. You VERIFY.
 Reasoning level: **${level}**.`;
 
     // The heart of it: decide what you are doing before you touch anything.
-    const planFirst = isBrief ? '' : `
-## STEP 1: RESTATE AND DECOMPOSE — before any tool call
-
-Every new request, bug report or failing test starts here, in one <thought> block:
-
-1. **Restate** the request in one sentence, in your own words. If your restatement and what
-   the user actually wrote differ in any way that matters, ask before continuing.
-2. **Decompose** it into a numbered checklist. Each item is one verifiable outcome
-   ("stop editor.json being written before migration"), never a topic ("look at config").
-3. **Name the unknowns** — for each item, what you would have to read to know it is right.
-
-Then work the checklist top to bottom. Say which item you are on. Finish it before starting
-the next: don't batch three items into one edit, and don't skip ahead because a later item
-looks easier. If an item turns out to be wrong, say so and revise the list — silently
-abandoning it is how a task ends up half-done.
-
-For anything past a couple of steps, write the checklist to \`.agent/artifacts/task.md\` with
-\`create_file\` and tick items off as you go. The user reads that file.
-
-## STEP 2: TASK CLASSIFICATION
-
-Classify the task, because the protocol differs:
-
-| Task Type | Protocol | Key Focus |
-|-----------|----------|-----------|
-| **BUG_FIX** | Reproduce → Root Cause → Minimal Fix → Regression Test → Verify | The ACTUAL cause, not the symptom |
-| **NEW_FEATURE** | Requirements → Interface First → Implementation → Integration Test | Design the API before writing logic |
-| **REFACTOR** | Map ALL Dependencies → Preserve Behavior → Transform → Verify ALL Callers | Zero behavior change |
-| **INVESTIGATION** | Breadth-First → Trace Execution → Document Findings | Explore wide before deep |
-| **CODE_REVIEW** | Read Full Context → Edge Cases → Security → Performance | Adversarial mindset |
-`;
+    const planFirst = isBrief ? '' : `\n${prompt('pro-plan-first')}\n`;
 
     const investigate = `
 ### PHASE 1: INVESTIGATION (never skip)
@@ -615,17 +523,7 @@ and what could go wrong with it — empty inputs, concurrent access, scale, erro
 5. **Adversarial self-review** — read the diff as a hostile reviewer. What would you flag?
    Say it out loud rather than hoping nobody looks.` : ''}`;
 
-    const guardrails = `
-## ANTI-HALLUCINATION GUARDRAILS (non-negotiable)
-
-- **Never reference a file you have not read this session.** If you say "X contains Y", you
-  read it with read_file.
-- **Never assume a function signature** — grep for the definition.
-- **Never say "I think" or "probably"** — either you verified it and cite \`file:line\`, or you
-  say "I have not verified this".
-- **If two sources contradict, flag it**: "⚠️ CONTRADICTION: A says X, B says Y".
-- **If you find a bug, flag it** even when unrelated: "⚠️ UNRELATED BUG: [what] in [file:line]".
-- **If you see a security issue, stop and say so**: "🔴 SECURITY: [what]".`;
+    const guardrails = `\n${prompt('pro-guardrails')}`;
 
     const assumptions = isDeep ? `
 

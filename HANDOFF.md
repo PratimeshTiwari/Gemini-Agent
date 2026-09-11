@@ -15,7 +15,7 @@ baton is.
 - Branch `v1-stable`. **Seven commits ahead of `origin/v1-stable`, not yet pushed.**
 - `main` is untouched at `68f76cd`. Work merges into `main` through a PR only.
   The branches in this repo are deliberate history; do not delete them.
-- Tests: `npm test` → **539 passing**, up from 295.
+- Tests: `npm test` → **582 passing**, up from 295.
 - Commits carry the `Co-Authored-By` and `Claude-Session` trailers the harness asked for.
   Older commits are inconsistent on purpose — the rewrite was reverted. Do not rewrite
   history again.
@@ -52,8 +52,11 @@ retry objective), `/context` (padded ANSI strings with `padEnd`, so the box neve
   wrapping; `looksLikeMultipleDrafts` now logs. `_extractToolCalls` is pinned by tests.
   **One thing to come back to: read `/logs agent` after a week and decide whether
   `multiple_drafts` has ever fired.**
-- **P2, next.** Settings tabs; `prompts/*.md`; extension `op`/`stage`; the ChatGPT image path.
-- **P3.** VS Code shell integration; folder picker; **restructure** the GitHub PR agent
+- ~~**P2**~~ — **done 2026-09-11.** Settings tabs (three, cycled with tab); `grep_search`
+  rebuilt for large repos (several patterns per call, context lines, grouped by file);
+  the ChatGPT bridge was **deleting** images rather than attaching them; `/logs extension`
+  now gets `op`/`stage`; static prompt prose moved to `server/src/prompts/*.md`.
+- **P3, next.** VS Code shell integration; folder picker; **restructure** the GitHub PR agent
   (not delete — the owner asked for a separate plan); split `agent-loop.js`.
 
 Then the fork in `## What's next` → "The fork": whether an opt-in API backend joins the
