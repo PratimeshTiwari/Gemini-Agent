@@ -11,8 +11,8 @@ const SLASH_COMMANDS = [
   { name: 'config', desc: 'Which model implements, and which one reviews it' },
   { name: 'plan', desc: 'Plan Mode — every edit needs approval' },
   { name: 'auto', desc: 'Auto Mode — safe edits apply automatically' },
-  { name: 'workspace', desc: 'Show or set the active workspace' },
-  { name: 'set-workspace', desc: 'Pick a workspace from a list of folders' },
+  { name: 'workspace', desc: 'Where the agent is working, and where its state lives' },
+  { name: 'set-workspace', desc: 'Switch project — restarts into it' },
   { name: 'memory', desc: 'What the agent has learned about this project' },
   { name: 'context', desc: 'Show what is in the context window' },
   { name: 'compact', desc: 'Compact history to save tokens' },
@@ -24,7 +24,6 @@ const SLASH_COMMANDS = [
   { name: 'image', desc: 'Attach an image — a path, or bare for the clipboard' },
   { name: 'plans', desc: 'Past plans, newest first' },
   { name: 'logs', desc: 'What has been failing, grouped by flow' },
-  { name: 'agent-dir', desc: 'Point the workspace at the agent\'s own source' },
   { name: 'restart', desc: 'Restart the server' },
   { name: 'exit', desc: 'Quit the agent' },
 ];

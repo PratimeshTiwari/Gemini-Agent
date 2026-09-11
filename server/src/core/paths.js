@@ -318,3 +318,13 @@ export function ensureParent(filePath) {
  * hashes the path and cannot be reversed, so the list has to be kept separately.
  */
 export const recentWorkspacesPath = () => path.join(homeDir(), 'recent-workspaces.json');
+
+/**
+ * Where a chosen workspace is left for the supervisor to pick up.
+ *
+ * Switching workspace mid-session was the problem, not the feature — see
+ * CLAUDE.md → What's next. `/set-workspace` writes the choice here, the process
+ * exits asking to be restarted, and `src/index.js` relaunches pointing at it.
+ * A file rather than an argument because the child cannot change its own argv.
+ */
+export const nextWorkspacePath = () => path.join(homeDir(), 'next-workspace');

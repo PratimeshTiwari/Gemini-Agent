@@ -481,16 +481,23 @@ file outside the workspace produced `../../../tmp/x`, and `resolve(backupDir, th
 backup *outside the backup directory and outside the workspace*: with workspace `/a/b/c`, a
 backup of `/tmp/x` landed at `/a/b/tmp/x.bak`. Anything outside now goes under `_external/`.
 
-### P1 — correctness · next
+### P1 — done, 2026-09-11
 
-**Validate tool arguments.** `zod` is a dependency and `mcp/mcp-server.js` never imports it.
+**Validate tool arguments.** *(done — `mcp/validate-args.js`.)* `zod` is a dependency and
+`mcp/mcp-server.js` never imports it.
 `TOOL_DEFINITIONS` declares a schema per tool and `PromptBuilder` renders it into the prompt as
 *the contract*, then `_extractToolCalls` does `_cleanJsonString` → `JSON.parse` → dispatch with
 nothing checking the args against the schema just promised. A wrong-typed arg fails deep inside
 a handler with a message the model cannot act on. Validating and returning the specific schema
 error for repair is most of what a real tool-call API buys, and it is available today.
 
-**The workspace commands, the way `/scope` went in phase 5.** `setWorkspace` rebinds
+Schemas are built from the declarative `parameters` block, so there is one source of truth. It
+also **coerces what is obviously meant** — `"10"` for a number is a working turn that used to be
+thrown away — but deliberately *not* booleans the same way: `Boolean("false")` is `true`, which
+would silently invert `isRegex` and `recursive`, the two flags where it matters most. The words
+are read explicitly instead.
+
+**The workspace commands, the way `/scope` went in phase 5.** *(done.)* `setWorkspace` rebinds
 `mcpServer`, `promptBuilder`, `diffEngine` and `contextManager` but *not* `sessionStore`
 (deliberately), *not* `memoryManager`, and *not* the config. So after `/workspace`:
 `promptBuilder._loadMemory()` reads the new project's `memory.md` while `manage_memory add`
@@ -498,20 +505,27 @@ writes to the old one, and the old project's allowlist stays armed against the n
 `/agent-dir` goes outright — tools already take absolute paths (`edit-file.js:15`) and the
 system prompt already grants self-editing, so it unlocks nothing and silently repoints state.
 `/workspace` becomes read-only; `/set-workspace` becomes a *restart* picker, which the exit-75
-supervisor now makes possible.
+supervisor now makes possible. The choice is left in `~/.agent/next-workspace` and `src/index.js`
+consumes it on relaunch — a file, because the child cannot rewrite its own argv, and read-once,
+because a stale handover would silently override `--workspace` on every later start.
 
-**Settings rows can outgrow the viewport.** `describeSettings` pads to a fixed width with no
-bound against terminal width, so long values wrap — in the live frame, which is the one place
-that must never happen. Truncate the hint first, then the value.
+**Settings rows can outgrow the viewport.** *(done.)* `describeSettings` padded to a fixed width
+with no bound against terminal width, so long values wrapped — in the live frame, which is the
+one place that must never happen. The hint truncates first: it is the part you can lose and
+still know what the setting is set to. Verified at 72 columns.
 
-**Instrument `looksLikeMultipleDrafts`.** The other two detectors log (`op: 'provider_error'`,
-`op: 'tool_amnesia'`); this one fires silently, so there is no evidence it has ever fired at
-all. One `logError` line, then let a week of data decide. Deleting on a hunch is how you lose
-the one that was working.
+**Instrument `looksLikeMultipleDrafts`.** *(done — `op: 'multiple_drafts'`.)* The other two
+detectors logged and this one did not, so there was no evidence it had ever fired at all —
+exactly the state in which a detector that works cannot be told from one that does nothing.
+`/logs agent` answers it now. **Still to do: read it after a week of use and decide.**
 
-**Characterisation tests for `agent-loop.js`.** 1,908 lines, no tests, and it is the dispatcher.
+**Characterisation tests for `agent-loop.js`.** *(started.)* `_extractToolCalls` is covered —
+it is what stands in for a tool-call API here, so it is the most load-bearing text processing
+in the project, and it turned out to handle every adversarial case put to it: braces inside
+strings, nested objects, raw newlines in string literals, and unfenced JSON. The retry and
+dispatch paths still want scaffolding and are left for the split in P3.
 
-### P2 — features
+### P2 — features · next
 
 - **Settings tabs**, Claude Code style: `Settings · Status · Config · Usage`, ←/→ between them.
   The rows exist; this is a header and a group filter.
@@ -523,6 +537,9 @@ the one that was working.
 - **Extension error richness.** Content scripts send no `op`/`stage`, so `/logs extension` is
   thin.
 - **The ChatGPT bridge's image path** — verify or fix. Gemini's is confirmed working.
+- **`grep_search` for large repos**: several patterns in one call, context lines, results
+  grouped by file. Today it is `pattern / isRegex / includes / maxResults` and returns fifty
+  unranked single lines. See "Search, and why there is still no index".
 
 ### P3 — after
 
@@ -533,6 +550,46 @@ the one that was working.
   deleted: planned separately once the above is done.
 - Split `agent-loop.js`. The slash commands alone are ~400 lines and their removal makes the
   rest testable.
+- A **symbol index** — `find_symbol` / `find_references`, from tree-sitter or ctags. The
+  structural half of what a large codebase needs, and the half grep is worst at.
+
+### Search, and why there is still no index
+
+Decided 2026-09-11, revisited deliberately because the next codebase is a large one.
+
+**No embedding index.** Phase 1 deleted `semantic_search` for being broken; this is the
+separate question of whether a *working* one should replace it. It should not, and Claude Code —
+the benchmark this project is measured against — does not have one either. Four reasons, the
+last of which is specific to this architecture:
+
+- Code search is mostly **exact-symbol** search (`getUserById`, `EADDRINUSE`), where lexical
+  matching wins outright.
+- An index goes **stale on every edit**. Cursor pays for a persistent background service to
+  re-index continuously; the alternative is serving the model a confident map of code that no
+  longer exists — the same failure phase 1 removed.
+- **Chunking destroys structure.** This repo already learned that: the deleted `ast-chunker`
+  resolved 24% of its own top-level symbols.
+- **Retrieval is single-shot; an agent iterates.** grep → read → grep again with a better term
+  beats one shot at the twenty nearest chunks, because the second query knows what the first
+  found.
+
+The constraint that settles it: **the context window is a browser chat tab.** Every retrieved
+chunk is typed into Gemini by a content script. Twenty 500-token chunks is 10,000 tokens typed
+into a browser per query, most of it unread — in a project whose whole prompt strategy exists to
+avoid large repeated payloads. Agentic grep→read sends only what the model decided it needed.
+
+**What a large codebase actually needs**, none of which is RAG:
+
+| gap | answer | where |
+| --- | --- | --- |
+| you don't know the codebase's word for it ("rate limit" vs `throttle`) | multi-pattern `grep_search`, and prompt guidance to try synonyms — the model already knows them, it just burns a browser round-trip per guess | P2 |
+| "who calls this?", "what extends this?" | a symbol index (tree-sitter or ctags): exact, invalidates on mtime, needs no model | P3 |
+| orientation in an unfamiliar repo | `AGENT.md` — a human-written map beats a generated one because someone vouched for it | done, phase 2 |
+| a 50-line unranked hit list is hard to reason from | context lines, grouping by file, ranking | P2 |
+
+This is a decision made from the architecture, not from measurement. If grep genuinely fails on
+real questions in the large codebase, that evidence outranks the argument above — and the shape
+of the failures says which of the four rows is the one that bites.
 
 ### The fork
 

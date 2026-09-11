@@ -37,7 +37,7 @@ function oneLineError(result) {
 import * as paths from './paths.js';
 import { EFFORT_LEVELS, resolveEffort, isEffort, effortFromConfig } from './effort.js';
 import { stripImageData } from './prompt-builder.js';
-import { resolveWorkspaceInput, validateWorkspace, rememberWorkspace } from './workspaces.js';
+import { validateWorkspace } from './workspaces.js';
 import { z } from 'zod';
 import { SessionStore } from '../storage/session-store.js';
 import { ContextManager } from '../context/context-manager.js';
@@ -277,6 +277,14 @@ export class AgentLoop {
       // The single-response rule no longer rides on every message; it is
       // re-asserted when the model actually breaks it.
       if (looksLikeMultipleDrafts(cleanContent)) {
+        // Logged because the other two detectors are and this one was not, so
+        // there was no evidence it had ever fired — which is exactly the state
+        // in which you cannot tell a detector that works from one that does
+        // nothing. `/logs agent` answers it now.
+        logError(this.workspace, {
+          flow: 'agent', op: 'multiple_drafts',
+          message: cleanContent.trim().slice(0, 200),
+        });
         this.promptBuilder.noteDrift();
       }
     } catch (err) {
@@ -531,42 +539,6 @@ export class AgentLoop {
     }), this.callbacks);
   }
 
-  /**
-   * Point the agent at another directory.
-   *
-   * The workspace is duplicated across half a dozen collaborators, so this is
-   * the one place that rewires them — `/workspace` and `/agent-dir` both used
-   * to carry their own copy of the list, and they had already drifted apart.
-   *
-   * SessionStore is deliberately left alone: rebinding it here would write the
-   * current conversation into the other project's history file.
-   *
-   * @param {string} workspace - an absolute path that has already been checked
-   *   by {@link validateWorkspace}.
-   * @returns {string} a message for the transcript.
-   */
-  setWorkspace(workspace, note = '') {
-    if (workspace === this.workspace) {
-      return `📂 Already using: ${workspace}`;
-    }
-
-    this.workspace = workspace;
-    if (this.mcpServer) this.mcpServer.workspace = workspace;
-    if (this.promptBuilder) this.promptBuilder.workspace = workspace;
-    if (this.diffEngine) this.diffEngine.workspace = workspace;
-    if (this.contextManager) {
-      this.contextManager.workspacePath = workspace;
-      if (this.contextManager.summarizer) this.contextManager.summarizer.workspacePath = workspace;
-    }
-
-    this.workspaceSummary = '';        // stale for the new project
-    this.promptBuilder?.resetPromptState?.();
-    paths.clearPathCache();            // the state root is resolved per workspace
-    rememberWorkspace(workspace);
-
-    return `📂 Workspace changed${note ? ` to ${note}` : ''}: ${workspace}`;
-  }
-
   async handleSlashCommand(command, args) {
     switch (command) {
       case 'plan':
@@ -688,28 +660,26 @@ export class AgentLoop {
         return result;
       }
 
+      // Read-only. The workspace decides where state, sessions, memory and the
+      // command allowlist live, and `setWorkspace` rebound four collaborators
+      // but not the session store (deliberately), the memory manager, or the
+      // config — so after a switch the agent recalled the new project's memory
+      // while writing facts into the old one's file, and the old project's
+      // allowlist stayed armed. A restart rebinds everything; nothing else does.
+      case 'workspace':
       case 'agent-dir': {
-        const target = this.agentSourceDir || this.workspace;
-        const problem = validateWorkspace(target);
-        if (problem) return { message: `❌ ${problem}` };
-        return { message: this.setWorkspace(target, 'agent source') };
-      }
-
-      case 'workspace': {
-        // Args are re-joined because a path may contain spaces; the command
-        // used to take args[0] and silently truncate "~/My Projects/app".
-        const requested = args?.join(' ').trim();
-        if (!requested) return { message: `📂 Current workspace: ${this.workspace}` };
-
-        const abs = resolveWorkspaceInput(requested, this.workspace);
-        const problem = validateWorkspace(abs);
-        if (problem) {
-          // Refusing here is the whole point: an unchecked path used to be
-          // assigned anyway, and every tool call after it failed separately
-          // against a root that was never there.
-          return { message: `❌ ${problem}\n\nWorkspace unchanged: ${this.workspace}\nTry \`/set-workspace\` to pick one from a list.` };
-        }
-        return { message: this.setWorkspace(abs) };
+        const here = command === 'agent-dir'
+          ? `\n\nThe agent's own source is at \`${this.agentSourceDir}\`. You do not need to `
+            + 'switch to it — file tools take absolute paths, and the system prompt already '
+            + 'tells the model it may edit itself there.'
+          : '';
+        return {
+          message: `📂 Workspace: \`${this.workspace}\`\n`
+            + `   State:     \`${paths.agentDir(this.workspace)}\`\n\n`
+            + 'Pick a different one with `/set-workspace`, which restarts into it — '
+            + 'or start there: `agent-cli --workspace <path>`.'
+            + here,
+        };
       }
 
       // One ladder replaces /model and /reasoning. They were two knobs whose

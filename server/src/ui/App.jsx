@@ -206,9 +206,18 @@ export function App({ agentLoop, wsServer }) {
   const [terminalHeight, setTerminalHeight] = useState(
     (stdout && stdout.rows) || process.stdout.rows || 24,
   );
+  // Width matters for the same reason height does: a row wider than the
+  // viewport wraps onto a second line, which grows the live frame past the
+  // budget and brings back Ink's clear-and-repaint path.
+  const [terminalWidth, setTerminalWidth] = useState(
+    (stdout && stdout.columns) || process.stdout.columns || 80,
+  );
   useEffect(() => {
     if (!stdout) return;
-    const onResize = () => setTerminalHeight(stdout.rows || 24);
+    const onResize = () => {
+      setTerminalHeight(stdout.rows || 24);
+      setTerminalWidth(stdout.columns || 80);
+    };
     stdout.on('resize', onResize);
     return () => stdout.off('resize', onResize);
   }, [stdout]);
@@ -643,6 +652,7 @@ export function App({ agentLoop, wsServer }) {
             activeMenu={activeMenu}
             setActiveMenu={setActiveMenu}
             agentLoop={agentLoop}
+            terminalWidth={terminalWidth}
             handleSubmit={handleSubmit}
             mode={mode}
             setActiveTab={setActiveTab}

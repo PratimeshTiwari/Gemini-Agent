@@ -19,6 +19,7 @@ import { manageTask } from './tools/manage-task.js';
 import getEditorState from './tools/get-editor-state.js';
 import getDiagnostics from './tools/get-diagnostics.js';
 import { logError } from '../core/error-log.js';
+import { validateArgs } from './validate-args.js';
 
 // Tool registry with schemas
 const TOOL_DEFINITIONS = [
@@ -178,12 +179,30 @@ export class MCPServer {
       };
     }
 
+    // The schema below is the one the prompt showed the model as the contract,
+    // and until now nothing checked the call against it — a wrong-typed argument
+    // reached the handler and failed inside it with a message written for a
+    // stack trace. There is no tool-call API here to do this, so this is the
+    // layer that has to. It also coerces "10" to 10, which is a working turn
+    // that used to be thrown away. See ./validate-args.js.
+    const checked = validateArgs(name, tool.parameters, args);
+    if (!checked.ok) {
+      logError(this.workspace, {
+        flow: 'tool',
+        op: `${name}:bad_args`,
+        message: checked.message.split('\n')[0],
+        meta: { args: Object.keys(args || {}) },
+      });
+      return { success: false, error: checked.message };
+    }
+    const validArgs = checked.value;
+
     let retries = 0;
     let lastErr = null;
 
     while (retries < 3) {
       try {
-        const result = await tool.handler(args, {
+        const result = await tool.handler(validArgs, {
           workspace: this.workspace,
           diffEngine: this.diffEngine,
           ...context,

@@ -331,9 +331,47 @@ export async function handleSlashCommand(query, {
       return;
     }
 
-    if (command === 'set-workspace' || (command === 'workspace' && args.length === 0)) {
+    // `/workspace` on its own reports; only `/set-workspace` offers the switch,
+    // and the switch is a restart.
+    if (command === 'set-workspace') {
       setActiveMenu({ type: 'workspace', current: agentLoop.workspace });
       setIsProcessing(false);
+      return;
+    }
+
+    // Chosen from the picker above. The process leaves and comes back pointing
+    // at the new directory, because every collaborator keyed on the workspace —
+    // the session store, memory, config, the allowlist — is rebuilt by a
+    // restart and was *not* rebuilt by the in-place switch this replaces.
+    if (command === 'switch-workspace') {
+      const target = args.join(' ').trim();
+      const problem = validateWorkspace(target);
+      if (problem) {
+        setHistory(prev => [...prev, { role: 'assistant', content: `❌ ${problem}`, isLocal: true }]);
+        setIsProcessing(false);
+        return;
+      }
+      if (!process.env.AGENT_CLI_SUPERVISED) {
+        setHistory(prev => [...prev, {
+          role: 'assistant',
+          isLocal: true,
+          content: 'This process has no supervisor to restart it.\n\n'
+            + `Quit with \`/exit\` and start again: \`agent-cli --workspace ${target}\``,
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+      try {
+        const { writeFileSync } = await import('fs');
+        writeFileSync(paths.ensureParent(paths.nextWorkspacePath()), target, 'utf8');
+      } catch (err) {
+        setHistory(prev => [...prev, { role: 'assistant', content: `❌ Could not hand over: ${err.message}`, isLocal: true }]);
+        setIsProcessing(false);
+        return;
+      }
+      setHistory(prev => [...prev, { role: 'assistant', content: `📂 Restarting in \`${target}\`…`, isLocal: true }]);
+      setIsProcessing(false);
+      setTimeout(() => process.exit(75), 120);
       return;
     }
 

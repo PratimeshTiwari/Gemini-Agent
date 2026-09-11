@@ -31,6 +31,7 @@ export function Menus({
   activeMenu,
   setActiveMenu,
   agentLoop,
+  terminalWidth = 80,
   handleSubmit,
   mode,
   setActiveTab,
@@ -222,6 +223,10 @@ export function Menus({
           const hidden = Math.max(0, matches.length - LIMIT);
           const width = Math.max(...rows.map((r) => r.label.length), 0);
           const vwidth = Math.min(26, Math.max(...rows.map((r) => r.value.length), 0));
+          // A row wider than the viewport wraps, and a wrapped row in the live
+          // frame is how the clear-the-terminal bug comes back. The border,
+          // padding and SelectInput's own pointer take the rest.
+          const hintRoom = Math.max(0, terminalWidth - width - vwidth - 12);
 
           return (
             <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
@@ -243,7 +248,9 @@ export function Menus({
                     // Two columns, so the values read as a column rather than
                     // as prose that happens to follow a label.
                     label: `${row.label.padEnd(width)}   ${oneLine(row.value, 26).padEnd(vwidth)}`
-                      + `${row.hint ? `  ${row.hint}` : ''}`,
+                      // The hint is the first thing to go: it is the part you
+                      // can lose and still know what the setting is set to.
+                      + `${row.hint && hintRoom > 8 ? `  ${oneLine(row.hint, hintRoom)}` : ''}`,
                     value: row.run || '',
                     key: row.label,
                   }))}
@@ -484,6 +491,10 @@ export function Menus({
           <Box flexDirection="column" borderStyle="single" borderColor="blue" padding={1}>
             <Text bold color="blue">📂 Choose a workspace</Text>
             <Text dimColor wrap="truncate-start">Currently: {activeMenu.current}</Text>
+            <Text dimColor wrap="wrap">
+              The agent restarts into it. This conversation belongs to the project you are
+              leaving, and so do its memory, config and command rules.
+            </Text>
             <SelectInput
               limit={10}
               items={[
@@ -499,11 +510,11 @@ export function Menus({
                 if (item.value === '\u0000type') {
                   // Hand the user a half-written command rather than a second
                   // prompt of our own: the input line already knows how to edit.
-                  setInput('/workspace ');
+                  setInput('/switch-workspace ');
                   return;
                 }
                 if (item.value === activeMenu.current) return;
-                handleSubmit(`/workspace ${item.value}`);
+                handleSubmit(`/switch-workspace ${item.value}`);
               }}
             />
             <Text dimColor>↑↓ move · enter choose · esc cancel</Text>
