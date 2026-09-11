@@ -34,14 +34,22 @@ Likewise `vscode-companion/*.vsix` is committed and must be repackaged after edi
 ### Tests
 
 ```bash
-npm test                                          # -> server: node --test "src/**/*.test.js"
-node --test server/src/core/risk-classifier.test.js   # single file
+npm test                                       # -> server: node --test "test/**/*.test.js"
+node --test server/test/core/risk-classifier.test.js   # single file
 ```
 
-**Never use `node --test src/`** — given a directory, Node 22 runs *every* `.js` file under it
-as a test, including `main.js`, which starts the WebSocket server and hangs forever. The quoted
-glob is what makes the script work under `sh` (which has no globstar and would otherwise silently
-skip `src/core/risk-classifier.test.js`).
+Tests live in `server/test/`, mirroring `server/src/` directory for directory. They used to sit
+beside their subjects, which made a missing test visible in an `ls` — that is how `diff-engine.js`
+was found with none, and it turned out to be 358 lines that overwrite files, containing a bug
+that wrote backups outside the backup directory.
+
+Moving them bought one thing back: `node --test src/` used to be a landmine, because given a
+directory Node runs *every* `.js` file under it as a test — including `main.js`, which starts the
+WebSocket server and hangs forever. Nothing under `test/` starts anything, so the trap is gone.
+The quoted glob is still what makes the script work under `sh`, which has no globstar.
+
+A test that needs a path into the source tree must compute it relative to `src/`, not to itself
+(`prompt-loader.test.js` reads `../../src/prompts`).
 
 **Expected state: all tests pass.** They used to be 34/10/24 red: the tests described designs
 the code had replaced — `plan-generator` writes one file per comment under `PR-<n>/` rather than
@@ -79,8 +87,8 @@ server/src/
                       #   AgentTerminal, QuestionPrompt
 ```
 
-Modules are kebab-case; React components keep PascalCase (`ui/App.jsx`). Tests are colocated
-as `*.test.js` beside their subject.
+Modules are kebab-case; React components keep PascalCase (`ui/App.jsx`). Tests live in
+`server/test/`, mirroring this tree — `src/core/paths.js` is tested by `test/core/paths.test.js`.
 
 ## Architecture
 
