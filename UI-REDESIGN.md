@@ -150,10 +150,13 @@ exception worth arguing over rather than deciding here: the banner wordmark.
 The figlet stays; it is the product's wordmark and it is free (Static). Two
 changes:
 
-- **Solid accent instead of the rainbow gradient.** A gradient reads as terminal
-  art; a solid or two-tone wordmark reads as a product. This is the single
-  highest-ratio change in the file — one line, and it is most of what "looks
-  unpolished" is.
+- **A two-stop ramp instead of the rainbow gradient.** Flat accent was the first
+  answer and it overshot: a wordmark with no depth reads as unfinished. The
+  problem with `ink-gradient`'s "mind" preset was never that it had colour, it
+  was that it had *many hues*, competing with every other coloured thing in the
+  app. Cyan → indigo, ten vertical bands measured from the widest row so a
+  column is the same colour on every row, both stops inside the accent family:
+  a brand mark rather than terminal art, and no new palette roles.
 - **The byline joins the dim orientation line**, keeping `Developed by` so it
   reads as attribution rather than as a stray name. It is not a peer of the
   wordmark, but it is not anonymous either.
@@ -286,11 +289,12 @@ ctrl+e is deliberate and documented in `App.jsx`: Ink cannot repaint what
 
 ## Open questions — the owner's call, not this file's
 
-- **The figlet wordmark.** Kept above on the argument that it is free and it is
-  the brand. The alternative is a 3-row compact header, which is more
-  conventionally "professional" and loses the only thing that makes the app look
-  like itself. Recommendation: keep it, drop the gradient, revisit if it still
-  reads as loud in solid accent.
+- ~~**The figlet wordmark.**~~ *Answered.* Kept, on the argument that it is free
+  (it lives in `<Static>`) and it is the brand. Flat accent was tried and read as
+  unfinished; the two-stop cyan→indigo ramp is where it landed. The alternative
+  considered and rejected was a 3-row compact header — more conventionally
+  "professional", and it loses the only thing that makes the app look like
+  itself.
 - **Does anything survive as emoji?** The live-frame chrome has none left. The
   boundary drawn was deliberate: emoji in *transcript prose* — `✅ Created skill`,
   `❌ No such command` from the slash commands — were left alone, because that is

@@ -58,7 +58,9 @@ and 17 `console.*` writes that landed in the Ink frame (the `[GitHub Bridge]`
 lines) went to `error-log.js`. The frame budget is a **sum** rather than a
 constant now — the slash palette is six conditional rows a single number could
 never be right about. Measured at four terminal sizes in five states: 0 `ESC[2J`
-everywhere. Read the file for what changed against the plan, including one
+everywhere. The wordmark went rainbow → flat cyan → a two-stop cyan-to-indigo
+ramp: flat read as unfinished, and the rainbow's problem was many hues, not
+colour. Read the file for what changed against the plan, including one
 finding recorded as *unproven* rather than fixed.
 
 **Plan the GitHub PR agent restructure.** 1,649 lines, the largest single feature.
