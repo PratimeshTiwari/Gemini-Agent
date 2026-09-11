@@ -12,9 +12,8 @@ where the baton is.
 
 ## State
 
-- Branch `v1-stable`. **Four commits unpushed** (`a4975b7`, `0024961`, the
-  UI-redesign plan, and the redesign itself); `origin/v1-stable` is at `df791f5`.
-  The owner pushes by hand — do not push without being asked.
+- Branch `v1-stable`. **Six commits unpushed**; `origin/v1-stable` is at
+  `df791f5`. The owner pushes by hand — do not push without being asked.
 - `main` is untouched at `68f76cd`. **None of this has been through a PR yet.** Work
   merges into `main` through a PR only; the branches here are deliberate history, so
   do not delete them and do not rewrite history.
@@ -51,6 +50,11 @@ mtime nothing watched. `/image` put base64 in the session files.
 
 ## Next
 
+**The GitHub restructure is planned but not started.** `GITHUB-AGENT-PLAN.md`
+phase 1 (two lines: failures to `error-log.js`) is the smallest useful next step;
+phase 2 (characterisation tests for the poller and CI parser against a stubbed
+API) is what everything after it needs.
+
 **`UI-REDESIGN.md` is done** — all eight items, 2026-09-11. The chrome cost 17
 rows and talked about itself; it is one row now. Seven colours became five
 roles, the live frame has no emoji left, the mode moved onto the input border,
@@ -63,9 +67,18 @@ ramp: flat read as unfinished, and the rainbow's problem was many hues, not
 colour. Read the file for what changed against the plan, including one
 finding recorded as *unproven* rather than fixed.
 
-**Plan the GitHub PR agent restructure.** 1,649 lines, the largest single feature.
-The owner was explicit: **restructure, not delete**, and plan it on its own once
-everything else had landed. It has. This is the next piece of work.
+**`GITHUB-AGENT-PLAN.md`** — the restructure, planned 2026-09-11, nothing built.
+The diagnosis is one sentence: it is a second agent, built beside the first
+rather than on top of it, so it re-derived its own loop (`runHeadlessTask`), its
+own system prompt, a **third** hand-kept tool list, its own prompt assembly —
+which re-sends the whole history every turn, opting out of the repetition-filter
+protection `PromptBuilder` exists for — its own failure log (`agent.log`, which
+nothing reads), and its own word for "plan".
+
+Most of the feature does not change: the poller, the classifier and the CI
+parser are genuinely its own thing. What goes is the duplication. Seven phases,
+ordered so the tests land before the risky prompt work; `GITHUB_REPOS` is
+silently ignored in any git repo with an origin, which is the one outright bug.
 
 Then five things raised while the phases ran and parked until they were done. All are
 recorded in `CLAUDE.md` → `## What's next`:
