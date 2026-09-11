@@ -227,71 +227,102 @@
   }
 
   // src/background/socket.js
-  var WS_URL = "ws://localhost:7777";
-  var RECONNECT_BASE = 1e3;
-  var RECONNECT_MAX = 3e4;
+  var DEFAULT_PORT = 7777;
+  var RETRY_LADDER_MS = [250, 500, 1e3, 2e3, 4e3, 8e3];
+  var RETRY_STEADY_MS = 5e3;
+  var KEEPALIVE_MS = 2e4;
+  var ALARM_FALLBACK_MINUTES = 0.5;
   var HEARTBEAT_INTERVAL = 1e4;
   var ws = null;
   var heartbeatTimer = null;
-  function connectWebSocket() {
+  var retryTimer = null;
+  var keepAliveTimer = null;
+  var attempt = 0;
+  async function getPort() {
+    try {
+      const { agentPort } = await chrome.storage.local.get("agentPort");
+      const n = parseInt(agentPort, 10);
+      return Number.isInteger(n) && n > 0 && n < 65536 ? n : DEFAULT_PORT;
+    } catch {
+      return DEFAULT_PORT;
+    }
+  }
+  async function socketUrl() {
+    return `ws://127.0.0.1:${await getPort()}`;
+  }
+  async function connectWebSocket() {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    let url;
     try {
-      ws = new WebSocket(WS_URL);
-      ws.onopen = async () => {
-        console.log("\u2705 Connected to agent server");
-        await setState({ connected: true, reconnectAttempts: 0, lastError: null });
-        ws.send(JSON.stringify({
-          id: crypto.randomUUID(),
-          type: "identify",
-          payload: { clientType: "extension" },
-          timestamp: Date.now()
-        }));
-        broadcastTabStatus();
-        startHeartbeat();
-        broadcastToSidePanel({
-          type: "connection_status",
-          payload: { connected: true }
-        });
-      };
-      ws.onmessage = async (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          await handleServerMessage(message);
-        } catch (err) {
-          console.error("Failed to parse server message:", err);
-        }
-      };
-      ws.onclose = async (event) => {
-        console.log(`\u{1F50C} Disconnected from agent server (code: ${event.code})`);
-        ws = null;
-        stopHeartbeat();
-        await setState({ connected: false });
-        broadcastToSidePanel({
-          type: "connection_status",
-          payload: { connected: false }
-        });
-        if (event.code !== 1e3) {
-          scheduleReconnect();
-        }
-      };
-      ws.onerror = async (err) => {
-        console.error("WebSocket error:", err);
-        await setState({ lastError: "Connection failed" });
-      };
+      url = await socketUrl();
+      ws = new WebSocket(url);
     } catch (err) {
-      console.error("Failed to create WebSocket:", err);
-      scheduleReconnect();
+      console.warn("[socket] could not open", url, err?.message);
+      scheduleRetry();
+      return;
     }
+    ws.onopen = async () => {
+      attempt = 0;
+      stopKeepAlive();
+      await setState({ connected: true, reconnectAttempts: 0, lastError: null });
+      ws.send(JSON.stringify({
+        id: crypto.randomUUID(),
+        type: "identify",
+        payload: { clientType: "extension" },
+        timestamp: Date.now()
+      }));
+      broadcastTabStatus();
+      startHeartbeat();
+      broadcastToSidePanel({ type: "connection_status", payload: { connected: true } });
+    };
+    ws.onmessage = async (event) => {
+      try {
+        await handleServerMessage(JSON.parse(event.data));
+      } catch (err) {
+        console.warn("[socket] unparseable server message:", err?.message);
+      }
+    };
+    ws.onclose = async (event) => {
+      ws = null;
+      stopHeartbeat();
+      await setState({ connected: false });
+      broadcastToSidePanel({ type: "connection_status", payload: { connected: false } });
+      if (event.code !== 1e3) scheduleRetry();
+    };
+    ws.onerror = async () => {
+      await setState({ lastError: "Connection failed" });
+    };
   }
-  async function scheduleReconnect() {
-    const state = await getState();
-    const attempts = state.reconnectAttempts + 1;
-    const delay = Math.min(RECONNECT_BASE * Math.pow(2, attempts - 1), RECONNECT_MAX);
-    await setState({ reconnectAttempts: attempts });
-    console.log(`\u{1F504} Reconnecting in ${delay}ms (attempt ${attempts})...`);
-    await chrome.alarms.create("reconnect", { delayInMinutes: delay / 6e4 });
+  function scheduleRetry() {
+    const delay = RETRY_LADDER_MS[attempt] ?? RETRY_STEADY_MS;
+    attempt++;
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => connectWebSocket(), delay);
+    startKeepAlive();
+    chrome.alarms.create("reconnect", { delayInMinutes: ALARM_FALLBACK_MINUTES });
+    setState({ reconnectAttempts: attempt }).catch(() => {
+    });
+  }
+  function startKeepAlive() {
+    if (keepAliveTimer) return;
+    const ping = () => chrome.runtime.getPlatformInfo().catch(() => {
+    });
+    ping();
+    keepAliveTimer = setInterval(() => {
+      ping();
+    }, KEEPALIVE_MS);
+  }
+  function stopKeepAlive() {
+    if (keepAliveTimer) {
+      clearInterval(keepAliveTimer);
+      keepAliveTimer = null;
+    }
+    chrome.alarms.clear("reconnect").catch(() => {
+    });
   }
   function startHeartbeat() {
     stopHeartbeat();
@@ -338,7 +369,6 @@
       case "heartbeat_ack":
         break;
       default:
-        console.log("Unknown server message type:", type);
         broadcastToSidePanel(message);
     }
   }

@@ -532,8 +532,15 @@ chrome.runtime.sendMessage({
   // Service worker may not be ready yet
 });
 
-// Keep the service worker alive
+/**
+ * Keep the bridge connected — see the long note in `gemini-bridge.js`. In short:
+ * Chrome terminates the idle service worker and its timers die with it, so the
+ * only reconnect cadence was `chrome.alarms`' 30-second floor. A content script
+ * lives as long as its page, and `sendMessage` wakes the worker.
+ */
+const CONNECT_NUDGE_MS = 3000;
 let keepAlivePort = null;
+
 function connectToServiceWorker() {
   try {
     keepAlivePort = chrome.runtime.connect({ name: 'keepAlive' });
@@ -541,7 +548,11 @@ function connectToServiceWorker() {
       setTimeout(connectToServiceWorker, 1000);
     });
   } catch (err) {
-    // Context invalidated
+    // Context invalidated — the extension was reloaded under this page.
   }
 }
 connectToServiceWorker();
+
+setInterval(() => {
+  chrome.runtime.sendMessage({ type: 'connect' }).catch(() => {});
+}, CONNECT_NUDGE_MS);

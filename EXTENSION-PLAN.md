@@ -35,35 +35,30 @@ mechanisms, and most are small.
 
 ## Connectivity
 
-### The address is wrong, and it has been since P0
+### The address theory was wrong — measured and discarded
 
-**Measured, not inferred.** Against the real server binding:
+The first draft of this plan blamed `ws://localhost`: `localhost` resolves `::1`
+first on this machine, and P0 moved the server from binding `::` (every
+interface) to `127.0.0.1` (IPv4 only), so every attempt now begins with a refused
+IPv6 connection.
 
-```
-ws://localhost:7908   -> OPEN after 7ms        (Node falls back to IPv4)
-ws://127.0.0.1:7908   -> OPEN after 2ms
-ws://[::1]:7908       -> FAILED (ECONNREFUSED) after 0ms
-```
-
-and on this machine:
+**That is all true and it does not matter.** Measured in Chrome 152, headless,
+against an IPv4-only server, three runs each:
 
 ```
-dns.lookup('localhost', {all:true})
-  -> [ { address: '::1', family: 6 }, { address: '127.0.0.1', family: 4 } ]
+ws://localhost -> open 33ms | open 10ms | open 11ms
+ws://127.0.0.1 -> open 11ms | open 11ms | open 14ms
+ws://[::1]     -> error 2ms | error 10ms | error 10ms
 ```
 
-`::1` comes **first**. P0 changed the server from `new WS({ port })` — which
-binds `::`, every interface including `::1` — to `host: '127.0.0.1'`, IPv4 only.
-That fix is correct and stays. But the extension still dials
-`ws://localhost:7777`, so **every connection attempt now begins with a refused
-IPv6 connection that did not happen before P0.**
+Chrome falls back from `::1` in about ten milliseconds. Node does the same in
+seven. The refused IPv6 attempt is real and costs nothing.
 
-Node falls back in 7ms. Chrome is not Node, and whether it falls back inside a
-single WebSocket attempt or surfaces a close event is the difference between
-"instant" and "thirty seconds" — see the next item for why. The fix is one word,
-in a file where the same constant already appears twice.
+`127.0.0.1` is still the right address to dial — it says what it means and does
+not depend on the hosts file — but it is a tidy-up, **not** the fix. Recorded
+because a plan that keeps a disproved cause in it will have someone re-derive it.
 
-### The reconnect backoff computes a number that can never matter
+### The reconnect is the whole problem — measured
 
 `socket.js`:
 
@@ -74,24 +69,77 @@ const delay = Math.min(RECONNECT_BASE * 2 ** (attempts - 1), RECONNECT_MAX);
 await chrome.alarms.create('reconnect', { delayInMinutes: delay / 60000 });
 ```
 
-`chrome.alarms` clamps to a **30-second floor**. `RECONNECT_MAX` is 30,000ms —
-*exactly* that floor. So the ladder 1s → 2s → 4s → 8s → 16s → 30s collapses to a
-constant: **every reconnect waits 30 seconds**, and the exponential arithmetic
-above it is decorative.
+`chrome.alarms` clamps to a **30-second floor**, and `RECONNECT_MAX` is 30,000ms
+— *exactly* that floor. The ladder 1s → 2s → 4s → 8s → 16s → 30s collapses to a
+constant: **every retry is 30 seconds**, and the arithmetic above it is
+decorative.
 
-That is the amplifier. Any failed attempt — including a refused `::1` — costs
-thirty seconds instead of one.
+**Measured with the real extension loaded into headless Chrome**, timing from the
+server's `listening` to the extension's `identify`:
 
-The fix is to stop using alarms for short retries. The service worker is kept
-alive by the content script's `keepAlive` port, so `setTimeout` works for the
-first several attempts; alarms are the right tool only for the long gaps after
-the worker has been allowed to die.
+| case | time to connect | handshakes seen by the server |
+| --- | --- | --- |
+| Chrome already running 20s, then the agent starts | **13.6s** | **1** |
+| agent already listening, then Chrome starts | **25.6s** | 1 |
 
-### Nothing tells the extension that a server appeared
+**One handshake.** The extension is not retrying and failing — it is not
+*trying*. And the 13.6s reconstructs exactly: the worker's first attempt is at
+~3.6s after Chrome starts, it fails (no server yet), it schedules an alarm, the
+alarm fires 30s later at ~33.6s; the server began listening at 20s; 33.6 − 20 =
+13.6.
 
-`connectWebSocket()` runs at module top level, on `onInstalled`, on `onStartup`
-and on the reconnect alarm. Starting the CLI fires none of those. So the
-best case for "I just started the agent" is the next alarm — thirty seconds.
+Two things have to change together, because in MV3 they are the same problem:
+
+- **Retry on `setTimeout` while the worker is alive** — 250ms, 500ms, 1s, 2s…
+  Alarms are for long gaps, not for the first ten seconds.
+- **Keep the worker alive while disconnected.** A pending `setTimeout` does *not*
+  stop Chrome terminating an idle MV3 worker, and a timer in a dead worker never
+  fires. So while there is no socket, the worker needs a periodic call to stay
+  resident — and the alarm stays as the backstop for when it is killed anyway.
+
+Nothing can push at the worker from outside: the server cannot wake it, so the
+extension has to be the one still looking.
+
+### What was tried, and what is still unproven
+
+Built and measured, in order. **None of it moved the number in headless Chrome.**
+
+| attempt | result |
+| --- | --- |
+| `setTimeout` ladder (250ms → 8s) instead of alarms | 30.0s gaps |
+| `chrome.runtime.getPlatformInfo()` every 5s to stay resident | 30.0s gaps |
+| ditto, with a model tab open | 30.0s gaps |
+| content script nudging `{type:'connect'}` every 3s | 30.0s gaps |
+
+Four runs, every gap exactly 30.0s. Chrome terminates the idle worker, its
+timers die with it, and the alarm floor is the only cadence left.
+
+**But the harness could not test the last two.** A check for the content script
+came back `NOT-INJECTED`, for two reasons found afterwards: Chrome **match
+patterns cannot contain a port**, so the test's `http://127.0.0.1:7933/*` entry
+was invalid — and the detector was wrong anyway, because
+`enableAntiThrottling` **creates the `<audio>` element and never appends it to
+the document**, so it was never findable. (That is its own finding: a detached
+element is what the throttling defence has always been.)
+
+So the honest position: **the root cause is proven, the fix is not.** Headless
+Chrome has no user activity and no real profile, and is known to reclaim workers
+harder than a browser someone is using. The changes made are each defensible on
+their own — `127.0.0.1`, a configurable port, dead constants gone, a ladder that
+works whenever the worker *is* alive, a nudge from the one context that persists
+— but the improvement has not been demonstrated.
+
+**Measure it in a real browser instead.** `describeSettings` now carries an
+`Extension` row on the Status tab — "connected in 420ms" — recorded on the first
+`identify` against the moment the socket started listening. Restart the agent
+with Chrome open and read it. That turns this from an argument into a number.
+
+**If it is still ~30s there, the answer is an offscreen document.** That is the
+documented MV3 pattern for a connection that has to outlive the worker: a real
+document owns the WebSocket and Chrome does not reclaim it on an idle timer. It
+is a bigger change — the worker becomes a relay — which is why it is recorded
+here rather than attempted blind.
+
 
 ### The port is hardcoded, in two places, one of which is dead
 
@@ -236,8 +284,8 @@ and written where `/logs` can group it. Then a regression is a number.
 
 | # | phase | why here | risk |
 | --- | --- | --- | --- |
-| 1 | `127.0.0.1` not `localhost`; port from the server; delete the dead `WS_URL` | one-word fixes to the measured cause | **low** |
-| 2 | Real backoff: `setTimeout` while the worker lives, alarms only for long gaps | removes the 30s floor that amplifies every failure | low |
+| 1 | Fast retry while the worker lives + keep it resident while disconnected; alarms demoted to a backstop | **the measured cause: 13.6s → expected sub-second** | **low** |
+| 2 | `127.0.0.1` not `localhost`; port overridable; delete the dead `WS_URL` | tidy-ups, not the fix — see above | low |
 | 3 | Tests for `src/background/` — socket state, reconnect policy, routing, tab choice | the connectivity bugs live here and it needs no browser | low, slow |
 | 4 | Fix the code-block scrape; add the language; stop replacing the parent | user-visible, and the CLI half is in `UI-REDESIGN.md` round two | low |
 | 5 | Structured trace events → server → `/logs extension` | makes "it got slower" a number instead of a feeling | medium |

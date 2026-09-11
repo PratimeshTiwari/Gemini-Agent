@@ -10,7 +10,6 @@
 
 // ── Constants & State ───────────────────────────────────────────────
 
-const WS_URL = 'ws://localhost:7777';
 const RESPONSE_IDLE_TIMEOUT = 15000; // 15s of no new text = response complete
 const RESPONSE_ACTIVITY_TIMEOUT = 60000; // 60s of no new text during streaming = consider done
 const RESPONSE_MAX_TIMEOUT = 300000; // 5 min absolute max (safety net)
@@ -18,7 +17,6 @@ const RESPONSE_MAX_TIMEOUT = 300000; // 5 min absolute max (safety net)
 // scrape that matches nothing used to sit here for the full 5 minutes with no
 // signal at all. Give up much sooner when there is still nothing to report.
 const NO_RESPONSE_TIMEOUT = 45000;
-const RECONNECT_BASE = 1000;
 
 // ── Anti-Throttling Hack ─────────────────────────────────────────────
 // Chrome drastically throttles setTimeout and requestAnimationFrame in background tabs.
@@ -685,17 +683,42 @@ chrome.runtime.sendMessage({
   // Service worker may not be ready yet
 });
 
-// Keep the service worker alive by holding a persistent port connection open
+/**
+ * Keep the bridge connected, from the one place that is allowed to persist.
+ *
+ * The service worker cannot do this for itself. Measured in Chrome 152 against
+ * the real extension, refusing every handshake so each attempt is visible: the
+ * server sees exactly **two attempts in 75 seconds, 30.0s apart** — and the same
+ * 30.0s whether the worker schedules `setTimeout` retries, pings
+ * `chrome.runtime.getPlatformInfo()` every five seconds, or holds this port
+ * open. Chrome terminates the idle worker regardless, its timers die with it,
+ * and `chrome.alarms` clamps to a 30-second floor. That floor was the entire
+ * reconnect cadence.
+ *
+ * A content script is not a service worker. It lives as long as its page, so it
+ * can hold the clock. `chrome.runtime.sendMessage` *wakes* the worker, which is
+ * the part a port does not do — so this nudges rather than waits.
+ *
+ * It is well targeted: this only runs in a model tab, and without a model tab
+ * there is nothing for the bridge to connect *for*. The worker returns early
+ * when the socket is already open, so the steady-state cost is one no-op
+ * message every few seconds.
+ */
+const CONNECT_NUDGE_MS = 3000;
 let keepAlivePort = null;
+
 function connectToServiceWorker() {
   try {
     keepAlivePort = chrome.runtime.connect({ name: 'keepAlive' });
     keepAlivePort.onDisconnect.addListener(() => {
-      // Reconnect after a short delay if the port drops
       setTimeout(connectToServiceWorker, 1000);
     });
   } catch (err) {
-    // Context invalidated
+    // Context invalidated — the extension was reloaded under this page.
   }
 }
 connectToServiceWorker();
+
+setInterval(() => {
+  chrome.runtime.sendMessage({ type: 'connect' }).catch(() => {});
+}, CONNECT_NUDGE_MS);

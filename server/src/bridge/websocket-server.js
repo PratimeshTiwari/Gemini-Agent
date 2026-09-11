@@ -116,6 +116,9 @@ export class WebSocketServer {
       });
 
       this.wss.on('listening', () => {
+        // When the socket opened, so the extension's arrival can be timed
+        // against it. See `extensionConnectMs` below.
+        this.listeningAt = Date.now();
         resolve();
       });
 
@@ -195,6 +198,25 @@ export class WebSocketServer {
     // Identify client type from first message
     if (payload?.clientType && client.type === 'unknown') {
       client.type = payload.clientType;
+
+      /**
+       * How long the extension took to notice this server, in milliseconds.
+       *
+       * Recorded because "the connection got slower" was reported from use and
+       * could not be checked from inside the product. Measured in headless
+       * Chrome the reconnect cadence is exactly 30.0s — `chrome.alarms` clamps
+       * to a 30-second floor and the extension's backoff capped at exactly that
+       * floor, so the whole ladder was a constant. Whether the fix for that
+       * helps in a *real* browser is the number this row exists to answer.
+       *
+       * First extension only: later reconnects are a different question and
+       * overwriting this would lose the startup figure, which is the one people
+       * mean.
+       */
+      if (client.type === 'extension' && this.extensionConnectMs === undefined && this.listeningAt) {
+        this.extensionConnectMs = Date.now() - this.listeningAt;
+        if (this.agentLoop) this.agentLoop.extensionConnectMs = this.extensionConnectMs;
+      }
     }
 
     switch (type) {

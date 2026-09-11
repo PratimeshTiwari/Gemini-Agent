@@ -148,6 +148,16 @@ export function describeSettings(agentLoop) {
     },
     {
       group: 'Status',
+      label: 'Extension',
+      value: (() => {
+        const ms = agentLoop?.extensionConnectMs;
+        if (ms === undefined) return 'not connected yet';
+        return ms < 1000 ? `connected in ${ms}ms` : `connected in ${(ms / 1000).toFixed(1)}s`;
+      })(),
+      hint: 'how long the browser bridge took to find this server',
+    },
+    {
+      group: 'Status',
       label: 'State directory',
       value: safe(() => paths.agentDir(agentLoop.workspace), ''),
       hint: 'config, sessions, memory, plans, logs',
