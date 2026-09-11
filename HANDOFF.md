@@ -15,7 +15,7 @@ baton is.
 - Branch `v1-stable`. **Seven commits ahead of `origin/v1-stable`, not yet pushed.**
 - `main` is untouched at `68f76cd`. Work merges into `main` through a PR only.
   The branches in this repo are deliberate history; do not delete them.
-- Tests: `npm test` → **403 passing**, up from 295.
+- Tests: `npm test` → **498 passing**, up from 295.
 - Commits carry the `Co-Authored-By` and `Claude-Session` trailers the harness asked for.
   Older commits are inconsistent on purpose — the rewrite was reverted. Do not rewrite
   history again.
@@ -42,10 +42,11 @@ retry objective), `/context` (padded ANSI strings with `padEnd`, so the box neve
 
 `CLAUDE.md` → `## What's next` has the detail and the evidence. In short:
 
-- **P0, before anyone else runs this.** The shell classifier can be walked past
-  (`echo hi; rm -rf /tmp/x` → `safe`, auto-executes); the bridge binds to `::` with no
-  auth; `diff-engine.js` overwrites files and has no tests.
-- **P1.** Validate tool args with the `zod` that is already installed and never imported;
+- ~~**P0**~~ — **done 2026-09-11.** The classifier now splits the command line and lets
+  the worst segment decide; the bridge binds to loopback and refuses web-page origins;
+  `diff-engine.js` has 25 tests, one of which found backups escaping the backup
+  directory for any file edited outside the workspace.
+- **P1, next.** Validate tool args with the `zod` that is already installed and never imported;
   the workspace commands (`/agent-dir`, `/workspace`, `/set-workspace` — `setWorkspace`
   leaves memory and the allowlist pointing at the old project); settings rows can outgrow
   the viewport; instrument `looksLikeMultipleDrafts`; tests for `agent-loop.js`.

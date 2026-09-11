@@ -18,6 +18,28 @@ import { WebSocketServer as WS } from 'ws';
 import { randomUUID } from 'crypto';
 import { logError } from '../core/error-log.js';
 
+/**
+ * Loopback only. Not `localhost`, which resolves through the hosts file and has
+ * been pointed elsewhere on machines with unusual DNS setups.
+ */
+const LOOPBACK = '127.0.0.1';
+
+/**
+ * Who may open a socket here.
+ *
+ * A Chrome extension sends `chrome-extension://<id>`; Firefox sends
+ * `moz-extension://`. A connection with *no* Origin is a non-browser client —
+ * curl, a test, another process — and is allowed, because the browser is the
+ * only thing that can be tricked into connecting on someone else's behalf. A
+ * page on a website sends its own origin and is refused.
+ */
+const EXTENSION_ORIGIN = /^(chrome-extension|moz-extension|safari-web-extension):\/\//i;
+
+export function isAllowedOrigin(origin) {
+  if (!origin) return true;              // not a browser page
+  return EXTENSION_ORIGIN.test(origin);
+}
+
 export class WebSocketServer {
   constructor({ port, agentLoop, githubHandler }) {
     this.port = port;
@@ -54,9 +76,40 @@ export class WebSocketServer {
     this.agentLoop.setBackgroundCallbacks(backgroundCallbacks);
   }
 
+  /**
+   * Start listening — on the loopback interface only, for the extension only.
+   *
+   * `new WS({ port })` binds to `::`, every interface. Verified, not assumed.
+   * That put a socket on the office LAN, the café wifi and the hotel network
+   * which accepts `user_message` and runs shell commands on this machine, with
+   * no authentication of any kind. Two things close that, both free:
+   *
+   *  - `host: '127.0.0.1'` — nothing off this machine can reach it at all.
+   *  - an Origin check — a *web page* in the user's own browser can open
+   *    `ws://127.0.0.1:7777` and would arrive over loopback like anything else.
+   *    Browsers cannot forge `Origin`, and the extension's is
+   *    `chrome-extension://<id>`, so requiring that shuts the page out.
+   *
+   * What remains: another process running as the same user on this machine can
+   * still connect. That needs a shared secret the extension can read, which
+   * needs a setup step — noted in CLAUDE.md → What's next rather than guessed at.
+   */
   async start() {
     return new Promise((resolve, reject) => {
-      this.wss = new WS({ port: this.port });
+      this.wss = new WS({
+        port: this.port,
+        host: LOOPBACK,
+        verifyClient: ({ origin, req }, done) => {
+          if (isAllowedOrigin(origin)) return done(true);
+          logError(this.agentLoop?.workspace, {
+            flow: 'bridge',
+            op: 'rejected_origin',
+            message: `Refused a connection from origin ${origin || '(none)'}`,
+          });
+          // 403, and say why: a silent drop here reads as "the bridge is down".
+          done(false, 403, 'Only the Agent CLI browser extension may connect');
+        },
+      });
 
       this.wss.on('connection', (ws, req) => {
         this._handleConnection(ws, req);

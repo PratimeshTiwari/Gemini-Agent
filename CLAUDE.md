@@ -431,7 +431,7 @@ already provides.
 Agreed 2026-09-10, after all six Direction phases landed. Ordered by what would hurt most if
 left alone, not by what is most interesting.
 
-### P0 — before anyone else runs this
+### P0 — done, 2026-09-11
 
 **The auto-mode command classifier can be walked straight past.** `_classifyCommand` takes
 `command.split(/\s+/)[0]` as "the binary" and never looks at shell metacharacters. Measured:
@@ -446,17 +446,42 @@ left alone, not by what is most interesting.
 
 In auto mode `safe` means *executes with no approval*. The model does not have to be malicious
 for this to fire — a plausible-looking `grep … || npm publish` is exactly the shape a confused
-model emits. Fix: split on `;` `&&` `||` `|` newline `$( )` backticks, classify every segment,
-worst wins.
+model emits.
+
+**Fixed.** `core/shell-split.js` is a lexer, not a shell: it only needs to know where one
+command ends and the next begins, and which text will be executed at all. It respects quoting
+(`echo "a; b"` is one command), follows `$(…)` and backticks — including inside double quotes,
+where `echo "$(rm -rf /)"` really does run `rm` — and keeps `2>&1` and `&>log` attached rather
+than splitting them on the `&`. `_classifyCommand` then classifies every segment and **the worst
+one wins**, naming the segments responsible rather than the first one found. Redirect targets
+are resolved against the workspace, so `cat x > ~/.ssh/authorized_keys` is `critical` even from
+inside it; `sed` and `awk` are no longer read-only, because `-i` is invisible in the first word;
+`sudo`/`su`/`doas` are `critical` wherever they appear.
 
 **The bridge binds to every interface with no auth.** `new WS({ port })` resolves to
 `{"address":"::"}` — verified, not assumed. No origin check, no token. Anything on the same
 network can connect to 7777, inject prompts and read replies, on a tool that runs shell
-commands. Fix: `host: '127.0.0.1'`, a token the extension carries, an origin check.
+commands.
+
+**Fixed**, two ways, both free. `host: '127.0.0.1'` so nothing off this machine can reach it.
+And a `verifyClient` Origin check, because a *web page* in the user's own browser can open
+`ws://127.0.0.1:7777` and arrives over loopback like anything else — browsers cannot forge
+`Origin`, so requiring `chrome-extension://` shuts the page out while leaving non-browser
+clients (which already had to be on this machine) alone. Verified against the running server:
+`lsof` shows `127.0.0.1:7821`, a website origin gets `403`, the extension connects.
+
+**What remains:** another process running as the same user can still connect. Closing that needs
+a shared secret the extension can read, which needs a setup step — a UX decision, not a patch.
 
 **`diff-engine.js` has no tests.** 358 lines, and it is the thing that overwrites files.
 
-### P1 — correctness
+**Fixed**, and writing them turned up a real bug. `_createBackup` used
+`relative(workspace, absPath)` directly, and the tools accept absolute paths — so backing up a
+file outside the workspace produced `../../../tmp/x`, and `resolve(backupDir, that)` wrote the
+backup *outside the backup directory and outside the workspace*: with workspace `/a/b/c`, a
+backup of `/tmp/x` landed at `/a/b/tmp/x.bak`. Anything outside now goes under `_external/`.
+
+### P1 — correctness · next
 
 **Validate tool arguments.** `zod` is a dependency and `mcp/mcp-server.js` never imports it.
 `TOOL_DEFINITIONS` declares a schema per tool and `PromptBuilder` renders it into the prompt as
