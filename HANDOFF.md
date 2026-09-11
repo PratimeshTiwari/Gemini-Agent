@@ -12,8 +12,9 @@ where the baton is.
 
 ## State
 
-- Branch `v1-stable`. **One commit unpushed** (`a4975b7`); `origin/v1-stable` is at
-  `df791f5`. The owner pushes by hand — do not push without being asked.
+- Branch `v1-stable`. **Three commits unpushed** (`a4975b7`, `0024961`, and the
+  UI-redesign plan); `origin/v1-stable` is at `df791f5`. The owner pushes by hand —
+  do not push without being asked.
 - `main` is untouched at `68f76cd`. **None of this has been through a PR yet.** Work
   merges into `main` through a PR only; the branches here are deliberate history, so
   do not delete them and do not rewrite history.
@@ -49,6 +50,13 @@ history and ignored the system prompt and tool definitions. `/restart` touched a
 mtime nothing watched. `/image` put base64 in the session files.
 
 ## Next
+
+**`UI-REDESIGN.md`** — planned 2026-09-11, nothing built. The CLI reads as
+unpolished, and the diagnosis is one idea: the chrome costs 17 rows and talks
+about itself. Seven colours with no meanings, emoji breaking the status bar's
+column alignment, the mode chip detached from the box it governs, and ~24
+`console.*` writes that land in the live Ink frame (the `[GitHub Bridge]` lines).
+Eight items, ordered; `RESERVED_ROWS` moves last and only from a measurement.
 
 **Plan the GitHub PR agent restructure.** 1,649 lines, the largest single feature.
 The owner was explicit: **restructure, not delete**, and plan it on its own once
