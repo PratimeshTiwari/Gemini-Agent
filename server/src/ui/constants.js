@@ -34,19 +34,32 @@ export const FOCUS_INPUT = 'input';
 export const FOCUS_TERMINAL = 'terminal';
 
 /**
- * Rows the live frame spends on furniture below the transcript: the thinking
- * line (2), the input box with its margin and border (5), the mode chip with
- * the blank row above it (2), the status bar with its rule and its own blank
- * row (4), a row of slack so a wrapped line cannot tip the frame over the
- * viewport, and the breathing room between the transcript and the prompt (1) —
- * without that row the input box sits flush against the last line of output and
- * the two read as one block.
+ * Rows the live frame always spends on furniture below the transcript: the
+ * thinking line with its margin (2, and the artifacts summary costs the same 2
+ * in the idle state that replaces it), the breathing room above the prompt (1),
+ * the input box with its two borders (3), the status bar with the blank row
+ * above it (2), and a row of slack so a wrapped line cannot tip the frame over
+ * the viewport (1).
  *
- * Overshooting costs a little transcript; undershooting costs the scrollback,
- * because Ink answers an overflowing frame with a full clear-and-repaint on
- * every render. See the note at the top of App.jsx.
+ * **Always** is the load-bearing word, and it is the bug this constant used to
+ * carry. It was 17 and written as a single number covering everything, but some
+ * of the furniture is conditional and one piece of it is *tall*: the slash
+ * palette is up to six rows, the disconnected-extension warning one, the
+ * "taking a while" note one. 17 did not cover them either — type `/` during a
+ * run on a disconnected extension and the frame was eight rows over budget,
+ * which is the clear-and-repaint bug waiting for an unusual afternoon.
+ *
+ * So the constant is now only the base, and App.jsx adds the conditional rows
+ * to it for the frame it is actually about to draw. Removing the mode chip (2),
+ * the permanent keybindings row (1) and the rule above the status bar (1) is
+ * what took the base from 13 to 9.
+ *
+ * Both numbers are measured, not derived: `scratchpad/stress.py` under a pty
+ * with a seeded transcript and a fake extension client holding a turn open,
+ * expecting 0 ESC[2J at 24×72, 24×100 and 40×140 — idle, running, and with the
+ * palette open. The one clear on ctrl+e is deliberate and documented in App.jsx.
  */
-export const RESERVED_ROWS = 17;
+export const RESERVED_ROWS = 9;
 
 export const THINKING_MESSAGES = [
   'Thinking…',

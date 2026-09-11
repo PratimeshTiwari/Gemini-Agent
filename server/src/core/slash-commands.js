@@ -20,6 +20,7 @@ import fs from 'fs';
 import path from 'path';
 import * as paths from './paths.js';
 import { EFFORT_LEVELS, resolveEffort, isEffort } from './effort.js';
+import { logError } from './error-log.js';
 
 /**
  * Run one slash command.
@@ -289,7 +290,10 @@ export async function handleSlashCommand(loop, command, args) {
 
         case 'refresh': {
           loop.githubHandler.refresh().catch(err => {
-            console.error(`[GitHub] Refresh error: ${err.message}`);
+            logError(loop.workspace, {
+              flow: 'github', op: 'refresh',
+              message: `Refresh error: ${err.message}`, detail: err.stack,
+            });
           });
           return { message: '🔄 Forcing immediate GitHub poll...' };
         }

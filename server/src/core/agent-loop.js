@@ -170,7 +170,10 @@ export class AgentLoop {
       });
       // Fire and forget, runs in the background
       this._compactHistory().catch(err => {
-        console.warn('Auto-compaction failed:', err);
+        logError(this.workspace, {
+          flow: 'agent', op: 'auto_compact',
+          message: `Auto-compaction failed: ${err.message}`, detail: err.stack,
+        });
       });
     }
 
@@ -213,7 +216,10 @@ export class AgentLoop {
       await this._sendToGemini(prompt, callbacks);
 
     } catch (err) {
-      console.error(err.stack);
+      logError(this.workspace, {
+        flow: 'agent', op: 'handle_user_message',
+        message: err.message, detail: err.stack,
+      });
       callbacks.sendToPanel({
         id: randomUUID(),
         type: 'error',
@@ -234,7 +240,10 @@ export class AgentLoop {
     // Allow subagent responses through even when main agent isn't processing —
     // background GitHub tasks use _executeSubagent without setting isProcessing.
     if (!this.isProcessing && !isSubagent) {
-      console.warn('[Agent Loop] Received Gemini response but agent is no longer processing (likely stopped).');
+      logError(this.workspace, {
+        flow: 'agent', op: 'stale_response',
+        message: 'Response arrived after the turn had stopped',
+      });
       this._releaseExtension();
       return;
     }
@@ -243,7 +252,10 @@ export class AgentLoop {
       this.callbacks = this._backgroundCallbacks;
     }
     if (!this.callbacks) {
-      console.warn('⚠️ Received Gemini response but no callbacks registered');
+      logError(this.workspace, {
+        flow: 'agent', op: 'no_callbacks',
+        message: 'Response arrived with no callbacks registered',
+      });
       return;
     }
 
@@ -261,7 +273,10 @@ export class AgentLoop {
 
     if (!complete) {
       if (payload.timedOut) {
-        console.warn('⚠️ Gemini response timed out');
+        logError(this.workspace, {
+          flow: 'agent', op: 'response_timeout',
+          message: 'The browser tab stopped streaming before the reply finished',
+        });
         this.callbacks.sendToPanel({
           id: randomUUID(),
           type: 'agent_response',
@@ -447,7 +462,10 @@ export class AgentLoop {
       this.pendingSubagents.delete(requestId);
       resolve({ success: true, result: content, url });
     } else {
-      console.warn(`⚠️ Received subagent response for unknown requestId: ${requestId}`);
+      logError(this.workspace, {
+        flow: 'agent', op: 'unknown_subagent',
+        message: `Subagent reply for an unknown requestId: ${requestId}`,
+      });
     }
   }
 
@@ -709,7 +727,10 @@ export class AgentLoop {
         memoryEnabled: this.memoryManager ? this.memoryManager.memoryEnabled : true,
       }, null, 2));
     } catch (err) {
-      console.warn('⚠️ Failed to save config:', err.message);
+      logError(this.workspace, {
+        flow: 'agent', op: 'save_config',
+        message: `Failed to save config: ${err.message}`, detail: err.stack,
+      });
     }
   }
 
@@ -779,7 +800,10 @@ export class AgentLoop {
    * back and the CLI would sit on "Thinking..." forever.
    */
   _onExtensionStall(model) {
-    console.warn(`[Agent Loop] No response from the ${model} tab; releasing it.`);
+    logError(this.workspace, {
+      flow: 'agent', op: 'extension_stall',
+      message: `No response from the ${model} tab; releasing it`, meta: { model },
+    });
     this.isProcessing = false;
     if (this.callbacks) {
       this.callbacks.sendToPanel({

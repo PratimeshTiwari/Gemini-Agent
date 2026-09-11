@@ -12,9 +12,9 @@ where the baton is.
 
 ## State
 
-- Branch `v1-stable`. **Three commits unpushed** (`a4975b7`, `0024961`, and the
-  UI-redesign plan); `origin/v1-stable` is at `df791f5`. The owner pushes by hand —
-  do not push without being asked.
+- Branch `v1-stable`. **Four commits unpushed** (`a4975b7`, `0024961`, the
+  UI-redesign plan, and the redesign itself); `origin/v1-stable` is at `df791f5`.
+  The owner pushes by hand — do not push without being asked.
 - `main` is untouched at `68f76cd`. **None of this has been through a PR yet.** Work
   merges into `main` through a PR only; the branches here are deliberate history, so
   do not delete them and do not rewrite history.
@@ -51,12 +51,15 @@ mtime nothing watched. `/image` put base64 in the session files.
 
 ## Next
 
-**`UI-REDESIGN.md`** — planned 2026-09-11, nothing built. The CLI reads as
-unpolished, and the diagnosis is one idea: the chrome costs 17 rows and talks
-about itself. Seven colours with no meanings, emoji breaking the status bar's
-column alignment, the mode chip detached from the box it governs, and ~24
-`console.*` writes that land in the live Ink frame (the `[GitHub Bridge]` lines).
-Eight items, ordered; `RESERVED_ROWS` moves last and only from a measurement.
+**`UI-REDESIGN.md` is done** — all eight items, 2026-09-11. The chrome cost 17
+rows and talked about itself; it is one row now. Seven colours became five
+roles, the live frame has no emoji left, the mode moved onto the input border,
+and 17 `console.*` writes that landed in the Ink frame (the `[GitHub Bridge]`
+lines) went to `error-log.js`. The frame budget is a **sum** rather than a
+constant now — the slash palette is six conditional rows a single number could
+never be right about. Measured at four terminal sizes in five states: 0 `ESC[2J`
+everywhere. Read the file for what changed against the plan, including one
+finding recorded as *unproven* rather than fixed.
 
 **Plan the GitHub PR agent restructure.** 1,649 lines, the largest single feature.
 The owner was explicit: **restructure, not delete**, and plan it on its own once
@@ -110,9 +113,13 @@ recorded in `CLAUDE.md` → `## What's next`:
   the agent *run* a turn without a browser, connect a fake extension client over the
   WebSocket with a `chrome-extension://` origin and never answer — that is how the
   animation was measured.
-- **`RESERVED_ROWS` is load-bearing and now 17.** Adding a row to the bottom furniture
-  without raising it brings back the clear-the-terminal bug. Expect `0` `ESC[2J` and
-  `0` idle bytes from every screen; every one added this session was measured.
+- **`RESERVED_ROWS` is load-bearing and now 9 — a *base*, not a total.** App.jsx
+  adds the conditional furniture (palette, disconnected warning, "taking a while")
+  for the frame it is about to draw. Adding always-on furniture means raising the
+  constant; adding conditional furniture means adding it to that sum, or the
+  clear-the-terminal bug comes back. Expect `0` `ESC[2J` and `0` idle bytes from
+  every screen. The harness recipe is in `UI-REDESIGN.md` → How to verify — including
+  the `clientType` field the fake extension client must send, which is not `client`.
 - **A prompt refactor needs a byte-for-byte check**, not a read-through. Moving prose
   into files changed one of ten prompt shapes because `trimEnd()` ate a trailing
   newline the assembly depended on.

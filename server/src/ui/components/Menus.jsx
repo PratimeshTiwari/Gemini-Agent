@@ -119,7 +119,7 @@ export function Menus({
         {activeMenu?.type === 'command_approval' && (
           <Box flexDirection="column" borderStyle="single" borderColor={activeMenu.payload.riskLevel === 'critical' ? 'red' : 'yellow'} padding={1}>
             <Text bold color={activeMenu.payload.riskLevel === 'critical' ? 'red' : 'yellow'}>
-              ⚠️ Command Execution Request ({activeMenu.payload.riskLevel.toUpperCase()})
+              ! Command Execution Request ({activeMenu.payload.riskLevel.toUpperCase()})
             </Text>
             <Text>Command: <Text bold>{activeMenu.payload.command}</Text></Text>
             <Text>Directory: {activeMenu.payload.cwd}</Text>
@@ -150,7 +150,7 @@ export function Menus({
 
         {activeMenu?.type === 'plan_review' && (
           <Box flexDirection="column" borderStyle="single" borderColor="magenta" padding={1}>
-            <Text bold color="magenta">📝 Implementation Plan Ready for Review</Text>
+            <Text bold color="cyan">Implementation plan ready for review</Text>
             <Text>The agent has created an implementation_plan.md artifact.</Text>
             <SelectInput
               items={[
@@ -252,10 +252,10 @@ export function Menus({
                     value: 'reviewer none',
                   },
                   {
-                    label: `🔍  Duo — ${other} reviews ${main}${isDuo ? '  ← current' : ''}`,
+                    label: `Duo — ${other} reviews ${main}${isDuo ? '  ← current' : ''}`,
                     value: `reviewer ${other}`,
                   },
-                  { label: `🤖  Swap the main model to ${other}`, value: `main ${other}` },
+                  { label: `Swap the main model to ${other}`, value: `main ${other}` },
                 ]}
                 onSelect={(item) => run(item.value.split(' '))}
               />
@@ -301,7 +301,7 @@ export function Menus({
                 </Text>
                 <SelectInput
                   items={[
-                    { label: '✅  Keep them', value: 'keep' },
+                    { label: 'Keep them', value: 'keep' },
                     ...(undoable.length
                       ? [{ label: `↩️   Put ${undoable.length === changes.length ? 'them' : `${undoable.length} of them`} back`, value: 'undo' }]
                       : []),
@@ -476,9 +476,9 @@ export function Menus({
         )}
 
         {activeMenu?.type === 'plans' && (
-          <Box flexDirection="column" borderStyle="single" borderColor="blue" padding={1}>
-            <Text bold color="blue">
-              📐  {activeMenu.plans.length} past plan{activeMenu.plans.length === 1 ? '' : 's'}
+          <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+            <Text bold color="cyan">
+              {activeMenu.plans.length} past plan{activeMenu.plans.length === 1 ? '' : 's'}
             </Text>
             <Text dimColor wrap="wrap">
               Each one was archived when the next replaced it. Enter opens it in your editor.
@@ -560,7 +560,7 @@ export function Menus({
                 <Text bold color="yellow">🛡️  Remove this rule?</Text>
                 <Box marginY={1} paddingLeft={2}>
                   <Text color={kind === 'allow' ? 'green' : 'red'} wrap="wrap">
-                    {kind === 'allow' ? '✅ ' : '⛔ '}{cmd}
+                    {kind === 'allow' ? '✓ ' : '✗ '}{cmd}
                   </Text>
                 </Box>
                 <Text dimColor wrap="wrap">
@@ -603,7 +603,7 @@ export function Menus({
                   limit={10}
                   items={[
                     ...all.map(({ cmd, kind }) => ({
-                      label: `${kind === 'allow' ? '✅' : '⛔'}  ${oneLine(cmd, 58)}`,
+                      label: `${kind === 'allow' ? '✓' : '✗'}  ${oneLine(cmd, 58)}`,
                       value: cmd,
                       key: `${kind}:${cmd}`,
                     })),
@@ -628,13 +628,13 @@ export function Menus({
           // toggle it meant reading every rule you had ever added. What belongs
           // on the first screen is the four things you can do.
           const items = [
-            { label: on ? '⛔  Disable — ask before every command' : '✅  Enable — let allowed commands run',
+            { label: on ? 'Disable — ask before every command' : 'Enable — let allowed commands run',
               value: on ? 'disable' : 'enable' },
             { label: '＋  Allow a command…', value: '\u0000add' },
             { label: '＋  Block a command…', value: '\u0000block' },
             ...(all.length > 0
               ? [
-                { label: `📋  View commands (${all.length})`, value: '\u0000list' },
+                { label: `View commands (${all.length})`, value: '\u0000list' },
                 { label: '🧹  Clear every rule', value: 'clear' },
               ]
               : []),
@@ -678,9 +678,9 @@ export function Menus({
           };
 
           return (
-            <Box flexDirection="column" borderStyle="single" borderColor="magenta" padding={1}>
-              <Text bold color="magenta">
-                🧩 Skills — {skills.length} across {folders.length} folder{folders.length === 1 ? '' : 's'}
+            <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+              <Text bold color="cyan">
+                Skills — {skills.length} across {folders.length} folder{folders.length === 1 ? '' : 's'}
               </Text>
               <Text dimColor wrap="wrap">
                 Markdown files the agent opens when their description matches the task. Only the
@@ -699,7 +699,7 @@ export function Menus({
                   // a list with no way to reach them, which is what made this
                   // screen feel half-finished.
                   { label: `📁  Folders searched (${folders.length})…`, value: 'folders', key: '_folders' },
-                  { label: '📂  Open the skills folder', value: `open:${skillsDir(activeMenu.workspace)}`, key: '_dir' },
+                  { label: 'Open the skills folder', value: `open:${skillsDir(activeMenu.workspace)}`, key: '_dir' },
                 ]}
                 onSelect={(item) => {
                   if (item.value === 'new') {
@@ -730,7 +730,7 @@ export function Menus({
 
         {activeMenu?.type === 'workspace' && (
           <Box flexDirection="column" borderStyle="single" borderColor="blue" padding={1}>
-            <Text bold color="blue">📂 Choose a workspace</Text>
+            <Text bold color="cyan">Choose a workspace</Text>
             <Text dimColor wrap="truncate-start">Currently: {activeMenu.current}</Text>
             <Text dimColor wrap="wrap">
               The agent restarts into it. This conversation belongs to the project you are
@@ -744,7 +744,7 @@ export function Menus({
                   value: c.path,
                 })),
                 ...(canPickFolder()
-                  ? [{ label: '  📂 Browse…', value: '\u0000browse' }]
+                  ? [{ label: '  Browse…', value: '\u0000browse' }]
                   : []),
                 { label: '  Type a path instead…', value: '\u0000type' },
               ]}
@@ -772,7 +772,7 @@ export function Menus({
 
         {activeMenu?.type === 'github' && (
           <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-            <Text bold color="cyan">📋 GitHub Integration Menu</Text>
+            <Text bold color="cyan">GitHub integration</Text>
             <SelectInput
               items={[
                 { label: 'Refresh PR Activity Now', value: 'refresh' },

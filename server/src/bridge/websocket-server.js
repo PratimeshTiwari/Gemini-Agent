@@ -148,7 +148,10 @@ export class WebSocketServer {
         const message = JSON.parse(data.toString());
         await this._handleMessage(clientId, message);
       } catch (err) {
-        console.error(`❌ Error handling message from ${clientId}:`, err.message);
+        logError(this.agentLoop?.workspace, {
+          flow: 'bridge', op: 'handle_message',
+          message: err.message, detail: err.stack, meta: { clientId },
+        });
         this._send(ws, {
           id: randomUUID(),
           type: 'error',
@@ -163,7 +166,10 @@ export class WebSocketServer {
     });
 
     ws.on('error', (err) => {
-      console.error(`❌ Client error (${clientId}):`, err.message);
+      logError(this.agentLoop?.workspace, {
+        flow: 'bridge', op: 'client_error',
+        message: err.message, meta: { clientId },
+      });
     });
 
     // Send welcome message
@@ -298,14 +304,21 @@ export class WebSocketServer {
         break;
 
       case 'github_pr_viewing':
-        // User is viewing a PR page
+        // Which PR the browser is looking at. Recorded on the client, not
+        // printed: this is routine traffic on a MutationObserver, and a
+        // console.log here writes straight into the frame Ink is repainting —
+        // three copies of "User viewing PR #13" in the transcript was exactly
+        // that. The GitHub tab is where this belongs if it is ever surfaced.
         if (payload?.pr) {
-          console.log(`  [GitHub Bridge] User viewing PR #${payload.pr.number} on ${payload.pr.full_name}`);
+          this.viewingPR = { number: payload.pr.number, repo: payload.pr.full_name };
         }
         break;
 
       default:
-        console.warn(`⚠️ Unknown message type: ${type}`);
+        logError(this.agentLoop?.workspace, {
+          flow: 'bridge', op: 'unknown_message',
+          message: `Unknown message type: ${type}`,
+        });
     }
   }
 

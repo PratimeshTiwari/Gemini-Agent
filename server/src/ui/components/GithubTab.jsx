@@ -33,7 +33,7 @@ export function GithubTab({ agentLoop, wsServer, github, maxRows }) {
 
   return (
     <Box flexDirection="column" borderStyle="single" borderColor="cyan" paddingX={1} width="100%">
-      <Text bold color="cyan">📋 GitHub PR Dashboard</Text>
+      <Text bold color="cyan">GitHub PR dashboard</Text>
       {body}
     </Box>
   );
@@ -98,7 +98,7 @@ function TokenSetup({ agentLoop, wsServer, github }) {
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text color={authRejected ? 'red' : 'yellow'} bold>
-        {authRejected ? '🔒 GitHub token rejected' : '⚠️  GitHub setup pending'}
+        {authRejected ? 'GitHub token rejected' : 'GitHub setup pending'}
       </Text>
       <Text wrap="wrap">Generate a token with the <Text bold>repo</Text> scope at https://github.com/settings/tokens/new and paste it below.</Text>
       <Text dimColor wrap="wrap">Stored in this workspace's .agent/config.json; the integration starts immediately.</Text>
@@ -116,7 +116,7 @@ function TokenSetup({ agentLoop, wsServer, github }) {
             />
           )}
       </Box>
-      {error ? <Text color="red" wrap="wrap">❌ {error}</Text> : null}
+      {error ? <Text color="red" wrap="wrap">✗ {error}</Text> : null}
       <KeyHints hints={[['^o', 'back to the agent']]} />
     </Box>
   );
@@ -195,7 +195,7 @@ function PrExplorer({ agentLoop, github, maxRows }) {
     return (
       <Box flexDirection="column" marginTop={1}>
         <GithubStatus agentLoop={agentLoop} github={github} />
-        <Text bold color="magenta" wrap="truncate">🧭 PR #{pr?.number} — {pr?.title}</Text>
+        <Text bold color="cyan" wrap="truncate">PR #{pr?.number} — {pr?.title}</Text>
         <KeyHints hints={[['↑↓', 'move'], ['⏎', 'send to the agent'], ['esc', 'back']]} />
         {loadingPrComments ? <Text dimColor><Spinner type="dots" /> Loading comments…</Text> : null}
         {!loadingPrComments && prComments.length === 0 ? <Text dimColor>No comments on this PR.</Text> : null}
@@ -221,7 +221,7 @@ function PrExplorer({ agentLoop, github, maxRows }) {
   return (
     <Box flexDirection="column" marginTop={1}>
       <GithubStatus agentLoop={agentLoop} github={github} />
-      <Text bold color="magenta">🧭 PR explorer</Text>
+      <Text bold color="cyan">PR explorer</Text>
       <KeyHints hints={[['↑↓', 'move'], ['⏎', 'open comments'], ['r', 'refresh'], ['esc', 'back']]} />
       {loadingPrs ? <Text dimColor><Spinner type="dots" /> Loading PRs…</Text> : null}
       {!loadingPrs && prList.length === 0 ? <Text dimColor>No open PRs found.</Text> : null}
@@ -247,7 +247,7 @@ function Activity({ agentLoop, github, maxRows }) {
 
       {agentLoop.githubHandler?._currentAnalysis && (
         <Text color="yellow" wrap="truncate">
-          🔄 Analysing @{agentLoop.githubHandler._currentAnalysis.author} on PR #{agentLoop.githubHandler._currentAnalysis.prNumber}
+          Analysing @{agentLoop.githubHandler._currentAnalysis.author} on PR #{agentLoop.githubHandler._currentAnalysis.prNumber}
           <Text dimColor> · queue {agentLoop.githubHandler?._commentQueue?.length || 0}</Text>
         </Text>
       )}
@@ -279,7 +279,7 @@ function Activity({ agentLoop, github, maxRows }) {
               );
             }
             if (activity.type === 'github_notification') {
-              return <Text key={activity.id} wrap="truncate">  ℹ️  {activity.payload.message}</Text>;
+              return <Text key={activity.id} wrap="truncate">  {activity.payload.message}</Text>;
             }
             return null;
           })}

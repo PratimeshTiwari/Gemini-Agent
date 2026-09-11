@@ -3,7 +3,7 @@ import { Box, Text, usePaste } from 'ink';
 import TextInput from 'ink-text-input';
 import { RunningLine } from './RunningLine.jsx';
 import { FOCUS_INPUT } from '../constants.js';
-import { applyPaste, attachedPastes, nextPasteId } from '../paste.js';
+import { applyPaste, nextPasteId } from '../paste.js';
 
 /** First `n` non-empty lines of an artifact, for the one-glance summary. */
 function head(text, n) {
@@ -16,7 +16,7 @@ function head(text, n) {
 
 /**
  * The bottom of the agent tab: the thinking line while a turn runs, then the
- * prompt with its slash palette and the plan/auto chip.
+ * prompt with its slash palette.
  *
  * Everything here is bounded on purpose. It sits in Ink's repainted frame, so
  * an unbounded row — the artifact dump this used to render in full — pushes the
@@ -54,8 +54,6 @@ export function InputBar({
   verbose,
 }) {
   const hasArtifacts = Boolean(artifacts?.task || artifacts?.walkthrough);
-  // Derived from the prompt, not from the list — see attachedPastes.
-  const attached = attachedPastes(input, pastes);
   const promptVisible = !diffRequest && !terminalOpen && !activeMenu;
 
   // Bracketed paste, which this hook turns on, is what separates "the user
@@ -99,8 +97,8 @@ export function InputBar({
         <Box flexDirection="column" marginTop={1}>
           {hasArtifacts && !isProcessing && (
             <Box flexDirection="column" marginBottom={1}>
-              <Text color="yellow">
-                📋 {[artifacts.task && 'task.md', artifacts.walkthrough && 'walkthrough.md'].filter(Boolean).join(' · ')}
+              <Text color="cyan">
+                {'▸ '}{[artifacts.task && 'task.md', artifacts.walkthrough && 'walkthrough.md'].filter(Boolean).join(' · ')}
                 <Text dimColor>{verbose ? '' : ' — ctrl+e to expand'}</Text>
               </Text>
               {verbose && artifacts.task && (
@@ -113,7 +111,7 @@ export function InputBar({
           )}
 
           {!extensionConnected && (
-            <Text color="yellow">⚠️  Open a Gemini tab in Chrome — the extension is not connected</Text>
+            <Text color="yellow">! Open a Gemini tab in Chrome — the extension is not connected</Text>
           )}
 
           {slashOpen && (
@@ -127,14 +125,21 @@ export function InputBar({
             </Box>
           )}
 
+          {/*
+            The border is the mode. Plan vs auto is the answer to "will this
+            edit happen without asking me?", and it used to be a yellow chip two
+            rows *below* the box it governs — the most consequential state on
+            screen rendered as a footnote, for two rows of frame budget. The
+            border is already the most visible line here and it costs nothing.
+          */}
           <Box
             flexDirection="row"
             borderStyle="round"
-            borderColor={focus === FOCUS_INPUT ? 'cyan' : 'gray'}
+            borderColor={focus === FOCUS_INPUT ? (mode === 'plan' ? 'yellow' : 'cyan') : 'gray'}
             paddingX={1}
             width="100%"
           >
-            <Text bold color={focus === FOCUS_INPUT ? 'cyan' : 'gray'}>{'> '}</Text>
+            <Text bold color={focus === FOCUS_INPUT ? (mode === 'plan' ? 'yellow' : 'cyan') : 'gray'}>{'> '}</Text>
             <TextInput
               focus={focus === FOCUS_INPUT}
               value={input}
@@ -166,18 +171,6 @@ export function InputBar({
               }}
               placeholder="Ask anything, or / for commands"
             />
-          </Box>
-
-          <Box paddingX={1} marginTop={1}>
-            <Text color={mode === 'auto' ? 'green' : 'yellow'}>
-              ▶▶ {mode} mode on <Text dimColor>(shift+tab to cycle)</Text>
-              {attached.length > 0 && (
-                <Text dimColor>
-                  {'  · '}{attached.length} paste{attached.length === 1 ? '' : 's'} attached
-                  {' — delete the marker to drop one'}
-                </Text>
-              )}
-            </Text>
           </Box>
         </Box>
       )}

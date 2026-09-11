@@ -7,12 +7,11 @@ import { Banner } from './components/Banner.jsx';
 import { TranscriptTurn } from './components/TranscriptTurn.jsx';
 import { AgentTerminal } from './components/AgentTerminal.jsx';
 import { InputBar } from './components/InputBar.jsx';
-import { KeyHints } from './components/KeyHints.jsx';
 import { clampForDisplay } from './format.js';
 import { SLASH_COMMANDS, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES, RESERVED_ROWS } from './constants.js';
 import { resolveEffort } from '../core/effort.js';
 import { groupTurns } from './transcript.js';
-import { expandPastes } from './paste.js';
+import { expandPastes, attachedPastes } from './paste.js';
 import { drainChatQueue } from './chat-queue.js';
 import { drainTerminalQueue } from './terminal-queue.js';
 import { useKeyBindings } from './hooks/use-key-bindings.js';
@@ -238,7 +237,19 @@ export function App({ agentLoop, wsServer }) {
   // the spinner, the input box, the mode chip and the status bar — is fixed
   // furniture, and going over the viewport is what triggers Ink's full-clear
   // repaint path.
-  const liveBudget = Math.max(3, terminalHeight - RESERVED_ROWS);
+  // Furniture the frame is about to draw, not furniture it might draw. The
+  // palette is the reason this is a sum rather than a constant: it is six rows
+  // when it is open and none when it is not, and a single number can only be
+  // right about one of those.
+  const liveBudget = Math.max(3, terminalHeight - RESERVED_ROWS
+    - (slashOpen ? slashMatches.length : 0)
+    - (extensionConnected ? 0 : 1)
+    - (isThinkingTooLong ? 1 : 0));
+
+  // Shown in the status bar rather than under the prompt: it is rare, it is one
+  // short field, and a conditional row under the input is a row RESERVED_ROWS
+  // has to budget for whether or not it is ever drawn.
+  const attachedCount = attachedPastes(input, pastes).length;
 
   useEffect(() => {
     // /plan and /auto mutate agentLoop.mode directly, so mirror it back.
@@ -556,7 +567,18 @@ export function App({ agentLoop, wsServer }) {
   const runningTasks = tasks.filter(t => t.status === 'running').length;
   // Which repo of a group we are on. Empty for an ordinary single-repo
   // workspace, where showing it would be noise.
-  const activeScope = paths.getActiveScope(agentLoop.workspace);
+  // The scope is a *path* from the state root down to the workspace, so it can
+  // be several segments long — and the status bar is a fixed-height instrument
+  // that must never wrap. The last segment is the identifying part ("repo-1");
+  // the rest is the route to it, which the workspace line in the banner already
+  // gives. Measured under a pty: the unclamped value wrapped the bar onto two
+  // rows, which is one row of live frame nobody budgeted for.
+  const activeScope = (() => {
+    const scope = paths.getActiveScope(agentLoop.workspace);
+    if (!scope) return null;
+    const leaf = scope.split('/').filter(Boolean).pop() || scope;
+    return leaf.length > 20 ? `${leaf.slice(0, 19)}…` : leaf;
+  })();
 
   // The banner is committed with the rest of the scrollback rather than living
   // in the live frame: it is ten rows of figlet that would otherwise be
@@ -697,46 +719,56 @@ export function App({ agentLoop, wsServer }) {
         </>
       )}
 
-      {/* Fixed Status Bar
-          marginTop separates it from the mode chip above; the two rows inside
-          are one unit and stay together. Three lines stacked with no gap read
-          as one dense block rather than as three different kinds of thing. */}
-      <Box marginTop={1} paddingX={1} flexDirection="column" width="100%" borderTopStyle="single" borderTopColor="gray">
-        <Box flexDirection="row" justifyContent="space-between" width="100%">
-          <Text>
-            {activeTab === 'agent' ? (
-              <>
-                {isProcessing
-                  ? <Text color="yellow"><Spinner type="dots" /> Agent</Text>
-                  : <Text color={extensionConnected ? 'cyan' : 'yellow'} bold>{extensionConnected ? '🟢' : '🟡'} Agent</Text>}
-                <Text dimColor> │ GitHub {github.hasNewEvent ? '🔴 ' : ''}(ctrl+o)</Text>
-              </>
-            ) : (
-              <>
-                <Text dimColor>Agent (ctrl+o) │ </Text>
-                <Text color="cyan" bold>🐙 GitHub</Text>
-              </>
-            )}
-          </Text>
-          <Text dimColor>
-            {activeScope ? <Text color="green">🎯 {activeScope} · </Text> : ''}
-            {resolveEffort(agentLoop.modelConfig?.effort).id.toUpperCase()}
-            {' · '}
-            <Text color={tokenColor}>~{syncTokenEstimate.toLocaleString()}/{tokenLimit.toLocaleString()} ({tokenPct}%)</Text>
-          </Text>
+      {/*
+        The status bar: one row, fixed columns.
+
+        It used to be two rows under a horizontal rule — identity and tabs left,
+        effort and tokens right, then a permanent row of keybindings left and a
+        second context number right. Four values on two rows, right-aligned
+        against different left-hand content, so none of them lined up with each
+        other and the two "how full am I" numbers (`~1,427/50,000` in tokens,
+        `2/50 ctx` in turns) asked one question in two units.
+
+        One row now: **who and where** on the left, **state and cost** on the
+        right, always in that order. The keybindings moved into `/help`, which
+        already listed every one of them — a hint is a teaching surface, and
+        this one was charging permanent screen rent for something that is
+        load-bearing exactly once. The rule above it went with them: the blank
+        row already separated the bar from the prompt, and the line was drawing
+        a boundary that was never in doubt.
+      */}
+      <Box marginTop={1} paddingX={1} flexDirection="row" justifyContent="space-between" width="100%">
+        <Box flexShrink={1} overflow="hidden">
+        <Text wrap="truncate">
+          {activeTab === 'agent' ? (
+            <>
+              {isProcessing
+                ? <Text color="cyan"><Spinner type="dots" /> agent</Text>
+                : <Text color={extensionConnected ? 'cyan' : 'yellow'} bold>
+                    {extensionConnected ? '●' : '○'} agent
+                  </Text>}
+              <Text dimColor>{'  ·  '}github{github.hasNewEvent ? '*' : ''} ^o</Text>
+            </>
+          ) : (
+            <>
+              <Text color="cyan" bold>● github</Text>
+              <Text dimColor>{'  ·  '}agent ^o</Text>
+            </>
+          )}
+          {activeScope ? <Text dimColor>{'  ·  '}{activeScope}</Text> : null}
+          <Text dimColor>{'  ·  '}/help</Text>
+        </Text>
         </Box>
-        <Box flexDirection="row" justifyContent="space-between" width="100%">
-          {/* No 'mode' hint: the plan/auto chip above the prompt already says
-              which mode you are in and how to cycle it. */}
-          <KeyHints hints={[
-            ['^t', 'terminal'],
-            ['^e', verbose ? 'collapse' : 'expand'],
-            ['^u', 'clear'],
-          ]} />
-          <Text dimColor>
-            {runningTasks > 0 ? <Text color="yellow">{runningTasks} bg · </Text> : ''}
-            {history.length}/50 ctx
-          </Text>
+        <Box flexShrink={0}>
+        <Text dimColor wrap="truncate">
+          {attachedCount > 0 ? `${attachedCount} paste${attachedCount === 1 ? '' : 's'}  ·  ` : ''}
+          {runningTasks > 0 ? <Text color="yellow">{runningTasks} bg{'  ·  '}</Text> : ''}
+          <Text color={mode === 'plan' ? 'yellow' : 'cyan'}>{mode}</Text>
+          <Text dimColor> ⇥{'  ·  '}</Text>
+          {resolveEffort(agentLoop.modelConfig?.effort).id.toUpperCase()}
+          {'  ·  '}
+          <Text color={tokenColor}>{tokenPct}% of {tokenLimit >= 1000 ? `${Math.round(tokenLimit / 1000)}k` : tokenLimit}</Text>
+        </Text>
         </Box>
       </Box>
     </Box>

@@ -36,6 +36,7 @@ export const FLOWS = {
   task: 'Background tasks',
   diff: 'Edits and diff approval',
   context: 'Indexing, memory and context',
+  storage: 'Session history and state files',
   ui: 'Terminal UI',
 };
 

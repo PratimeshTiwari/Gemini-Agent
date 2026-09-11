@@ -202,7 +202,10 @@ export class GitHubPoller extends EventEmitter {
         });
       }
     } catch (err) {
-      console.error("Failed to fetch comments for PR:", err.message);
+      logError(this.workspace, {
+        flow: 'github', op: 'fetch_comments',
+        message: `Failed to fetch comments for PR: ${err.message}`, detail: err.stack,
+      });
     }
     
     // Sort by created_at descending (newest first)
@@ -448,7 +451,10 @@ export class GitHubPoller extends EventEmitter {
         return JSON.parse(readFileSync(this.stateFile, 'utf-8'));
       }
     } catch (err) {
-      console.warn(`⚠️ Failed to load GitHub state: ${err.message}`);
+      logError(this.workspace, {
+        flow: 'github', op: 'load_state',
+        message: `Failed to load GitHub state: ${err.message}`,
+      });
     }
     return { commentWatermarks: {}, seenCIRuns: {} };
   }
@@ -461,7 +467,10 @@ export class GitHubPoller extends EventEmitter {
       }
       writeFileSync(this.stateFile, JSON.stringify(this.state, null, 2), 'utf-8');
     } catch (err) {
-      console.warn(`⚠️ Failed to save GitHub state: ${err.message}`);
+      logError(this.workspace, {
+        flow: 'github', op: 'save_state',
+        message: `Failed to save GitHub state: ${err.message}`,
+      });
     }
   }
 }
