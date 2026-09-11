@@ -303,3 +303,77 @@ ctrl+e is deliberate and documented in `App.jsx`: Ink cannot repaint what
 - **`vscode-companion/cli-agent-companion-1.3.1.vsix`** is still tracked
   alongside 1.4.0. Raised in `HANDOFF.md`, still undecided — unrelated to the UI,
   noted here so it is not lost.
+
+---
+
+# Round two — raised 2026-09-12
+
+Two things the first pass did not touch, both reported from use rather than from
+reading the code.
+
+## Code blocks
+
+A fenced block in the transcript arrives looking like this:
+
+```
+JavaScript// 1. Using async/await (Preferred based on your AGENT.md conventions)
+async function fetchUserData() {
+```
+
+**Half of that is an extension bug, not a rendering one.** `extractTextContent`
+in `gemini-bridge.js` matches `code-block` *and* its inner `pre code`, processes
+the ancestor first, and takes `textContent` of the wrapper — which includes
+Gemini's header chip. So the language label is welded to the first line of code,
+and the fence's own language comes out empty because the attribute lives on the
+inner `<code>`. Full diagnosis in `EXTENSION-PLAN.md` → Scraping; the fix is
+phase 4 there, and it has to land first.
+
+**The CLI half is about being copyable.** `marked-terminal` is configured with
+`tab: 2`, so code is indented — and a drag-select then copies the indentation
+with it, which is exactly what you do not want from a code block. Three changes:
+
+- **Do not indent code blocks.** Indentation is the single thing standing between
+  a mouse drag and clean, pasteable code. This is the whole answer to "can we copy
+  them with the mouse": there is no button to click — a clickable button needs
+  mouse *tracking*, and turning that on is what would take native selection away
+  (`CLAUDE.md` → "No mouse tracking, ever"). Selection already works; it just
+  copies two leading spaces per line.
+- **Mark the block's edges** so it is obvious where code starts and stops — a dim
+  rule carrying the language, above the code and not inside it, so it is outside
+  what a drag picks up.
+- **A keyboard copy** — `ctrl+y` copies the last code block to the clipboard via
+  `pbcopy`/`xclip`, and offers a picker when a reply has several. That is the
+  reliable path; the mouse is the convenient one.
+
+## Jitter above the input
+
+**Measured**, under a pty at 24×100, during a live turn with the spinner running:
+
+```
+window                  5.0s
+bytes                   136,368        (27 KB/s)
+erase-line sequences    1,368
+rows rewritten / tick   21.9
+```
+
+**Twenty-two rows, 12.5 times a second, on a 24-row terminal** — the whole
+visible frame. Ink does not diff by line: any state change rewrites the entire
+live frame, and the `RunningLine` animation is a state change every 80ms. A
+selection made anywhere in that region is being written over twelve times a
+second.
+
+The settled transcript is safe — `<Static>` is never rewritten — so this is about
+the *in-flight turn*, and that is the fix. Today `TranscriptTurn` keeps every
+action of the running turn live until the turn ends, so the live region grows to
+`liveBudget` (15 rows at 24 high) and every one is repainted per tick. **Commit
+each action to `<Static>` as it completes**, and the live region becomes the
+current action plus the furniture — around eight rows instead of twenty-two.
+
+That is also how Claude Code stays still under the same renderer: not a different
+technique, a smaller live frame.
+
+Two cautions. `CLAUDE.md` is explicit that "adding memoization to the transcript
+rows is how the scroll glitches came back the last two times", and this touches
+the same seam — so it wants the same measurement, before and after, at several
+terminal sizes. And `RESERVED_ROWS` is a floor on furniture, not on the live
+turn; shrinking the live turn does not change it.
