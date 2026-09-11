@@ -666,7 +666,7 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
       // Compact tool definitions for Flash — names + key params only
       tools += `## ask_question — Ask the user to choose. Blocks until they answer. Args: question (string), options (string[], 2-4 concrete choices), header (string, 2-3 word topic). Several at once: questions ([{question, options, header}], max 4)
 ## search_files — Find files by name. Args: query (string)
-## grep_search — Search text across files. Args: pattern (string), isRegex? (bool), includes? (string[])
+## grep_search — Search text across files, grouped by file. Args: pattern (string or string[] — pass several terms when unsure of the wording), isRegex? (bool), includes? (string[]), contextLines? (number)
 ## read_file — Read a file. Args: path (string), startLine? (number), endLine? (number)
 ## edit_file — Edit a file. Args: path (string), edits ([{oldText, newText}])
 ## create_file — Create a file. Args: path (string), content (string)
@@ -724,12 +724,22 @@ Parameters:
   - maxResults (number, optional): Max results to return (default: 20)
 
 ## grep_search
-Search for text content across all files in the codebase. Like ripgrep.
+Search file contents across the codebase, like ripgrep. Results come back grouped by file,
+the file with the most matches first.
+
+When you do not know what *this* codebase calls something, search several names at once:
+\`{"pattern": ["rate limit", "throttle", "quota"]}\` is one search, not three. Guessing one
+term at a time costs a full round trip per guess.
+
 Parameters:
-  - pattern (string, required): Text or regex pattern to search for
-  - isRegex (boolean, optional): Treat pattern as regex
-  - includes (array of strings, optional): Glob patterns to filter files (e.g., ["*.js"])
-  - maxResults (number, optional): Max results (default: 50)
+  - pattern (string or array of strings, required): term(s) to find; an array searches for
+    any of them
+  - isRegex (boolean, optional): treat every pattern as a regex
+  - includes (array of strings, optional): globs to restrict the search (e.g. ["*.js"])
+  - maxResults (number, optional): max matches (default 50, max 500)
+  - contextLines (number, optional): lines of surrounding code per match (0-5, default 0).
+    Use it when a bare line would not tell you whether the match is the right one — it is
+    cheaper than reading the whole file to find out.
 
 ## read_file
 Read the contents of a file with optional line range.

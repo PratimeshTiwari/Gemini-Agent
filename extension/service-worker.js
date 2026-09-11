@@ -32,7 +32,11 @@
       console.warn("Cannot send to server \u2014 not connected");
       broadcastToSidePanel({
         type: "error",
-        payload: { message: "\u274C Not connected to agent server. Is it running?" }
+        payload: {
+          op: "not_connected",
+          stage: "send_to_server",
+          message: "\u274C Not connected to agent server. Is it running?"
+        }
       });
     }
   }
@@ -62,6 +66,7 @@
       payload: { connectedModels }
     });
   }
+  var lastTabFailure = null;
   async function trySendToTab(tab, message, targetModel) {
     let originalActiveTabId = null;
     try {
@@ -81,6 +86,7 @@
       success = true;
     } catch (firstErr) {
       console.warn(`[Service Worker] First attempt failed for ${targetModel} tab ${tab.id}:`, firstErr.message);
+      lastTabFailure = { stage: "send", message: firstErr.message };
       const scriptPath = MODEL_SCRIPTS[targetModel];
       if (scriptPath) {
         try {
@@ -91,6 +97,7 @@
           success = true;
         } catch (secondErr) {
           console.warn(`[Service Worker] Second attempt failed for ${targetModel} tab ${tab.id}:`, secondErr.message);
+          lastTabFailure = { stage: "reinject", message: secondErr.message };
         }
       }
     }
@@ -135,7 +142,10 @@
     const targetModel = payload.targetModel || "gemini";
     const targetUrl = MODEL_URLS[targetModel];
     if (!targetUrl) {
-      const errorMsg = { type: "error", payload: { message: `\u274C Unsupported model: ${targetModel}` } };
+      const errorMsg = {
+        type: "error",
+        payload: { op: "unsupported_model", stage: "route", targetModel, message: `\u274C Unsupported model: ${targetModel}` }
+      };
       broadcastToSidePanel(errorMsg);
       sendToServer(errorMsg);
       return;
@@ -162,7 +172,13 @@
       if (tabs.length === 0) {
         const errorMsg = {
           type: "error",
-          payload: { message: `\u274C Failed to open ${targetModel} tab automatically. Please open https://gemini.google.com/app manually.` }
+          payload: {
+            op: "no_tab",
+            stage: "open_tab",
+            targetModel,
+            url: targetUrl,
+            message: `\u274C Failed to open ${targetModel} tab automatically. Please open https://gemini.google.com/app manually.`
+          }
         };
         broadcastToSidePanel(errorMsg);
         sendToServer(errorMsg);
@@ -176,8 +192,16 @@
     if (!success) {
       const errorMsg = {
         type: "error",
-        payload: { message: `Failed to communicate with ${targetModel} tab after multiple retries. Please hard-refresh the tab (Cmd+Shift+R) and try again!` }
+        payload: {
+          op: "tab_unreachable",
+          stage: lastTabFailure?.stage || "send",
+          targetModel,
+          url: targetUrl,
+          detail: lastTabFailure?.message,
+          message: `Failed to communicate with ${targetModel} tab after multiple retries${lastTabFailure?.message ? ` \u2014 ${lastTabFailure.message}` : ""}. Hard-refresh the tab (Cmd+Shift+R) and try again.`
+        }
       };
+      lastTabFailure = null;
       broadcastToSidePanel(errorMsg);
       sendToServer(errorMsg);
     }

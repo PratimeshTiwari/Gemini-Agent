@@ -114,7 +114,7 @@ async function injectPrompt(text) {
   try {
     const input = findElement(SELECTORS.inputField);
     if (!input) {
-      throw new Error('Could not find ChatGPT input field');
+      throw new Error('[find_input] Could not find the ChatGPT input field — the editor selector has probably changed');
     }
 
     // Record how many responses exist BEFORE we send
@@ -137,19 +137,51 @@ async function injectPrompt(text) {
 
       const dataTransfer = new DataTransfer();
 
-      // Strip image data
+      // Attach the image, rather than deleting it. This used to strip the
+      // <image_data> block and paste the remaining text, so `/image` against
+      // ChatGPT silently sent a prompt that talked about a screenshot nobody
+      // had been given. Same technique as the Gemini bridge: rebuild the data
+      // URL into a real File and let one paste event carry both.
       const imgRegex = /<image_data>\n(data:image\/[^;]+;base64,[^\n]+)\n<\/image_data>/;
-      text = text.replace(imgRegex, '').trim();
+      const imgMatch = text.match(imgRegex);
+      let hasImage = false;
 
-      dataTransfer.setData('text/plain', text);
+      if (imgMatch) {
+        text = text.replace(imgRegex, '').trim();
+        try {
+          const res = await fetch(imgMatch[1]);
+          const blob = await res.blob();
+          const ext = (blob.type.split('/')[1] || 'png');
+          dataTransfer.items.add(new File([blob], `image.${ext}`, { type: blob.type }));
+          hasImage = true;
+          console.log(`[ChatGPT Bridge] Attached image file: image.${ext} (${Math.round(blob.size / 1024)}KB)`);
+        } catch (err) {
+          // The prompt still goes; the model is told the image did not.
+          console.error('[ChatGPT Bridge] Failed to convert image data URL to Blob', err);
+          text = `${text}\n\n(An image was attached but could not be delivered to this tab.)`;
+        }
+      }
+
+      if (text) {
+        dataTransfer.setData('text/plain', text);
+      }
+
       const pasteEvent = new ClipboardEvent('paste', {
         clipboardData: dataTransfer,
         bubbles: true,
         cancelable: true,
       });
 
+      input.focus();
       const pasteHandled = !input.dispatchEvent(pasteEvent);
+
+      // The upload is asynchronous; sending before it lands drops the file.
+      if (hasImage) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
       if (!pasteHandled && text) {
+        input.focus();
         document.execCommand('insertText', false, text);
       }
 
@@ -172,7 +204,7 @@ async function injectPrompt(text) {
       await new Promise(r => setTimeout(r, 1000));
       const currentText = input.tagName === 'TEXTAREA' ? input.value : input.textContent;
       if (currentText.trim().length > 0) {
-        throw new Error("Failed to submit prompt: Send button never became active.");
+        throw new Error("[send_button] Send button never became active — the button selector has probably changed");
       }
     }
 

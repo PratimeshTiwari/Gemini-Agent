@@ -525,21 +525,37 @@ in the project, and it turned out to handle every adversarial case put to it: br
 strings, nested objects, raw newlines in string literals, and unfenced JSON. The retry and
 dispatch paths still want scaffolding and are left for the split in P3.
 
-### P2 — features · next
+### P2 — features
 
-- **Settings tabs**, Claude Code style: `Settings · Status · Config · Usage`, ←/→ between them.
-  The rows exist; this is a header and a group filter.
+- **Settings tabs** — *done.* Three (`Settings · Status · Context`), because those are the
+  three questions people open the page to ask; a fourth tab with two rows in it is a worse
+  answer than a third tab with six. **Tab** cycles them, not ←/→, which the filter field needs
+  for its cursor — inside a menu the agent's own bindings are inert, so tab is free there and
+  nowhere else. Typing searches *every* tab and says so, because making someone find the right
+  tab before they can search is asking them to know the answer first. Escape clears a filter
+  before it closes the page. `/context`'s numbers live on the Context tab too.
 - **`server/src/prompts/*.md`.** The point is not readability, it is that a prompt change is
   invisible in a diff today — one word inside a template literal in a 1,035-line file. The
   greedy-regex incident that ate three tool definitions twice is the same root cause. Tool
   definitions stay in code and get *generated* from `TOOL_DEFINITIONS`: separating a schema
   from its handler is how they drift.
-- **Extension error richness.** Content scripts send no `op`/`stage`, so `/logs extension` is
-  thin.
-- **The ChatGPT bridge's image path** — verify or fix. Gemini's is confirmed working.
-- **`grep_search` for large repos**: several patterns in one call, context lines, results
-  grouped by file. Today it is `pattern / isRegex / includes / maxResults` and returns fifty
-  unranked single lines. See "Search, and why there is still no index".
+- **Extension error richness** — *done.* The bridge already read `payload.op`/`stage`; nothing
+  sent them. Service-worker errors now carry `op`, `stage`, `targetModel` and the DOM-side
+  message that actually failed. Content scripts run in the page and cannot set fields on that
+  payload, so they prefix `[stage]` to their message and the bridge lifts it back out — a
+  changed selector on gemini.google.com now logs as `find_input` rather than "failed".
+- **The ChatGPT bridge's image path** — *fixed, and it was broken.* It matched the
+  `<image_data>` block and **deleted** it, then pasted the remaining text — so `/image` against
+  ChatGPT sent a prompt discussing a screenshot nobody had been given. It now rebuilds the data
+  URL into a `File` the way the Gemini bridge does, and says so in the prompt if it cannot.
+- **`grep_search` for large repos** — *done.* Several patterns in one call (`["rate limit",
+  "throttle", "quota"]` is one search, not three round trips), optional context lines capped at
+  five, and results grouped by file with the busiest file first — on a large repo the module
+  that owns a concept is usually the one that mentions it most. Fifty flat rows also repeated
+  the path fifty times, and every one of those characters is retyped into the browser next turn.
+  It probes one match past `maxResults` so it can tell "exactly fifty" from "fifty and we
+  stopped counting": ripgrep's `--max-count` caps *per file*, so without the spare there is
+  never a surplus to notice. See "Search, and why there is still no index".
 
 ### P3 — after
 

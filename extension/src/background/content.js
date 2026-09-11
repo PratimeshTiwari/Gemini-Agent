@@ -30,6 +30,17 @@ export async function broadcastTabStatus() {
   });
 }
 
+/**
+ * Why the last attempt to reach a tab failed.
+ *
+ * The bridge logs whatever the extension reports, and the extension reported
+ * only "failed after multiple retries" — so `/logs extension` could say that
+ * something in the browser broke and nothing about what. This carries the
+ * actual DOM-side message out to the terminal, which is the only place anyone
+ * is looking when a selector on gemini.google.com changes.
+ */
+let lastTabFailure = null;
+
 async function trySendToTab(tab, message, targetModel) {
   let originalActiveTabId = null;
   try {
@@ -52,6 +63,7 @@ async function trySendToTab(tab, message, targetModel) {
     success = true;
   } catch (firstErr) {
     console.warn(`[Service Worker] First attempt failed for ${targetModel} tab ${tab.id}:`, firstErr.message);
+    lastTabFailure = { stage: 'send', message: firstErr.message };
     
     const scriptPath = MODEL_SCRIPTS[targetModel];
     if (scriptPath) {
@@ -63,6 +75,7 @@ async function trySendToTab(tab, message, targetModel) {
         success = true;
       } catch (secondErr) {
         console.warn(`[Service Worker] Second attempt failed for ${targetModel} tab ${tab.id}:`, secondErr.message);
+        lastTabFailure = { stage: 'reinject', message: secondErr.message };
       }
     }
   }
@@ -124,7 +137,10 @@ export async function injectPromptIntoModel(payload) {
   const targetUrl = MODEL_URLS[targetModel];
 
   if (!targetUrl) {
-    const errorMsg = { type: 'error', payload: { message: `❌ Unsupported model: ${targetModel}` } };
+    const errorMsg = {
+      type: 'error',
+      payload: { op: 'unsupported_model', stage: 'route', targetModel, message: `❌ Unsupported model: ${targetModel}` },
+    };
     broadcastToSidePanel(errorMsg);
     sendToServer(errorMsg);
     return;
@@ -157,7 +173,13 @@ export async function injectPromptIntoModel(payload) {
     if (tabs.length === 0) {
       const errorMsg = {
         type: 'error',
-        payload: { message: `❌ Failed to open ${targetModel} tab automatically. Please open https://gemini.google.com/app manually.` },
+        payload: {
+          op: 'no_tab',
+          stage: 'open_tab',
+          targetModel,
+          url: targetUrl,
+          message: `❌ Failed to open ${targetModel} tab automatically. Please open https://gemini.google.com/app manually.`,
+        },
       };
       broadcastToSidePanel(errorMsg);
       sendToServer(errorMsg);
@@ -173,8 +195,18 @@ export async function injectPromptIntoModel(payload) {
   if (!success) {
     const errorMsg = {
       type: 'error',
-      payload: { message: `Failed to communicate with ${targetModel} tab after multiple retries. Please hard-refresh the tab (Cmd+Shift+R) and try again!` },
+      payload: {
+        op: 'tab_unreachable',
+        stage: lastTabFailure?.stage || 'send',
+        targetModel,
+        url: targetUrl,
+        detail: lastTabFailure?.message,
+        message: `Failed to communicate with ${targetModel} tab after multiple retries`
+          + `${lastTabFailure?.message ? ` — ${lastTabFailure.message}` : ''}`
+          + '. Hard-refresh the tab (Cmd+Shift+R) and try again.',
+      },
     };
+    lastTabFailure = null;
     broadcastToSidePanel(errorMsg);
     sendToServer(errorMsg);
   }

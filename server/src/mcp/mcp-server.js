@@ -34,12 +34,16 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'grep_search',
-    description: 'Search for text content across all files in the codebase. Like ripgrep. Use for finding code patterns, function definitions, imports, etc.',
+    description: 'Search file contents across the codebase, like ripgrep. Results are grouped by file, most matches first. '
+      + 'Pass SEVERAL patterns at once when you are not sure what this codebase calls something — ["rate limit", "throttle", "quota"] '
+      + 'is one search, not three, and guessing wrong three times in a row costs three round trips. '
+      + 'Use contextLines when a bare matching line would not tell you whether it is the right one.',
     parameters: {
-      pattern: { type: 'string', description: 'The text or regex pattern to search for', required: true },
-      isRegex: { type: 'boolean', description: 'If true, treat pattern as a regex', required: false },
-      includes: { type: 'array', description: 'Glob patterns to filter files (e.g., ["*.js", "*.ts"])', required: false },
-      maxResults: { type: 'number', description: 'Maximum results (default: 50)', required: false },
+      pattern: { type: 'string', description: 'Text or regex to find. May also be an array of terms, which are searched together (OR).', required: true },
+      isRegex: { type: 'boolean', description: 'If true, every pattern is treated as a regex', required: false },
+      includes: { type: 'array', description: 'Globs to restrict the search (e.g. ["*.js", "*.ts"])', required: false },
+      maxResults: { type: 'number', description: 'Maximum matches (default 50, max 500)', required: false },
+      contextLines: { type: 'number', description: 'Lines of surrounding code to include with each match (0-5, default 0)', required: false },
     },
     handler: grepSearch,
   },

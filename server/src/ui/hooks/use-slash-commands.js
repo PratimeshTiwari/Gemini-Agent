@@ -7,6 +7,7 @@ import { readErrors, summarizeErrors, clearErrors, FLOWS } from '../../core/erro
 import { listPlans } from '../../core/plan-archive.js';
 import { resolveWorkspaceInput, validateWorkspace } from '../../core/workspaces.js';
 import { SLASH_COMMANDS } from '../constants.js';
+import { SETTING_GROUPS } from '../../core/settings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -162,7 +163,7 @@ export async function handleSlashCommand(query, {
     // so they piled up somewhere no command would show them — which is its own
     // way of losing the plan you wanted back.
     if (command === 'settings' || command === 'config-all') {
-      setActiveMenu({ type: 'settings', query: '' });
+      setActiveMenu({ type: 'settings', query: '', group: SETTING_GROUPS[0] });
       setIsProcessing(false);
       return;
     }

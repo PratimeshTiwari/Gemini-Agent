@@ -239,12 +239,19 @@ export class WebSocketServer {
         // from inside the browser tab, and until now it was handled and thrown
         // away — a selector that changed on gemini.google.com looked, from the
         // terminal, like the agent simply going quiet.
+        // Content scripts run in the page and cannot set fields on this
+        // payload — it reaches here as a bare message — so they prefix the
+        // stage in brackets and it is lifted back out into `op`. Without it a
+        // changed selector on gemini.google.com arrived as "failed", which is
+        // the one thing you already knew.
+        const tagged = /^\[([a-z_]+)\]\s*/i.exec(payload?.message || '');
         logError(this.agentLoop?.workspace, {
           flow: 'extension',
-          op: payload?.op || payload?.stage || 'unknown',
-          message: payload?.message || payload?.error || 'Extension reported an error',
+          op: payload?.op || tagged?.[1] || payload?.stage || 'unknown',
+          message: (payload?.message || payload?.error || 'Extension reported an error')
+            .replace(/^\[[a-z_]+\]\s*/i, ''),
           detail: payload?.detail || payload?.stack,
-          meta: { targetModel: payload?.targetModel, url: payload?.url },
+          meta: { targetModel: payload?.targetModel, url: payload?.url, stage: payload?.stage },
         });
         // The turn is dead, so hand the bridge lock back — otherwise every
         // later prompt queues behind a request that will never be answered.

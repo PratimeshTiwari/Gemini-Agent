@@ -7,7 +7,7 @@ import { QuestionPrompt } from './QuestionPrompt.jsx';
 import { summarizeDiff, previewRows } from '../diff-preview.js';
 import { oneLine } from '../format.js';
 import { EFFORT_LEVELS, resolveEffort } from '../../core/effort.js';
-import { describeSettings, filterSettings } from '../../core/settings.js';
+import { describeSettings, filterSettings, SETTING_GROUPS } from '../../core/settings.js';
 import { listWorkspaceCandidates } from '../../core/workspaces.js';
 import { skillsDir } from '../../core/paths.js';
 import { FOCUS_INPUT } from '../constants.js';
@@ -44,7 +44,25 @@ export function Menus({
   // the arrows and Enter. So escape lands here, and only here — one step back
   // where a menu has steps, closed otherwise.
   useInput((_char, key) => {
+    // Tab cycles the settings tabs. Not ←/→, which the filter field needs for
+    // its cursor, and not shift+tab alone, which is the global mode toggle
+    // everywhere else — inside a menu the agent's own bindings are inert, so
+    // tab is free here and nowhere else.
+    if (key.tab && activeMenu?.type === 'settings') {
+      const step = key.shift ? -1 : 1;
+      const at = Math.max(0, SETTING_GROUPS.indexOf(activeMenu.group || SETTING_GROUPS[0]));
+      const next = (at + step + SETTING_GROUPS.length) % SETTING_GROUPS.length;
+      setActiveMenu({ ...activeMenu, group: SETTING_GROUPS[next], query: '' });
+      return;
+    }
+
     if (!key.escape) return;
+    // Escape clears a filter before it closes the page: having typed three
+    // letters, "get me out of this filter" is the more likely of the two.
+    if (activeMenu?.type === 'settings' && activeMenu.query) {
+      setActiveMenu({ ...activeMenu, query: '' });
+      return;
+    }
     if (activeMenu?.type === 'allowlist' && activeMenu.view) {
       setActiveMenu({ ...activeMenu, view: activeMenu.view === 'confirm' ? 'list' : null, pending: null });
       return;
@@ -216,7 +234,8 @@ export function Menus({
         {activeMenu?.type === 'settings' && (() => {
           const rows = describeSettings(agentLoop);
           const query = activeMenu.query || '';
-          const matches = filterSettings(rows, query);
+          const group = activeMenu.group || SETTING_GROUPS[0];
+          const matches = filterSettings(rows, query, group);
           // The list lives in Ink's repainted frame, so it is bounded and says
           // how much it is not showing. See ui/constants.js.
           const LIMIT = 8;
@@ -230,7 +249,17 @@ export function Menus({
 
           return (
             <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-              <Text bold color="cyan">⚙️  Settings</Text>
+              <Box>
+                {SETTING_GROUPS.map((name) => (
+                  <Text key={name}>
+                    {name === group
+                      ? <Text bold color="cyan">{name}</Text>
+                      : <Text dimColor>{name}</Text>}
+                    <Text dimColor>{'   '}</Text>
+                  </Text>
+                ))}
+                {query ? <Text dimColor>{'(all tabs)'}</Text> : null}
+              </Box>
               <Box>
                 <Text dimColor>{'⌕ '}</Text>
                 <TextInput
@@ -262,7 +291,9 @@ export function Menus({
                 />
               )}
               {hidden > 0 ? <Text dimColor>{`  ↓ ${hidden} more — type to narrow`}</Text> : null}
-              <Text dimColor>type to filter · ↑↓ move · enter change · esc close</Text>
+              <Text dimColor>
+                type to filter · tab switches · ↑↓ move · enter change · esc {query ? 'clear' : 'close'}
+              </Text>
             </Box>
           );
         })()}

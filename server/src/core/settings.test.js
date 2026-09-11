@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { describeSettings, filterSettings } from './settings.js';
+import { describeSettings, filterSettings, SETTING_GROUPS } from './settings.js';
 
 /** Enough of an AgentLoop for the page to describe. */
 const loop = (over = {}) => ({
@@ -89,5 +89,55 @@ test('filterSettings', async (t) => {
 
   await t.test('no match is empty, not everything', () => {
     assert.deepEqual(filterSettings(rows, 'zzzz'), []);
+  });
+});
+
+test('tabs', async (t) => {
+  const rows = describeSettings(loop({ conversationHistory: [{ content: 'hi' }] }));
+
+  await t.test('every row belongs to a tab that exists', () => {
+    for (const row of rows) {
+      assert.ok(SETTING_GROUPS.includes(row.group), `${row.label} -> ${row.group}`);
+    }
+  });
+
+  // A tab with two rows in it is a worse answer than no tab.
+  await t.test('no tab is empty', () => {
+    for (const group of SETTING_GROUPS) {
+      assert.ok(rows.filter((r) => r.group === group).length >= 3, group);
+    }
+  });
+
+  await t.test('a group narrows the list', () => {
+    const status = filterSettings(rows, '', 'Status');
+    assert.ok(status.length > 0);
+    assert.ok(status.every((r) => r.group === 'Status'));
+    assert.ok(status.length < rows.length);
+  });
+
+  // Making someone find the right tab before they can search for a setting is
+  // asking them to know the answer first.
+  await t.test('typing searches every tab, not just the one you are on', () => {
+    const found = filterSettings(rows, 'github', 'Settings');
+    assert.ok(found.some((r) => r.label === 'GitHub'), 'GitHub lives on the Status tab');
+  });
+
+  await t.test('an empty query returns to the tab you were on', () => {
+    assert.ok(filterSettings(rows, '', 'Context').every((r) => r.group === 'Context'));
+  });
+});
+
+test('the context tab reports the window', async (t) => {
+  await t.test('turns and tokens follow the history', () => {
+    const rows = describeSettings(loop({
+      conversationHistory: [{ content: 'x'.repeat(400) }, { content: 'y'.repeat(400) }],
+    }));
+    assert.equal(rows.find((r) => r.label === 'Turns').value, '2');
+    assert.match(rows.find((r) => r.label === 'Tokens').value, /~200 \/ 50,000/);
+  });
+
+  await t.test('a loop with no diff engine still renders', () => {
+    const rows = describeSettings(loop({ diffEngine: undefined }));
+    assert.equal(rows.find((r) => r.label === 'Diffs').value, '0 pending');
   });
 });

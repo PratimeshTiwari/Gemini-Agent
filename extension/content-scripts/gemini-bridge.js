@@ -152,7 +152,7 @@ async function injectPrompt(text) {
   try {
     const input = findElement(SELECTORS.inputField);
     if (!input) {
-      throw new Error('Could not find Gemini input field');
+      throw new Error('[find_input] Could not find the Gemini input field — the editor selector has probably changed');
     }
 
     // Record how many responses exist BEFORE we send
@@ -250,7 +250,7 @@ async function injectPrompt(text) {
       // Wait a moment to see if the fallbacks worked by checking if input cleared
       await new Promise(r => setTimeout(r, 1000));
       if (input.textContent.trim().length > 0) {
-        throw new Error("Failed to submit prompt: Send button never became active (Image upload might be stuck).");
+        throw new Error("[send_button] Send button never became active — an image upload may be stuck, or the button selector has changed");
       }
     }
 
