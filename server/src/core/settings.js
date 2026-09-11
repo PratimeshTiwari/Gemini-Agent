@@ -52,10 +52,9 @@ export function describeSettings(agentLoop) {
   const github = agentLoop?.githubHandler?.getStatus?.() || {};
 
   const history = agentLoop?.conversationHistory || [];
-  const tokens = history.reduce((sum, turn) => {
-    const text = turn?.content || JSON.stringify(turn?.result || turn?.args || '');
-    return sum + Math.ceil(String(text).length / 4);
-  }, 0);
+  // Everything the tab holds, not just the turns kept locally — see
+  // AgentLoop.contextTokens.
+  const tokens = agentLoop?.contextTokens ?? 0;
   const limit = agentLoop?.contextManager?.maxTokens || 50000;
   const pending = safe(() => agentLoop.diffEngine.getPendingDiffs().length, 0);
   const applied = safe(() => agentLoop.diffEngine.appliedDiffs.length, 0);
@@ -67,6 +66,7 @@ export function describeSettings(agentLoop) {
       value: effort.id,
       hint: `browser tab: ${effort.browser}`,
       run: '/effort',
+      restore: (value) => `/effort ${value}`,
     },
     {
       group: 'Settings',
@@ -74,6 +74,7 @@ export function describeSettings(agentLoop) {
       value: main,
       hint: 'implements, and answers you',
       run: '/config',
+      restore: (value) => `/config main ${value}`,
     },
     {
       group: 'Settings',
@@ -81,6 +82,7 @@ export function describeSettings(agentLoop) {
       value: reviewer || 'none',
       hint: reviewer ? 'duo — audits every non-trivial change' : 'solo — nothing reviews the work',
       run: '/config',
+      restore: (value) => `/config reviewer ${value}`,
     },
     {
       group: 'Settings',
@@ -88,20 +90,25 @@ export function describeSettings(agentLoop) {
       value: agentLoop?.mode === 'auto' ? 'auto' : 'plan',
       hint: agentLoop?.mode === 'auto' ? 'safe edits apply on their own' : 'every edit shows a diff first',
       run: agentLoop?.mode === 'auto' ? '/plan' : '/auto',
+      restore: (value) => `/${value}`,
     },
     {
       group: 'Settings',
       label: 'Memory',
       value: memoryOn ? 'on' : 'off',
       hint: memoryOn ? `${facts} fact${facts === 1 ? '' : 's'} recalled each session` : 'nothing learned, nothing recalled',
-      run: '/memory',
+      // The direction, not the bare command: `/memory` on its own prints the
+      // list of facts, which is not what pressing Enter on a switch should do.
+      run: memoryOn ? '/memory off' : '/memory on',
+      restore: (value) => `/memory ${value}`,
     },
     {
       group: 'Settings',
       label: 'Command rules',
       value: rules.enabled === false ? 'off' : 'on',
-      hint: `${rules.allow?.length || 0} allowed · ${rules.block?.length || 0} blocked`,
+      hint: `${rules.allow?.length || 0} allowed · ${rules.block?.length || 0} blocked — enter to browse them`,
       run: '/allowlist',
+      restore: (value) => `/allowlist ${value === 'on' ? 'enable' : 'disable'}`,
     },
     {
       group: 'Settings',
@@ -147,7 +154,7 @@ export function describeSettings(agentLoop) {
       group: 'Context',
       label: 'Tokens',
       value: `~${tokens.toLocaleString()} / ${limit.toLocaleString()}`,
-      hint: `${Math.min(100, Math.round((tokens / limit) * 100))}% of the budget`,
+      hint: `${Math.min(100, Math.round((tokens / limit) * 100))}% — counts the system prompt and tool results too`,
       run: '/compact',
     },
     {
@@ -174,6 +181,35 @@ export function describeSettings(agentLoop) {
  * by any of the three — "duo" is not in any label but it is exactly what
  * someone types when they want to know whether a reviewer is on.
  */
+/**
+ * What changed between two readings of the page.
+ *
+ * Settings here apply the moment you pick one — there is no staged copy to
+ * save, so a "save or discard" prompt would be describing something that had
+ * already happened. What is actually useful on the way out is a list of what
+ * you just did, and a way to put it back.
+ *
+ * Only rows that know how to restore themselves are offered; the rest are
+ * reported and left alone, which is honest about what an undo can reach.
+ *
+ * @returns {Array<{label: string, from: string, to: string, restore?: string}>}
+ */
+export function settingsChanged(before, after) {
+  const was = new Map((before || []).map((row) => [row.label, row.value]));
+  const changes = [];
+  for (const row of after || []) {
+    const from = was.get(row.label);
+    if (from === undefined || from === row.value) continue;
+    changes.push({
+      label: row.label,
+      from,
+      to: row.value,
+      ...(row.restore ? { restore: row.restore(from) } : {}),
+    });
+  }
+  return changes;
+}
+
 export function filterSettings(rows, query, group = null) {
   const inGroup = group ? rows.filter((row) => row.group === group) : rows;
   const q = String(query ?? '').trim().toLowerCase();

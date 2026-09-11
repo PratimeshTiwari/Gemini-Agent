@@ -40,7 +40,9 @@ test('describeSettings', async (t) => {
   await t.test('each row that can be changed says what to run', () => {
     const rows = describeSettings(loop());
     assert.equal(row(rows, 'Effort').run, '/effort');
-    assert.equal(row(rows, 'Memory').run, '/memory');
+    // The direction, not the bare command: `/memory` alone prints the facts,
+    // which is not what pressing Enter on a switch should do.
+    assert.equal(row(rows, 'Memory').run, '/memory off');
     // Plan mode offers the switch to auto, not a no-op back to plan.
     assert.equal(row(rows, 'Edit approval').run, '/auto');
     assert.equal(row(loop({ mode: 'auto' }) && describeSettings(loop({ mode: 'auto' })), 'Edit approval').run, '/plan');
@@ -128,12 +130,21 @@ test('tabs', async (t) => {
 });
 
 test('the context tab reports the window', async (t) => {
-  await t.test('turns and tokens follow the history', () => {
+  // Turns count what was kept locally; tokens count what the *tab* holds —
+  // the system prompt, the tool definitions, every tool result fed back. They
+  // are different numbers on purpose, and summing the history reported a
+  // fraction of the real one.
+  await t.test('turns follow the history, tokens follow the thread', () => {
     const rows = describeSettings(loop({
       conversationHistory: [{ content: 'x'.repeat(400) }, { content: 'y'.repeat(400) }],
+      contextTokens: 4200,
     }));
     assert.equal(rows.find((r) => r.label === 'Turns').value, '2');
-    assert.match(rows.find((r) => r.label === 'Tokens').value, /~200 \/ 50,000/);
+    assert.match(rows.find((r) => r.label === 'Tokens').value, /~4,200 \/ 50,000/);
+  });
+
+  await t.test('a loop that has sent nothing yet reads zero, not NaN', () => {
+    assert.match(describeSettings(loop()).find((r) => r.label === 'Tokens').value, /~0 \//);
   });
 
   await t.test('a loop with no diff engine still renders', () => {

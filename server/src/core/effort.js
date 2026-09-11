@@ -23,6 +23,8 @@
 export const EFFORT_LEVELS = [
   {
     id: 'flash',
+    contextBudget: 24000,
+    name: 'Flash',
     label: '⚡ Flash',
     tier: 'flash',
     level: null,
@@ -31,6 +33,8 @@ export const EFFORT_LEVELS = [
   },
   {
     id: 'flash-thinking',
+    contextBudget: 48000,
+    name: 'Flash Thinking',
     label: '🧠 Flash Thinking',
     tier: 'flash-thinking',
     level: null,
@@ -39,6 +43,8 @@ export const EFFORT_LEVELS = [
   },
   {
     id: 'brief',
+    contextBudget: 96000,
+    name: 'Brief',
     label: '🏃 Brief',
     tier: 'pro',
     level: 'brief',
@@ -47,6 +53,8 @@ export const EFFORT_LEVELS = [
   },
   {
     id: 'standard',
+    contextBudget: 96000,
+    name: 'Standard',
     label: '🪜 Standard',
     tier: 'pro',
     level: 'standard',
@@ -55,6 +63,8 @@ export const EFFORT_LEVELS = [
   },
   {
     id: 'deep',
+    contextBudget: 96000,
+    name: 'Deep',
     label: '🔭 Deep',
     tier: 'pro',
     level: 'deep',
@@ -64,6 +74,26 @@ export const EFFORT_LEVELS = [
 ];
 
 export const DEFAULT_EFFORT = 'standard';
+
+/**
+ * About `contextBudget`.
+ *
+ * It is **not** the model's advertised context window. What actually runs out
+ * here is a *browser chat thread*: a prompt is typed into a real tab and the
+ * reply is scraped back, so the ceiling is whatever that page keeps working
+ * with — and nobody publishes that number. The budget is an operating limit
+ * for when to compact, chosen conservatively and deliberately per rung:
+ *
+ *  - `flash` is the profile that exists *because* the model does worse with
+ *    long prompts. Letting its thread grow to the same size as pro's would
+ *    defeat the reason for choosing it.
+ *  - the three pro rungs share one budget, because they differ in how hard the
+ *    model thinks, not in how much it can hold.
+ *
+ * A single hardcoded 50,000 for every tier was the previous answer, and it was
+ * wrong in both directions at once. These are better guesses, still guesses —
+ * `CLAUDE.md` → What's next records measuring them as work, not as a footnote.
+ */
 
 const BY_ID = new Map(EFFORT_LEVELS.map((e) => [e.id, e]));
 

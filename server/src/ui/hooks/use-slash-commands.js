@@ -7,7 +7,8 @@ import { readErrors, summarizeErrors, clearErrors, FLOWS } from '../../core/erro
 import { listPlans } from '../../core/plan-archive.js';
 import { resolveWorkspaceInput, validateWorkspace } from '../../core/workspaces.js';
 import { SLASH_COMMANDS } from '../constants.js';
-import { SETTING_GROUPS } from '../../core/settings.js';
+import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
+import { canPickFolder, pickFolder } from '../folder-picker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -163,7 +164,15 @@ export async function handleSlashCommand(query, {
     // so they piled up somewhere no command would show them — which is its own
     // way of losing the plan you wanted back.
     if (command === 'settings' || command === 'config-all') {
-      setActiveMenu({ type: 'settings', query: '', group: SETTING_GROUPS[0] });
+      // Snapshot on the way in, so leaving can say what changed. Settings apply
+      // as they are picked, so this is the only record of what they were.
+      setActiveMenu({
+        type: 'settings',
+        query: '',
+        group: SETTING_GROUPS[0],
+        at: 0,
+        baseline: describeSettings(agentLoop),
+      });
       setIsProcessing(false);
       return;
     }
@@ -244,7 +253,33 @@ export async function handleSlashCommand(query, {
         const sub = (args[1] || '').toLowerCase();
         const target = args.slice(2).join(' ').trim();
 
-        if (sub === 'add' && target) {
+        // `/skills dir add` with nothing after it: the case where you are adding
+        // a folder is the case where you do not remember its path, and every
+        // desktop already answers that question well.
+        let chosen = target;
+        if (sub === 'add' && !chosen) {
+          if (!canPickFolder()) {
+            setHistory(prev => [...prev, { role: 'user', content: query }, {
+              role: 'assistant', isLocal: true,
+              content: 'Usage: `/skills dir add <path>`\n\n'
+                + '_(A folder chooser would open here, but this machine has no dialog available — '
+                + 'on Linux that usually means `zenity` or `kdialog` is not installed.)_',
+            }]);
+            setIsProcessing(false);
+            return;
+          }
+          chosen = await pickFolder('Choose a folder of skills');
+          if (!chosen) {
+            setHistory(prev => [...prev, { role: 'user', content: query }, {
+              role: 'assistant', content: 'Cancelled.', isLocal: true,
+            }]);
+            setIsProcessing(false);
+            return;
+          }
+        }
+
+        if (sub === 'add' && chosen) {
+          const target = chosen;
           const abs = resolveWorkspaceInput(target, agentLoop.workspace);
           const problem = validateWorkspace(abs);
           if (problem) {
@@ -283,7 +318,8 @@ export async function handleSlashCommand(query, {
           role: 'assistant',
           isLocal: true,
           content: `### 📁 Skill folders, searched in order\n${dirs.join('\n')}\n\n`
-            + 'Add one with `/skills dir add <path>`, drop one with `/skills dir remove <path>`.\n'
+            + `Add one with \`/skills dir add <path>\`${canPickFolder() ? ' — or bare, to pick one from a dialog' : ''}, `
+            + 'drop one with `/skills dir remove <path>`.\n'
             + 'The first folder to define a name wins, so a project can override a personal skill.',
         }]);
         setIsProcessing(false);

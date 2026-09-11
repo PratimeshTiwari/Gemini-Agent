@@ -33,8 +33,80 @@ function writeState(name, data) {
     }
 }
 
+/**
+ * Append one JSON object to a `.jsonl` file in `.agent/state/`.
+ *
+ * Append-only rather than rewritten, like `chat-queue.jsonl`: the CLI drains by
+ * deleting the whole file, and truncating here would race with that.
+ */
+function appendState(name, data) {
+    const file = statePath(name);
+    if (!file) return false;
+    try {
+        fs.appendFileSync(file, `${JSON.stringify(data)}\n`);
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
 function activate(context) {
     const sub = (...items) => context.subscriptions.push(...items);
+
+    // ── Terminal output ───────────────────────────────────────────────
+    //
+    // The agent can already be woken when a process *it* started fails —
+    // `run_background` plus `manage_task watch`. It could never see a terminal
+    // you opened yourself, because those belong to the terminal emulator and
+    // there is no API for them. Inside VS Code there now is one: shell
+    // integration reports each command, its output and its exit code.
+    //
+    // Only failures are forwarded, and only their tail. A passing `npm test` is
+    // not news, and a full build log is tens of thousands of characters that
+    // would be typed into a browser chat tab verbatim.
+    if (typeof vscode.window.onDidStartTerminalShellExecution === 'function') {
+        const MAX_OUTPUT_CHARS = 4000;
+        const running = new Map(); // execution -> collected output
+
+        sub(vscode.window.onDidStartTerminalShellExecution(async (event) => {
+            const execution = event.execution;
+            let collected = '';
+            running.set(execution, () => collected);
+            try {
+                for await (const chunk of execution.read()) {
+                    collected += chunk;
+                    // Keep the tail: a failure explains itself at the end, and
+                    // holding a whole build log in memory helps nobody.
+                    if (collected.length > MAX_OUTPUT_CHARS * 2) {
+                        collected = collected.slice(-MAX_OUTPUT_CHARS);
+                    }
+                }
+            } catch (e) {
+                /* the terminal closed mid-command */
+            }
+            running.set(execution, () => collected);
+        }));
+
+        sub(vscode.window.onDidEndTerminalShellExecution((event) => {
+            const getOutput = running.get(event.execution);
+            running.delete(event.execution);
+
+            // exitCode is undefined when the shell could not report one, which
+            // is not the same as success — but it is not a failure either, and
+            // guessing would fill the queue with noise.
+            if (event.exitCode === undefined || event.exitCode === 0) return;
+
+            const output = (getOutput ? getOutput() : '').slice(-MAX_OUTPUT_CHARS);
+            appendState('terminal.jsonl', {
+                timestamp: Date.now(),
+                command: event.execution.commandLine?.value || '(unknown command)',
+                cwd: event.execution.cwd?.fsPath || event.execution.cwd?.path || null,
+                exitCode: event.exitCode,
+                terminal: event.terminal?.name || null,
+                output: output.replace(/\u001b\[[0-9;?]*[a-zA-Z]/g, '').trimEnd(),
+            });
+        }));
+    }
 
     // ── Editor state ──────────────────────────────────────────────────
     let editorTimer;

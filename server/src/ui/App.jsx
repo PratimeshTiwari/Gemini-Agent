@@ -14,6 +14,7 @@ import { resolveEffort } from '../core/effort.js';
 import { groupTurns } from './transcript.js';
 import { expandPastes } from './paste.js';
 import { drainChatQueue } from './chat-queue.js';
+import { drainTerminalQueue } from './terminal-queue.js';
 import { useKeyBindings } from './hooks/use-key-bindings.js';
 import { useHotkeys } from './hooks/use-hotkeys.js';
 import { useGithubTab } from './hooks/use-github-tab.js';
@@ -329,6 +330,28 @@ export function App({ agentLoop, wsServer }) {
     return () => clearInterval(id);
   }, [agentLoop.workspace]);
 
+  // Commands that failed in a VS Code terminal, forwarded by the companion.
+  //
+  // Offered, not acted on. The failure lands in the input box as a marker you
+  // can send or delete — an agent that starts editing because a command you ran
+  // in another window failed is a worse tool than one that waits to be asked,
+  // however good the loop looks in a demo. Same attachment machinery as a
+  // paste, so a page of build output costs one row of the live frame.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (isProcessing) return; // never interrupt a running turn
+      const failures = drainTerminalQueue(agentLoop.workspace);
+      if (failures.length === 0) return;
+      setPastes((prev) => [...prev, ...failures].slice(-20));
+      setInput((prev) => {
+        const markers = failures.map((f) => f.marker).join(' ');
+        return prev ? `${prev} ${markers} ` : `${markers} `;
+      });
+      setPaletteSuppressed(true);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [agentLoop.workspace, isProcessing]);
+
   // Poll active background tasks
   useEffect(() => {
     let lastTasksJson = '[]';
@@ -523,10 +546,10 @@ export function App({ agentLoop, wsServer }) {
     return () => clearInterval(approvalInterval);
   }, [activeMenu, agentLoop, handleSubmit]);
 
-  // Rough token estimation for the status bar
-  const syncTokenEstimate = Math.round(agentLoop.conversationHistory.reduce((sum, turn) => {
-    return sum + ((turn.content?.length || 0) / 4);
-  }, 0));
+  // What the browser thread is carrying — the system prompt, the tool
+  // definitions, every tool result fed back, not just the turns we kept a copy
+  // of. Summing conversationHistory reported a fraction of the real number.
+  const syncTokenEstimate = agentLoop.contextTokens ?? 0;
   const tokenLimit = 50000;
   const tokenPct = Math.round((syncTokenEstimate / tokenLimit) * 100);
   const tokenColor = tokenPct > 80 ? 'red' : tokenPct > 50 ? 'yellow' : 'cyan';

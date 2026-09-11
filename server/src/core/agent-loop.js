@@ -110,6 +110,17 @@ export class AgentLoop {
       timeoutMs: EXTENSION_RESPONSE_TIMEOUT,
     });
     this.pendingSubagents = new Map(); // requestId -> { resolve, reject, targetModel }
+
+    // Characters the browser thread is actually holding.
+    //
+    // The estimate used to be built from `conversationHistory`, which is only
+    // the *user and agent messages we kept a copy of*. What the tab holds is
+    // everything ever typed into it — the system prompt, 1,575 tokens of tool
+    // definitions, AGENT.md, memory, skills, every tool result fed back — and
+    // none of that was counted, so a session reading "~200 tokens" had sent
+    // twenty thousand. Counted where it crosses the bridge, which is the only
+    // place that cannot be wrong about it.
+    this.contextChars = 0;
     this.githubHandler = null; // Set externally after initialization
 
     // Workspace summary (generated dynamically by context manager)
@@ -262,6 +273,7 @@ export class AgentLoop {
     }
 
     // Request complete
+    this.contextChars += (content || '').length;
     this._releaseExtension();
 
     // (Auto-compaction is now handled silently via background subagents, so the old isCompacting logic is removed from here)
@@ -642,6 +654,7 @@ export class AgentLoop {
         this.conversationHistory = [];
         this.sessionStore.clear();
         this.promptBuilder.resetPromptState();
+        this.contextChars = 0;
         return { message: '🧹 Conversation history cleared.' };
 
       // `/context` reports what is in the window. Registering folders of .md
@@ -1016,6 +1029,18 @@ export class AgentLoop {
   }
 
 
+  /**
+   * Roughly how many tokens the browser thread is carrying.
+   *
+   * Everything typed into the tab and everything scraped back, not just the
+   * turns we kept — see `contextChars`. Four characters per token is the same
+   * approximation `TokenCounter` uses; the point of this number is "am I near
+   * the wall", and a better tokenizer would not change that answer.
+   */
+  get contextTokens() {
+    return Math.round(this.contextChars / 4);
+  }
+
   /** The model the main conversation runs on. Subagents name their own. */
   get mainModel() {
     return this.modelConfig.main || 'gemini';
@@ -1089,6 +1114,7 @@ export class AgentLoop {
   async _sendToGemini(prompt, callbacks) {
     // Create a promise that will be resolved when we get the Gemini response
     this.pendingGeminiResponse = true;
+    this.contextChars += prompt.length;
 
     this._enqueueExtensionRequest({
       prompt,
@@ -1751,8 +1777,7 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
    * cannot be aligned.
    */
   async _getContextInfo() {
-    const { TokenCounter } = await import('../context/token-counter.js');
-    const used = TokenCounter.estimateHistoryTokens(this.conversationHistory);
+    const used = this.contextTokens;
     const limit = this.contextManager?.maxTokens || 50000;
     const pct = Math.min(100, Math.round((used / limit) * 100));
 
@@ -1763,7 +1788,8 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
     const rows = [
       ['Mode', this.mode === 'plan' ? 'plan — every edit needs approval' : 'auto — safe edits apply on their own'],
       ['Turns', `${turns}`],
-      ['Tokens', `~${used.toLocaleString()} / ${limit.toLocaleString()}  (${pct}%)`],
+      ['Tokens', `~${used.toLocaleString()} / ${limit.toLocaleString()}  (${pct}%)`
+        + '   — everything sent to the tab, not just these turns'],
       ['Diffs', `${pending} pending · ${applied} applied`],
       ['Workspace', this.workspace],
     ];
@@ -1849,6 +1875,12 @@ ${compactedSummary}`;
       this.conversationHistory = [compactedTurn, ...toKeep];
       this.sessionStore.saveHistory(this.conversationHistory);
       this.promptBuilder.resetPromptState();
+      // The thread starts again from the summary, so the count does too.
+      // Carrying the old total past this would leave the agent believing it was
+      // still full and compacting forever.
+      this._resetContextCount(
+        this.conversationHistory.reduce((n, t) => n + (t.content?.length || 0), 0),
+      );
 
       // Say what actually happened. "✅ History compacted." told the user
       // nothing — not how much went, not whether the model summarised it or the
@@ -1857,7 +1889,7 @@ ${compactedSummary}`;
         turns.reduce((sum, t) => sum + ((t.content?.length || 0) / 4), 0),
       );
       const before = approxTokens([...toCompact, ...toKeep]);
-      const after = approxTokens(this.conversationHistory);
+      const after = this.contextTokens;
       const how = llmResponse.success
         ? 'summarised by the model'
         : 'condensed locally (the model did not answer, so the deterministic fallback ran)';

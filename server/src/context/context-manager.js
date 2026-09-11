@@ -1,4 +1,4 @@
-import { TokenCounter } from './token-counter.js';
+import { resolveEffort, DEFAULT_EFFORT } from '../core/effort.js';
 
 /**
  * ContextManager
@@ -14,17 +14,24 @@ export class ContextManager {
   constructor(workspacePath, memoryManager) {
     this.workspacePath = workspacePath;
     this.memoryManager = memoryManager;
-    this.maxTokens = 50000; // safe threshold for Gemini Flash
+    // Replaced per turn from the active rung — see AgentLoop. Kept as a field
+    // so anything reading `maxTokens` gets the budget actually in force.
+    this.maxTokens = resolveEffort(DEFAULT_EFFORT).contextBudget;
   }
 
   /**
-   * Has the history outgrown the budget?
-   * @param {Array<Object>} history
+   * Has the thread outgrown its budget?
+   *
+   * Takes the count rather than the history, because the history is only the
+   * turns we kept a local copy of. The browser tab is also holding the system
+   * prompt, the tool definitions and every tool result ever fed back — which is
+   * most of what fills a thread, and none of what this used to measure.
+   *
+   * @param {number} tokens - what the thread is carrying (AgentLoop.contextTokens)
    * @returns {boolean}
    */
-  needsCompaction(history) {
-    const tokens = TokenCounter.estimateHistoryTokens(history);
-    // Compact past 80% of budget, so there is room to do the compacting.
-    return tokens > this.maxTokens * 0.8;
+  needsCompaction(tokens) {
+    // Compact past 80% of budget, so there is room left to do the compacting.
+    return Number(tokens || 0) > this.maxTokens * 0.8;
   }
 }

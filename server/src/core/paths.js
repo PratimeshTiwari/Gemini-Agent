@@ -212,6 +212,15 @@ export const planApprovalPath = (workspace) => statePath(workspace, 'plan-approv
 export const diagnosticsPath = (workspace) => statePath(workspace, 'diagnostics.json');
 /** Selections the user sent over with "Add to Agent Chat". Append-only. */
 export const chatQueuePath = (workspace) => statePath(workspace, 'chat-queue.jsonl');
+/**
+ * Commands that failed in a VS Code terminal, appended by the companion.
+ *
+ * The agent could always be woken by a process *it* started (`run_background`
+ * plus `manage_task watch`); a terminal you opened yourself belonged to the
+ * terminal emulator and there was no API for it. Inside VS Code there is one.
+ * Append-only for the same reason as chat-queue: the CLI drains by deleting.
+ */
+export const terminalQueuePath = (workspace) => statePath(workspace, 'terminal.jsonl');
 /** Comments left on a plan while reviewing it, before the review is submitted. */
 export const planReviewPath = (workspace) => statePath(workspace, 'plan-review.json');
 

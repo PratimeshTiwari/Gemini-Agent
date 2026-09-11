@@ -6,8 +6,9 @@ import TextInput from 'ink-text-input';
 import { QuestionPrompt } from './QuestionPrompt.jsx';
 import { summarizeDiff, previewRows } from '../diff-preview.js';
 import { oneLine } from '../format.js';
+import { canPickFolder, pickFolder } from '../folder-picker.js';
 import { EFFORT_LEVELS, resolveEffort } from '../../core/effort.js';
-import { describeSettings, filterSettings, SETTING_GROUPS } from '../../core/settings.js';
+import { describeSettings, filterSettings, settingsChanged, SETTING_GROUPS } from '../../core/settings.js';
 import { listWorkspaceCandidates } from '../../core/workspaces.js';
 import { skillsDir } from '../../core/paths.js';
 import { FOCUS_INPUT } from '../constants.js';
@@ -20,6 +21,9 @@ import { FOCUS_INPUT } from '../constants.js';
  * approval that could be triggered by a stray 'y' in typed text is how edits
  * used to get applied without anyone agreeing to them.
  */
+/** Settings rows that are a switch, not a choice. Flipped without leaving the page. */
+const TOGGLES = new Set(['/plan', '/auto', '/memory on', '/memory off', '/allowlist enable', '/allowlist disable']);
+
 /** `2026-09-10 14:32`, in the reader's own timezone. */
 function localStamp(when) {
   const pad = (n) => String(n).padStart(2, '0');
@@ -61,6 +65,22 @@ export function Menus({
     // letters, "get me out of this filter" is the more likely of the two.
     if (activeMenu?.type === 'settings' && activeMenu.query) {
       setActiveMenu({ ...activeMenu, query: '' });
+      return;
+    }
+    // On the way out, say what changed — and only then. Settings here apply the
+    // moment you pick one, so there is nothing to save; what is worth showing
+    // is what you just did and a way to put it back. No dialog when nothing
+    // changed: a confirmation you always dismiss teaches people to dismiss
+    // confirmations.
+    if (activeMenu?.type === 'settings' && activeMenu.view !== 'leaving') {
+      const changes = settingsChanged(activeMenu.baseline, describeSettings(agentLoop));
+      if (changes.length > 0) {
+        setActiveMenu({ ...activeMenu, view: 'leaving', changes });
+        return;
+      }
+    }
+    if (activeMenu?.returnTo && !(activeMenu.type === 'allowlist' && activeMenu.view)) {
+      setActiveMenu(activeMenu.returnTo);
       return;
     }
     if (activeMenu?.type === 'allowlist' && activeMenu.view) {
@@ -156,21 +176,39 @@ export function Menus({
             <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
               <Text bold color="cyan">🎚️  How hard should it work?</Text>
               <Text dimColor wrap="wrap">
-                One ladder. It sets both the prompt profile and which browser tab it
-                is written for — set your Gemini tab to match.
+                One ladder, least effort first. Each rung sets the prompt profile and names
+                the browser tab it is written for — set your Gemini tab to match.
               </Text>
+              <Box marginTop={1} />
               <SelectInput
-                items={EFFORT_LEVELS.map((e) => ({
-                  label: `${e.label}${e.id === current ? '  ← current' : ''}  ·  ${e.browser}`,
-                  value: e.id,
-                }))}
+                items={(() => {
+                  // No emoji in the rows. Their terminal widths disagree — ⚡ is
+                  // usually one column and 🧠 is two — so a name column padded
+                  // after them lines up on no terminal at all, which is what
+                  // made this list look crooked.
+                  const nameWidth = Math.max(...EFFORT_LEVELS.map((e) => e.name.length));
+                  const tabWidth = Math.max(...EFFORT_LEVELS.map((e) => e.browser.length));
+                  return EFFORT_LEVELS.map((e) => ({
+                    label: `${e.name.padEnd(nameWidth)}  ${e.browser.padEnd(tabWidth)}`
+                      + `  ${e.id === current ? '← current' : '         '}`,
+                    value: e.id,
+                  }));
+                })()}
+                onHighlight={(item) => {
+                  if (item.value !== activeMenu.at) setActiveMenu((m) => ({ ...m, at: item.value }));
+                }}
                 onSelect={async (item) => {
-                  setActiveMenu(null);
+                  setActiveMenu(activeMenu.returnTo || null);
                   const result = await agentLoop.handleSlashCommand('effort', [item.value]);
                   setHistory(prev => [...prev, { role: 'assistant', content: result.message, isLocal: true }]);
                   setFocus(FOCUS_INPUT);
                 }}
               />
+              <Box marginTop={1}>
+                <Text dimColor wrap="truncate">
+                  {'  '}{resolveEffort(activeMenu.at || current).blurb}
+                </Text>
+              </Box>
               <Text dimColor>↑↓ move · enter choose · esc cancel</Text>
             </Box>
           );
@@ -189,7 +227,7 @@ export function Menus({
           const other = main === 'gemini' ? 'chatgpt' : 'gemini';
           const isDuo = Boolean(reviewer) && reviewer !== main;
           const run = async (args) => {
-            setActiveMenu(null);
+            setActiveMenu(activeMenu.returnTo || null);
             const result = await agentLoop.handleSlashCommand('config', args);
             setHistory(prev => [...prev, { role: 'assistant', content: result.message, isLocal: true }]);
             setFocus(FOCUS_INPUT);
@@ -236,16 +274,67 @@ export function Menus({
           const query = activeMenu.query || '';
           const group = activeMenu.group || SETTING_GROUPS[0];
           const matches = filterSettings(rows, query, group);
+
+          // ── Leaving, with something to report ──────────────────────
+          if (activeMenu.view === 'leaving') {
+            const changes = activeMenu.changes || [];
+            const undoable = changes.filter((c) => c.restore);
+            return (
+              <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+                <Text bold color="cyan">
+                  {changes.length} setting{changes.length === 1 ? '' : 's'} changed
+                </Text>
+                <Box flexDirection="column" marginY={1} paddingLeft={2}>
+                  {changes.map((c) => (
+                    <Text key={c.label}>
+                      <Text>{c.label}</Text>
+                      <Text dimColor>{'  '}{c.from}{' → '}</Text>
+                      <Text color="cyan">{c.to}</Text>
+                      {c.restore ? null : <Text dimColor>{'  (cannot be undone from here)'}</Text>}
+                    </Text>
+                  ))}
+                </Box>
+                <Text dimColor wrap="wrap">
+                  These applied as you picked them — there is nothing waiting to be saved.
+                </Text>
+                <SelectInput
+                  items={[
+                    { label: '✅  Keep them', value: 'keep' },
+                    ...(undoable.length
+                      ? [{ label: `↩️   Put ${undoable.length === changes.length ? 'them' : `${undoable.length} of them`} back`, value: 'undo' }]
+                      : []),
+                  ]}
+                  onSelect={async (item) => {
+                    setActiveMenu(null);
+                    setFocus(FOCUS_INPUT);
+                    if (item.value !== 'undo') return;
+                    // One at a time and in order: each runs the command that
+                    // owns that setting, which is the same path the user took.
+                    for (const change of undoable) {
+                      await agentLoop.handleSlashCommand(
+                        change.restore.slice(1).split(' ')[0],
+                        change.restore.slice(1).split(' ').slice(1),
+                      );
+                    }
+                    setHistory(prev => [...prev, {
+                      role: 'assistant', isLocal: true,
+                      content: `↩️ Put back: ${undoable.map((c) => `${c.label} → ${c.from}`).join(', ')}`,
+                    }]);
+                  }}
+                />
+                <Text dimColor>↑↓ move · enter choose</Text>
+              </Box>
+            );
+          }
+
+          // ── The page ───────────────────────────────────────────────
           // The list lives in Ink's repainted frame, so it is bounded and says
           // how much it is not showing. See ui/constants.js.
           const LIMIT = 8;
           const hidden = Math.max(0, matches.length - LIMIT);
           const width = Math.max(...rows.map((r) => r.label.length), 0);
-          const vwidth = Math.min(26, Math.max(...rows.map((r) => r.value.length), 0));
-          // A row wider than the viewport wraps, and a wrapped row in the live
-          // frame is how the clear-the-terminal bug comes back. The border,
-          // padding and SelectInput's own pointer take the rest.
-          const hintRoom = Math.max(0, terminalWidth - width - vwidth - 12);
+          const vwidth = Math.min(30, Math.max(...rows.map((r) => r.value.length), 0));
+          const selected = matches[Math.min(activeMenu.at || 0, matches.length - 1)];
 
           return (
             <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
@@ -265,7 +354,7 @@ export function Menus({
                 <TextInput
                   value={query}
                   placeholder="filter…"
-                  onChange={(value) => setActiveMenu((m) => ({ ...m, query: value }))}
+                  onChange={(value) => setActiveMenu((m) => ({ ...m, query: value, at: 0 }))}
                 />
               </Box>
               {matches.length === 0 ? (
@@ -274,23 +363,61 @@ export function Menus({
                 <SelectInput
                   limit={LIMIT}
                   items={matches.map((row) => ({
-                    // Two columns, so the values read as a column rather than
-                    // as prose that happens to follow a label.
-                    label: `${row.label.padEnd(width)}   ${oneLine(row.value, 26).padEnd(vwidth)}`
-                      // The hint is the first thing to go: it is the part you
-                      // can lose and still know what the setting is set to.
-                      + `${row.hint && hintRoom > 8 ? `  ${oneLine(row.hint, hintRoom)}` : ''}`,
+                    // Two columns and nothing else. The hint used to ride along
+                    // here and was truncated mid-word at every width — it is
+                    // only ever wanted for the row you are looking at, so it
+                    // moved below the list where it has the whole line.
+                    label: `${row.label.padEnd(width)}   ${oneLine(row.value, 30).padEnd(vwidth)}`,
                     value: row.run || '',
                     key: row.label,
                   }))}
-                  onSelect={(item) => {
+                  onHighlight={(item) => {
+                    const at = matches.findIndex((r) => r.label === item.key);
+                    if (at >= 0 && at !== activeMenu.at) setActiveMenu((m) => ({ ...m, at }));
+                  }}
+                  onSelect={async (item) => {
+                    if (!item.value) return;
+                    const back = { ...activeMenu, view: undefined, changes: undefined };
+
+                    // A row that needs a choice hands over to that chooser and
+                    // gets the page back afterwards. Closing settings to make a
+                    // change — and never returning — is why the summary on the
+                    // way out could never fire: there was no way out that still
+                    // knew what you had come in with.
+                    if (item.value === '/effort') {
+                      setActiveMenu({ type: 'effort', returnTo: back });
+                      return;
+                    }
+                    if (item.value === '/config') {
+                      setActiveMenu({ type: 'config', returnTo: back });
+                      return;
+                    }
+                    if (item.value === '/allowlist') {
+                      setActiveMenu({ type: 'allowlist', rules: agentLoop.commandRules, returnTo: back });
+                      return;
+                    }
+
+                    // A row that is simply a switch flips where it stands.
+                    if (TOGGLES.has(item.value)) {
+                      await agentLoop.handleSlashCommand(item.value.slice(1).split(' ')[0],
+                        item.value.slice(1).split(' ').slice(1));
+                      setActiveMenu(back);
+                      return;
+                    }
+
+                    // Anything else is a command in its own right — it answers
+                    // in the transcript, which is not something to read through
+                    // a menu.
                     setActiveMenu(null);
                     setFocus(FOCUS_INPUT);
-                    if (item.value) handleSubmit(item.value);
+                    handleSubmit(item.value);
                   }}
                 />
               )}
               {hidden > 0 ? <Text dimColor>{`  ↓ ${hidden} more — type to narrow`}</Text> : null}
+              {selected?.hint
+                ? <Text dimColor wrap="truncate">{'  '}{selected.hint}</Text>
+                : null}
               <Text dimColor>
                 type to filter · tab switches · ↑↓ move · enter change · esc {query ? 'clear' : 'close'}
               </Text>
@@ -364,7 +491,12 @@ export function Menus({
             ...rules.block.map((c) => ({ cmd: c, kind: 'block' })),
           ];
 
-          const close = () => { setActiveMenu(null); setFocus(FOCUS_INPUT); };
+          const close = () => {
+            // Back to settings when that is where this was opened from.
+            if (activeMenu.returnTo) { setActiveMenu(activeMenu.returnTo); return; }
+            setActiveMenu(null);
+            setFocus(FOCUS_INPUT);
+          };
 
           // ── Confirm ────────────────────────────────────────────────
           // A rule can be a paragraph of shell — a compound git command with
@@ -533,11 +665,19 @@ export function Menus({
                   label: `${c.current ? '● ' : '  '}${c.label}`,
                   value: c.path,
                 })),
+                ...(canPickFolder()
+                  ? [{ label: '  📂 Browse…', value: '\u0000browse' }]
+                  : []),
                 { label: '  Type a path instead…', value: '\u0000type' },
               ]}
-              onSelect={(item) => {
+              onSelect={async (item) => {
                 setActiveMenu(null);
                 setFocus(FOCUS_INPUT);
+                if (item.value === '\u0000browse') {
+                  const chosen = await pickFolder('Choose a project to work on');
+                  if (chosen && chosen !== activeMenu.current) handleSubmit(`/switch-workspace ${chosen}`);
+                  return;
+                }
                 if (item.value === '\u0000type') {
                   // Hand the user a half-written command rather than a second
                   // prompt of our own: the input line already knows how to edit.
