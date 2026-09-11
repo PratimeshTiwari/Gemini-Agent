@@ -15,7 +15,7 @@ baton is.
 - Branch `v1-stable`. **Seven commits ahead of `origin/v1-stable`, not yet pushed.**
 - `main` is untouched at `68f76cd`. Work merges into `main` through a PR only.
   The branches in this repo are deliberate history; do not delete them.
-- Tests: `npm test` → **582 passing**, up from 295.
+- Tests: `npm test` → **624 passing**, up from 295. They live in `server/test/` now.
 - Commits carry the `Co-Authored-By` and `Claude-Session` trailers the harness asked for.
   Older commits are inconsistent on purpose — the rewrite was reverted. Do not rewrite
   history again.
@@ -56,8 +56,15 @@ retry objective), `/context` (padded ANSI strings with `padEnd`, so the box neve
   rebuilt for large repos (several patterns per call, context lines, grouped by file);
   the ChatGPT bridge was **deleting** images rather than attaching them; `/logs extension`
   now gets `op`/`stage`; static prompt prose moved to `server/src/prompts/*.md`.
-- **P3, next.** VS Code shell integration; folder picker; **restructure** the GitHub PR agent
-  (not delete — the owner asked for a separate plan); split `agent-loop.js`.
+- ~~**P3**~~ — **done 2026-09-11**, except the GitHub restructure. VS Code terminal
+  integration (failed commands reach the input box as a marker); native folder picker;
+  `agent-loop.js` 1,910 → 1,594 with the slash commands extracted. Also: tests moved to
+  `server/test/`, a running-line animation that costs less than the spinner it replaced,
+  a command audit log (`/commands`), and the `<thought>` bug that was printing the
+  model's reasoning as raw XML.
+- **Next: plan the GitHub PR agent restructure.** 1,649 lines, the largest single
+  feature, explicitly *not* to be deleted. The owner asked for it to be planned on its
+  own once everything else landed. It has.
 
 Then the fork in `## What's next` → "The fork": whether an opt-in API backend joins the
 browser bridge. That is a product decision, not a task.

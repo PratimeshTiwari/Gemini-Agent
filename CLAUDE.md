@@ -605,15 +605,26 @@ dispatch paths still want scaffolding and are left for the split in P3.
   stopped counting": ripgrep's `--max-count` caps *per file*, so without the spare there is
   never a surplus to notice. See "Search, and why there is still no index".
 
-### P3 — after · next
+### P3 — done, 2026-09-11 (except the GitHub restructure)
 
-- VS Code terminal shell integration: engine `^1.80.0` → `^1.93.0`, then repackage the `.vsix`.
-  `watch_task` already exists to receive it.
-- Native folder picker for `/skills dir`, macOS `osascript`, hidden where no picker exists.
+- VS Code terminal shell integration — *done.* The companion forwards **failed** commands only,
+  and only their tail, to `.agent/state/terminal.jsonl`; the CLI drains it into the input box as
+  a marker you send or delete. It offers rather than acts: an agent that starts editing because
+  a command you ran in another window failed is a worse tool than one that waits to be asked.
+  Engine `^1.80.0` → `^1.93.0`, repackaged as `cli-agent-companion-1.4.0.vsix`.
+- Native folder picker — *done.* `/skills dir add` with no path, and Browse… in the workspace
+  picker. macOS, zenity, kdialog or PowerShell, and offered **only** where one exists: a menu row
+  that silently does nothing is worse than no row, because people press it twice and conclude the
+  tool is broken.
 - **Restructure the GitHub PR agent** — 1,649 lines, the largest single feature here. Not
-  deleted: planned separately once the above is done.
-- Split `agent-loop.js`. The slash commands alone are ~400 lines and their removal makes the
-  rest testable.
+  deleted, and **not started**: the owner asked for it to be planned on its own once everything
+  else had landed. It now is. This is the next thing to plan.
+- Split `agent-loop.js` — *done.* The sixteen-case slash-command switch moved to
+  `core/slash-commands.js` as a function taking the loop, so the dependency reads in the
+  signature instead of as seventeen implicit `this.` references. 1,910 → 1,594 lines, interface
+  unchanged. This is what unblocks generating the tool definitions: `ask_question`,
+  `ask_subagent`, `ask_researcher`, `ask_reviewer` and `manage_memory` are still dispatched from
+  inside `agent-loop.js` and need declaring somewhere first.
 - A **symbol index** — `find_symbol` / `find_references`, from tree-sitter or ctags. The
   structural half of what a large codebase needs, and the half grep is worst at.
 
@@ -654,6 +665,21 @@ avoid large repeated payloads. Agentic grep→read sends only what the model dec
 This is a decision made from the architecture, not from measurement. If grep genuinely fails on
 real questions in the large codebase, that evidence outranks the argument above — and the shape
 of the failures says which of the four rows is the one that bites.
+
+### Raised, not yet planned
+
+Two things the owner asked to come back to once the phases were done:
+
+**Session logs as post-compaction recall.** Compaction replaces older turns with a summary, and
+anything it dropped is gone from the model's view — but not from disk: `sessions/history.jsonl`
+still holds every turn. A tool that lets the model look back into its own history would turn
+"compaction ate the detail" from a loss into a lookup. Probably better than making compaction
+smarter, because it does not require deciding in advance what will matter.
+
+**Search for really large codebases.** `grep_search` now takes several patterns, context lines
+and groups by file (P2), and the reasoning for *not* adding an index is recorded above. That
+decision was made from the architecture, not from measurement — the next codebase is the
+measurement.
 
 ### The fork
 
