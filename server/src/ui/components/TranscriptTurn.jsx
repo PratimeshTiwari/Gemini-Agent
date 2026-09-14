@@ -74,7 +74,7 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget }) {
           )}
 
           <Box flexDirection="column" marginLeft={2} width="100%">
-            {shown.map((act) => <ActionRow key={act.id} act={act} verbose={verbose} />)}
+            {shown.map((act) => <ActionRow key={act.id} act={act} verbose={verbose} isLive={isLive} />)}
           </Box>
         </Box>
       )}
@@ -112,8 +112,28 @@ function diffRowsFor(act) {
   return <DiffRows rows={rows} />;
 }
 
+/**
+ * How much of one step's output may be drawn.
+ *
+ * Only the **live** turn has to fit the viewport. It is in the frame Ink
+ * repaints, and a frame taller than the terminal is answered with
+ * `ESC[2J ESC[3J` and a full repaint on every render — the flicker-and-cannot-
+ * scroll bug. A **committed** step is `<Static>` output: written once, never
+ * repainted, ordinary scrollback the terminal scrolls and selects like any
+ * other command's. It does not need a cap, and capping it is why expanding a
+ * step that finished ten minutes ago still ended in `... [truncated]` with
+ * nothing you could do about it.
+ *
+ * Collapsed rows stay short either way — that is the summary, not the output.
+ */
+const limitsFor = (isLive, verbose) => {
+  if (!verbose) return { lines: 6, chars: 400 };
+  return isLive ? { lines: 20, chars: 1200 } : { lines: Infinity, chars: Infinity };
+};
+
 /** One step inside a turn. Collapsed to a line unless `verbose`. */
-function ActionRow({ act, verbose }) {
+function ActionRow({ act, verbose, isLive }) {
+  const limit = limitsFor(isLive, verbose);
   if (act.type === 'tool') {
     return (
       <Box flexDirection="column" width="100%">
@@ -132,7 +152,8 @@ function ActionRow({ act, verbose }) {
                 and days later, showed it as a line of dim text. */}
             {diffRowsFor(act) ?? (
               <Text dimColor wrap="wrap">
-                {formatCommandResult(act.result, 20) ?? clampForDisplay(act.result, 20)}
+                {formatCommandResult(act.result, limit.lines)
+                  ?? clampForDisplay(act.result, limit.lines, limit.chars)}
               </Text>
             )}
           </Box>
@@ -147,7 +168,7 @@ function ActionRow({ act, verbose }) {
         <Text color="green">{'⏺ '}<Text dimColor>{oneLine(act.result)}</Text></Text>
         {verbose && (
           <Box paddingLeft={2} width="100%">
-            <Text dimColor wrap="wrap">{clampForDisplay(act.result, 20)}</Text>
+            <Text dimColor wrap="wrap">{clampForDisplay(act.result, limit.lines, limit.chars)}</Text>
           </Box>
         )}
       </Box>
@@ -161,7 +182,9 @@ function ActionRow({ act, verbose }) {
         <Text dimColor>✻ Thinking… ({lineCount} line{lineCount === 1 ? '' : 's'})</Text>
         {verbose && (
           <Box paddingLeft={2} width="100%">
-            <Text dimColor wrap="wrap">{act.content}</Text>
+            {/* Thinking had no cap at all, so one long block in a running turn
+                could push the live frame past the viewport on its own. */}
+            <Text dimColor wrap="wrap">{clampForDisplay(act.content, limit.lines, limit.chars)}</Text>
           </Box>
         )}
       </Box>
@@ -171,7 +194,7 @@ function ActionRow({ act, verbose }) {
   if (act.type === 'command_output') {
     return (
       <Box width="100%">
-        <Text dimColor wrap="wrap">{clampForDisplay(act.content, verbose ? 40 : 6, verbose ? 4000 : 400)}</Text>
+        <Text dimColor wrap="wrap">{clampForDisplay(act.content, limit.lines, limit.chars)}</Text>
       </Box>
     );
   }
