@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
 import * as paths from '../../core/paths.js';
+import { mergeLoopHistory } from '../transcript.js';
 import { FOCUS_INPUT } from '../constants.js';
 
 /**
@@ -56,7 +57,10 @@ export function buildAgentCallbacks({
     sendToPanel: (msg) => {
       wsServer.broadcast('extension', msg);
       if (msg.type === 'agent_response') {
-        setHistory([...agentLoop.conversationHistory]);
+        // Append what the loop has gained; never replace. See mergeLoopHistory —
+        // replacing dropped every UI-only message and took a real turn off the
+        // screen with it, because <Static> counts what it has printed by index.
+        setHistory((prev) => mergeLoopHistory(prev, agentLoop.conversationHistory));
         setIsProcessing(false);
         setActiveToolCalls([]);
       } else if (msg.type === 'ask_question') {

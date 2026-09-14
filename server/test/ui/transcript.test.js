@@ -4,7 +4,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { groupTurns, parseTurnActions } from '../../src/ui/transcript.js';
+import { groupTurns, parseTurnActions , mergeLoopHistory } from '../../src/ui/transcript.js';
 
 describe('groupTurns', () => {
   it('starts a turn at each user message and attaches what follows', () => {
@@ -164,5 +164,66 @@ describe('parseTurnActions — the model\'s reasoning', () => {
     const { actions, finalMessages } = parse('Just the answer.');
     assert.deepStrictEqual(actions, []);
     assert.strictEqual(finalMessages[0].content, 'Just the answer.');
+  });
+});
+
+describe('mergeLoopHistory — the transcript is append-only', () => {
+  const user = (c) => ({ role: 'user', content: c });
+  const agent = (c) => ({ role: 'agent', content: c });
+  const local = (c) => ({ role: 'assistant', content: c, isLocal: true });
+
+  it('a new agent message is appended', () => {
+    const shown = [user('hi')];
+    const loop = [user('hi'), agent('hello')];
+    assert.deepEqual(mergeLoopHistory(shown, loop), [user('hi'), agent('hello')]);
+  });
+
+  it('nothing new returns the same array, so React can skip the render', () => {
+    const shown = [user('hi'), agent('hello')];
+    assert.equal(mergeLoopHistory(shown, [user('hi'), agent('hello')]), shown);
+  });
+
+  /**
+   * The reported bug. `/new` leaves a local marker on screen that the loop does
+   * not have; replacing the array dropped it, the array got shorter, and
+   * <Static> — which counts what it has printed by index — skipped the turn.
+   * The reply had been received and stored; it simply never reached the screen.
+   */
+  it('a local marker does not cost a turn', () => {
+    let shown = [local('✨ Starting a new chat in Gemini...')];
+    shown = [...shown, user('hi')];                       // handleSubmit appends
+    shown = mergeLoopHistory(shown, [user('hi'), agent('ANSWER ONE')]);
+
+    assert.deepEqual(shown.map((m) => m.content),
+      ['✨ Starting a new chat in Gemini...', 'hi', 'ANSWER ONE']);
+
+    shown = [...shown, user('hi again')];
+    shown = mergeLoopHistory(shown,
+      [user('hi'), agent('ANSWER ONE'), user('hi again'), agent('ANSWER TWO')]);
+
+    assert.deepEqual(shown.map((m) => m.content),
+      ['✨ Starting a new chat in Gemini...', 'hi', 'ANSWER ONE', 'hi again', 'ANSWER TWO']);
+  });
+
+  it('several local messages still cost nothing', () => {
+    let shown = [local('a'), local('b'), local('c'), user('q')];
+    shown = mergeLoopHistory(shown, [user('q'), agent('r')]);
+    assert.deepEqual(shown.map((m) => m.content), ['a', 'b', 'c', 'q', 'r']);
+  });
+
+  it('a slash command in the middle does not shift the count', () => {
+    // `/help` echoes what you typed and answers locally; neither reaches the
+    // model, so both are local and neither may be counted as loop history.
+    let shown = [user('q1'), agent('r1')];
+    shown = [...shown, { ...user('/help'), isLocal: true }, local('…help…')];
+    shown = [...shown, user('q2')];
+    shown = mergeLoopHistory(shown, [user('q1'), agent('r1'), user('q2'), agent('r2')]);
+    assert.deepEqual(shown.map((m) => m.content), ['q1', 'r1', '/help', '…help…', 'q2', 'r2']);
+  });
+
+  it('history shorter than the screen is left alone for the repaint to handle', () => {
+    // /clear, /new, /undo and /compact all repaint; merging must not fight them.
+    const shown = [user('q1'), agent('r1')];
+    assert.equal(mergeLoopHistory(shown, []), shown);
   });
 });

@@ -40,7 +40,7 @@ export async function handleSlashCommand(query, {
     // because nothing made the two lists agree.
     if (command === 'help' || command === 'shortcuts') {
       const width = Math.max(...SLASH_COMMANDS.map((c) => c.name.length));
-      setHistory(prev => [...prev, { role: 'user', content: query }, {
+      setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
         role: 'assistant',
         isLocal: true,
         content: [
@@ -63,7 +63,7 @@ export async function handleSlashCommand(query, {
     }
 
     if (command === 'exit') {
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: '👋 Goodbye! Agent shutting down.', isLocal: true }]);
+      setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: '👋 Goodbye! Agent shutting down.', isLocal: true }]);
       setIsProcessing(false);
       setTimeout(() => process.exit(0), 100);
       return;
@@ -75,7 +75,7 @@ export async function handleSlashCommand(query, {
     // "Restarting server..." and stayed exactly where it was.
     if (command === 'restart') {
       if (!process.env.AGENT_CLI_SUPERVISED) {
-        setHistory(prev => [...prev, { role: 'user', content: query }, {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
           role: 'assistant',
           isLocal: true,
           content: 'This process has no supervisor to restart it — it was started directly '
@@ -84,7 +84,7 @@ export async function handleSlashCommand(query, {
         setIsProcessing(false);
         return;
       }
-      setHistory(prev => [...prev, { role: 'user', content: query }, {
+      setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
         role: 'assistant', content: '🔄 Restarting…', isLocal: true,
       }]);
       setIsProcessing(false);
@@ -146,7 +146,7 @@ export async function handleSlashCommand(query, {
     if (command === 'scope' || command === 'repo') {
       const active = paths.getActiveScope(agentLoop.workspace);
       const { discovered, base } = paths.resolveState(agentLoop.workspace);
-      setHistory(prev => [...prev, { role: 'user', content: query }, {
+      setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
         role: 'assistant',
         isLocal: true,
         content: discovered && active
@@ -186,7 +186,7 @@ export async function handleSlashCommand(query, {
       const days = listCommandDays(agentLoop.workspace);
 
       if (days.length === 0) {
-        setHistory(prev => [...prev, { role: 'user', content: query }, {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
           role: 'assistant', isLocal: true,
           content: 'No commands run yet in this workspace.\n\n'
             + 'Every shell command the agent runs — and every one it is blocked from running — '
@@ -204,7 +204,7 @@ export async function handleSlashCommand(query, {
           return `  ${icon[e.outcome] || '·'} \`${time}\` ${oneLine(e.command, 70)}`
             + (e.outcome === 'ran' ? '' : ` _(${e.outcome})_`);
         });
-        setHistory(prev => [...prev, { role: 'user', content: query }, {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
           role: 'assistant', isLocal: true,
           content: `### 🧾 ${day} — ${entries.length} command${entries.length === 1 ? '' : 's'}\n\n`
             + (lines.join('\n') || '  _(none)_'),
@@ -221,7 +221,7 @@ export async function handleSlashCommand(query, {
     if (command === 'plans') {
       const plans = listPlans(agentLoop.workspace);
       if (plans.length === 0) {
-        setHistory(prev => [...prev, { role: 'user', content: query }, {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
           role: 'assistant',
           isLocal: true,
           content: 'No past plans yet.\n\nEach plan is copied to `.agent/artifacts/plans/` when '
@@ -240,7 +240,7 @@ export async function handleSlashCommand(query, {
 
       if (arg === 'clear') {
         const n = clearErrors(agentLoop.workspace);
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `🧹 Cleared ${n} logged failure${n === 1 ? '' : 's'}.`, isLocal: true }]);
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `🧹 Cleared ${n} logged failure${n === 1 ? '' : 's'}.`, isLocal: true }]);
         setIsProcessing(false);
         return;
       }
@@ -256,7 +256,7 @@ export async function handleSlashCommand(query, {
             const detail = e.detail ? `\n    \`${String(e.detail).split('\n')[0].slice(0, 120)}\`` : '';
             return `  ${when} **${e.op || '—'}** — ${e.message}${repeat}${detail}`;
           }).join('\n');
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `### 🩺 ${arg} — ${FLOWS[arg]}\n${body}`, isLocal: true }]);
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `### 🩺 ${arg} — ${FLOWS[arg]}\n${body}`, isLocal: true }]);
         setIsProcessing(false);
         return;
       }
@@ -281,7 +281,7 @@ export async function handleSlashCommand(query, {
         content = `### 🩺 ${summary.total} failure${summary.total === 1 ? '' : 's'} logged\n${rows}\n\n`
           + `_\`/logs <flow>\` for detail · \`/logs clear\` to reset · full log in \`.agent/logs/errors.jsonl\`_`;
       }
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content, isLocal: true }]);
+      setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content, isLocal: true }]);
       setIsProcessing(false);
       return;
     }
@@ -300,7 +300,7 @@ export async function handleSlashCommand(query, {
         let chosen = target;
         if (sub === 'add' && !chosen) {
           if (!canPickFolder()) {
-            setHistory(prev => [...prev, { role: 'user', content: query }, {
+            setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
               role: 'assistant', isLocal: true,
               content: 'Usage: `/skills dir add <path>`\n\n'
                 + '_(A folder chooser would open here, but this machine has no dialog available — '
@@ -311,7 +311,7 @@ export async function handleSlashCommand(query, {
           }
           chosen = await pickFolder('Choose a folder of skills');
           if (!chosen) {
-            setHistory(prev => [...prev, { role: 'user', content: query }, {
+            setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
               role: 'assistant', content: 'Cancelled.', isLocal: true,
             }]);
             setIsProcessing(false);
@@ -324,7 +324,7 @@ export async function handleSlashCommand(query, {
           const abs = resolveWorkspaceInput(target, agentLoop.workspace);
           const problem = validateWorkspace(abs);
           if (problem) {
-            setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ ${problem}`, isLocal: true }]);
+            setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `❌ ${problem}`, isLocal: true }]);
             setIsProcessing(false);
             return;
           }
@@ -334,7 +334,7 @@ export async function handleSlashCommand(query, {
             agentLoop.promptBuilder?.resetPromptState?.();
           }
           const found = listSkills(agentLoop.workspace, agentLoop.skillFolders).length;
-          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `✅ Watching \`${abs}\` for skills — ${found} skill${found === 1 ? '' : 's'} visible now.`, isLocal: true }]);
+          setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `✅ Watching \`${abs}\` for skills — ${found} skill${found === 1 ? '' : 's'} visible now.`, isLocal: true }]);
           setIsProcessing(false);
           return;
         }
@@ -348,14 +348,14 @@ export async function handleSlashCommand(query, {
             agentLoop._saveConfig();
             agentLoop.promptBuilder?.resetPromptState?.();
           }
-          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: changed ? `🗑️ Stopped watching \`${abs}\`.` : `Not a skill folder: \`${target}\``, isLocal: true }]);
+          setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: changed ? `🗑️ Stopped watching \`${abs}\`.` : `Not a skill folder: \`${target}\``, isLocal: true }]);
           setIsProcessing(false);
           return;
         }
 
         const dirs = skillSearchPath(agentLoop.workspace, agentLoop.skillFolders)
           .map((d, i) => `  ${i + 1}. \`${d}\`${i === 0 ? ' _(this project)_' : i === 1 ? ' _(yours, all projects)_' : ''}`);
-        setHistory(prev => [...prev, { role: 'user', content: query }, {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
           role: 'assistant',
           isLocal: true,
           content: `### 📁 Skill folders, searched in order\n${dirs.join('\n')}\n\n`
@@ -372,7 +372,7 @@ export async function handleSlashCommand(query, {
         const nameParts = isGlobal ? args.slice(2) : args.slice(1);
         const result = createSkill(agentLoop.workspace, nameParts.join(' '), { global: isGlobal });
         if (!result.ok) {
-          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ ${result.error}`, isLocal: true }]);
+          setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `❌ ${result.error}`, isLocal: true }]);
           setIsProcessing(false);
           return;
         }
@@ -383,7 +383,7 @@ export async function handleSlashCommand(query, {
         } catch (e) { /* no editor here; the path is in the message */ }
         // The catalogue is part of the system prompt, so it has to be re-sent.
         agentLoop.promptBuilder?.resetPromptState?.();
-        setHistory(prev => [...prev, { role: 'user', content: query }, {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
           role: 'assistant',
           isLocal: true,
           content: `✅ Created skill **${result.name}**\n\n\`${result.file}\`\n\n`
@@ -399,7 +399,7 @@ export async function handleSlashCommand(query, {
         const body = skills.length === 0
           ? 'No skills yet. Create one with `/skills new <name>`.'
           : skills.map((sk) => `  • **${sk.name}** — ${sk.description || '_(no description)_'}\n    \`${sk.relative}\``).join('\n');
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `### 🧩 Skills\n${body}`, isLocal: true }]);
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `### 🧩 Skills\n${body}`, isLocal: true }]);
         setIsProcessing(false);
         return;
       }
@@ -525,7 +525,7 @@ export async function handleSlashCommand(query, {
         const { existsSync } = await import('fs');
         finalFilePath = resolve(agentLoop.workspace, args.join(' '));
         if (!existsSync(finalFilePath)) {
-           setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ File not found: ${finalFilePath}` }]);
+           setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `❌ File not found: ${finalFilePath}` }]);
            setIsProcessing(false); return;
         }
         ext = extname(finalFilePath).toLowerCase();
@@ -542,9 +542,9 @@ export async function handleSlashCommand(query, {
           path: finalFilePath,
           sizeKB: Math.round(imageBuffer.length / 1024)
         });
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `🖼️ Image attached: ${finalFilePath} (${Math.round(imageBuffer.length / 1024)}KB)\nType your prompt and the image will be included.` }]);
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `🖼️ Image attached: ${finalFilePath} (${Math.round(imageBuffer.length / 1024)}KB)\nType your prompt and the image will be included.` }]);
       } catch (e) {
-        setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ Error reading image: ${e.message}` }]);
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `❌ Error reading image: ${e.message}` }]);
       }
       setIsProcessing(false);
       return;
@@ -566,19 +566,26 @@ export async function handleSlashCommand(query, {
           if (result && result.message) {
             newHistory.push({ role: 'assistant', content: result.message, isLocal: true });
           }
+          // These three rewrite the transcript rather than extend it — undo
+          // removes a turn, compact replaces the older ones with a summary. Ink
+          // cannot un-print what <Static> has committed, so a replace has to be
+          // a repaint: without this the old turns stay on screen and the next
+          // real one is skipped, which is the same fault mergeLoopHistory fixes
+          // on the ordinary path.
           setHistory(newHistory);
+          resetScreen();
         } else if (result && result.message) {
-          setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: result.message, isLocal: true }]);
+          setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: result.message, isLocal: true }]);
         }
       } catch (err) {
-        setHistory(prev => [...prev, { role: 'user', content: query }, {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
           role: 'assistant',
           isLocal: true,
           content: `❌ \`/${command}\` failed: ${err?.message || err}`,
         }]);
       }
     } else {
-      setHistory(prev => [...prev, { role: 'user', content: query }, { role: 'assistant', content: `❌ No such command: \`/${command}\`\nType \`/\` on its own to see what there is.`, isLocal: true }]);
+      setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `❌ No such command: \`/${command}\`\nType \`/\` on its own to see what there is.`, isLocal: true }]);
     }
     setIsProcessing(false);
     return;

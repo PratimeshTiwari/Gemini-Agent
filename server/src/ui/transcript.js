@@ -132,3 +132,40 @@ export function parseTurnActions(turn) {
 
   return { actions, finalMessages };
 }
+
+/**
+ * Fold the agent loop's history into what is already on screen.
+ *
+ * The transcript must be **append-only**. `<Static>` commits each item to the
+ * terminal once and tracks how many it has written by index, so an array that
+ * gets shorter — or whose front shifts — makes Ink skip exactly as many items
+ * as it lost, permanently. They are not redrawn later; they are simply never
+ * drawn.
+ *
+ * That is what replacing the array with `agentLoop.conversationHistory` did.
+ * The loop's history holds only what the model was actually sent, while the
+ * screen also carries UI-only messages — a slash command's reply, the "starting
+ * a new chat" marker, the extension-reconnect notice. Every replace dropped
+ * those, the array got shorter by that many, and the next real turn silently
+ * never appeared. The reported symptom was "I sent a prompt and got no
+ * response": the reply had arrived, been parsed and been written to
+ * `history.jsonl` — it just never reached the screen.
+ *
+ * Local messages are therefore the thing to preserve, and `isLocal` is what
+ * marks them.
+ *
+ * @param {Array} shownHistory   what the transcript currently holds
+ * @param {Array} loopHistory    `agentLoop.conversationHistory`
+ * @returns {Array} `shownHistory` itself when there is nothing new, so React
+ *                  can skip the render
+ */
+export function mergeLoopHistory(shownHistory, loopHistory) {
+  // How much of the loop's history is already on screen. Counted by excluding
+  // the local messages rather than by tracking an index, because a counter has
+  // to be reset in every place history is cleared and missing one brings this
+  // straight back.
+  const alreadyShown = shownHistory.reduce((n, m) => (m.isLocal ? n : n + 1), 0);
+
+  if (loopHistory.length <= alreadyShown) return shownHistory;
+  return [...shownHistory, ...loopHistory.slice(alreadyShown)];
+}
