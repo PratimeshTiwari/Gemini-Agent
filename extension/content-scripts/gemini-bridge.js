@@ -579,12 +579,42 @@ function extractTextContent(element) {
   const clone = element.cloneNode(true);
 
   // Replace code blocks with fenced blocks
-  clone.querySelectorAll('pre code, code-block').forEach(codeBlock => {
-    const lang = codeBlock.getAttribute('data-language') ||
-                 codeBlock.className.match(/language-(\w+)/)?.[1] || '';
-    const code = codeBlock.textContent;
-    const replacement = document.createTextNode(`\n\`\`\`${lang}\n${code}\n\`\`\`\n`);
-    codeBlock.parentElement.replaceWith(replacement);
+  // Gemini wraps a code block in <code-block>, which holds a header chip — the
+  // language name and a copy button — as well as the <pre><code>. ChatGPT puts a
+  // similar header inside the <pre>. Matching `pre code, code-block` and then
+  // replacing `parentElement` got three things wrong at once:
+  //
+  //  - `textContent` of the wrapper is the chip *plus* the code, so the label and
+  //    the copy button's own text were welded onto the first line of code
+  //    (`JavaScriptcontent_copy// 1. Using async/await`).
+  //  - the language lives on the inner <code>, not the wrapper, so the fence came
+  //    out bare and the CLI had nothing to highlight with.
+  //  - replacing the block's *parent* took the parent's other children with it,
+  //    which silently deleted prose sitting beside the block.
+  //
+  // So: match the outermost block, read the language off the inner <code>, take
+  // the text from the <pre>, and replace the block itself — never its parent.
+  clone.querySelectorAll('code-block, pre').forEach((block) => {
+    // Replacing an outer <code-block> detaches the <pre> inside it, and the list
+    // from querySelectorAll is static — skip what is no longer in the clone.
+    if (!clone.contains(block)) return;
+
+    const pre = block.matches('pre') ? block : block.querySelector('pre');
+    const codeEl = (pre || block).querySelector('code');
+    const source = codeEl || pre || block;
+
+    const langOf = (el) => {
+      if (!el) return '';
+      const attr = el.getAttribute('data-language');
+      if (attr) return attr;
+      const cls = typeof el.className === 'string' ? el.className : '';
+      return cls.match(/language-(\w+)/)?.[1] || '';
+    };
+    const lang = langOf(codeEl) || langOf(pre) || langOf(block);
+
+    block.replaceWith(
+      document.createTextNode(`\n\`\`\`${lang}\n${source.textContent}\n\`\`\`\n`),
+    );
   });
 
   // Replace inline code
