@@ -1,7 +1,7 @@
 import { connectWebSocket } from './socket.js';
 import { sendToServer } from './messaging.js';
 import { getState } from './state.js';
-import { broadcastTabStatus, reinjectModelTabs } from './content.js';
+import { broadcastTabStatus, reinjectModelTabs, restoreFocusFrom, forgetFocusFrom } from './content.js';
 
 // Open side panel on extension icon click
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -28,9 +28,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'diff_response':
       case 'gemini_response':
       case 'gemini_response_stream':
-        if (type === 'gemini_response' && payload.complete && payload.isSubagent && sender.tab) {
-          payload.subagentUrl = sender.tab.url;
-          chrome.tabs.remove(sender.tab.id).catch(err => console.warn('Failed to auto-close subagent tab:', err));
+        if (type === 'gemini_response' && sender.tab) {
+          // A turn is over when the reply is complete *or* when it gave up. The
+          // close used to run only on `complete`, so a timed-out subagent left
+          // its tab open — and `runHeadlessTask` runs up to ten turns.
+          const finished = payload.complete || payload.timedOut;
+
+          if (finished) {
+            // Before the close, not after: once the tab is gone Chrome has
+            // already picked a new active tab, and the "do we still hold focus"
+            // check can no longer tell whether the user had moved on.
+            await restoreFocusFrom(sender.tab.id);
+          }
+
+          if (finished && payload.isSubagent) {
+            if (payload.complete) payload.subagentUrl = sender.tab.url;
+            forgetFocusFrom(sender.tab.id);
+            chrome.tabs.remove(sender.tab.id)
+              .catch(err => console.warn('Failed to auto-close subagent tab:', err));
+          }
         }
         sendToServer({ type, payload });
         sendResponse({ success: true });

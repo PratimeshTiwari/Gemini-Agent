@@ -80,6 +80,54 @@ export async function broadcastTabStatus() {
  */
 let lastTabFailure = null;
 
+/**
+ * Model tab id -> the tab whose focus it took.
+ *
+ * The Tab Wakeup Protocol activates a model tab so Chrome does not throttle the
+ * DOM work happening in it, and it never gave the focus back — so every send
+ * yanked the browser to Gemini and left it there, which on a tool whose whole
+ * premise is that the browser is a background engine is the most intrusive
+ * thing it does.
+ *
+ * Keyed by tab rather than held in one slot because a subagent turn and the
+ * user's own turn can be in flight at once, in different tabs, and each has its
+ * own answer to "where was I before this started".
+ */
+const focusTakenFrom = new Map();
+
+/**
+ * Give focus back, once the tab is finished with.
+ *
+ * Deliberately does nothing if the model tab is no longer the active one: that
+ * means the user moved on while the reply was generating, and pulling them back
+ * would be a second theft rather than a repair.
+ */
+export async function restoreFocusFrom(modelTabId) {
+  const restoreTo = focusTakenFrom.get(modelTabId);
+  focusTakenFrom.delete(modelTabId);
+  if (restoreTo === undefined) return;
+
+  try {
+    const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!active || active.id !== modelTabId) return;
+    await chrome.tabs.update(restoreTo, { active: true });
+  } catch (e) {
+    // The tab we came from has been closed. Nothing to go back to.
+  }
+}
+
+/** Record that `modelTabId` took the focus that belonged to `fromTabId`. */
+export function rememberFocus(modelTabId, fromTabId) {
+  if (fromTabId === null || fromTabId === undefined) return;
+  if (modelTabId === fromTabId) return;
+  focusTakenFrom.set(modelTabId, fromTabId);
+}
+
+/** A tab that closes on its own must not leave an entry behind. */
+export function forgetFocusFrom(modelTabId) {
+  focusTakenFrom.delete(modelTabId);
+}
+
 async function trySendToTab(tab, message, targetModel) {
   let originalActiveTabId = null;
   try {
@@ -90,6 +138,12 @@ async function trySendToTab(tab, message, targetModel) {
     if (tab.id !== originalActiveTabId) {
       await chrome.tabs.update(tab.id, { active: true });
       await new Promise(r => setTimeout(r, 250)); // Wait for Chrome to wake up the DOM
+      // Remember what we took it from. Restoring here would undo the wakeup —
+      // completion is detected by a 2s `setInterval` in the content script, and
+      // Chrome throttles that to once a minute in a background tab, so a turn
+      // would take a minute to be noticed as finished. The tab has to stay in
+      // front until the reply lands; `restoreFocusFrom` is called then.
+      rememberFocus(tab.id, originalActiveTabId);
     }
   } catch (e) {
     console.warn('Failed to execute Tab Wakeup:', e);

@@ -85,6 +85,26 @@
     });
   }
   var lastTabFailure = null;
+  var focusTakenFrom = /* @__PURE__ */ new Map();
+  async function restoreFocusFrom(modelTabId) {
+    const restoreTo = focusTakenFrom.get(modelTabId);
+    focusTakenFrom.delete(modelTabId);
+    if (restoreTo === void 0) return;
+    try {
+      const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!active || active.id !== modelTabId) return;
+      await chrome.tabs.update(restoreTo, { active: true });
+    } catch (e) {
+    }
+  }
+  function rememberFocus(modelTabId, fromTabId) {
+    if (fromTabId === null || fromTabId === void 0) return;
+    if (modelTabId === fromTabId) return;
+    focusTakenFrom.set(modelTabId, fromTabId);
+  }
+  function forgetFocusFrom(modelTabId) {
+    focusTakenFrom.delete(modelTabId);
+  }
   async function trySendToTab(tab, message, targetModel) {
     let originalActiveTabId = null;
     try {
@@ -93,6 +113,7 @@
       if (tab.id !== originalActiveTabId) {
         await chrome.tabs.update(tab.id, { active: true });
         await new Promise((r) => setTimeout(r, 250));
+        rememberFocus(tab.id, originalActiveTabId);
       }
     } catch (e) {
       console.warn("Failed to execute Tab Wakeup:", e);
@@ -410,9 +431,16 @@
         case "diff_response":
         case "gemini_response":
         case "gemini_response_stream":
-          if (type === "gemini_response" && payload.complete && payload.isSubagent && sender.tab) {
-            payload.subagentUrl = sender.tab.url;
-            chrome.tabs.remove(sender.tab.id).catch((err) => console.warn("Failed to auto-close subagent tab:", err));
+          if (type === "gemini_response" && sender.tab) {
+            const finished = payload.complete || payload.timedOut;
+            if (finished) {
+              await restoreFocusFrom(sender.tab.id);
+            }
+            if (finished && payload.isSubagent) {
+              if (payload.complete) payload.subagentUrl = sender.tab.url;
+              forgetFocusFrom(sender.tab.id);
+              chrome.tabs.remove(sender.tab.id).catch((err) => console.warn("Failed to auto-close subagent tab:", err));
+            }
           }
           sendToServer({ type, payload });
           sendResponse({ success: true });
