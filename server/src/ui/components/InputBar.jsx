@@ -44,6 +44,7 @@ export function InputBar({
   setInput,
   cursorRef,
   promptMaxRows,
+  animTick,
   setSlashIdx,
   slashMatches,
   slashOpen,
@@ -75,7 +76,7 @@ export function InputBar({
       {isProcessing && !diffRequest && (
         <Box flexDirection="column" marginBottom={1}>
           <Text color="cyan">
-            <RunningLine text={isToolRunningRef.current ? status : thinkingText} />
+            <RunningLine tick={animTick} text={isToolRunningRef.current ? status : thinkingText} />
             <Text dimColor>
               {' ('}{elapsed}s
               {syncTokenEstimate > 0 ? ` · ↑ ${syncTokenEstimate >= 1000 ? `${(syncTokenEstimate / 1000).toFixed(1)}k` : syncTokenEstimate} tokens` : ''}

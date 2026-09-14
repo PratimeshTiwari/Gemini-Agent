@@ -2,7 +2,7 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import { DiffRows } from './DiffRows.jsx';
 import { rowsFromPatch } from '../diff-preview.js';
-import Spinner from 'ink-spinner';
+import { Dots } from './RunningLine.jsx';
 import { renderMarkdown, oneLine, summarizeResult, clampForDisplay, formatCommandResult } from '../format.js';
 import { parseTurnActions } from '../transcript.js';
 
@@ -40,7 +40,7 @@ function userMessageText(content, isLive) {
  * `verbose` (ctrl+e) opens every step's raw output. Because committed rows
  * cannot be repainted, App reprints the transcript when it changes.
  */
-export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget }) {
+export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick = 0 }) {
   // Only shown when it can actually be worked out. A turn whose messages were
   // never stamped has no duration, and printing one anyway is how this shipped
   // reading `Worked for -6.2s`.
@@ -70,7 +70,7 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget }) {
             {isLive ? (
               <>
                 {'  '}Worked for{' '}
-                <Text color="cyan"><Spinner type="dots" /> {status}</Text>
+                <Text color="cyan"><Dots tick={tick} /> {status}</Text>
               </>
             ) : (
               <>{'  '}{duration === null ? 'Worked' : `Worked for ${duration}s`}</>

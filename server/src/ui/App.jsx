@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useStdout, Static } from 'ink';
-import Spinner from 'ink-spinner';
 import { GithubTab } from './components/GithubTab.jsx';
 import { Menus, DiffApproval } from './components/Menus.jsx';
 import { Banner } from './components/Banner.jsx';
 import { TranscriptTurn } from './components/TranscriptTurn.jsx';
 import { AgentTerminal } from './components/AgentTerminal.jsx';
+import { Dots } from './components/RunningLine.jsx';
 import { InputBar } from './components/InputBar.jsx';
 import { clampForDisplay } from './format.js';
 import { SLASH_COMMANDS, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES, RESERVED_ROWS } from './constants.js';
@@ -200,6 +200,26 @@ export function App({ agentLoop, wsServer }) {
     }
     const startedAt = Date.now();
     const id = setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [isProcessing]);
+
+  /**
+   * The one animation clock in the app.
+   *
+   * Every animated thing in the live frame used to own a timer: `RunningLine`,
+   * the status bar's spinner, the "Worked for" spinner, and one more per
+   * in-flight tool call. `ink-spinner` starts an interval per instance, and each
+   * of those state updates repaints the *whole* live frame — Ink does not diff
+   * by line — so the frame was being redrawn three-plus-N times per tick to
+   * animate a single idea, out of step with itself.
+   *
+   * One tick, passed down. It runs only while a turn does, so an idle screen
+   * still writes nothing at all, which is the bar `ui/constants.js` sets.
+   */
+  const [animTick, setAnimTick] = useState(0);
+  useEffect(() => {
+    if (!isProcessing) return undefined;
+    const id = setInterval(() => setAnimTick((n) => n + 1), 80);
     return () => clearInterval(id);
   }, [isProcessing]);
 
@@ -699,6 +719,7 @@ export function App({ agentLoop, wsServer }) {
               verbose={verbose}
               status={status}
               liveBudget={liveBudget}
+              tick={animTick}
             />
           ))}
 
@@ -713,7 +734,7 @@ export function App({ agentLoop, wsServer }) {
                       ? '✖'
                       : call.result !== undefined
                         ? '✔'
-                        : <Text color="cyan"><Spinner type="dots" /></Text>}
+                        : <Dots tick={animTick} />}
                     {' '}{call.name}
                   </Text>
                   {verbose && call.result !== undefined && (
@@ -752,6 +773,7 @@ export function App({ agentLoop, wsServer }) {
             setInputAtEnd={setInputAtEnd}
             cursorRef={cursorRef}
             promptMaxRows={promptMaxRows}
+            animTick={animTick}
             setSlashIdx={setSlashIdx}
             slashMatches={slashMatches}
             slashOpen={slashOpen}
@@ -815,7 +837,7 @@ export function App({ agentLoop, wsServer }) {
           {activeTab === 'agent' ? (
             <>
               {isProcessing
-                ? <Text color="cyan"><Spinner type="dots" /> agent</Text>
+                ? <Text color="cyan"><Dots tick={animTick} /> agent</Text>
                 : <Text color={extensionConnected ? 'cyan' : 'yellow'} bold>
                     {extensionConnected ? '●' : '○'} agent
                   </Text>}

@@ -2,14 +2,21 @@ import React from 'react';
 import { Text } from 'ink';
 
 /**
- * The one row that says the agent is working.
+ * The row that says the agent is working, and the frames everything else uses.
  *
- * It replaces `ink-spinner` on this line rather than sitting next to it, and
- * that is the whole design constraint. `ink-spinner` drives a state update
- * every 80ms, and every one of those repaints the live frame — measured at
- * 31 KB/s during a running turn, with zero full-screen clears. Adding a second
- * animated thing would have doubled that for decoration. One timer in, one
- * timer out: the cost is exactly what it already was.
+ * The constraint this file was written around is that `ink-spinner` drives a
+ * state update every 80ms and every one of those repaints the whole live frame,
+ * so replacing it here rather than sitting beside it kept the cost at one timer.
+ *
+ * That was true of this row and false of the frame. Three more `<Spinner>`s were
+ * live at the same time — the status bar's, the "Worked for" line's, and **one
+ * per in-flight tool call** — each with its own unsynchronised interval, each
+ * repainting everything. So the frame was being redrawn three-plus-N times per
+ * tick to animate one idea.
+ *
+ * The tick is now owned once, by App, and passed in. Nothing here starts a
+ * timer; `Dots` is the same braille sequence for everywhere that used
+ * `ink-spinner`, driven by that one tick.
  *
  * The effect is a highlight sweeping through the text, left to right, at the
  * same cadence the spinner already ticked. Nothing about the row's *width*
@@ -19,21 +26,17 @@ import { Text } from 'ink';
  */
 
 /** Braille dots, the same sequence ink-spinner used, so the rhythm is familiar. */
-const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+export const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/** What `<Spinner type="dots" />` drew, without a timer of its own. */
+export function Dots({ tick = 0, color = 'cyan' }) {
+  return <Text color={color}>{FRAMES[tick % FRAMES.length]}</Text>;
+}
 
 /** How far either side of the crest still gets brightened. */
 const SPREAD = 3;
 
-const TICK_MS = 80;
-
-export function RunningLine({ text, color = 'cyan' }) {
-  const [tick, setTick] = React.useState(0);
-
-  React.useEffect(() => {
-    const id = setInterval(() => setTick((n) => n + 1), TICK_MS);
-    return () => clearInterval(id);
-  }, []);
-
+export function RunningLine({ text, tick = 0, color = 'cyan' }) {
   const label = String(text ?? '');
   const frame = FRAMES[tick % FRAMES.length];
 
