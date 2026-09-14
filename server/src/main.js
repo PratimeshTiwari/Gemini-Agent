@@ -29,6 +29,9 @@ import { RiskClassifier } from './core/risk-classifier.js';
 import { FileWatcher } from './watcher/file-watcher.js';
 import { TaskManager } from './core/task-manager.js';
 
+/** How long to wait for an already-running extension to greet us, at startup. */
+const EXTENSION_GREETING_MS = 1500;
+
 // ── Parse CLI Arguments ──────────────────────────────────────────────
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -243,27 +246,27 @@ async function main() {
     }
   }
 
-  // Automatically open Gemini Web in the default browser to wake up the extension
-  try {
-    const { exec } = await import('child_process');
-    const startUrl = 'https://gemini.google.com/app';
+  /**
+   * Give the extension a moment to announce itself, and open a tab only if it
+   * does not.
+   *
+   * This used to open `gemini.google.com/app` unconditionally on every start,
+   * *then* wait — so a session that began with Chrome open, the extension
+   * connected and a Gemini tab already in front of you still got another tab.
+   * Five runs in a day was five tabs, and the information needed to avoid it was
+   * already here: the bridge knows whether an extension has identified.
+   *
+   * The wait stays short because it is on the path to first paint. It is long
+   * enough for a live worker to finish its handshake and not nearly long enough
+   * for a worker Chrome has suspended — which is fine, because opening the tab
+   * is what wakes that one up. That is the case the tab exists for.
+   */
+  const hasExt = () => wsServer.clients
+    && Array.from(wsServer.clients.values()).some((c) => c.type === 'extension');
 
-    if (process.platform === 'darwin') {
-      exec(`open "${startUrl}"`);
-    } else if (process.platform === 'win32') {
-      exec(`start "" "${startUrl}"`);
-    } else {
-      exec(`xdg-open "${startUrl}"`);
-    }
-  } catch (err) {
-    console.error('Failed to open browser automatically:', err);
-  }
-
-  // Allow a brief moment for the extension WebSocket to connect
-  const hasExt = () => wsServer.clients && Array.from(wsServer.clients.values()).some(c => c.type === 'extension');
   if (!hasExt()) {
-    await new Promise(resolve => {
-      const timeout = setTimeout(resolve, 1500);
+    await new Promise((resolve) => {
+      const timeout = setTimeout(resolve, EXTENSION_GREETING_MS);
       const interval = setInterval(() => {
         if (hasExt()) {
           clearInterval(interval);
@@ -272,6 +275,23 @@ async function main() {
         }
       }, 50);
     });
+  }
+
+  if (!hasExt()) {
+    try {
+      const { exec } = await import('child_process');
+      const startUrl = 'https://gemini.google.com/app';
+
+      if (process.platform === 'darwin') {
+        exec(`open "${startUrl}"`);
+      } else if (process.platform === 'win32') {
+        exec(`start "" "${startUrl}"`);
+      } else {
+        exec(`xdg-open "${startUrl}"`);
+      }
+    } catch (err) {
+      console.error('Failed to open browser automatically:', err);
+    }
   }
 
   // Start CLI UI
