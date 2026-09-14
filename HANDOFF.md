@@ -1,7 +1,8 @@
 # Session handoff
 
-Written 2026-09-11, end of the second long session. Delete this file once the work
-below is finished — it is a baton, not documentation.
+Started 2026-09-11; last updated **2026-09-14**, end of the third long session.
+Delete this file once the work below is finished — it is a baton, not
+documentation.
 
 **Read `CLAUDE.md` first.** It carries the architecture, the gotchas, `## Direction`
 (the six phases, all done, with the reasoning behind each call) and `## What's next`
@@ -12,8 +13,10 @@ where the baton is.
 
 ## State
 
-- Branch `v1-stable`. **Seven commits unpushed**; `origin/v1-stable` is at
-  `c04b355`. The owner pushes by hand — do not push without being asked.
+- Branch `v1-stable`, **pushed through `db2ad89`** — only this handoff edit sits
+  after it. The owner pushes by hand: do not push without being asked, and check
+  `git log origin/v1-stable..HEAD` rather than trusting this line, which goes
+  stale the moment either of you moves.
 - `main` is untouched at `68f76cd`. **None of this has been through a PR yet.**
   Work merges into `main` through a PR only; the branches here are deliberate
   history, so do not delete them and do not rewrite history.
@@ -120,7 +123,7 @@ these); search on a genuinely large codebase; the API-backend fork.
   has two and `runHeadlessTask` in `agent-loop.js` has a third with a different
   subset. Nobody had counted the third.
 
-## Gotchas that actually bit, this session
+## Gotchas that actually bit
 
 - **Never bulk-edit `prompt-builder.js` with a regex**, and **escape backticks** in
   anything inserted into its template literals — a bare one ends the string and
@@ -146,6 +149,26 @@ these); search on a genuinely large codebase; the API-backend fork.
 - **A prompt refactor needs a byte-for-byte check**, not a read-through. Moving prose
   into files changed one of ten prompt shapes because `trimEnd()` ate a trailing
   newline the assembly depended on.
+- **`chrome.runtime.sendMessage` throws *synchronously* once the extension is
+  reloaded.** `.catch()` does not catch it — nothing was returned to reject. A
+  three-second interval written that way raised an uncaught error every three
+  seconds forever. Use the `safeSend` guard in the content scripts; do not add a
+  raw `chrome.runtime.*` call.
+- **The extension is testable from Node, and it is worth it.** Headless Chrome
+  with `--headless=new --load-extension=<dir> --disable-extensions-except=<dir>`
+  and a throwaway `--user-data-dir`, against a real `WebSocketServer` on
+  127.0.0.1. Timing `listening` → `identify` is how the 13.6s was found; refusing
+  every handshake in `verifyClient` turns each retry into an observable
+  timestamp, which is how the exact 30.0s cadence was found.
+- **Two ways that harness lied, both mine.** Chrome **match patterns cannot
+  contain a port**, so a test entry of `http://127.0.0.1:7933/*` is invalid and
+  the content script silently never injects. And the detector that was supposed
+  to confirm injection looked for the `<audio>` element — which
+  `enableAntiThrottling` creates and **never appends**. Two green-looking runs
+  proved nothing. Check the harness before believing a negative result.
+- **Headless Chrome is not your browser.** It has no user activity and reclaims
+  service workers harder. A measurement there is a lower bound on how good things
+  are, not an answer.
 
 ## Owner preferences observed
 
