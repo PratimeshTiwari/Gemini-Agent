@@ -290,6 +290,147 @@ detector earns its place.
 
 ---
 
+## Track F — the instruction surfaces: see them, do not multiply them
+
+Raised 2026-09-15: *"do we show which files are set in the settings UI for these
+sections, and open them in the editor? or should we add the option to add paths
+to these md files in the config and through the UI? and if an invalid path is
+selected, do we flag it?"*
+
+Three questions with three different answers, and one of them is no.
+
+### The one idea
+
+**You cannot see what you are sending.**
+
+`PromptBuilder` resolves three instruction sources on every full prompt — a
+walked chain of `AGENT.md` files, `memory.md`, and a skill catalogue across up to
+66 candidate directories — and then throws the resolution away. `_loadAgentMd`
+builds a `files` array, concatenates it, and returns a string; the list is a
+local variable that dies with the call. `/context` and the Context tab report
+**how much** is in the window (turns, tokens, diffs) and never **what**.
+
+So "it feels like a mess" is not a configuration problem. The mechanism is
+already one-per-axis by design — phase 2 of `## Direction` in `CLAUDE.md` went to
+some trouble to make it so. You just cannot watch it work.
+
+**The proof is in this repo.** `AGENT.md` at the root is the unedited stock
+template: six headings, five of them an empty HTML comment, 740 bytes of
+`<!-- Describe your project here -->` going into every turn-0 prompt, stated to
+the model as this project's context. `_loadAgentMd` skips a file only when its
+trimmed body is empty, and a template full of headings is not empty. Nothing in
+the product would ever tell you — and the first screen that lists sources tells
+you in one line.
+
+### D. What we are not doing, and why
+
+**Not adding configurable paths to instruction files.** That is `contextFolders`,
+and `## Direction` phase 2 deleted it on purpose: "registering folders of `.md`
+files was a second way to give the model standing instructions, and that is the
+thing being removed". Putting it back — in config, in the UI, or both — would
+restore the exact mess the two-axis design was built to end, and would do it by
+making an already-invisible resolution longer.
+
+The reason the walk is better than a path list is not taste. A path list is a
+claim about where files are, written once and then wrong; the walk is a fact
+about where they are now. The right response to "I cannot tell which files are in
+play" is to show the walk, not to replace it with something equally invisible and
+additionally stale.
+
+If a file genuinely needs to be in the prompt and is somewhere the walk cannot
+reach, the answer already exists and is one line: `AGENT.md` can say "read
+`<path>` before touching the parser", and the model has `read_file`.
+
+### A. See what is loaded — the actual ask
+
+The information is already computed. It needs to be returned instead of dropped.
+
+One function, `describeInstructionSources(agentLoop)`, returning a row per source
+with where it came from, how big it is, and what state it is in:
+
+```
+AGENT.md   ~/.agent/AGENT.md                    —      not present
+           ./AGENT.md                         740 B   looks like the template
+memory     .agent/memory.md                     7 facts of 40
+skills     .agent/skills                        3
+           ~/.agent/skills                      1  (1 shadowed by the project)
+           /Users/me/notes/skills               —      folder is missing
+```
+
+States worth distinguishing, because each has a different fix: **loaded**,
+**empty** (exists, nothing in it), **template** (exists, never edited),
+**missing**, **unreadable**, **shadowed** (a skill overridden by a nearer one).
+
+This belongs on the **Context tab**, not a new one. `CLAUDE.md` already says bare
+`/context` "survives as what its name says — a report of what is in the window".
+It reports the sizes and not the sources, so this completes a screen that is
+already half of this, rather than adding a surface.
+
+### B. Open what is loaded
+
+Enter on a row opens that file in the editor. This needs no new machinery at all:
+`App.jsx`, `Menus.jsx`, `use-slash-commands.js` and `use-github-keys.js` already
+do `exec(editor || 'code')` on a path, and `open_in_editor` is a tool the agent
+has. It is a `run:` field on a settings row, which the row shape already
+supports.
+
+One thing to fix while passing: `open_in_editor` branches on
+`editor === 'code' || editor === 'cursor'` as an exact string, so an editor
+configured as a path silently loses `--goto`. That is **P2.9**, and this track is
+the reason to do it first rather than later.
+
+### C. Flag what is broken
+
+Validation exists, in one place, at one moment: `/skills dir add` runs
+`validateWorkspace` before writing the folder to config. Nothing re-checks it.
+So a folder that is deleted, renamed or typed straight into `config.json` by hand
+becomes a silently dead entry that contributes nothing and says nothing.
+
+The fix falls out of A: a source list that carries a state per row shows
+`folder is missing` without any new validation pass. Add re-validation on read so
+the state is current rather than remembered, and the flag is honest.
+
+**Scope limit worth stating:** for the walked files there are no configured paths
+to be invalid, so "invalid path" only ever applies to `skillFolders`. Everything
+else can be *absent*, which is normal and not an error — `~/.agent/AGENT.md` not
+existing is the common case and must read as a blank, not a fault.
+
+### Phases
+
+| # | phase | category | why here | risk |
+| --- | --- | --- | --- | --- |
+| 1 | `_loadAgentMd` returns `{ text, files }`; same for memory and skills. `describeInstructionSources()` assembles them | A | the data exists and is discarded; everything below needs it | low |
+| 2 | Render it on the Context tab, one row per file, with state | A, C | the actual ask, and `folder is missing` comes free | low |
+| 3 | Enter opens the row's file; fix `open_in_editor`'s editor-name check (P2.9) | B | no new machinery, and P2.9 is a prerequisite not a bonus | low |
+| 4 | Re-validate `skillFolders` on read rather than at add time | C | makes the state current instead of remembered | low |
+| 5 | Detect the unedited template and say so | A | the finding that started this, and one `grep` to detect | low |
+| 6 | `/context` prints the same rows as the tab | A | one report, two surfaces, no second implementation | low |
+
+Phase 1 is the only one with any substance; 2–6 are rendering and a string.
+Nothing here needs the owner.
+
+**Where it slots:** after the current P1 work. It is a real gap, but it is felt
+once per session where the jitter is felt every tick, and none of it is load
+bearing for anything else.
+
+### Also found, not part of this
+
+`~/.agent/workspaces/` holds **two** directories for this project —
+`Gemini-Agent-8cbfee62` (Sep 10, 18 KB) and `Gemini-Agent-30e5bb9b` (current).
+`workspaceSlug` is `basename + md5`, and the hash input was changed from the
+workspace path to the resolved `.agent` directory so that a group and its scoped
+repos share one history. `8cbfee62` is md5 of the bare workspace path; the change
+shipped without a migration, so the old home copy was orphaned rather than
+renamed.
+
+Nothing was lost — the workspace copy is the other half of that pair — and the
+stranded file is 18 KB of superseded scrollback. It is a tidy-up, not a bug:
+either rename it on startup the way `migrate.js` folds the pre-`.agent` layout,
+or leave it and stop mentioning it. Recorded because two directories with the
+same project name in them is exactly the thing someone re-derives later.
+
+---
+
 ## The rest of the pipeline
 
 P0–P2 above is what is felt on every turn. It is **not** the whole board, and
@@ -384,6 +525,10 @@ These have no plan file and have been carried as prose for three sessions:
   nobody reads them as *rates*. That overlaps **P2.12** and **P2.13** and is worth
   doing on its own — any claim about how far the text channel is behind a real
   tool-call API is an estimate until that view exists.
+
+### Track F — the instruction surfaces
+
+Six phases, planned in full above. Not started. Slots after P1.
 
 ### Track E — process, not code
 
