@@ -69,7 +69,7 @@ believing a negative.
 
 ## P0 — felt on every turn, proven, cheap
 
-**All four are done** (`38b1c00`, `732e0ae`, `68d5dc4`, `eee60b2`), with tests.
+**All six are done** (`38b1c00`, `732e0ae`, `68d5dc4`, `eee60b2`), with tests.
 Kept here because the reasoning is the part worth having later; what each fix
 turned out to be is recorded under its item.
 
@@ -144,6 +144,7 @@ row.
 
 ### 4. Every send yanks the browser and leaves it there
 
+
 `content.js:84`. `trySendToTab` captures `originalActiveTabId`, uses it only to
 decide *whether* to switch, and never switches back. On a tool whose whole premise
 is that the browser is a background engine, this is the most intrusive thing it
@@ -168,6 +169,26 @@ their tab is created `active: false` on purpose, and the wakeup pulled it to the
 front anyway, defeating the background lane entirely.
 
 ---
+
+### 5. A reply could arrive, be stored, and never reach the screen — **done** `eabb559`
+
+Reported as "it did not collect the response from the browser". It had been
+collected, parsed and written to `history.jsonl`; it was never drawn. `<Static>`
+counts what it has printed **by index**, so the transcript must be append-only —
+and `agent_response` replaced it with `agentLoop.conversationHistory`, which does
+not hold the UI-only messages the screen also carries. The array got shorter by
+that many and Ink skipped exactly that many turns, permanently.
+
+`/undo` and `/compact` had the same fault by another route: they replace without
+repainting.
+
+### 6. Text put into the prompt left the cursor in front of it — **done** `36fc1a1`
+
+`ink-text-input` reads `value.length` into its cursor on mount and never moves it
+forward again; its one effect clamps *down* only. So a pasted marker left the
+caret at column zero and the next thing typed went before the paste. The field is
+remounted on programmatic writes. Applied to history recall, slash completion and
+the pre-filled menu commands too — all had it.
 
 ## P1 — felt continuously, but wants care or a number first
 
@@ -265,10 +286,32 @@ Delete it rather than fix it: the Tab Wakeup Protocol is the mechanism that
 actually works, and two competing hacks for one problem is how this got
 confusing.
 
-### 11. A drained marker expands with no separator
+### 11. An expanded marker does not terminate its fence
 
-The model received `why is this failing?src/widget.js (lines 2-2):` glued
-together. Cosmetic, one newline.
+Re-measured after the cursor fix, which corrected the *ordering* but not this:
+
+```
+``` A command failed in the editor's terminal (exit 1):
+``` why is this failing?
+```
+
+The closing fence is followed by text on the same line, so it is not a clean
+fence close for anything parsing the markdown — the model included. One newline
+after the close, not a space before the next thing.
+
+### 11b. The terminal queue drains every failure, forever
+
+Observed in use: three `@terminal:` markers accumulated in one prompt, one of
+them a typo the owner had made in their own shell (`git remote show orign`). The
+companion forwards **every** non-zero exit from any VS Code terminal, and the CLI
+drains all of them into the box.
+
+"Offered, not acted on" is the right design and this is the wrong dose: a
+failure you already know about, from a command you ran deliberately, is noise
+that has to be deleted by hand before the prompt is usable. Options, in order of
+how much they change: drop failures older than a minute or two; keep only the
+most recent one; require the companion's forwarding to be opted into per
+terminal. Wants a decision, not a patch.
 
 ### 12. The refresh interval is a guess, and it counts the wrong thing
 
