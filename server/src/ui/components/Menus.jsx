@@ -44,6 +44,7 @@ export function Menus({
   setFocus,
   setHistory,
   setInput,
+  setInputAtEnd,
 }) {
   // Every menu's footer promised `esc cancel` and nothing listened: the agent's
   // own key bindings go inert while a modal is up, and SelectInput knows only
@@ -654,8 +655,8 @@ export function Menus({
                     return;
                   }
                   close();
-                  if (item.value === '\u0000add') { setInput('/allowlist add '); return; }
-                  if (item.value === '\u0000block') { setInput('/allowlist block '); return; }
+                  if (item.value === '\u0000add') { setInputAtEnd('/allowlist add '); return; }
+                  if (item.value === '\u0000block') { setInputAtEnd('/allowlist block '); return; }
                   handleSubmit(`/allowlist ${item.value}`);
                 }}
               />
@@ -707,7 +708,7 @@ export function Menus({
                     setFocus(FOCUS_INPUT);
                     // Hand over a half-written command: the skill needs a name
                     // and the prompt is already the place to type one.
-                    setInput('/skills new ');
+                    setInputAtEnd('/skills new ');
                     return;
                   }
                   if (item.value === 'folders') {
@@ -760,7 +761,7 @@ export function Menus({
                 if (item.value === '\u0000type') {
                   // Hand the user a half-written command rather than a second
                   // prompt of our own: the input line already knows how to edit.
-                  setInput('/workspace ');
+                  setInputAtEnd('/workspace ');
                   return;
                 }
                 if (item.value === activeMenu.current) return;

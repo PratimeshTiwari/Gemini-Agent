@@ -44,6 +44,7 @@ export function useKeyBindings({
   setFocus,
   setHistoryIdx,
   setInput,
+  setInputAtEnd,
   setPaletteSuppressed,
   setSlashIdx,
   setTerminalOpen,
@@ -101,7 +102,7 @@ export function useKeyBindings({
     // writing area — the prompt used to advertise it and do nothing.
     if (key.tab) {
       if (slashOpen) {
-        setInput(`/${slashMatches[slashSelected].name} `);
+        setInputAtEnd(`/${slashMatches[slashSelected].name} `);
         setSlashIdx(0);
         return;
       }
@@ -121,7 +122,7 @@ export function useKeyBindings({
       if (inputHistory.length > 0) {
         const nextIdx = historyIdx === -1 ? inputHistory.length - 1 : Math.max(0, historyIdx - 1);
         setHistoryIdx(nextIdx);
-        setInput(inputHistory[nextIdx]);
+        setInputAtEnd(inputHistory[nextIdx]);
         // A recalled "/command" must not open the palette, which would take
         // these very arrows over and strand the user mid-scroll.
         setPaletteSuppressed(true);
@@ -142,7 +143,7 @@ export function useKeyBindings({
           setPaletteSuppressed(false);
         } else {
           setHistoryIdx(nextIdx);
-          setInput(inputHistory[nextIdx]);
+          setInputAtEnd(inputHistory[nextIdx]);
           setPaletteSuppressed(true);
         }
       }

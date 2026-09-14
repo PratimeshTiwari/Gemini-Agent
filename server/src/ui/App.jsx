@@ -136,6 +136,28 @@ export function App({ agentLoop, wsServer }) {
   }, []);
   const [inputHistory, setInputHistory] = useState([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
+
+  /**
+   * Bumped whenever the *app* rewrites the prompt rather than the user typing.
+   *
+   * `ink-text-input` owns its cursor and only ever initialises it from the value
+   * on mount; its one effect clamps the offset *down* when the value shrinks and
+   * never moves it forward when the value grows. So text put into the box from
+   * outside — an editor selection, a failed terminal command, a recalled history
+   * entry, a completed slash command — left the cursor wherever it already was,
+   * which for a prompt that had been empty is column zero. The next thing typed
+   * went in front of the paste instead of after it.
+   *
+   * There is no prop for this, so the field is remounted: on mount it reads
+   * `value.length`, which is exactly the wanted behaviour. Only programmatic
+   * writes bump it — bumping on every keystroke would yank the cursor to the end
+   * mid-edit.
+   */
+  const [inputEpoch, setInputEpoch] = useState(0);
+  const setInputAtEnd = React.useCallback((next) => {
+    setInput(next);
+    setInputEpoch((n) => n + 1);
+  }, []);
   // Set while the input line holds a recalled history entry rather than typing.
   const [paletteSuppressed, setPaletteSuppressed] = useState(false);
   // Set by the key bindings when Enter carried a modifier, read by InputBar's
@@ -332,9 +354,11 @@ export function App({ agentLoop, wsServer }) {
       const added = drainChatQueue(agentLoop.workspace);
       if (added.length === 0) return;
       setPastes((prev) => [...prev, ...added].slice(-20));
-      setInput((prev) => {
+      setInputAtEnd((prev) => {
         const markers = added.map((a) => a.marker).join(' ');
-        return prev ? `${prev} ${markers} ` : `${markers} `;
+        // `prev` already ends in a space when a previous drain put it there;
+        // joining blindly produced a double gap between markers.
+        return prev ? `${prev.replace(/\s+$/, '')} ${markers} ` : `${markers} `;
       });
       setPaletteSuppressed(true);
     }, 500);
@@ -354,9 +378,9 @@ export function App({ agentLoop, wsServer }) {
       const failures = drainTerminalQueue(agentLoop.workspace);
       if (failures.length === 0) return;
       setPastes((prev) => [...prev, ...failures].slice(-20));
-      setInput((prev) => {
+      setInputAtEnd((prev) => {
         const markers = failures.map((f) => f.marker).join(' ');
-        return prev ? `${prev} ${markers} ` : `${markers} `;
+        return prev ? `${prev.replace(/\s+$/, '')} ${markers} ` : `${markers} `;
       });
       setPaletteSuppressed(true);
     }, 1000);
@@ -511,6 +535,7 @@ export function App({ agentLoop, wsServer }) {
     setActiveTab,
     setHistoryIdx,
     setInput,
+    setInputAtEnd,
     setPaletteSuppressed,
     setSlashIdx,
     setTerminalOpen,
@@ -681,6 +706,8 @@ export function App({ agentLoop, wsServer }) {
             mode={mode}
             newlineRef={newlineRef}
             setInput={setInput}
+            setInputAtEnd={setInputAtEnd}
+            inputEpoch={inputEpoch}
             setSlashIdx={setSlashIdx}
             slashMatches={slashMatches}
             slashOpen={slashOpen}
@@ -704,6 +731,7 @@ export function App({ agentLoop, wsServer }) {
             setFocus={setFocus}
             setHistory={setHistory}
             setInput={setInput}
+            setInputAtEnd={setInputAtEnd}
           />
 
           <AgentTerminal

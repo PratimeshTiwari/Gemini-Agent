@@ -42,6 +42,7 @@ export function InputBar({
   mode,
   newlineRef,
   setInput,
+  inputEpoch,
   setSlashIdx,
   slashMatches,
   slashOpen,
@@ -141,6 +142,14 @@ export function InputBar({
           >
             <Text bold color={focus === FOCUS_INPUT ? (mode === 'plan' ? 'yellow' : 'cyan') : 'gray'}>{'> '}</Text>
             <TextInput
+              /*
+                Remounted whenever the app rewrites the prompt. TextInput reads
+                `value.length` into its cursor on mount and never moves the
+                cursor forward again, so a marker dropped in from the editor or
+                the terminal queue left the caret at column zero and the next
+                thing typed landed in front of it. See `inputEpoch` in App.jsx.
+              */
+              key={inputEpoch}
               focus={focus === FOCUS_INPUT}
               value={input}
               onChange={(v) => {
