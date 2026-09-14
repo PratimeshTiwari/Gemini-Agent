@@ -77,6 +77,8 @@ export async function handleSlashCommand(query, {
           '  ctrl+t      shell',
           '  ctrl+o      GitHub dashboard',
           '  ctrl+u      clear the input   ·   ctrl+w   delete the last word',
+          '  ctrl+j      newline, without sending   ·   ↑ ↓   move a line, or recall',
+          '  ctrl+f      attach commands that failed in the editor terminal',
           '  esc         stop the run, or close a menu',
           '',
           '### ⌨️  Commands',

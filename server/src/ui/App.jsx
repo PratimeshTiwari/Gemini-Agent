@@ -135,6 +135,14 @@ export function App({ agentLoop, wsServer }) {
     setPastes((prev) => [...prev, paste].slice(-20));
   }, []);
   const [inputHistory, setInputHistory] = useState([]);
+
+  /**
+   * Commands that failed in an editor terminal, waiting to be asked for.
+   *
+   * Kept here rather than pushed into the prompt so the offer costs one field
+   * in a row that already exists, instead of rewriting what you were typing.
+   */
+  const [pendingFailures, setPendingFailures] = useState([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
 
   /**
@@ -380,22 +388,27 @@ export function App({ agentLoop, wsServer }) {
 
   // Commands that failed in a VS Code terminal, forwarded by the companion.
   //
-  // Offered, not acted on. The failure lands in the input box as a marker you
-  // can send or delete — an agent that starts editing because a command you ran
-  // in another window failed is a worse tool than one that waits to be asked,
-  // however good the loop looks in a demo. Same attachment machinery as a
-  // paste, so a page of build output costs one row of the live frame.
+  // Offered, not acted on — and putting the marker straight into the prompt was
+  // already acting. The companion forwards *every* non-zero exit from *any*
+  // terminal, so a prompt would collect a failure you already knew about, from a
+  // command you ran deliberately, and sometimes a typo you had already noticed
+  // and fixed. Three of them accumulated in one prompt in use, each needing
+  // deleting by hand before the prompt could be used.
+  //
+  // The line: **what you asked for is inserted, what merely happened is
+  // offered.** The editor's "Add to Agent Chat" is a deliberate act and still
+  // lands in the box; a command failing somewhere else is not, so it waits
+  // behind ctrl+f and says so in the status bar.
+  //
+  // Draining still happens on the same tick, because the file is the
+  // companion's outbox and leaving it to grow is a different problem.
   useEffect(() => {
     const id = setInterval(() => {
       if (isProcessing) return; // never interrupt a running turn
       const failures = drainTerminalQueue(agentLoop.workspace);
       if (failures.length === 0) return;
-      setPastes((prev) => [...prev, ...failures].slice(-20));
-      setInputAtEnd((prev) => {
-        const markers = failures.map((f) => f.marker).join(' ');
-        return prev ? `${prev.replace(/\s+$/, '')} ${markers} ` : `${markers} `;
-      });
-      setPaletteSuppressed(true);
+      // Held, not inserted. See `pendingFailures`.
+      setPendingFailures((prev) => [...prev, ...failures].slice(-20));
     }, 1000);
     return () => clearInterval(id);
   }, [agentLoop.workspace, isProcessing]);
@@ -536,6 +549,16 @@ export function App({ agentLoop, wsServer }) {
       setPastes([]);
     },
     'delete-word': () => setInput((value) => value.replace(/\s*\S+\s*$/, '')),
+    'attach-failures': () => {
+      if (pendingFailures.length === 0) return;
+      setPastes((prev) => [...prev, ...pendingFailures].slice(-20));
+      setInputAtEnd((prev) => {
+        const markers = pendingFailures.map((f) => f.marker).join(' ');
+        return prev ? `${prev.replace(/\s+$/, '')} ${markers} ` : `${markers} `;
+      });
+      setPendingFailures([]);
+      setPaletteSuppressed(true);
+    },
   }, !diffRequest && !activeMenu);
 
   useKeyBindings({
@@ -810,6 +833,16 @@ export function App({ agentLoop, wsServer }) {
         </Box>
         <Box flexShrink={0}>
         <Text dimColor wrap="truncate">
+          {/*
+            An offer has to be visible or it is not an offer. Yellow because it
+            is the one field here that wants a decision from you; it appears
+            only when something is waiting and takes no room otherwise.
+          */}
+          {pendingFailures.length > 0 ? (
+            <Text color="yellow">
+              {pendingFailures.length} failed ^f{'  ·  '}
+            </Text>
+          ) : ''}
           {attachedCount > 0 ? `${attachedCount} paste${attachedCount === 1 ? '' : 's'}  ·  ` : ''}
           {runningTasks > 0 ? <Text color="yellow">{runningTasks} bg{'  ·  '}</Text> : ''}
           <Text color={mode === 'plan' ? 'yellow' : 'cyan'}>{mode}</Text>
