@@ -1,5 +1,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
+import { DiffRows } from './DiffRows.jsx';
+import { rowsFromPatch } from '../diff-preview.js';
 import Spinner from 'ink-spinner';
 import { renderMarkdown, oneLine, summarizeResult, clampForDisplay, formatCommandResult } from '../format.js';
 import { parseTurnActions } from '../transcript.js';
@@ -89,6 +91,27 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget }) {
   );
 }
 
+/**
+ * The diff for an edit, if this step is one and carries a patch.
+ *
+ * `edit_file` and `create_file` return `patch` — the whole unified diff —
+ * alongside hunks trimmed to a ten-line preview. The trimmed hunks are what
+ * keeps the model's copy of the result small; the patch is what makes the
+ * transcript readable. Parsing it here costs nothing at the source.
+ *
+ * @returns {JSX.Element|null} null when this is not an edit, so the caller can
+ *                             fall through to its other shapes
+ */
+function diffRowsFor(act) {
+  if (act.toolName !== 'edit_file' && act.toolName !== 'create_file') return null;
+  const patch = act.result?.patch;
+  if (typeof patch !== 'string' || !patch) return null;
+
+  const rows = rowsFromPatch(patch, { maxLines: 24 });
+  if (rows.length === 0) return null;
+  return <DiffRows rows={rows} />;
+}
+
 /** One step inside a turn. Collapsed to a line unless `verbose`. */
 function ActionRow({ act, verbose }) {
   if (act.type === 'tool') {
@@ -101,11 +124,17 @@ function ActionRow({ act, verbose }) {
         </Box>
         {verbose && act.result !== null && act.result !== undefined && (
           <Box paddingLeft={2} width="100%">
-            {/* A shell result gets shell shape; everything else falls back to
-                the generic clamp. */}
-            <Text dimColor wrap="wrap">
-              {formatCommandResult(act.result, 20) ?? clampForDisplay(act.result, 20)}
-            </Text>
+            {/* An edit gets diff shape, a shell result gets shell shape, and
+                everything else falls back to the generic clamp. The diff
+                renderer existed only on the approval prompt, so the one place a
+                change could be read in colour was the moment before it was
+                applied — and the transcript, which is what you read afterwards
+                and days later, showed it as a line of dim text. */}
+            {diffRowsFor(act) ?? (
+              <Text dimColor wrap="wrap">
+                {formatCommandResult(act.result, 20) ?? clampForDisplay(act.result, 20)}
+              </Text>
+            )}
           </Box>
         )}
       </Box>

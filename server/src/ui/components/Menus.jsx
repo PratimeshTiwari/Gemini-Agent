@@ -4,7 +4,8 @@ import { Box, Text, useInput } from 'ink';
 import SelectInput from 'ink-select-input';
 import TextInput from 'ink-text-input';
 import { QuestionPrompt } from './QuestionPrompt.jsx';
-import { summarizeDiff, previewRows } from '../diff-preview.js';
+import { rowsFromPatch } from '../diff-preview.js';
+import { DiffRows } from './DiffRows.jsx';
 import { oneLine } from '../format.js';
 import { canPickFolder, pickFolder } from '../folder-picker.js';
 import { readCommands, listCommandDays } from '../../core/command-log.js';
@@ -822,12 +823,21 @@ export function DiffApproval({
 }) {
   if (!diffRequest) return null;
 
+  // Built from the patch, not from `diffRequest.hunks`.
+  //
+  // Those hunks are the *tool's* return value, and `edit_file` trims them to an
+  // id, a start and a ten-line preview string so the copy that could reach the
+  // model stays small. `previewRows` and `summarizeDiff` read `lines`,
+  // `oldLines` and `newLines`, which trimmed hunks have never had — so this
+  // screen has been drawing `@@ -1,undefined +1,undefined @@`, `+0 / -0` and no
+  // diff at all, on the one screen whose entire job is showing you the change
+  // before you approve it.
   const hunks = diffRequest.hunks ?? [];
-  const { added, removed } = summarizeDiff(hunks);
-  const rows = previewRows(hunks, { maxLines: 16 });
+  const rows = rowsFromPatch(diffRequest.patch, { maxLines: 16 });
+  const added = rows.filter((r) => r.type === 'add').length;
+  const removed = rows.filter((r) => r.type === 'del').length;
   const critical = diffRequest.riskLevel === 'critical';
 
-  const colorFor = { add: 'green', del: 'red', header: 'cyan' };
 
   return (
     <Box
@@ -855,16 +865,9 @@ export function DiffApproval({
 
       {rows.length > 0 && (
         <Box flexDirection="column" marginY={1}>
-          {rows.map((row, i) => (
-            <Text
-              key={i}
-              wrap="truncate"
-              dimColor={row.type === 'ctx' || row.type === 'more'}
-              color={colorFor[row.type]}
-            >
-              {row.text}
-            </Text>
-          ))}
+          {/* The gutter earns its width here: this is the screen where you are
+              deciding whether to let the change happen. */}
+          <DiffRows rows={rows} gutter />
         </Box>
       )}
 
