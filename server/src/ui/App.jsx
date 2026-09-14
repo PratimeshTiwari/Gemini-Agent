@@ -138,25 +138,19 @@ export function App({ agentLoop, wsServer }) {
   const [historyIdx, setHistoryIdx] = useState(-1);
 
   /**
-   * Bumped whenever the *app* rewrites the prompt rather than the user typing.
+   * The prompt field's caret, reached imperatively.
    *
-   * `ink-text-input` owns its cursor and only ever initialises it from the value
-   * on mount; its one effect clamps the offset *down* when the value shrinks and
-   * never moves it forward when the value grows. So text put into the box from
-   * outside — an editor selection, a failed terminal command, a recalled history
-   * entry, a completed slash command — left the cursor wherever it already was,
-   * which for a prompt that had been empty is column zero. The next thing typed
-   * went in front of the paste instead of after it.
-   *
-   * There is no prop for this, so the field is remounted: on mount it reads
-   * `value.length`, which is exactly the wanted behaviour. Only programmatic
-   * writes bump it — bumping on every keystroke would yank the cursor to the end
-   * mid-edit.
+   * `use-key-bindings` owns up and down, because the precedence between the
+   * slash palette, moving a line and recalling history has to be decided in one
+   * place. It asks the field to move first and only falls through to history
+   * when the caret was already on the first or last line.
    */
-  const [inputEpoch, setInputEpoch] = useState(0);
+  const cursorRef = useRef(null);
   const setInputAtEnd = React.useCallback((next) => {
     setInput(next);
-    setInputEpoch((n) => n + 1);
+    // The field puts the caret at the end of anything handed to it wholesale;
+    // this is here so the intent reads at the call site.
+    setTimeout(() => cursorRef.current?.toEnd?.(), 0);
   }, []);
   // Set while the input line holds a recalled history entry rather than typing.
   const [paletteSuppressed, setPaletteSuppressed] = useState(false);
@@ -263,7 +257,15 @@ export function App({ agentLoop, wsServer }) {
   // palette is the reason this is a sum rather than a constant: it is six rows
   // when it is open and none when it is not, and a single number can only be
   // right about one of those.
+  // Every extra line of the prompt is a row the live frame has to find, and
+  // RESERVED_ROWS budgets the input box at its one-line height. A prompt is
+  // allowed to be several lines now, so the extra ones are charged here with
+  // the rest of the conditional furniture — an unbudgeted row in the live
+  // region is exactly what brings the full-clear repaint back.
+  const promptExtraRows = Math.max(0, input.split('\n').length - 1);
+
   const liveBudget = Math.max(3, terminalHeight - RESERVED_ROWS
+    - promptExtraRows
     - (slashOpen ? slashMatches.length : 0)
     - (extensionConnected ? 0 : 1)
     - (isThinkingTooLong ? 1 : 0));
@@ -536,6 +538,7 @@ export function App({ agentLoop, wsServer }) {
     setHistoryIdx,
     setInput,
     setInputAtEnd,
+    cursorRef,
     setPaletteSuppressed,
     setSlashIdx,
     setTerminalOpen,
@@ -707,7 +710,7 @@ export function App({ agentLoop, wsServer }) {
             newlineRef={newlineRef}
             setInput={setInput}
             setInputAtEnd={setInputAtEnd}
-            inputEpoch={inputEpoch}
+            cursorRef={cursorRef}
             setSlashIdx={setSlashIdx}
             slashMatches={slashMatches}
             slashOpen={slashOpen}

@@ -45,6 +45,7 @@ export function useKeyBindings({
   setHistoryIdx,
   setInput,
   setInputAtEnd,
+  cursorRef,
   setPaletteSuppressed,
   setSlashIdx,
   setTerminalOpen,
@@ -119,6 +120,15 @@ export function useKeyBindings({
         setSlashIdx(Math.max(0, slashSelected - 1));
         return;
       }
+      // Inside a prompt of several lines, up means "up a line". Only when the
+      // caret is already on the first line does it mean "the previous command" —
+      // the same rule a text field and a shell each follow on their own, and
+      // the reason the field cannot decide this for itself is that the slash
+      // palette outranks both.
+      if (cursorRef?.current?.moveUp?.()) {
+        setPaletteSuppressed(true);
+        return;
+      }
       if (inputHistory.length > 0) {
         const nextIdx = historyIdx === -1 ? inputHistory.length - 1 : Math.max(0, historyIdx - 1);
         setHistoryIdx(nextIdx);
@@ -133,6 +143,10 @@ export function useKeyBindings({
     if (key.downArrow) {
       if (slashOpen) {
         setSlashIdx(Math.min(slashMatches.length - 1, slashSelected + 1));
+        return;
+      }
+      if (cursorRef?.current?.moveDown?.()) {
+        setPaletteSuppressed(true);
         return;
       }
       if (historyIdx !== -1) {

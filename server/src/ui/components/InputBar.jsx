@@ -1,6 +1,6 @@
 import React from 'react';
 import { Box, Text, usePaste } from 'ink';
-import TextInput from 'ink-text-input';
+import { PromptInput } from './PromptInput.jsx';
 import { RunningLine } from './RunningLine.jsx';
 import { FOCUS_INPUT } from '../constants.js';
 import { applyPaste, nextPasteId } from '../paste.js';
@@ -42,7 +42,7 @@ export function InputBar({
   mode,
   newlineRef,
   setInput,
-  inputEpoch,
+  cursorRef,
   setSlashIdx,
   slashMatches,
   slashOpen,
@@ -141,17 +141,12 @@ export function InputBar({
             width="100%"
           >
             <Text bold color={focus === FOCUS_INPUT ? (mode === 'plan' ? 'yellow' : 'cyan') : 'gray'}>{'> '}</Text>
-            <TextInput
-              /*
-                Remounted whenever the app rewrites the prompt. TextInput reads
-                `value.length` into its cursor on mount and never moves the
-                cursor forward again, so a marker dropped in from the editor or
-                the terminal queue left the caret at column zero and the next
-                thing typed landed in front of it. See `inputEpoch` in App.jsx.
-              */
-              key={inputEpoch}
+            <PromptInput
               focus={focus === FOCUS_INPUT}
               value={input}
+              cursorRef={cursorRef}
+              placeholder="Ask anything, or / for commands"
+              onNewline={() => { newlineRef.current = true; }}
               onChange={(v) => {
                 setInput(v);
                 setSlashIdx(0);
@@ -159,10 +154,10 @@ export function InputBar({
                 setPaletteSuppressed(false);
               }}
               onSubmit={(value) => {
-                // TextInput's own useInput is registered before ours (child
-                // effects run first), so it calls this before the key bindings
-                // have seen the keystroke. Defer a tick to find out whether
-                // that Enter was really a Shift+Enter asking for a newline.
+                // Our own useInput is registered before the key bindings'
+                // (child effects run first), so this fires before they have
+                // seen the keystroke. Defer a tick to find out whether that
+                // Enter was really a Shift+Enter asking for a newline.
                 setTimeout(() => {
                   if (newlineRef.current) {
                     newlineRef.current = false;
@@ -178,7 +173,6 @@ export function InputBar({
                   handleSubmit(value);
                 }, 0);
               }}
-              placeholder="Ask anything, or / for commands"
             />
           </Box>
         </Box>
