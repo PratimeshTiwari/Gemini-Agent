@@ -455,3 +455,56 @@ describe('stripImageData — what goes out is not what is kept', () => {
     assert.equal(stripImageData(null), '');
   });
 });
+
+describe('PromptBuilder — the prompt may not name a tool that does not exist', () => {
+  /**
+   * The prompt *is* the contract. A tool named in prose that no dispatcher
+   * answers to is worse than a missing instruction: the model obeys it, the
+   * call is rejected, and the turn is spent.
+   *
+   * This existed. The pro-tier guardrails told the model to build its task.md
+   * checklist "using the `write_to_file` tool", and there has never been a
+   * `write_to_file` — the write tools are `create_file` and `edit_file`. It
+   * survived because nothing compares the prose against the dispatch tables,
+   * which is what this does.
+   */
+  const REAL_TOOLS = new Set([
+    // mcp/mcp-server.js TOOL_DEFINITIONS
+    'search_files', 'grep_search', 'read_file', 'edit_file', 'create_file',
+    'list_directory', 'run_command', 'open_in_editor', 'run_background',
+    'manage_task', 'get_editor_state', 'get_diagnostics',
+    // dispatched inside core/agent-loop.js, declared in no array (P2)
+    'ask_question', 'ask_subagent', 'ask_researcher', 'ask_reviewer',
+    'manage_memory',
+  ]);
+
+  /** Things in backticks that read like a tool name but are not one. */
+  const NOT_TOOLS = /^(implementation_plan|task|walkthrough|plan|agent|memory|errors|history|package_json|node_modules)$/;
+
+  test('every snake_case name the prompt calls a "tool" is dispatchable', () => {
+    const offenders = new Set();
+
+    for (const mode of ['plan', 'auto']) {
+      for (const effort of ['flash', 'flash-thinking', 'brief', 'standard', 'deep']) {
+        for (const topology of ['single', 'duo']) {
+          const pb = new PromptBuilder(ws, ws);
+          const modelConfig = { effort, main: 'gemini', ...(topology === 'duo' ? { reviewer: 'chatgpt' } : {}) };
+          // Turn 0 (everything) and the periodic reminder both carry prose.
+          const prompts = [build(pb, { mode, topology, modelConfig })];
+          const refreshed = driveToRefresh(pb, { mode, topology, modelConfig });
+          if (refreshed.prompt) prompts.push(refreshed.prompt);
+
+          for (const prompt of prompts) {
+            // `name` immediately followed by the word "tool" is the shape that
+            // instructs a call; a bare backticked word can be a filename.
+            for (const m of prompt.matchAll(/`([a-z][a-z0-9_]*_[a-z0-9_]+)`\s+tool\b/g)) {
+              if (!REAL_TOOLS.has(m[1]) && !NOT_TOOLS.test(m[1])) offenders.add(m[1]);
+            }
+          }
+        }
+      }
+    }
+
+    assert.deepEqual([...offenders], [], `prompt names undispatchable tool(s): ${[...offenders]}`);
+  });
+});

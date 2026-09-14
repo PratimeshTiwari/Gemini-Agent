@@ -80,8 +80,12 @@ export function buildAgentCallbacks({
             last.result = msg.payload.result;
             last.success = msg.payload.success;
             
-            if (last.success && (last.name === 'create_file' || last.name === 'edit_file' || last.name === 'write_to_file')) {
-              const pathArg = last.args?.path || last.args?.TargetFile;
+            // `write_to_file` and `TargetFile` used to be tested for here. Neither
+            // exists: the tools are `create_file` and `edit_file`, and both take
+            // `path`. A name that no tool answers to cannot fire, so the branch
+            // was dead and made this read as if a third write tool existed.
+            if (last.success && (last.name === 'create_file' || last.name === 'edit_file')) {
+              const pathArg = last.args?.path;
               if (pathArg && (pathArg.endsWith('implementation_plan.md') || pathArg.endsWith('plan.md')) && agentLoop.mode === 'plan') {
                 archivePlan(agentLoop.workspace, paths.artifactPath(agentLoop.workspace, path.basename(pathArg)));
                 setPlanReviewReady(true);

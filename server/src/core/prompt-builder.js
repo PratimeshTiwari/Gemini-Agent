@@ -279,7 +279,7 @@ with a long serial chain of read_file calls, \`ask_subagent\` for a self-contain
 They run in parallel and return to you. Delegating judgement is what you cannot do here.
 
 - When tasks are complex, create a plan first (save it to \`.agent/artifacts/implementation_plan.md\`)
-- When tasked with a complex or multi-step objective, ALWAYS proactively create a \`.agent/artifacts/task.md\` checklist using the \`write_to_file\` tool to plan your work, similar to Antigravity IDE. Update it as you progress.
+- When tasked with a complex or multi-step objective, ALWAYS proactively create a \`.agent/artifacts/task.md\` checklist using the \`create_file\` tool to plan your work, similar to Antigravity IDE. Update it as you progress.
 - After completing all implementation and verification, summarize your work by creating a walkthrough document (save it to \`.agent/artifacts/walkthrough.md\`). Document changes made, what was tested, and validation results.
 - After implementing changes, self-review: re-read the edited files and verify correctness
 - If you're not confident in a change, tell the user explicitly rather than guessing`;
