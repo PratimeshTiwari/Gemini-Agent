@@ -190,6 +190,68 @@ caret at column zero and the next thing typed went before the paste. The field i
 remounted on programmatic writes. Applied to history recall, slash completion and
 the pre-filled menu commands too — all had it.
 
+## Next session's P0 — found by running it, 2026-09-15
+
+Reported by the owner from use, each one verified here before being written
+down. **None is fixed.** They are first because two of them cost real money and
+one of them is a feature that has never once run.
+
+### 1. Auto-compaction has never fired, and cannot
+
+`agent-loop.js:164` calls `needsCompaction(this.conversationHistory)` — the
+array. `context-manager.js:33` is `Number(tokens || 0) > this.maxTokens * 0.8`.
+`Number([{…},{…}])` is `NaN`, and `NaN > x` is **always false**. An empty
+history gives `0`, which also never trips. So the branch is dead for every
+possible input, and the meter was watched past **200% of 50k** with the
+compaction message never appearing.
+
+The bitter part: the function's own doc says
+`@param {number} tokens - what the thread is carrying (AgentLoop.contextTokens)`
+and explains *why* it takes the count rather than the history — "the browser tab
+is also holding the system prompt, the tool definitions and every tool result
+ever fed back". The reasoning was done, written down, and then wired to the
+wrong argument.
+
+`this.contextTokens` is a getter at `agent-loop.js:746`. The change is one word.
+
+**It is not a one-word job.** Nothing in `server/test/` mentions
+`needsCompaction` — that is why it survived — and this turns on a path that has
+never run in production. It wants the test first, then the word, then a run that
+watches it actually fire.
+
+### 2. Nothing bounds a successful tool loop
+
+`MAX_FAILED_ROUNDS = 4` bounds *failing* rounds. A model returning a valid
+`read_file` forever was scripted: **750 rounds in 40 seconds**, no cap, no
+warning. Against a real browser that is the user's Gemini quota and a burnt chat
+tab before they can reach escape.
+
+The comment at `:1119` reasons carefully about why failing rounds need a bound —
+"a command that cannot succeed … turns into the model retrying variations of it
+until the token budget is gone" — and then says "progress resets it, so a long
+run that keeps succeeding never trips", treating unboundedness as the feature.
+The same argument applies to success and was never made. A loop that succeeds
+750 times has not made progress; it has made 750 round trips.
+
+Wants a cap on rounds per user turn, with the turn's own tool calls counted, and
+a message that says what it stopped and why.
+
+### 3. The reconnect message duplicates your turn
+
+`use-agent-callbacks.js:131`: when the extension is not connected the turn is
+dropped and you are told to "submit your prompt again". But
+`agent-loop.js:194` already pushed it to `conversationHistory`, before
+`_sendToGemini` at `:216` — so retyping it puts it in twice.
+
+Two things to fix, not one: the turn should come back out, and that local
+notice is added without `isLocal`, so it also shifts `mergeLoopHistory`'s count
+by one. That is the same fault as `eabb559`, by a third route.
+
+### 4. `Small edit: 1 lines changed`
+
+`risk-classifier.js:167`. Pluralisation, and it counts `totalDeletedLines` while
+saying "changed".
+
 ## P1 — felt continuously, but wants care or a number first
 
 ### 5. The live frame is rewritten twelve times a second

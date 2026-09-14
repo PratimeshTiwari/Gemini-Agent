@@ -1,184 +1,148 @@
 # Session handoff
 
-Started 2026-09-11; last updated **2026-09-14**, end of the third long session.
+Started 2026-09-11; last updated **2026-09-15**, end of the fourth long session.
 Delete this file once the work below is finished — it is a baton, not
 documentation.
 
-**Read `CLAUDE.md` first.** It carries the architecture, the gotchas, `## Direction`
-(the six phases, all done, with the reasoning behind each call) and `## What's next`
-(P0–P3 with the evidence for each, plus the things still to plan). This file only says
-where the baton is.
+**Read `CLAUDE.md` first** for the architecture and the gotchas, then
+**`UX-PLAN.md`**, which is the board: what is done, what is next, and the
+reasoning behind each call. This file only says where the baton is.
 
 ---
 
+## Start here
+
+`UX-PLAN.md` → **`## Next session's P0 — found by running it`**. Four bugs the
+owner found by using the product, each verified against the code before being
+written down, none fixed. Two of them cost real money.
+
+1. **Auto-compaction has never fired and cannot.** `needsCompaction` is handed
+   the history array where it wants a token count; `Number([…])` is `NaN` and
+   `NaN > x` is always false. The meter was watched past 200% of 50k. The fix is
+   one word — and is *not* a one-word job: nothing tests `needsCompaction`, which
+   is why it survived, and the change turns on a path that has never run.
+2. **Nothing bounds a successful tool loop.** 750 rounds in 40 seconds against a
+   scripted model. `MAX_FAILED_ROUNDS` bounds failures only, and the comment
+   next to it treats unbounded success as the feature.
+3. **The reconnect message duplicates your turn** — it is already in
+   `conversationHistory`, and the notice is missing `isLocal`.
+4. `Small edit: 1 lines changed`.
+
 ## State
 
-- Branch `v1-stable`, **pushed through `db2ad89`** — only this handoff edit sits
-  after it. The owner pushes by hand: do not push without being asked, and check
-  `git log origin/v1-stable..HEAD` rather than trusting this line, which goes
-  stale the moment either of you moves.
-- `main` is untouched at `68f76cd`. **None of this has been through a PR yet.**
-  Work merges into `main` through a PR only; the branches here are deliberate
-  history, so do not delete them and do not rewrite history.
-- Tests: `npm test` → **624 passing**, in `server/test/` mirroring `server/src/`.
-- Four plan files at the root, all evidence-led and none finished:
-  `UI-REDESIGN.md` (round one done, round two open), `EXTENSION-PLAN.md`
-  (phases 1–2 done but **unverified**), `GITHUB-AGENT-PLAN.md` (designed,
-  shelved by the owner), and this file.
+- Branch `v1-stable`. **Check `git log origin/v1-stable..HEAD`** rather than
+  trusting a number here — it is stale the moment either of you moves. The owner
+  pushes by hand; do not push without being asked.
+- `main` is still untouched and the merge is **still a clean fast-forward**
+  (`git rev-list --left-right --count main...v1-stable` → `0 <n>`). Nothing from
+  four sessions has been through a PR. It is free today and does not stay free;
+  `CLAUDE.md` documents the divergence trap. **The owner has said the PR happens
+  once the current run of changes is done.**
+- Tests: `npm test` runs **both workspaces** now — `server/test/` and
+  `extension/test/`. All green.
 
-## Done, session three (2026-09-11 → 12)
+## Done this session
 
-- **The CLI redesign**, all eight items of `UI-REDESIGN.md`. Chrome went from 17
-  rows to one; seven colours became five roles; no emoji left in the live frame;
-  the mode moved onto the input border. `RESERVED_ROWS` is a **base of 9 plus the
-  conditional furniture**, not a constant — the slash palette is six rows a single
-  number could never be right about. Measured at four sizes in five states.
-- **The extension's reconnect cause**, found by measurement after the first
-  diagnosis was wrong. Everything below in "Known and unfixed".
-- **Context invalidation.** Reloading the extension orphaned every running
-  content script, and `chrome.runtime.sendMessage` throws *synchronously* — so a
-  reply was scraped and then dropped on the last step while the CLI sat on
-  "Thinking…". All three content scripts now route through `safeSend`, and the
-  worker re-injects into open tabs on start, so a reload heals itself.
-- **`looksLikeProviderError` learned Gemini's refusal** ("I'm having a hard time
-  fulfilling your request"), which is structurally identical to a finished answer
-  and would otherwise become the turn's result.
-- **`/workspace` is one command.** It was three names for one noun, and
-  `/workspace <path>` silently ignored the path.
-- **`.vscode/` deleted** — untracked, gitignored, and recommending an extension id
-  that is not on the marketplace.
+The whole of `UX-PLAN.md`'s original P0, plus what using the product turned up.
 
-## Next
+- **The code-block scrape was deleting prose**, not just mangling code, and the
+  same bug was in both bridges. First tests the extension has ever had.
+- **The prompt is a real multi-line editor** — ctrl+j everywhere, shift+enter
+  where the terminal reports it, up/down moving by line and falling through to
+  history at the edges. `ink-text-input` is gone; it owned its cursor and would
+  not give it back, which was also the cause of pastes landing behind the caret.
+  The prompt is **bounded to a third of the viewport** and scrolls inside that.
+- **A reply could arrive, be stored, and never reach the screen.** `<Static>`
+  counts what it has printed by index, so the transcript must be append-only.
+- **Diffs are drawn in the transcript** — and the approval prompt, which is the
+  one screen whose whole job is showing you a change, had **never drawn one**.
+- **One animation clock instead of three-plus-N.** 38% fewer bytes.
+- **Destructive commands ask first**, on the one rule that they destroy more
+  than you named.
+- **A failed editor command waits behind ctrl+f** instead of typing itself into
+  your prompt.
+- **The mode picker is readable and switchable**, verified against the live page.
 
-**The owner's order: the extension first, then the UI quirks. GitHub is shelved.**
+## The model/effort work, half built
 
-### Waiting on the owner — nothing below can be settled without these
+`core/model-match.js` (14 tests) decides which browser mode a rung wants from
+whatever the plan is offering, matching on what an option is *for* rather than
+its name — the version numbers move and the list differs by subscription.
+`gemini-bridge.js` reads and switches, **verified against gemini.google.com**.
 
-1. **Read `/settings` → Status → `Extension`** after reloading the extension and
-   hard-refreshing the Gemini tab. It shows how long the bridge took to find the
-   server. If it still reads ~30s, `EXTENSION-PLAN.md` says the answer is an
-   offscreen document, and that is the next build.
-2. **The two-tab Gemini test** (`GITHUB-AGENT-PLAN.md` → phase 0): two tabs,
-   concurrent prompts, once with both backgrounded. The lane design depends on it.
-3. `vscode-companion/cli-agent-companion-1.3.1.vsix` is still tracked next to
-   1.4.0. Undecided since session two.
+**Still to build:** the server asking for the list on connect, caching it,
+showing it on the Status tab, and `/effort` acting on the plan. All server-side
+and testable with the pty harness.
 
-### `EXTENSION-PLAN.md` — 2 of 9 phases, and those two are unproven
+Until then `/effort` still only prints "💡 Set your browser tab to **Gemini
+Pro**" and hopes — which is the gap this closes.
 
-| # | phase | state |
-| --- | --- | --- |
-| 1 | fast retry + keep the worker resident | **done, unverified** |
-| 2 | `127.0.0.1`, port overridable, dead constants gone | **done** |
-| 3 | tests for `src/background/` | not started |
-| 4 | fix the code-block scrape | not started — **blocks UI round two** |
-| 5 | structured trace events → `/logs extension` | not started |
-| 6 | one throttling mechanism; restore focus; close tabs on failure | not started |
-| 7 | selector discovery fallback | not started |
-| 8 | collapse the two bridges (~600 lines) | not started |
-| 9 | tab identity (lane → tabId) | not started |
+## What the owner has decided
 
-### `UI-REDESIGN.md` round two — neither started
+- **GitHub stays shelved** until the current UI/extension run is finished. Its
+  phase 1 (two lines routing analysis failures into `/logs`) is worth doing
+  whenever someone is next in that file.
+- **ext8 — collapsing the two bridges — is not being done.** The cost it was
+  meant to remove is "fix it twice", and fixing the scrape twice took one commit
+  and ten minutes. The jsdom tests now run against *both* files, so a divergence
+  in scraping fails the build, which is most of its value for none of its risk.
+- **The extension reconnect is settled.** The owner read Status → Extension in a
+  real browser and the connect time had improved. No offscreen document.
+- **The jitter's second half — committing finished actions to `<Static>` — is
+  deliberately not done.** The live frame is ~13 rows of which 9 are fixed
+  furniture, so shrinking the turn portion buys ~20% for the seam that brought
+  the scroll glitches back twice. 38% was taken for free instead.
+- `cli-agent-companion-1.3.1.vsix` deleted.
 
-- **Code blocks.** Half is extension phase 4 (the `JavaScript` welded to the first
-  line is a scrape bug). The CLI half: un-indent so a drag-select copies clean
-  code, mark the block's edges, and `ctrl+y` to copy. There is no clickable copy
-  button and there cannot be — that needs mouse tracking, which is what would
-  take native selection away.
-- **Jitter.** Measured: **21.9 rows rewritten per tick, 12.5×/second** — the whole
-  visible frame. Ink does not diff by line. The fix is to shrink the live region:
-  commit each action to `<Static>` as it completes instead of holding the whole
-  turn live. ~8 rows instead of 22. Same seam that produced the scroll glitches
-  twice, so measure before and after.
+## Still open, roughly in order
 
-### `GITHUB-AGENT-PLAN.md` — shelved by the owner, 0 of 9
+After next session's P0: **Track F** in `UX-PLAN.md` (see which `AGENT.md`,
+memory and skills are actually loaded — this repo's own `AGENT.md` is the
+unedited template and nothing would tell you), finishing the model switcher,
+`src/background/` tests, extension phase 5 (trace events), and the `:` command
+palette — thin, since `:stop` is the only `:` command.
 
-Designed, not started. The diagnosis and the lane finding are worth keeping:
-the browser contention is **artificial** — the extension already gives background
-work its own tab, and `ExtensionLock._lane(model)` is what makes it queue.
+## How to test anything here
 
-### Still parked from session two
+The pty harness is the reason this session found what it did. It lives in the
+session scratchpad and is worth rebuilding if gone; `UX-PLAN.md` → **How this
+was measured** has the recipe.
 
-`/skills` shape; **session logs as post-compaction recall** (the strongest of
-these); search on a genuinely large codebase; the API-backend fork.
+- `drive.py` — pty-forks the CLI with `PATH` prefixed by shims for `open`,
+  `code` and `xdg-open` that log their argv instead of launching, which is how
+  "did it open the editor" became checkable.
+- `fake-extension.js` / `hold-extension.js` — answer prompts from a script, or
+  hold a turn open so the live frame can be measured.
+- `measure-jitter.py`, `overflow-test.py` — bytes, erase-lines and `ESC[2J` per
+  terminal size. **The bar is 0 clears and 0 idle bytes, at every size.**
+- `scrape-test.mjs` — `extractTextContent` lifted out of the shipped source and
+  run against a Gemini-shaped DOM in jsdom.
 
-## Known and unfixed
+**And check the harness before believing a negative.** It lied four times this
+session: a port the extension never dials, a file-seeding step that also typed
+its content into the prompt, an extractor that dropped an `async` keyword, and a
+test assertion loose enough to pass on "5 alloweds and 2 blockeds". Three of
+those looked like product bugs first.
 
-- **The extension reconnect fix is not proven.** The cause is: `chrome.alarms`
-  clamps to a 30-second floor and `RECONNECT_MAX` was *exactly* that floor, so the
-  1s/2s/4s/8s/16s ladder was a constant. Measured with the real extension in
-  headless Chrome: 13.6s to connect warm, 25.6s cold, **one** handshake each; and
-  refusing every handshake gives two attempts in 75s, gap exactly 30.0s. Four
-  different fixes were built and **none moved that number** — Chrome kills the
-  idle worker and takes its timers. Two of those four could not even be tested,
-  because Chrome match patterns cannot contain a port and the injection detector
-  was wrong anyway. Headless reclaims workers harder than a real browser, so the
-  Status row exists to answer it where it matters.
-- **`enableAntiThrottling` creates its `<audio>` element and never appends it to
-  the document.** The throttling defence has always been a detached node.
-- **A local process running as the user can still reach the bridge.** Needs a
-  shared secret the extension can read, which needs a setup step.
-- **Context budgets (24k / 48k / 96k per rung) are guesses.**
-- **`multiple_drafts` has never been observed firing** (`/logs agent`).
-- **Tool definitions are three hand-kept lists**, not two: `prompt-builder.js`
-  has two and `runHeadlessTask` in `agent-loop.js` has a third with a different
-  subset. Nobody had counted the third.
+## Gotchas this session added
 
-## Gotchas that actually bit
-
-- **Never bulk-edit `prompt-builder.js` with a regex**, and **escape backticks** in
-  anything inserted into its template literals — a bare one ends the string and
-  surfaces as `ReferenceError` thrown from an unrelated function.
-- **An edit script that asserts before writing loses every earlier replacement.** Two
-  batches of description fixes silently did nothing this way. Verify with `grep`.
-- **`import('./src/index.js')` runs the CLI.** Same trap as `main.js`: both are
-  scripts, not modules.
-- **The pty harness must send escape sequences one at a time.** `b"\x1b[B" * 3` in one
-  write arrives as a single keypress. Send, sleep ~150ms, drain, repeat.
-- **It earns its keep.** It caught the phase-4 bug where the default `effort:
-  'standard'` shadowed every legacy config key, which the unit tests did not. To make
-  the agent *run* a turn without a browser, connect a fake extension client over the
-  WebSocket with a `chrome-extension://` origin and never answer — that is how the
-  animation was measured.
-- **`RESERVED_ROWS` is load-bearing and now 9 — a *base*, not a total.** App.jsx
-  adds the conditional furniture (palette, disconnected warning, "taking a while")
-  for the frame it is about to draw. Adding always-on furniture means raising the
-  constant; adding conditional furniture means adding it to that sum, or the
-  clear-the-terminal bug comes back. Expect `0` `ESC[2J` and `0` idle bytes from
-  every screen. The harness recipe is in `UI-REDESIGN.md` → How to verify — including
-  the `clientType` field the fake extension client must send, which is not `client`.
-- **A prompt refactor needs a byte-for-byte check**, not a read-through. Moving prose
-  into files changed one of ten prompt shapes because `trimEnd()` ate a trailing
-  newline the assembly depended on.
-- **`chrome.runtime.sendMessage` throws *synchronously* once the extension is
-  reloaded.** `.catch()` does not catch it — nothing was returned to reject. A
-  three-second interval written that way raised an uncaught error every three
-  seconds forever. Use the `safeSend` guard in the content scripts; do not add a
-  raw `chrome.runtime.*` call.
-- **The extension is testable from Node, and it is worth it.** Headless Chrome
-  with `--headless=new --load-extension=<dir> --disable-extensions-except=<dir>`
-  and a throwaway `--user-data-dir`, against a real `WebSocketServer` on
-  127.0.0.1. Timing `listening` → `identify` is how the 13.6s was found; refusing
-  every handshake in `verifyClient` turns each retry into an observable
-  timestamp, which is how the exact 30.0s cadence was found.
-- **Two ways that harness lied, both mine.** Chrome **match patterns cannot
-  contain a port**, so a test entry of `http://127.0.0.1:7933/*` is invalid and
-  the content script silently never injects. And the detector that was supposed
-  to confirm injection looked for the `<audio>` element — which
-  `enableAntiThrottling` creates and **never appends**. Two green-looking runs
-  proved nothing. Check the harness before believing a negative result.
-- **Headless Chrome is not your browser.** It has no user activity and reclaims
-  service workers harder. A measurement there is a lower bound on how good things
-  are, not an answer.
-
-## Owner preferences observed
-
-- Simple over clever. "Keep things simple stupid yet effective."
-- Wants the reasoning, not a list of changes, and pushes back when a plan is a pile of
-  tasks rather than one idea.
-- Benchmarks against Claude Code and asks how Claude Code solves things.
-- Asks for the unsugared answer and means it. Measure before asserting; label an
-  estimate as an estimate.
-- Reverses course when the argument is good, and expects the same in return — `/help`
-  was removed and restored within a minute on that basis.
-- Sends short mid-turn corrections while work is running. Read them as steers, finish
-  the thing in flight, then act.
+- **`<Static>` counts by index.** The transcript must be append-only. Replacing
+  it with anything shorter makes Ink skip exactly as many turns, permanently —
+  and silently.
+- **`ink-text-input` reads `value.length` into its cursor on mount and never
+  moves it forward.** It is gone; `PromptInput` replaces it.
+- **The live frame's budget has a floor.** `Math.max(3, …)` means charging rows
+  to `liveBudget` is not enough on its own — anything that can grow needs its own
+  bound, or the total goes past the viewport anyway.
+- **Gemini calls it a *mode* picker, not a model picker**, and the trigger's
+  label contains the current model, so matching the whole label breaks on every
+  switch. Selection is a `selected` **class** — `aria-checked` is absent — and
+  `active` is on whichever item opened focused, so reading it reports the first
+  option as current every time.
+- **Never close that menu with Escape.** It removes the items but leaves
+  `aria-expanded="true"`, and the next open then reads as already-open, does not
+  click, and fails. Click the trigger; it toggles, so check `aria-expanded`
+  first.
+- **A fallback that cannot fire is worse than none**, because the ladder looks
+  like it has a safety net. The first structural fallback for the picker
+  returned nothing at all and would never have been noticed.
