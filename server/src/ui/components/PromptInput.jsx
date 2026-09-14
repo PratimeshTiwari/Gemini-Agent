@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Text, useInput } from 'ink';
+import { Box, Text, useInput } from 'ink';
 
 /**
  * The prompt field. Replaces `ink-text-input`, which could not do two things
@@ -39,6 +39,7 @@ export function PromptInput({
   focus = true,
   placeholder = '',
   cursorRef,
+  maxRows = 0,
 }) {
   const [offset, setOffset] = useState(value.length);
 
@@ -161,15 +162,58 @@ export function PromptInput({
       : <Text dimColor>{placeholder}</Text>;
   }
 
+  /**
+   * Only ever draw `maxRows` of the prompt, scrolled to keep the caret in view.
+   *
+   * The prompt is in the live frame, and the live frame must never outgrow the
+   * viewport — when it does, Ink answers with `ESC[2J ESC[3J` and a full repaint
+   * on every render, which is what "it flickers and I can't scroll or copy" was.
+   * Charging the extra lines to `liveBudget` is not enough on its own: that
+   * budget has a floor, so a tall enough prompt pushes the total past the
+   * viewport no matter what the in-flight turn gives up. Measured at 20 rows, a
+   * ten-line prompt produced 17 clears in a second.
+   *
+   * So the prompt gets a bound like everything else here. One of the rows is
+   * spent on the "N more" marker when there is anything off-screen, which keeps
+   * the drawn height exactly `maxRows` whether it is scrolled or not.
+   */
+  const lines = value.split('\n');
+  const at = Math.min(offset, value.length);
+  const caretLine = locate(value, at).line;
+
+  let start = 0;
+  let hidden = 0;
+  let windowLines = lines;
+  if (maxRows > 0 && lines.length > maxRows) {
+    const shown = maxRows - 1;                       // one row is the marker
+    start = Math.min(Math.max(0, caretLine - Math.floor(shown / 2)), lines.length - shown);
+    windowLines = lines.slice(start, start + shown);
+    hidden = lines.length - shown;
+  }
+
+  // Where the caret sits inside the window, once the skipped lines are gone.
+  const skipped = lines.slice(0, start).reduce((n, l) => n + l.length + 1, 0);
+  const text = windowLines.join('\n');
+  const localAt = Math.max(0, Math.min(at - skipped, text.length));
+
   // The caret is drawn rather than moved: Ink repaints the frame wherever it
   // likes, so a real terminal cursor would land in the wrong place.
-  if (!focus) return <Text>{value}</Text>;
-  const at = Math.min(offset, value.length);
-  return (
+  const body = focus ? (
     <Text>
-      {value.slice(0, at)}
-      <Text inverse>{value[at] === undefined || value[at] === '\n' ? ' ' : value[at]}</Text>
-      {value[at] === '\n' ? value.slice(at) : value.slice(at + 1)}
+      {text.slice(0, localAt)}
+      <Text inverse>{text[localAt] === undefined || text[localAt] === '\n' ? ' ' : text[localAt]}</Text>
+      {text[localAt] === '\n' ? text.slice(localAt) : text.slice(localAt + 1)}
     </Text>
+  ) : <Text>{text}</Text>;
+
+  if (hidden <= 0) return body;
+  return (
+    <Box flexDirection="column">
+      {body}
+      <Text dimColor>
+        {`… ${hidden} more line${hidden === 1 ? '' : 's'}`}
+        {start > 0 ? ' (scrolled)' : ''}
+      </Text>
+    </Box>
   );
 }

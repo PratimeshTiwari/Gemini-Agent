@@ -257,12 +257,23 @@ export function App({ agentLoop, wsServer }) {
   // palette is the reason this is a sum rather than a constant: it is six rows
   // when it is open and none when it is not, and a single number can only be
   // right about one of those.
-  // Every extra line of the prompt is a row the live frame has to find, and
-  // RESERVED_ROWS budgets the input box at its one-line height. A prompt is
-  // allowed to be several lines now, so the extra ones are charged here with
-  // the rest of the conditional furniture — an unbudgeted row in the live
-  // region is exactly what brings the full-clear repaint back.
-  const promptExtraRows = Math.max(0, input.split('\n').length - 1);
+  // How tall the prompt may draw, and what that costs the live frame.
+  //
+  // RESERVED_ROWS budgets the input box at its one-line height, so every extra
+  // line is a row the live frame has to find. Charging them is necessary and
+  // not sufficient: `liveBudget` has a floor, so a tall enough prompt pushes
+  // the total past the viewport however much the in-flight turn gives up.
+  // Measured at 20 rows, a ten-line prompt produced 17 full-screen clears in a
+  // second. So the prompt is bounded too, and scrolls inside its bound.
+  //
+  // A third of the viewport: enough that the common two- or three-line prompt
+  // is never scrolled, and never so much that the transcript disappears behind
+  // the thing you are typing into.
+  const promptMaxRows = Math.max(1, Math.floor(terminalHeight / 3));
+  const promptExtraRows = Math.max(
+    0,
+    Math.min(input.split('\n').length, promptMaxRows) - 1,
+  );
 
   const liveBudget = Math.max(3, terminalHeight - RESERVED_ROWS
     - promptExtraRows
@@ -711,6 +722,7 @@ export function App({ agentLoop, wsServer }) {
             setInput={setInput}
             setInputAtEnd={setInputAtEnd}
             cursorRef={cursorRef}
+            promptMaxRows={promptMaxRows}
             setSlashIdx={setSlashIdx}
             slashMatches={slashMatches}
             slashOpen={slashOpen}

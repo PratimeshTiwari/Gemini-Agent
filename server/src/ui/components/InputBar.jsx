@@ -43,6 +43,7 @@ export function InputBar({
   newlineRef,
   setInput,
   cursorRef,
+  promptMaxRows,
   setSlashIdx,
   slashMatches,
   slashOpen,
@@ -145,6 +146,7 @@ export function InputBar({
               focus={focus === FOCUS_INPUT}
               value={input}
               cursorRef={cursorRef}
+              maxRows={promptMaxRows}
               placeholder="Ask anything, or / for commands"
               onNewline={() => { newlineRef.current = true; }}
               onChange={(v) => {
