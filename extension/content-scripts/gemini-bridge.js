@@ -47,23 +47,24 @@ enableAntiThrottling();
 // ── DOM Selectors ────────────────────────────────────────────────────
 // Centralized selectors — update these when Google changes the UI
 const SELECTORS = {
-  // The control that opens the model picker. Gemini labels it for screen
-  // readers and gives it a keyboard shortcut, both of which outlive a class
-  // name — the visible text is the current model, which is exactly the thing
-  // that changes.
+  // The control that opens the picker. Ordered by what actually matched on
+  // gemini.google.com, not by what sounded likely: the first two guesses here
+  // were `aria-label*="switch model"` and `aria-label*="model"`, and both find
+  // nothing. Gemini calls it a **mode** picker, and labels it
+  // "Open mode picker, currently Flash" — the model name is in the label, so
+  // matching the whole label would break on every switch.
   modelTrigger: [
-    'button[aria-label*="switch model" i]',
-    'button[aria-label*="model" i]',
-    'bard-mode-switcher button',
     '[data-test-id="bard-mode-menu-button"]',
+    'bard-mode-switcher button',
+    'button[aria-label*="mode picker" i]',
   ],
 
-  // The options, once the picker is open.
+  // The options, once the picker is open. They are `<gem-menu-item>` elements
+  // with role=menuitem — not menuitemradio, and not inside a mat-menu, both of
+  // which were guessed here first and match nothing.
   modelMenuItem: [
-    '[role="menu"] [role="menuitemradio"]',
     '[role="menu"] [role="menuitem"]',
-    'mat-menu-content button',
-    '.mat-mdc-menu-content button',
+    'gem-menu-item',
   ],
 
   // The main prompt input textarea
@@ -589,45 +590,72 @@ function extractLatestResponse() {
 }
 
 /**
- * Read the model picker, without deciding anything.
+ * Opening and closing the mode picker, which is fussier than it looks.
+ *
+ * Both of these were learned by running against gemini.google.com rather than
+ * reasoned about, and both corrections matter:
+ *
+ * - **The trigger toggles.** Clicking it while the menu is open closes it. So a
+ *   blind click is only right half the time; `aria-expanded` says which half
+ *   you are in, and is checked first.
+ * - **Escape must not be used.** Dispatching it on `document.body` removes the
+ *   menu items but leaves `aria-expanded="true"` on the trigger — the component
+ *   ends up desynchronised, and the *next* open then reads as "already open",
+ *   does not click, finds nothing and fails. The first version of this closed
+ *   in a `finally` with Escape and broke every discovery after the first.
+ *   Clicking the trigger closes it cleanly, in under 60ms, with the attribute
+ *   and the DOM agreeing.
+ */
+const MENU_ITEM_POLL_MS = 50;
+const MENU_ITEM_POLL_TRIES = 20;
+
+function modelMenuItems() {
+  for (const selector of SELECTORS.modelMenuItem) {
+    const found = [...document.querySelectorAll(selector)];
+    if (found.length > 1) return found;
+  }
+  return [];
+}
+
+async function openModelMenu(trigger) {
+  if (trigger.getAttribute('aria-expanded') !== 'true') trigger.click();
+  for (let i = 0; i < MENU_ITEM_POLL_TRIES; i++) {
+    const items = modelMenuItems();
+    if (items.length > 1) return items;
+    await new Promise((r) => setTimeout(r, MENU_ITEM_POLL_MS));
+  }
+  return [];
+}
+
+async function closeModelMenu(trigger) {
+  if (trigger.getAttribute('aria-expanded') !== 'true') return;
+  trigger.click();
+  for (let i = 0; i < 8; i++) {
+    await new Promise((r) => setTimeout(r, MENU_ITEM_POLL_MS));
+    if (trigger.getAttribute('aria-expanded') !== 'true') return;
+  }
+}
+
+/**
+ * Read the mode picker, without deciding anything.
  *
  * What Gemini offers depends on the subscription: the version numbers move, and
  * a plan can be missing a tier entirely. So the list is read from the page and
  * sent to the server, which matches it against the effort rung
  * (`core/model-match.js`). Nothing here knows what "deep" means.
- *
- * The menu only exists in the DOM while it is open, so discovery has to open it
- * — and must always close it again, including when the read throws. Escape is
- * how it closes; clicking the trigger a second time can land on whatever moved
- * under the pointer.
  */
 async function readModelOptions() {
   const trigger = findElement(SELECTORS.modelTrigger) || findModelTriggerStructurally();
-  if (!trigger) throw new Error('[find_model_trigger] no control that opens the model picker');
-
-  trigger.click();
-
-  // The menu animates in. Poll rather than guess at the duration.
-  let items = [];
-  for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 50));
-    for (const selector of SELECTORS.modelMenuItem) {
-      const found = [...document.querySelectorAll(selector)];
-      if (found.length > 1) { items = found; break; }
-    }
-    if (items.length > 1) break;
-  }
+  if (!trigger) throw new Error('[find_model_trigger] no control that opens the mode picker');
 
   try {
+    const items = await openModelMenu(trigger);
     if (items.length === 0) throw new Error('[open_model_menu] the picker did not open, or has no options');
     return items.map(describeModelOption).filter((m) => m.label);
   } finally {
-    // Always, even on the throw above: a menu left open swallows the next click
-    // and the turn after it looks like a dead tab.
-    document.body.dispatchEvent(new KeyboardEvent('keydown', {
-      key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true,
-    }));
-    trigger.blur?.();
+    // Always: a menu left open swallows the next click, and the turn after that
+    // looks like a dead tab — a failure surfacing nowhere near its cause.
+    await closeModelMenu(trigger);
   }
 }
 
@@ -635,29 +663,35 @@ async function readModelOptions() {
  * The trigger, found by shape when no selector matches.
  *
  * EXTENSION-PLAN phase 7's argument: a ladder that misses loses the turn, and
- * the element is usually still findable by what it *is*. The picker is a button
- * that sits inside the composer and whose accessible name mentions switching —
- * so this looks for a button near the prompt box carrying a short label and a
- * dropdown role, rather than a class Google owns.
+ * the element is usually still findable by what it *is*.
+ *
+ * The first version of this looked for short-labelled buttons inside "the
+ * composer", taken as the input's great-grandparent. Run against the real page
+ * it returned nothing at all — that ancestor does not contain the picker, which
+ * sits six levels up. Recorded because a fallback that cannot fire is worse than
+ * none: it makes the ladder look like it has a safety net.
+ *
+ * What does hold is `aria-haspopup`. The picker is the popup-button nearest the
+ * prompt box that is not one of the composer's own controls, so this walks up
+ * from the input until an ancestor contains one. Verified to select the mode
+ * picker and nothing else.
  */
 function findModelTriggerStructurally() {
   const input = findElement(SELECTORS.inputField);
   if (!input) return null;
 
-  const composer = input.closest('form') || input.parentElement?.parentElement?.parentElement;
-  if (!composer) return null;
+  // Everything else in the composer that opens a menu — attachments, canvas,
+  // the mic — by the words their labels use.
+  const NOT_THE_PICKER = /send|submit|attach|upload|mic|voice|image|canvas|research/i;
 
-  const candidates = [...composer.querySelectorAll('button')].filter((b) => {
-    if (b.getAttribute('aria-haspopup')) return true;
-    const text = (b.textContent || '').trim();
-    // The trigger shows the current model: a word or two, never a sentence, and
-    // never empty the way an icon-only button is.
-    return text.length > 0 && text.length <= 24 && text.split(/\s+/).length <= 3;
-  });
-
-  // Nearest to the input wins; the send button and the attach button are also
-  // in here and are icon-only, so they fall out above.
-  return candidates.find((b) => !/send|submit|attach|upload|mic/i.test(b.getAttribute('aria-label') || '')) || null;
+  let node = input;
+  for (let level = 0; node && level < 8; level++) {
+    const buttons = [...node.querySelectorAll('button[aria-haspopup="true"], button[aria-haspopup="menu"]')]
+      .filter((b) => !NOT_THE_PICKER.test(`${b.getAttribute('aria-label') || ''} ${b.textContent || ''}`));
+    if (buttons.length > 0) return buttons[0];
+    node = node.parentElement;
+  }
+  return null;
 }
 
 /** One option's label, its own description, and whether it is the current one. */
@@ -671,10 +705,16 @@ function describeModelOption(el) {
     // "Advanced reasoning". That is what the server matches on, so it survives
     // the names changing.
     description: lines[1] || '',
-    selected: el.getAttribute('aria-checked') === 'true'
-      || el.getAttribute('aria-selected') === 'true'
-      || el.classList.contains('selected')
-      || Boolean(el.querySelector('[data-selected], .checkmark, mat-icon[fonticon="check"]')),
+    // On the real page the current option is marked by a `selected` class and
+    // nothing else — `aria-checked` and `aria-selected` are both absent, so the
+    // aria checks are future-proofing rather than what fires today.
+    //
+    // `active` is NOT selection. It is on whichever item the menu opened
+    // focused, which is the first one, so reading it would report the top of
+    // the list as current every time.
+    selected: el.classList.contains('selected')
+      || el.getAttribute('aria-checked') === 'true'
+      || el.getAttribute('aria-selected') === 'true',
   };
 }
 
@@ -689,26 +729,21 @@ async function selectModelByLabel(label) {
   if (!wanted) throw new Error('[switch_model] no model named');
 
   const trigger = findElement(SELECTORS.modelTrigger) || findModelTriggerStructurally();
-  if (!trigger) throw new Error('[find_model_trigger] no control that opens the model picker');
-  trigger.click();
+  if (!trigger) throw new Error('[find_model_trigger] no control that opens the mode picker');
 
-  for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 50));
-    for (const selector of SELECTORS.modelMenuItem) {
-      const found = [...document.querySelectorAll(selector)];
-      const hit = found.find((el) => describeModelOption(el).label.trim().toLowerCase() === wanted);
-      if (hit) {
-        hit.click();
-        await new Promise((r) => setTimeout(r, 300));
-        return true;
-      }
-    }
+  const items = await openModelMenu(trigger);
+  const hit = items.find((el) => describeModelOption(el).label.trim().toLowerCase() === wanted);
+
+  if (!hit) {
+    await closeModelMenu(trigger);
+    throw new Error(`[switch_model] the picker has no option called "${label}"`);
   }
 
-  document.body.dispatchEvent(new KeyboardEvent('keydown', {
-    key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true,
-  }));
-  throw new Error(`[switch_model] the picker has no option called "${label}"`);
+  // Clicking an option closes the menu itself — no close needed, and calling
+  // one would re-open it.
+  hit.click();
+  await new Promise((r) => setTimeout(r, 300));
+  return true;
 }
 
 /**
