@@ -10,6 +10,18 @@
  * Group flat history into turns. Messages are tagged with their index in the
  * flat list on the way through, which callers rely on to address them.
  */
+/**
+ * Timestamps are read, never invented.
+ *
+ * This used to fall back to `Date.now()` for a message that carried no
+ * timestamp — and `groupTurns` runs on every render, so the fallback moved. A
+ * turn opened by an unstamped user message therefore had a start time that
+ * crept forward while its end time, taken from a real step, stayed where it
+ * was: "Worked for" counted backwards, further from zero the longer the turn
+ * sat on screen. A turn that genuinely cannot be timed now says so by leaving
+ * these null, which the renderer can act on; a plausible wrong number is worse
+ * than a missing one, and is why this went unnoticed.
+ */
 export function groupTurns(history) {
   const turns = [];
   let currentTurn = null;
@@ -18,12 +30,17 @@ export function groupTurns(history) {
     msg._globalIdx = i;
     if (msg.role === 'user') {
       if (currentTurn) turns.push(currentTurn);
-      currentTurn = { id: turnId++, userMsg: msg, steps: [], startTime: msg.timestamp || Date.now(), endTime: msg.timestamp || Date.now() };
+      currentTurn = { id: turnId++, userMsg: msg, steps: [], startTime: msg.timestamp ?? null, endTime: msg.timestamp ?? null };
     } else if (currentTurn) {
       currentTurn.steps.push(msg);
-      currentTurn.endTime = msg.timestamp || currentTurn.endTime;
+      if (typeof msg.timestamp === 'number') {
+        // A turn whose opening message was never stamped still knows when it
+        // ran, from the first step that was.
+        if (currentTurn.startTime === null) currentTurn.startTime = msg.timestamp;
+        currentTurn.endTime = msg.timestamp;
+      }
     } else {
-      currentTurn = { id: turnId++, userMsg: null, steps: [msg], startTime: msg.timestamp || Date.now(), endTime: msg.timestamp || Date.now() };
+      currentTurn = { id: turnId++, userMsg: null, steps: [msg], startTime: msg.timestamp ?? null, endTime: msg.timestamp ?? null };
     }
   });
   if (currentTurn) turns.push(currentTurn);

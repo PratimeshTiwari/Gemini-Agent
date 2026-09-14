@@ -441,10 +441,12 @@ export function App({ agentLoop, wsServer }) {
       setActiveMenu(null);
       setIsProcessing(false);
       setStatus('');
+      // `:stop` never reaches the model, so its echo is local — counting it as
+      // loop history would shift the merge by one and cost a turn on screen.
       setHistory(prev => [
         ...prev,
-        { role: 'user', content: query },
-        { role: 'assistant', content: '🛑 Agent forcefully stopped.', isLocal: true }
+        { role: 'user', content: query, isLocal: true, timestamp: Date.now() },
+        { role: 'assistant', content: '🛑 Agent forcefully stopped.', isLocal: true, timestamp: Date.now() }
       ]);
       return;
     }
@@ -476,7 +478,11 @@ export function App({ agentLoop, wsServer }) {
     }
 
     // Optimistically update the UI so the user sees their prompt immediately
-    setHistory(prev => [...prev, { role: 'user', content: query }]);
+    // Stamped here. `groupTurns` falls back to `Date.now()` for a message with
+    // no timestamp, and that fallback is re-evaluated on every render — so an
+    // unstamped user message gave the turn a start time that crept forward
+    // while its end time stayed put, and "Worked for" counted backwards.
+    setHistory(prev => [...prev, { role: 'user', content: query, timestamp: Date.now() }]);
 
     const callbacks = buildAgentCallbacks({
       agentLoop,

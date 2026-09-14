@@ -41,7 +41,12 @@ function userMessageText(content, isLive) {
  * cannot be repainted, App reprints the transcript when it changes.
  */
 export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget }) {
-  const duration = ((turn.endTime - turn.startTime) / 1000).toFixed(1);
+  // Only shown when it can actually be worked out. A turn whose messages were
+  // never stamped has no duration, and printing one anyway is how this shipped
+  // reading `Worked for -6.2s`.
+  const timed = typeof turn.startTime === 'number' && typeof turn.endTime === 'number'
+    && turn.endTime >= turn.startTime;
+  const duration = timed ? ((turn.endTime - turn.startTime) / 1000).toFixed(1) : null;
   const { actions, finalMessages } = parseTurnActions(turn);
 
   // A live turn shows its most recent steps; a committed one shows all of them.
@@ -62,10 +67,14 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget }) {
       {actions.length > 0 && (
         <Box flexDirection="column" width="100%">
           <Text color="gray">
-            {'  '}Worked for{' '}
-            {isLive
-              ? <Text color="cyan"><Spinner type="dots" /> {status}</Text>
-              : <Text>{duration}s</Text>}
+            {isLive ? (
+              <>
+                {'  '}Worked for{' '}
+                <Text color="cyan"><Spinner type="dots" /> {status}</Text>
+              </>
+            ) : (
+              <>{'  '}{duration === null ? 'Worked' : `Worked for ${duration}s`}</>
+            )}
             <Text dimColor> · {actions.length} action{actions.length === 1 ? '' : 's'}</Text>
           </Text>
 

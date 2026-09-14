@@ -227,3 +227,47 @@ describe('mergeLoopHistory — the transcript is append-only', () => {
     assert.equal(mergeLoopHistory(shown, []), shown);
   });
 });
+
+describe('groupTurns — a turn is timed from stamps, never from the clock', () => {
+  /**
+   * The fallback used to be `Date.now()`, and `groupTurns` runs on every render,
+   * so it moved. A turn opened by an unstamped user message got a start time
+   * that crept forward while its end time stayed put, and the transcript showed
+   * "Worked for -6.2s".
+   */
+  it('an unstamped turn reports no time rather than a wrong one', () => {
+    const [turn] = groupTurns([{ role: 'user', content: 'hi' }]);
+    assert.equal(turn.startTime, null);
+    assert.equal(turn.endTime, null);
+  });
+
+  it('start and end come from the messages', () => {
+    const [turn] = groupTurns([
+      { role: 'user', content: 'hi', timestamp: 1000 },
+      { role: 'agent', content: 'a', timestamp: 2500 },
+      { role: 'agent', content: 'b', timestamp: 4000 },
+    ]);
+    assert.equal(turn.startTime, 1000);
+    assert.equal(turn.endTime, 4000);
+  });
+
+  it('an unstamped opener still borrows the first stamped step', () => {
+    const [turn] = groupTurns([
+      { role: 'user', content: 'hi' },
+      { role: 'agent', content: 'a', timestamp: 2000 },
+      { role: 'agent', content: 'b', timestamp: 3000 },
+    ]);
+    assert.equal(turn.startTime, 2000);
+    assert.equal(turn.endTime, 3000);
+  });
+
+  it('never runs backwards', () => {
+    const turns = groupTurns([
+      { role: 'user', content: 'one', timestamp: 1000 },
+      { role: 'agent', content: 'a', timestamp: 2000 },
+      { role: 'user', content: 'two', timestamp: 3000 },
+      { role: 'agent', content: 'b', timestamp: 4000 },
+    ]);
+    for (const t of turns) assert.ok(t.endTime >= t.startTime, `${t.endTime} < ${t.startTime}`);
+  });
+});
