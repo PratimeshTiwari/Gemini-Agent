@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import * as paths from '../../core/paths.js';
 import { createSkill, listSkills, skillSearchPath } from '../../core/skills.js';
+import { describeDestructive } from '../destructive.js';
 import { readErrors, summarizeErrors, clearErrors, FLOWS } from '../../core/error-log.js';
 import { listPlans } from '../../core/plan-archive.js';
 import { listCommandDays, readCommands } from '../../core/command-log.js';
@@ -29,10 +30,36 @@ export async function handleSlashCommand(query, {
   setHistory,
   setIsProcessing,
   setPendingImage,
+  confirmed = false,
 }) {
     const parts = query.slice(1).split(/\s+/);
     const command = parts[0].toLowerCase();
     const args = parts.slice(1);
+
+    // Some commands destroy more than they name. Ask first, once, from the one
+    // place that decides — `confirmed` is set when the answer comes back.
+    if (!confirmed) {
+      const rules = agentLoop.commandRules || {};
+      const warning = describeDestructive(command, args, {
+        allowCount: rules.allow?.length || 0,
+        blockCount: rules.block?.length || 0,
+        turnCount: agentLoop.conversationHistory?.length || 0,
+      });
+      if (warning) {
+        setActiveMenu({
+          type: 'confirm_destructive',
+          payload: {
+            ...warning,
+            onConfirm: () => handleSlashCommand(query, {
+              agentLoop, wsServer, resetScreen, setActiveMenu, setHistory,
+              setIsProcessing, setPendingImage, confirmed: true,
+            }),
+          },
+        });
+        setIsProcessing(false);
+        return;
+      }
+    }
 
     // Generated from SLASH_COMMANDS, not written out beside it. The hand-kept
     // copy had drifted twice — listing /init-skills and /paste-image after both

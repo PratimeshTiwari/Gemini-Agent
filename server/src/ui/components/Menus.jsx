@@ -150,6 +150,43 @@ export function Menus({
           </Box>
         )}
 
+        {/*
+          Destroying more than you named.
+
+          The app already stops before deleting *one* allowlist rule and spells
+          the rule out first. Then `/allowlist clear` took seven of them on one
+          keypress and reported it in the past tense, and `/clear` is a single
+          Enter on the settings screen's Session row. Which of those needs asking
+          is decided in `ui/destructive.js`, so the typed path and the settings
+          path cannot disagree about it.
+        */}
+        {activeMenu?.type === 'confirm_destructive' && (
+          <Box flexDirection="column" borderStyle="single" borderColor="yellow" padding={1}>
+            <Text bold color="yellow">{'! '}{activeMenu.payload.title}</Text>
+            <Box marginY={1}>
+              <Text dimColor wrap="wrap">{activeMenu.payload.detail}</Text>
+            </Box>
+            <SelectInput
+              items={[
+                { label: 'Cancel — change nothing', value: 'no' },
+                { label: activeMenu.payload.confirmLabel, value: 'yes' },
+              ]}
+              onSelect={(item) => {
+                const pending = activeMenu.payload;
+                setActiveMenu(null);
+                setFocus(FOCUS_INPUT);
+                if (item.value === 'yes') pending.onConfirm?.();
+                else {
+                  setHistory((prev) => [...prev, {
+                    role: 'assistant', isLocal: true, timestamp: Date.now(),
+                    content: `Cancelled — nothing was changed.`,
+                  }]);
+                }
+              }}
+            />
+          </Box>
+        )}
+
         {activeMenu?.type === 'plan_review' && (
           <Box flexDirection="column" borderStyle="single" borderColor="magenta" padding={1}>
             <Text bold color="cyan">Implementation plan ready for review</Text>
