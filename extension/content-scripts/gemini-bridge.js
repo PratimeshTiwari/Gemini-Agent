@@ -47,6 +47,25 @@ enableAntiThrottling();
 // ── DOM Selectors ────────────────────────────────────────────────────
 // Centralized selectors — update these when Google changes the UI
 const SELECTORS = {
+  // The control that opens the model picker. Gemini labels it for screen
+  // readers and gives it a keyboard shortcut, both of which outlive a class
+  // name — the visible text is the current model, which is exactly the thing
+  // that changes.
+  modelTrigger: [
+    'button[aria-label*="switch model" i]',
+    'button[aria-label*="model" i]',
+    'bard-mode-switcher button',
+    '[data-test-id="bard-mode-menu-button"]',
+  ],
+
+  // The options, once the picker is open.
+  modelMenuItem: [
+    '[role="menu"] [role="menuitemradio"]',
+    '[role="menu"] [role="menuitem"]',
+    'mat-menu-content button',
+    '.mat-mdc-menu-content button',
+  ],
+
   // The main prompt input textarea
   inputField: [
     'div.ql-editor[contenteditable="true"]',
@@ -570,6 +589,129 @@ function extractLatestResponse() {
 }
 
 /**
+ * Read the model picker, without deciding anything.
+ *
+ * What Gemini offers depends on the subscription: the version numbers move, and
+ * a plan can be missing a tier entirely. So the list is read from the page and
+ * sent to the server, which matches it against the effort rung
+ * (`core/model-match.js`). Nothing here knows what "deep" means.
+ *
+ * The menu only exists in the DOM while it is open, so discovery has to open it
+ * — and must always close it again, including when the read throws. Escape is
+ * how it closes; clicking the trigger a second time can land on whatever moved
+ * under the pointer.
+ */
+async function readModelOptions() {
+  const trigger = findElement(SELECTORS.modelTrigger) || findModelTriggerStructurally();
+  if (!trigger) throw new Error('[find_model_trigger] no control that opens the model picker');
+
+  trigger.click();
+
+  // The menu animates in. Poll rather than guess at the duration.
+  let items = [];
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    for (const selector of SELECTORS.modelMenuItem) {
+      const found = [...document.querySelectorAll(selector)];
+      if (found.length > 1) { items = found; break; }
+    }
+    if (items.length > 1) break;
+  }
+
+  try {
+    if (items.length === 0) throw new Error('[open_model_menu] the picker did not open, or has no options');
+    return items.map(describeModelOption).filter((m) => m.label);
+  } finally {
+    // Always, even on the throw above: a menu left open swallows the next click
+    // and the turn after it looks like a dead tab.
+    document.body.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true,
+    }));
+    trigger.blur?.();
+  }
+}
+
+/**
+ * The trigger, found by shape when no selector matches.
+ *
+ * EXTENSION-PLAN phase 7's argument: a ladder that misses loses the turn, and
+ * the element is usually still findable by what it *is*. The picker is a button
+ * that sits inside the composer and whose accessible name mentions switching —
+ * so this looks for a button near the prompt box carrying a short label and a
+ * dropdown role, rather than a class Google owns.
+ */
+function findModelTriggerStructurally() {
+  const input = findElement(SELECTORS.inputField);
+  if (!input) return null;
+
+  const composer = input.closest('form') || input.parentElement?.parentElement?.parentElement;
+  if (!composer) return null;
+
+  const candidates = [...composer.querySelectorAll('button')].filter((b) => {
+    if (b.getAttribute('aria-haspopup')) return true;
+    const text = (b.textContent || '').trim();
+    // The trigger shows the current model: a word or two, never a sentence, and
+    // never empty the way an icon-only button is.
+    return text.length > 0 && text.length <= 24 && text.split(/\s+/).length <= 3;
+  });
+
+  // Nearest to the input wins; the send button and the attach button are also
+  // in here and are icon-only, so they fall out above.
+  return candidates.find((b) => !/send|submit|attach|upload|mic/i.test(b.getAttribute('aria-label') || '')) || null;
+}
+
+/** One option's label, its own description, and whether it is the current one. */
+function describeModelOption(el) {
+  const lines = (el.innerText || el.textContent || '')
+    .split('\n').map((l) => l.trim()).filter(Boolean);
+
+  return {
+    label: lines[0] || '',
+    // Gemini writes a one-line purpose under each name — "Fastest answers",
+    // "Advanced reasoning". That is what the server matches on, so it survives
+    // the names changing.
+    description: lines[1] || '',
+    selected: el.getAttribute('aria-checked') === 'true'
+      || el.getAttribute('aria-selected') === 'true'
+      || el.classList.contains('selected')
+      || Boolean(el.querySelector('[data-selected], .checkmark, mat-icon[fonticon="check"]')),
+  };
+}
+
+/**
+ * Switch to a named option, by the label the server saw.
+ *
+ * Matched on the label rather than an index: the menu can reorder, and picking
+ * position N of a list that moved is how you end up on a model nobody chose.
+ */
+async function selectModelByLabel(label) {
+  const wanted = String(label || '').trim().toLowerCase();
+  if (!wanted) throw new Error('[switch_model] no model named');
+
+  const trigger = findElement(SELECTORS.modelTrigger) || findModelTriggerStructurally();
+  if (!trigger) throw new Error('[find_model_trigger] no control that opens the model picker');
+  trigger.click();
+
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    for (const selector of SELECTORS.modelMenuItem) {
+      const found = [...document.querySelectorAll(selector)];
+      const hit = found.find((el) => describeModelOption(el).label.trim().toLowerCase() === wanted);
+      if (hit) {
+        hit.click();
+        await new Promise((r) => setTimeout(r, 300));
+        return true;
+      }
+    }
+  }
+
+  document.body.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true,
+  }));
+  throw new Error(`[switch_model] the picker has no option called "${label}"`);
+}
+
+/**
  * Extract clean text content from an element, preserving code blocks and basic formatting.
  */
 function extractTextContent(element) {
@@ -734,6 +876,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       window.location.href = 'https://gemini.google.com/app';
       sendResponse({ success: true });
       break;
+
+    case 'discover_models':
+      readModelOptions()
+        .then((models) => safeSend({ type: 'model_options', payload: { models } }))
+        .catch((err) => safeSend({
+          type: 'error',
+          payload: { op: 'discover_models', message: err.message },
+        }));
+      sendResponse({ success: true });
+      return true;
+
+    case 'switch_model':
+      selectModelByLabel(payload?.label)
+        .then(() => readModelOptions())
+        .then((models) => safeSend({
+          type: 'model_options',
+          payload: { models, switchedTo: payload?.label },
+        }))
+        .catch((err) => safeSend({
+          type: 'error',
+          payload: { op: 'switch_model', message: err.message },
+        }));
+      sendResponse({ success: true });
+      return true;
 
     case 'get_page_status':
       sendResponse({
