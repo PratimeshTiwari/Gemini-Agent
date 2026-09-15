@@ -8,14 +8,70 @@
 import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 
+/**
+ * `tab: 0`, because the two spaces were being copied.
+ *
+ * `marked-terminal` indents a fenced block by `tab` spaces, and a terminal
+ * drag-select takes those spaces with it — so every code block this agent
+ * produced had to be re-indented by hand after pasting it anywhere. There is no
+ * clickable copy button here and there cannot be: that needs mouse tracking,
+ * and a terminal that is tracking hands the app the wheel and suppresses
+ * drag-select, which would take away the very thing being fixed.
+ *
+ * Losing the indent loses the only thing that marked where a block started and
+ * ended, so `renderCodeBlocks` puts that back as a dim rule on its own line —
+ * above and below, never beside, so a drag that starts on the first line of
+ * code and ends on the last picks up the code and nothing else.
+ */
 marked.use(markedTerminal({
-  tab: 2,
+  tab: 0,
   width: 100,
   showSectionPrefix: false,
   tableOptions: {
     style: { head: ['cyan'] }
   }
 }));
+
+/** A fenced block: language, then the body. */
+const FENCE = /^```([^\n`]*)\n([\s\S]*?)^```[ \t]*$/gm;
+
+/**
+ * The fenced code blocks in a reply, in the order they appear.
+ *
+ * Exported because `ctrl+y` copies the last one, and reaching into a rendered
+ * string to find it again would mean parsing the rules back out of prose that
+ * may legitimately contain them.
+ *
+ * @returns {Array<{lang: string, code: string}>}
+ */
+export function extractCodeBlocks(content) {
+  const out = [];
+  for (const m of String(content || '').matchAll(FENCE)) {
+    out.push({ lang: (m[1] || '').trim(), code: m[2].replace(/\n$/, '') });
+  }
+  return out;
+}
+
+/** Dim, so the rules read as furniture rather than as part of the code. */
+const DIM = '\x1b[2m';
+const RESET = '\x1b[22m';
+
+/**
+ * A block, bounded by rules that a drag does not pick up.
+ *
+ * The rule is as wide as the block's own longest line, capped at 60: it can
+ * never be wider than the code beside it, so it cannot wrap a frame that the
+ * code itself fits in. Widening it to the terminal would need the width passed
+ * down through every caller, to draw a line nobody needs longer.
+ */
+function renderBlock(lang, code) {
+  const lines = code.split('\n');
+  const width = Math.min(60, Math.max(8, ...lines.map((l) => l.length)));
+  const label = lang ? `\u2500 ${lang} ` : '';
+  const top = label + '\u2500'.repeat(Math.max(2, width - label.length));
+  const bottom = '\u2500'.repeat(width);
+  return `${DIM}${top}${RESET}\n${code}\n${DIM}${bottom}${RESET}`;
+}
 
 /** Collapse any value to a single line of at most `max` characters. */
 export function oneLine(value, max = 60) {
@@ -214,11 +270,31 @@ export function renderMarkdown(content) {
 
   let out;
   try {
+    /**
+     * Fenced blocks are lifted out before marked sees them, and put back after.
+     *
+     * Rendering each segment separately instead would break anything spanning a
+     * block — a list with code in an item stops being one list. A sentinel on
+     * its own line survives as a paragraph, so marked still parses one document
+     * and the block still gets drawn by `renderBlock` rather than by
+     * `marked-terminal`, which has no way to mark an edge.
+     *
+     * The token is deliberately plain: marked escapes and rewrites punctuation,
+     * and a sentinel that does not come back out is a code block deleted.
+     */
+    const blocks = [];
+    const stashed = source.replace(FENCE, (_m, lang, code) => {
+      blocks.push(renderBlock((lang || '').trim(), code.replace(/\n$/, '')));
+      return `x0codeblock${blocks.length - 1}x0`;
+    });
+
     out = marked
-      .parse(source
+      .parse(stashed
         .replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m')
         .replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m'))
       .trim();
+
+    out = out.replace(/x0codeblock(\d+)x0/g, (m, i) => blocks[Number(i)] ?? m);
   } catch {
     out = source;
   }

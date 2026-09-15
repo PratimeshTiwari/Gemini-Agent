@@ -28,6 +28,7 @@ export const HOTKEYS = {
   '\x15': 'clear-input',  // ctrl+u — wipe the prompt, as readline has always done
   '\x17': 'delete-word',  // ctrl+w — delete the word behind the cursor
   '\x06': 'attach-failures', // ctrl+f — pull in commands that failed in the editor
+  '\x19': 'copy-code',    // ctrl+y — the last code block in the transcript
 };
 
 const PASTE_START = '\x1b[200~';

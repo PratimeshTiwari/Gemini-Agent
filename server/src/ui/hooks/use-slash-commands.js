@@ -103,6 +103,7 @@ export async function handleSlashCommand(query, {
           '  ctrl+u      clear the input   ·   ctrl+w   delete the last word',
           '  ctrl+j      newline, without sending   ·   ↑ ↓   move a line, or recall',
           '  ctrl+f      attach commands that failed in the editor terminal',
+          '  ctrl+y      copy the last code block',
           '  esc         stop the run, or close a menu',
           '',
           '### ⌨️  Commands',
