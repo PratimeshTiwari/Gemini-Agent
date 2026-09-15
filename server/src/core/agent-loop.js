@@ -1724,10 +1724,33 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
      * surfaces rather than a second implementation that can disagree.
      */
     const sources = describeInstructionSources(this);
-    const width = Math.max(10, ...sources.map((r) => r.label.length));
+
+    // Bounded, and elided from the *left*.
+    //
+    // A label here is a path, and one long path would otherwise set the padding
+    // for every row and push the states off the right-hand edge — the same
+    // fault `describeSettings` had, where a row could outgrow the viewport. A
+    // path's tail is the part that identifies it, so that is the half kept.
+    const LABEL_MAX = 44;
+    const fit = (label) => (label.length <= LABEL_MAX
+      ? label
+      : `…${label.slice(-(LABEL_MAX - 1))}`);
+    const labels = sources.map((r) => fit(r.label));
+    const width = Math.min(LABEL_MAX, Math.max(10, ...labels.map((l) => l.length)));
+
+    // One row per source, one line per row. The detail truncates rather than
+    // the label: you can lose the end of "looks like the unedited template — it
+    // is being sent as your project context" and still know the file is a
+    // template, but a truncated path names no file at all. Same order of
+    // sacrifice `describeSettings` settled on.
+    const LINE_MAX = 96;
     const sourceLines = sources.length
-      ? ['', '', '**Feeding the prompt**', '', ...sources.map((r) => `  ${r.group.padEnd(9)} ${r.label.padEnd(width)}  `
-          + (r.state === 'loaded' ? r.detail : `${r.state} — ${r.detail}`))]
+      ? ['', '', '**Feeding the prompt**', '', ...sources.map((r, i) => {
+        const head = `  ${r.group.padEnd(9)} ${labels[i].padEnd(width)}  `;
+        const detail = r.state === 'loaded' ? r.detail : `${r.state} — ${r.detail}`;
+        const room = Math.max(12, LINE_MAX - head.length);
+        return head + (detail.length <= room ? detail : `${detail.slice(0, room - 1)}…`);
+      })]
       : [];
 
     return {
