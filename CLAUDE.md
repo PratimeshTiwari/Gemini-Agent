@@ -341,7 +341,8 @@ make both sides share the same base, not to resolve 120 files by hand.
 
 ## Product decisions
 
-Standing constraints on this project (previously kept in LEARNINGS.md). These are choices,
+Standing constraints on this project (the fuller reasoning, and the measurements, are in
+`DECISIONS.md`). These are choices,
 not limitations to route around:
 
 - **Gemini Web only, for now** — other bridges exist (`chatgpt-bridge.js`, `claude-bridge.js`)
@@ -813,7 +814,7 @@ have a key.
   harness, not a bug — use `script -q /dev/null <cmd>` to test under a pty.
 - Content-script DOM selectors break when the chat sites change; `extractLatestResponse` must
   wait for a *new* block before scraping. Gemini's editor only ingests text via a synthetic
-  `ClipboardEvent('paste')` — setting `innerHTML` breaks it (`LEARNINGS.md`).
+  `ClipboardEvent('paste')` — setting `innerHTML` breaks it.
 - `AGENT.md` at the repo root is *workspace* context read by `prompt-builder.js`, not
   instructions for you. It belongs to whatever project the agent is pointed at. It was the
   unedited stock template until 2026-09-16 — 740 bytes of `<!-- Describe your project here -->`

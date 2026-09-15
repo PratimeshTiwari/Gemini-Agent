@@ -1626,7 +1626,8 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
    *
    * The loop itself is `core/turn-runner.js` now: this is the wiring that says
    * where the model lives and what tools it may reach. Extracting it was
-   * GITHUB-AGENT-PLAN phase 6 — it was a second agent loop inside this one,
+   * Extracting it was the GitHub restructure's hardest phase — it was a second
+   * agent loop inside this one,
    * with its own dispatch, its own retry and no seam to test against.
    *
    * `_executeSubagent('gemini', …)` is still hard-coded rather than reading

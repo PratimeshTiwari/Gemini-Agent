@@ -3,7 +3,7 @@
  *
  * Extracted from `AgentLoop.runHeadlessTask`, which was a second agent loop
  * living inside the first — ten turns, its own dispatch, its own retry, its own
- * tool list — with no seam and no tests. GITHUB-AGENT-PLAN phase 6.
+ * tool list — with no seam and no tests.
  *
  * It knows nothing about GitHub, sessions, the UI, or where the model lives.
  * Everything that touches the outside is passed in, which is what makes the
@@ -16,7 +16,7 @@
  * Every `send` goes through `_executeSubagent`, which sets `isSubagent: true`,
  * and the extension answered that by creating a **fresh tab** and closing it
  * when the turn ended — so turn 2 was a browser tab that had never seen turn 1.
- * There was no thread to rely on. `GITHUB-AGENT-PLAN.md` called that opting out
+ * There was no thread to rely on. The GitHub plan called that opting out
  * of `PromptBuilder`'s protection; it was not, there was nothing to opt into.
  *
  * Measured on a ten-turn task with realistic tool results: **156,140 characters

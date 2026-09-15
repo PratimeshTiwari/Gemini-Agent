@@ -544,6 +544,21 @@ first time it starts in a workspace, and prints a one-line summary when it does.
 
 ---
 
+## 📚 Where the reasoning lives
+
+- **`CLAUDE.md`** — the architecture, the layout, and the gotchas that cost real
+  time if you meet them by surprise.
+- **`DECISIONS.md`** — what was decided and why: the standing constraints, the
+  calls that still bind, the negative results worth not re-trying, and how any
+  of it gets measured.
+- **`AGENT.md`** — what the agent itself is told about this project.
+
+Five planning documents used to sit here too. Every phase in them is now done or
+explicitly declined, so they were folded into `DECISIONS.md`; git has the
+originals.
+
+---
+
 ## 📜 Releases
 
 Versioned by what has actually merged into `main`. Each beta is one pull request

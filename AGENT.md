@@ -74,4 +74,5 @@ the handler in `mcp/tools/`, add one entry to `TOOL_DEFINITIONS` in
 - **One answer per turn** — never drafts or A/B alternatives to choose between.
 
 `CLAUDE.md` carries the reasoning behind each of these — read it when you need
-to know *why*, not just *what*. `UX-PLAN.md` is the current board.
+to know *why*, not just *what*. `DECISIONS.md` records the calls that still
+bind and the measurements behind them.
