@@ -474,6 +474,7 @@
           sendToServer({ type, payload });
           sendResponse({ success: true });
           break;
+        case "turn_trace":
         case "github_pr_comment":
         case "github_pr_viewing":
           sendToServer({ type, payload });

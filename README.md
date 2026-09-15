@@ -389,6 +389,9 @@ Once the agent is running, you can use built-in slash commands to manage your se
 - Type `/compact` to fold older turns into a summary by hand, or `/clear` to drop them.
 - Type `/logs` to read failures grouped by where they came from, and `/commands` for
   every shell command the agent has run, blocked or rejected.
+- Type `/logs extension` for how long the browser is actually taking — the median and
+  slowest tenth for each stage of a turn, from finding the input box to the reply finishing.
+  That is the number to compare when it feels slower than it used to.
 
 ## 🗂 One repo, or several under one folder
 
@@ -515,6 +518,7 @@ Everything the agent writes into a workspace lives in one directory, `.agent/`:
 ├── sessions/          # conversation history (local copy)
 └── logs/
     ├── errors.jsonl     # every failure, tagged with the flow it came from (/logs)
+    ├── traces.jsonl     # how long each browser turn took, per stage
     └── commands/        # one file per day: every shell command run (/commands)
 ```
 

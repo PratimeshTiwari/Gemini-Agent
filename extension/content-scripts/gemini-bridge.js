@@ -125,6 +125,23 @@ let lastResponseText = '';
 let responseIdleTimer = null;
 let initialResponseCount = 0;
 let responseStartTime = 0;
+
+/**
+ * How long this turn spent in each stage of the browser.
+ *
+ * The extension has never recorded a *successful* turn's timings — only its
+ * failures — so "the connection is slower than it used to be" could not be
+ * answered from inside the product. Marks are taken as the turn passes them and
+ * sent once, on completion; nothing here waits on anything.
+ */
+let turnTrace = null;
+const traceStart = () => { turnTrace = { t0: Date.now(), last: Date.now(), stages: {} }; };
+const traceMark = (stage) => {
+  if (!turnTrace) return;
+  const now = Date.now();
+  turnTrace.stages[stage] = now - turnTrace.last;
+  turnTrace.last = now;
+};
 let lastActivityTime = 0;
 let activityCheckTimer = null;
 let currentRequestData = null;
@@ -218,12 +235,14 @@ async function injectPrompt(text) {
   }
 
   isInjecting = true;
+  traceStart();
 
   try {
     const input = findElement(SELECTORS.inputField);
     if (!input) {
       throw new Error('[find_input] Could not find the Gemini input field — the editor selector has probably changed');
     }
+    traceMark('find_input');
 
     // Record how many responses exist BEFORE we send
     initialResponseCount = getResponseCount();
@@ -296,12 +315,15 @@ async function injectPrompt(text) {
     }
 
     // Wait for the send button to become enabled (Gemini validates input and uploads images)
+    traceMark('type');
+
     const sendBtn = await waitForSendButton(input, 30000);
 
     if (sendBtn === 'submitted') {
       console.log('[Gemini Bridge] Proceeding since prompt was manually submitted.');
     } else if (sendBtn) {
       sendBtn.click();
+      traceMark('send');
       console.log('[Gemini Bridge] Send button clicked');
     } else {
       // Fallback 1: Try submitting the closest form
@@ -387,6 +409,7 @@ function startResponseObserver() {
   stopResponseObserver();
   lastResponseText = '';
   responseStartTime = Date.now();
+  traceMark('first_token');
   lastActivityTime = Date.now();
   sawGenerating = false;
 
@@ -856,6 +879,13 @@ function extractTextContent(element) {
  */
 function onResponseComplete(responseText) {
   stopResponseObserver();
+
+  traceMark('complete');
+  if (turnTrace) {
+    // Sent separately from the reply, so a trace can never delay or break one.
+    safeSend({ type: 'turn_trace', payload: { model: 'gemini', stages: turnTrace.stages } });
+    turnTrace = null;
+  }
 
   // Send to service worker
   safeSend({

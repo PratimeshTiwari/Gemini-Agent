@@ -16,6 +16,7 @@
 
 import { WebSocketServer as WS } from 'ws';
 import { randomUUID } from 'crypto';
+import { logTrace } from '../core/trace-log.js';
 import { logError } from '../core/error-log.js';
 
 /**
@@ -247,6 +248,13 @@ export class WebSocketServer {
             timestamp: Date.now(),
           });
         }
+        break;
+
+      case 'turn_trace':
+        // How long the browser spent on each stage of a *successful* turn. The
+        // failure log has never had this, which is why "it got slower" was a
+        // feeling rather than a number.
+        logTrace(this.agentLoop?.workspace, payload);
         break;
 
       case 'model_options':

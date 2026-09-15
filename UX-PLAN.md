@@ -258,6 +258,23 @@ by one. That is the same fault as `eabb559`, by a third route.
 `risk-classifier.js:167`. Pluralisation, and it counts `totalDeletedLines` while
 saying "changed".
 
+## Parked — the `/effort` browser switch, 2026-09-15
+
+Built and working under the harness; **the owner has parked it** rather than
+chase it in a live browser today.
+
+What is done: `core/model-match.js` (14 tests) picks the mode a rung wants from
+whatever the plan offers, matching on what each option is *for* so the names can
+change; `gemini-bridge.js` reads and clicks the picker, with selectors verified
+against the live page; the bridge routes it; `/effort` acts on it; and discovery
+now runs at connect so the first `/effort` switches rather than only discovering.
+
+What is unverified: any of it against a real Gemini tab. When it is picked back
+up, the first question is whether the extension was reloaded — the page keeps
+the old content script until a hard refresh, and without that the tab has no
+`switch_model` handler at all. `/logs extension` will say `switch_model` if the
+picker moved under it, and nothing if the message never arrived.
+
 ## P1 — felt continuously, but wants care or a number first
 
 ### 5. The live frame is rewritten twelve times a second

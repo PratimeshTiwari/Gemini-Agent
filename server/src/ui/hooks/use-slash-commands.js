@@ -12,6 +12,7 @@ import { SLASH_COMMANDS } from '../constants.js';
 import { oneLine } from '../format.js';
 import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
 import { canPickFolder, pickFolder } from '../folder-picker.js';
+import { summariseTraces, formatMs } from '../../core/trace-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -325,6 +326,18 @@ export async function handleSlashCommand(query, {
 
       // `/logs <flow>` drills into one; bare `/logs` answers "what is breaking?"
       if (arg && FLOWS[arg]) {
+        // The extension is the one flow with timings as well as failures, and
+        // "is it slower?" is the question people bring to it. Shown first,
+        // because a turn that is merely slow logs nothing at all below.
+        let timing = '';
+        if (arg === 'extension') {
+          const t = summariseTraces(agentLoop.workspace);
+          timing = t.samples === 0
+            ? '_No turn timings recorded yet — they land here as turns complete._\n\n'
+            : `**Browser timings** — median and slowest tenth, over ${t.samples} turn${t.samples === 1 ? '' : 's'}\n`
+              + t.stages.map((st) => `  ${st.stage.padEnd(12)} ${formatMs(st.median).padStart(6)}   p90 ${formatMs(st.p90)}`).join('\n')
+              + '\n\n';
+        }
         const entries = readErrors(agentLoop.workspace, { flow: arg, limit: 15 });
         const body = entries.length === 0
           ? `Nothing logged for **${arg}**.`
@@ -334,7 +347,7 @@ export async function handleSlashCommand(query, {
             const detail = e.detail ? `\n    \`${String(e.detail).split('\n')[0].slice(0, 120)}\`` : '';
             return `  ${when} **${e.op || '—'}** — ${e.message}${repeat}${detail}`;
           }).join('\n');
-        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `### 🩺 ${arg} — ${FLOWS[arg]}\n${body}`, isLocal: true }]);
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `### 🩺 ${arg} — ${FLOWS[arg]}\n${timing}${body}`, isLocal: true }]);
         setIsProcessing(false);
         return;
       }
