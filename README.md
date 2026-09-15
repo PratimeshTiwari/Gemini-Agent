@@ -387,102 +387,114 @@ Once the agent is running, you can use built-in slash commands to manage your se
 - Type `/logs` to read failures grouped by where they came from, and `/commands` for
   every shell command the agent has run, blocked or rejected.
 
-## 🗂 One repo, or a monorepo
+## 🗂 One repo, or several under one folder
 
-There is nothing to configure for the ordinary case, and one flag for the other.
+### If you have one repo
 
-### A single repo
-
-Open it and go. The agent creates `<your repo>/.agent/` on first run and keeps
-everything there.
+Nothing to configure. Open it and go:
 
 ```bash
 cd ~/work/my-api
 agent
 ```
 
-### A group of repos under one folder
+The agent creates `~/work/my-api/.agent/` the first time and keeps everything
+there. You can stop reading this section.
 
-Put **one** `.agent/` at the top of the group. Every repo underneath then shares
-your skills and your config, while keeping its own history, artifacts and logs
-separate — so `/undo` in one repo cannot reach into another, and a plan written
-for one does not show up in the other's list.
+### If you keep several repos under one folder
+
+Say your work looks like this — `payments-api` and `dashboard` are two separate
+projects you keep side by side:
 
 ```
-/work/base-repo/
-├── .agent/                 ← the one you create
-│   ├── skills/             shared by every repo below
-│   ├── config.json         shared defaults
-│   ├── api/                just this repo: sessions, artifacts, logs, memory
-│   └── web/                just this repo
-├── AGENT.md                instructions for every repo below
-├── api/
-│   └── AGENT.md            instructions for api only — nearest wins
-└── web/
+~/work/
+├── payments-api/
+└── dashboard/
 ```
 
-The agent finds that directory by walking **up** from wherever you start, the
-way git finds `.git`. Which repo you are working on is the **scope**, and it is
-chosen at launch — never guessed from which files get touched:
+You have two choices, and the first is fine:
+
+**Either** treat them as unrelated. Run `agent` inside each one, and each gets
+its own `.agent/` folder. Nothing is shared, and nothing needs explaining.
+
+**Or** tie them together, if they share conventions and you want one set of
+skills for both. Create a single `.agent/` folder at the top:
 
 ```bash
-cd /work/base-repo && agent --scope api    # or, identically:
-cd /work/base-repo/api && agent
+mkdir -p ~/work/.agent/skills
 ```
 
-Both land on the same state. The scope shows in the status bar, and `/scope`
-says where you are. Tools still take absolute paths, so cross-repo work is
-possible — it is only state that is separated.
+That one directory is the signal. From then on, opening either project finds it
+by walking **up** the folders — the same way `git` finds `.git` from a
+subdirectory — and they share whatever is in it:
 
-**What is shared and what is not**, which is the part worth knowing:
+```
+~/work/
+├── .agent/                ← you created this
+│   ├── skills/               shared: both projects see these
+│   ├── config.json           shared: default model, effort, allowlist
+│   ├── payments-api/         the agent creates these two, one per project
+│   └── dashboard/            history, memory, artifacts, backups, logs
+├── AGENT.md               ← optional: rules for both projects
+├── payments-api/
+│   └── AGENT.md           ← optional: rules for this one only
+└── dashboard/
+```
 
-| shared across the group | kept per repo |
-| --- | --- |
-| `skills/` | `sessions/` — conversation history |
-| `config.json` defaults | `memory.md` — what it learned here |
-| | `artifacts/`, `backups/`, `logs/`, `state/` |
-| | `config.json` overrides |
+You never create the `payments-api/` and `dashboard/` folders *inside* `.agent/`
+— the agent makes them, so one project's history and `/undo` cannot reach into
+the other's.
 
-`AGENT.md` is not in that table because it does not live in `.agent/` at all —
-it sits with the code, and every one from your home directory down to the repo
-is read, nearest last. See [Project instructions](#-project-instructions).
-
-### Setting up skills
-
-A skill is one markdown file. There is no registry and nothing to install:
+**"Scope" is just which of them you are working on.** It is decided when you
+start, never guessed from which files get edited, and it shows in the status
+bar. These two commands are identical:
 
 ```bash
-agent                              # from anywhere in the project
-/skills new code-review            # creates it and opens it in your editor
+cd ~/work/payments-api && agent          # the obvious way
+cd ~/work && agent --scope payments-api  # the same thing, from the top
 ```
 
-That writes `<the group root>/.agent/skills/code-review.md` — shared, because
-skills usually are. Two variations:
+### Where do I put a skill?
 
-```bash
-/skills new --global deploy        # ~/.agent/skills — every project you open
-/skills dir add ~/team-skills      # a folder you keep elsewhere, e.g. a git repo of them
-```
-
-Fill in the frontmatter and the body:
+**Usually: the group folder, and stop thinking about it.** `/skills new <name>`
+already writes there, and a skill is only pulled into a prompt when its
+`description` line matches what the agent is doing — so a skill that only
+applies to one project can simply say so:
 
 ```markdown
 ---
-name: code-review
-description: Reviewing a diff or a pull request before it merges.
+name: release
+description: Cutting a release of payments-api. Not used for the dashboard.
 ---
-
-Check the diff against AGENT.md's conventions first, then look for
-missing tests, then for anything that changes a public signature.
 ```
 
-**Only the `description` is ever in the prompt** — one line per skill. The agent
-opens the file itself when that line matches what it is doing, so twenty skills
-cost twenty lines, not twenty files.
+**If you really want one project to have its own**, give that project its own
+`.agent/skills/` folder:
 
-To check what is actually loaded, `/skills dir` lists the folders and
-`/settings` → **Context** shows how many were found in each, and flags a folder
-you added that has since gone missing.
+```bash
+mkdir -p ~/work/payments-api/.agent/skills
+```
+
+Skills are then searched from the project upwards, so `payments-api` sees both
+its own and the group's, with its own winning if a name appears twice:
+
+```
+~/work/payments-api/.agent/skills/    this project   ← wins
+~/work/.agent/skills/                 both projects
+~/.agent/skills/                      every project you open
+```
+
+> **One consequence worth knowing.** That folder also makes `payments-api` its
+> own root, so its history, memory and artifacts move out of
+> `~/work/.agent/payments-api/` and into `~/work/payments-api/.agent/`. Skills
+> still resolve from both places; it is the *state* that stops being shared.
+> If that is not what you wanted, use a `description` line instead.
+
+### Where do I put instructions?
+
+`AGENT.md`, next to the code, and it is not in `.agent/` at all. Every one from
+your home directory down to the project is read, nearest last — so the project's
+file has the final word. See [Project instructions](#-project-instructions).
 
 ## 📂 Where the agent keeps its files
 
