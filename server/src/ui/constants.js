@@ -6,6 +6,7 @@ export /** Slash commands offered by the palette, and the source `/help` prints 
 const SLASH_COMMANDS = [
   { name: 'help', desc: 'Keys, and every command' },
   { name: 'settings', desc: 'Everything that is set, on one page' },
+  { name: 'open', desc: 'Open a file in your editor' },
   { name: 'effort', desc: 'How hard to work, and which browser tab it expects' },
   { name: 'allowlist', desc: 'Manage auto-approved/blocked command rules' },
   { name: 'config', desc: 'Which model implements, and which one reviews it' },

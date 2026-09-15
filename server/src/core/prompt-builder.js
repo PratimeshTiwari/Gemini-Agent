@@ -28,6 +28,28 @@ import { parseMemory, readMemoryEnabled } from '../context/memory-manager.js';
 // eagerly in a chatty Q&A session.
 const REFRESH_INTERVAL_MESSAGES = 20;
 
+/**
+ * Is this file saying anything?
+ *
+ * `loaded` is the ordinary case. `empty` is a file that exists and has nothing
+ * in it. `template` is the one worth naming: the stock `AGENT.md` ships with six
+ * headings and five HTML comments reading "describe your project here", and
+ * `_loadAgentMd` only skips a file whose *trimmed body* is empty — a template
+ * full of headings is not empty, so it goes into every turn-0 prompt, presented
+ * to the model as this project's context. This repo's own AGENT.md is one.
+ */
+export function agentMdState(body) {
+  if (!body) return 'empty';
+  const placeholders = (body.match(/<!--[^>]*-->/g) || []).length;
+  const prose = body
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/^#.*$/gm, '')
+    .replace(/^```[\s\S]*?```$/gm, '')
+    .trim();
+  if (placeholders >= 3 && prose.length < 400) return 'template';
+  return 'loaded';
+}
+
 export class PromptBuilder {
   constructor(workspace, agentSourceDir) {
     this.workspace = workspace;
@@ -846,14 +868,25 @@ ${tier === 'pro' ? this._reminderLineForLevel(resolveEffort(modelConfig.effort).
     }
 
     const parts = [];
+    const found = [];
     for (const file of [...new Set(files)]) {
       try {
         const body = readFileSync(file, 'utf-8').trim();
         if (body) parts.push(body);
-      } catch {
-        /* an unreadable AGENT.md must not take the prompt down */
+        found.push({ path: file, bytes: body.length, state: agentMdState(body) });
+      } catch (err) {
+        // An unreadable AGENT.md must not take the prompt down — but it should
+        // not vanish either. Reported, so the one screen that lists sources can
+        // say why a file you wrote is not in the prompt.
+        found.push({ path: file, bytes: 0, state: 'unreadable', detail: err.message });
       }
     }
+
+    // Kept, rather than discarded with the local variable it used to live in.
+    // The walk is the only thing that knows which files are in play, it ran on
+    // every full prompt, and nothing could ask it afterwards — so there was no
+    // way to find out that the AGENT.md being sent was an unedited template.
+    this.lastAgentMdFiles = found;
     return parts.join('\n\n');
   }
 

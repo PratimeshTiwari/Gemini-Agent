@@ -146,6 +146,32 @@ export async function handleSlashCommand(query, {
       return;
     }
 
+    // Open a file in the editor. Added for the Context tab's source rows —
+    // knowing which AGENT.md is being sent is most of the value, and being able
+    // to open it is the rest — but it stands on its own.
+    if (command === 'open') {
+      const target = args.join(' ').trim();
+      if (!target) {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+          role: 'assistant', isLocal: true, timestamp: Date.now(),
+          content: 'Usage: `/open <path>` — opens it in your editor.',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+      const abs = target.startsWith('/') ? target : `${agentLoop.workspace}/${target}`;
+      const { exec } = await import('child_process');
+      // Same ladder every other open in the app uses: the configured editor, then
+      // whatever the desktop would do with it.
+      exec(`"${agentLoop.editor || 'code'}" "${abs}" || open "${abs}" || xdg-open "${abs}"`);
+      setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+        role: 'assistant', isLocal: true, timestamp: Date.now(),
+        content: `📂 Opened \`${abs}\`.`,
+      }]);
+      setIsProcessing(false);
+      return;
+    }
+
     if (command === 'clear') {
       agentLoop.conversationHistory = [];
       setHistory([]);

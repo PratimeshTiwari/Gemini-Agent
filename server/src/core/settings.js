@@ -21,6 +21,7 @@
 import { resolveEffort } from './effort.js';
 import * as paths from './paths.js';
 import { countToday } from './command-log.js';
+import { describeInstructionSources } from './instruction-sources.js';
 
 /**
  * The tabs, in the order they are shown.
@@ -183,6 +184,19 @@ export function describeSettings(agentLoop) {
       hint: `${applied} applied — \`/undo\` steps back one`,
       run: applied > 0 ? '/undo' : undefined,
     },
+    // What the prompt is actually being told about this project.
+    //
+    // The Context tab reported how *much* was in the window — turns, tokens,
+    // diffs — and never *what*. `CLAUDE.md` already defines bare `/context` as
+    // "a report of what is in the window"; this is the half that was missing,
+    // rather than a new surface. Each row is a real file, so Enter opens it.
+    ...describeInstructionSources(agentLoop).map((source) => ({
+      group: 'Context',
+      label: source.group === 'AGENT.md' ? 'Instructions' : source.group === 'memory' ? 'Memory file' : 'Skills',
+      value: source.label,
+      hint: source.state === 'loaded' ? source.detail : `${source.state} — ${source.detail}`,
+      run: source.path ? `/open ${source.path}` : undefined,
+    })),
     {
       group: 'Context',
       label: 'Session',
