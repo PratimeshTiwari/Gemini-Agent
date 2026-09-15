@@ -352,3 +352,12 @@ export const recentWorkspacesPath = () => path.join(homeDir(), 'recent-workspace
  * A file rather than an argument because the child cannot change its own argv.
  */
 export const nextWorkspacePath = () => path.join(homeDir(), 'next-workspace');
+
+/**
+ * Reload steps left over from an `/update`, waiting to be acknowledged.
+ *
+ * In the **home** directory rather than a workspace: the thing that needs
+ * reloading is the browser extension and the editor companion, which belong to
+ * you and not to whichever project you happened to update from.
+ */
+export const pendingReloadPath = () => path.join(homeDir(), 'pending-reload.json');

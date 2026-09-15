@@ -17,6 +17,7 @@ import { drainTerminalQueue } from './terminal-queue.js';
 import { useKeyBindings } from './hooks/use-key-bindings.js';
 import { useHotkeys } from './hooks/use-hotkeys.js';
 import { canCopy, copyToClipboard } from './clipboard.js';
+import { checkForUpdate, readPendingReload } from '../core/update.js';
 import { useGithubTab } from './hooks/use-github-tab.js';
 import { handleSlashCommand } from './hooks/use-slash-commands.js';
 import { buildAgentCallbacks } from './hooks/use-agent-callbacks.js';
@@ -130,6 +131,18 @@ export function App({ agentLoop, wsServer }) {
   const [planReviewReady, setPlanReviewReady] = useState(false);
   const [walkthroughReady, setWalkthroughReady] = useState(false);
   const [artifacts, setArtifacts] = useState({ task: null, walkthrough: null });
+
+  /**
+   * Whether this agent is behind its own remote, and what a past `/update`
+   * left you to reload.
+   *
+   * The check runs **after** the first paint and never blocks: it is a `git
+   * fetch`, and a network call on the startup path is a hang waiting for an
+   * aeroplane. It fails silently, because an update check that can break
+   * startup is worse than no update check.
+   */
+  const [update, setUpdate] = useState({ available: false, behind: 0 });
+  const [pendingReload, setPendingReload] = useState(() => readPendingReload());
   // Pasted blocks, kept out of the prompt as markers. See ui/paste.js.
   const [pastes, setPastes] = useState([]);
   const addPaste = React.useCallback((paste) => {
@@ -335,11 +348,30 @@ export function App({ agentLoop, wsServer }) {
   // frame over the viewport in the first place.
   const compact = isCompactHeight(terminalHeight);
 
-  const liveBudget = Math.max(compact ? 1 : 3, terminalHeight - reservedRows(terminalHeight)
+  // One line each, and charged for. A row that draws without being budgeted is
+  // how the frame outgrows the viewport.
+  const noticeRows = (update.available ? 1 : 0) + (pendingReload ? 1 : 0);
+
+  /**
+   * What is left after the furniture — floored at one row, never at three.
+   *
+   * The floor used to be 3, and it was the bug twice. It exists so the turn
+   * always has *something* to draw in, but `Math.max(3, …)` does not mean
+   * "at least three if there is room", it means "three even when there is not"
+   * — and the frame then asks for more rows than the terminal has, which is
+   * Ink's clear-and-repaint path. Adding the two notice rows reproduced it at
+   * 13 rows: 9 furniture + 2 notices + a floored 3 is 14 in a 13-row terminal.
+   *
+   * Flooring at 1 loses nothing, because whenever there *is* room the
+   * subtraction already yields more than 3. The floor only ever bound in the
+   * case where binding it was wrong.
+   */
+  const liveBudget = Math.max(1, terminalHeight - reservedRows(terminalHeight)
     - promptExtraRows
     - (slashOpen ? slashMatches.length : 0)
     - (extensionConnected ? 0 : 1)
-    - (isThinkingTooLong ? 1 : 0));
+    - (isThinkingTooLong ? 1 : 0)
+    - noticeRows);
 
   // Shown in the status bar rather than under the prompt: it is rare, it is one
   // short field, and a conditional row under the input is a row RESERVED_ROWS
@@ -416,6 +448,24 @@ export function App({ agentLoop, wsServer }) {
     }, 2500);
     return () => clearInterval(id);
   }, [isProcessing]);
+
+  // `/update done` clears the file; this notices and the row goes away.
+  useEffect(() => {
+    if (!pendingReload) return undefined;
+    const id = setInterval(() => setPendingReload(readPendingReload()), 2000);
+    return () => clearInterval(id);
+  }, [pendingReload]);
+
+  useEffect(() => {
+    let cancelled = false;
+    // One beat after mount, so the first frame is already on screen.
+    const id = setTimeout(() => {
+      checkForUpdate(agentLoop.agentSourceDir)
+        .then((result) => { if (!cancelled) setUpdate(result); })
+        .catch(() => {});
+    }, 1500);
+    return () => { cancelled = true; clearTimeout(id); };
+  }, [agentLoop.agentSourceDir]);
 
   // Selections sent over from the editor with "Add to Agent Chat".
   //
@@ -787,6 +837,34 @@ export function App({ agentLoop, wsServer }) {
         />
       ) : (
         <>
+
+          {/*
+            Notices, at the top of everything Ink can repaint.
+
+            Above the in-flight turn because that is as high as a *live* row can
+            go — `<Static>` owns the scrollback above it and cannot be
+            repainted. One line each, both charged to `liveBudget` through
+            `noticeRows`, and both absent when there is nothing to say.
+
+            `wrap="truncate"` is load-bearing, not tidiness. The first version
+            of the reload row was ~105 characters, which wraps at 80 columns —
+            charged as one row and drawn as two, which put the frame over the
+            viewport at 13 rows and brought back the clear-and-repaint path.
+            Measured: 1 ESC[2J at 13x80 and 10x80 where there had been none.
+          */}
+          {pendingReload && (
+            <Text color="yellow" wrap="truncate">
+              {'⟳ '}
+              {pendingReload.steps.map((s) => s.what).join(' · ')}
+              <Text dimColor>{'  —  /update done when finished'}</Text>
+            </Text>
+          )}
+          {update.available && (
+            <Text color="cyan" wrap="truncate">
+              {'⬆ '}{update.behind} update{update.behind === 1 ? '' : 's'} available
+              <Text dimColor>{'  —  /update to pull'}</Text>
+            </Text>
+          )}
 
           {/* The in-flight turn — the only transcript rows Ink repaints. */}
           {liveTurns.map((turn) => (

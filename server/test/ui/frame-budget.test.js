@@ -22,11 +22,11 @@ import assert from 'node:assert';
 import { RESERVED_ROWS, COMPACT_BELOW_ROWS, reservedRows, isCompactHeight } from '../../src/ui/constants.js';
 
 /** What App.jsx computes, with no conditional rows in play. */
-const budget = (height) =>
-  Math.max(isCompactHeight(height) ? 1 : 3, height - reservedRows(height));
+const budget = (height, extras = 0) =>
+  Math.max(1, height - reservedRows(height) - extras);
 
 /** Furniture plus the turn: what Ink is asked to draw. */
-const frameHeight = (height) => reservedRows(height) + budget(height);
+const frameHeight = (height, extras = 0) => reservedRows(height) + extras + budget(height, extras);
 
 describe('the live frame fits the viewport at every usable height', () => {
   test('an ordinary terminal keeps all nine furniture rows', () => {
@@ -49,11 +49,15 @@ describe('the live frame fits the viewport at every usable height', () => {
     }
   });
 
-  test('the floor comes down with the furniture, or it overflows anyway', () => {
-    // The whole bug: a floor of 3 on a 10-row terminal asks for 6 + 3 = 9 and
-    // that fits, but a floor of 3 against nine rows of furniture asks for 12.
+  test('the floor is one row, not three', () => {
+    // A floor of 3 does not mean "at least three if there is room" — it means
+    // "three even when there is not", and the frame then asks for more rows
+    // than the terminal has. It was the bug twice: once from the furniture,
+    // once from the notice rows. Whenever there *is* room the subtraction
+    // already yields more than three, so flooring at 1 loses nothing.
     assert.ok(budget(10) >= 1, 'the turn still gets a row to draw in');
     assert.equal(frameHeight(10), 10);
+    assert.equal(budget(13, 2), 2, 'a floor of 3 here overflows a 13-row terminal');
   });
 
   test('the turn keeps a real share of an ordinary terminal', () => {
@@ -61,5 +65,38 @@ describe('the live frame fits the viewport at every usable height', () => {
     // where there was room all along.
     assert.equal(budget(24), 15);
     assert.equal(budget(40), 31);
+  });
+});
+
+describe('the notice rows are charged for', () => {
+  /**
+   * `/update` can draw two one-line notices at the top of the live frame: one
+   * for an available update, one for reload steps waiting to be acknowledged.
+   * A row that draws without being budgeted is how the frame outgrows the
+   * viewport — which is the single most important rule in `ui/`.
+   */
+  test('one notice still fits, at every height', () => {
+    for (let height = 9; height <= 60; height += 1) {
+      assert.ok(frameHeight(height, 1) <= height,
+        `${height} rows with one notice: frame would be ${frameHeight(height, 1)}`);
+    }
+  });
+
+  test('both notices still fit, at every height', () => {
+    for (let height = 9; height <= 60; height += 1) {
+      assert.ok(frameHeight(height, 2) <= height,
+        `${height} rows with two notices: frame would be ${frameHeight(height, 2)}`);
+    }
+  });
+
+  test('a notice costs the turn a row, rather than being drawn for free', () => {
+    assert.equal(budget(24, 0) - budget(24, 1), 1);
+    assert.equal(budget(24, 0) - budget(24, 2), 2);
+  });
+
+  test('at the floor the turn keeps a row and the frame still fits', () => {
+    // The notices cannot push the in-flight turn to nothing.
+    assert.ok(budget(10, 2) >= 1);
+    assert.ok(frameHeight(10, 2) <= 10);
   });
 });

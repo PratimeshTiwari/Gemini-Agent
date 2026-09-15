@@ -13,6 +13,7 @@ import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
 import { canPickFolder, pickFolder } from '../folder-picker.js';
 import { summariseTraces, formatMs } from '../../core/trace-log.js';
 import { channelHealth, formatRate, MIN_TURNS_FOR_RATE } from '../../core/channel-health.js';
+import { pullUpdate, savePendingReload, readPendingReload, clearPendingReload } from '../../core/update.js';
 
 
 /**
@@ -144,6 +145,65 @@ export async function handleSlashCommand(query, {
       // Let the frame paint, then leave. Ink restores the terminal on exit,
       // which is why this is an ordinary exit rather than an exec in place.
       leave(75, { wsServer, agentLoop });
+      return;
+    }
+
+    /**
+     * Pull the agent's own repo, and say what that leaves you to reload.
+     *
+     * The pull is the easy half. Three artifacts ship from this repo and only
+     * one of them is live after a restart: `service-worker.js` is a committed
+     * bundle Chrome reads on reload, content scripts stay in the page until it
+     * is hard-refreshed, and the `.vsix` is installed by hand. So the reminder
+     * is derived from what actually changed, and asks for nothing else.
+     */
+    if (command === 'update') {
+      if (args[0] === 'done') {
+        const had = readPendingReload();
+        clearPendingReload();
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+          role: 'assistant', isLocal: true,
+          content: had ? '✅ Cleared. Nothing left to reload.' : 'Nothing was waiting to be reloaded.',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      const say = (content) => {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true },
+          { role: 'assistant', content, isLocal: true }]);
+        setIsProcessing(false);
+      };
+
+      const outcome = await pullUpdate(agentLoop.agentSourceDir);
+      if (!outcome.ok) { say(`⚠️ ${outcome.error}`); return; }
+      if (!outcome.files.length) { say('✅ Already up to date.'); return; }
+
+      const n = outcome.files.length;
+      const lines = [`### ⬆️ Updated — ${n} file${n === 1 ? '' : 's'} changed`, ''];
+      if (outcome.install) {
+        lines.push('`package.json` moved, so dependencies need reinstalling:', '',
+          '```bash', 'npm install', '```', '');
+      }
+      if (outcome.steps.length) {
+        // Saved before the restart, and kept until acknowledged: the failure
+        // this prevents is silent, so a notice that scrolls past once and is
+        // gone would reproduce it.
+        savePendingReload(outcome.steps, { to: outcome.to });
+        lines.push('**Then these, because the pull touched them:**', '');
+        for (const step of outcome.steps) lines.push(`  - **${step.what}** — ${step.how}`);
+        lines.push('', '_Shown again on every start until you run `/update done`._');
+      } else {
+        lines.push('_Only the server changed — a restart is all it needs._');
+      }
+      lines.push('', process.env.AGENT_CLI_SUPERVISED
+        ? '_Restarting into the new version…_'
+        : '_Quit with `/exit` and start again to run the new version._');
+      say(lines.join('\n'));
+
+      if (process.env.AGENT_CLI_SUPERVISED && !outcome.install) {
+        setTimeout(() => leave(75, { wsServer, agentLoop }), 1200);
+      }
       return;
     }
 
