@@ -872,6 +872,14 @@ have a key.
   behind explicit dependency lists; the `<Static>` element, `staticEpoch` and the streaming
   path stayed in `App.jsx` deliberately, and adding memoization to the transcript rows is how
   the scroll glitches came back the last two times.
+- **A menu opened from `/settings` must not answer in the transcript.** `returnTo` is the
+  settings page, so setting it back reopens that page *on top of* whatever the command just
+  said. Four screens did this — `/effort`, `/config`, and two on the allowlist — and the
+  symptom is a setting that changes with no sign it did. `applyAndReturn` in `Menus.jsx` is
+  the one rule: go back and say nothing (the row is the confirmation and re-reads live
+  state), or close and let the transcript answer. And a menu that mutates shared state needs
+  a fresh `activeMenu` object — `commandRules` is shared by reference, so the values were
+  already right and React simply had no reason to repaint.
 - **The live frame must never outgrow the viewport.** This is the single most important rule in
   `ui/`. When Ink's dynamic output is taller than the terminal, `shouldClearTerminalForFrame`
   (`ink/build/ink.js`) switches it to writing `ESC[2J ESC[3J` plus a full repaint on *every*

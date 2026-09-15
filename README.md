@@ -704,12 +704,36 @@ so it is grouped by area rather than listed flat.
   launch reaches the same place with no window where the transcript on screen
   belongs to the old scope.
 
+#### Commands and configuration
+- **`/update`** — notice when `main` has moved, pull it, and say exactly what
+  that leaves you to reload. Three artifacts ship from this repo and pulling
+  only updates one of them: the extension bundle needs a reload, content
+  scripts a hard refresh, and the `.vsix` a reinstall. The reminder is derived
+  from what actually changed, and it survives the restart until you say it is
+  done.
+- **`/name <text>`** — name the agent, which until now could only be done by
+  editing a file that does not exist in a fresh clone. It had a reader (the
+  banner) and no writer.
+- **`find_symbol` / `find_references`** in the tool list, and `/logs rates`.
+
 #### Housekeeping
 - **Removed as dead:** `TokenCounter` (a 30-line class nothing could reach), five `paths.js`
   helpers with no caller — two of them leftovers of the deleted retrieval subsystem — and
   three test seams no test ever used. `chalk` as a dependency.
 - **Fixed, found by the same audit:** `/set-workspace` has always had a **recent** category
   and nothing ever wrote the file it reads, so it silently offered nothing. One missing call.
+- **A setting changed from `/settings` now shows that it changed.** Four screens ran the
+  command and then put the reply in the transcript *after* reopening the settings page on
+  top of it — so the change happened and the confirmation was invisible.
+- **A restart no longer goes out from under a running turn.** `/workspace`, `/restart` and
+  `/update` left immediately; the browser kept generating into a socket nobody was holding
+  and the reply was never drawn.
+- **Gemini's tables and nested lists survive the scrape.** The reply's DOM is converted by a
+  walker now rather than a series of passes, so a tag nobody listed still comes out readable
+  — `<table>`, `<blockquote>`, `<del>` and `<dl>` were all being concatenated or dropped.
+- **`/open` uses the editor this terminal is running inside.** It fell back to a hardcoded
+  `code`, which no VS Code *fork* installs, and then to the OS default for the file type —
+  which is how a markdown file opened in RStudio.
 
 #### Not done, on purpose
 - **The two bridges were not collapsed** (~600 duplicated lines). The cost it
