@@ -68,7 +68,7 @@ import { z } from 'zod';
 import { SessionStore } from '../storage/session-store.js';
 import { ContextManager } from '../context/context-manager.js';
 import { MemoryManager } from '../context/memory-manager.js';
-import { ExtensionLock } from '../bridge/extension-lock.js';
+import { ExtensionLock, mainLane, subLane } from '../bridge/extension-lock.js';
 
 
 // Backstop for a prompt the extension never answers. Longer than the content
@@ -182,7 +182,7 @@ export class AgentLoop {
     // bridge/extension-lock.js.
     this.extensionLock = new ExtensionLock({
       send: (payload) => this.callbacks?.injectPrompt?.(payload),
-      onStall: (model) => this._onExtensionStall(model),
+      onStall: (lane, model) => this._onExtensionStall(lane, model),
       timeoutMs: EXTENSION_RESPONSE_TIMEOUT,
     });
     this.pendingSubagents = new Map(); // requestId -> { resolve, reject, targetModel }
@@ -362,12 +362,11 @@ export class AgentLoop {
 
     if (isSubagent) {
       if (complete) {
-        // Read the lane before handling the response — handleSubagentResponse
-        // deletes the pending entry, and with it the only record of which tab
-        // this reply came from.
-        const lane = this.pendingSubagents.get(requestId)?.targetModel;
+        // The subagent's own lane, which is its own tab. Released by request
+        // id rather than by model: the user's turn is in a different tab on
+        // the same site, and freeing the model would free that too.
         this.handleSubagentResponse(requestId, content, payload.subagentUrl);
-        this._releaseExtension(lane);
+        this._releaseExtension(subLane(requestId));
       }
       return;
     }
@@ -965,8 +964,8 @@ export class AgentLoop {
    * releasing the wrong one leaves the right one wedged for the rest of the
    * session with later prompts vanishing into it silently.
    */
-  _releaseExtension(model = this.mainModel) {
-    this.extensionLock.release(model);
+  _releaseExtension(lane = mainLane(this.mainModel)) {
+    this.extensionLock.release(lane);
   }
 
   /**
@@ -986,11 +985,37 @@ export class AgentLoop {
    * — an asleep service worker, a tab with no bridge — where nothing would come
    * back and the CLI would sit on "Thinking..." forever.
    */
-  _onExtensionStall(model) {
+  /**
+   * A tab went quiet past the timeout.
+   *
+   * Which tab matters now that lanes are tabs. A stalled **subagent** is one
+   * background turn failing: its own tab, its own lane, and the caller is a
+   * promise waiting for an answer. Killing `isProcessing` and aborting every
+   * lane — which is what this did when there was one lane per model — would
+   * take the user's turn down with it, in a different tab, for something they
+   * never asked for. So the subagent is failed and only its lane released.
+   *
+   * A stalled **main** lane is the user's own turn, and that is still the loud
+   * case: say so, stop, and drop what was queued behind it.
+   */
+  _onExtensionStall(lane, model) {
+    const tab = model || this.mainModel;
     logError(this.workspace, {
       flow: 'agent', op: 'extension_stall',
-      message: `No response from the ${model} tab; releasing it`, meta: { model },
+      message: `No response from the ${tab} tab; releasing it`, meta: { model: tab, lane },
     });
+
+    if (String(lane).startsWith('sub:')) {
+      const requestId = String(lane).slice('sub:'.length);
+      const pending = this.pendingSubagents.get(requestId);
+      if (pending) {
+        this.pendingSubagents.delete(requestId);
+        pending.resolve({ success: false, error: `The ${tab} tab stopped responding.` });
+      }
+      this._releaseExtension(lane);
+      return;
+    }
+
     this.isProcessing = false;
     if (this.callbacks) {
       this.callbacks.sendToPanel({
@@ -998,7 +1023,7 @@ export class AgentLoop {
         type: 'error',
         payload: {
           message:
-            `No response from the ${model} tab. Check that the extension is loaded `
+            `No response from the ${tab} tab. Check that the extension is loaded `
             + 'and that tab is open, then try again.',
         },
         timestamp: Date.now(),
@@ -1489,7 +1514,7 @@ export class AgentLoop {
       setTimeout(() => {
         if (this.pendingSubagents.has(requestId)) {
           this.pendingSubagents.delete(requestId);
-          this._releaseExtension(targetModel);
+          this._releaseExtension(subLane(requestId));
           resolve({ success: false, error: `${targetModel} timeout after 5 minutes.` });
         }
       }, 300000);
