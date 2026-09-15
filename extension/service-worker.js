@@ -245,6 +245,19 @@
       sendToServer(errorMsg);
     }
   }
+  async function sendToModelTab(message, targetModel = "gemini") {
+    const targetUrl = MODEL_URLS[targetModel];
+    if (!targetUrl) return false;
+    const tabs = await chrome.tabs.query({ url: targetUrl });
+    if (tabs.length === 0) return false;
+    try {
+      await chrome.tabs.sendMessage(tabs[tabs.length - 1].id, message);
+      return true;
+    } catch (err) {
+      console.warn(`[Agent CLI] ${message.type} could not reach the ${targetModel} tab:`, err.message);
+      return false;
+    }
+  }
   async function triggerNewChatInModel(payload) {
     const targetModel = payload.targetModel || "gemini";
     const targetUrl = MODEL_URLS[targetModel];
@@ -404,6 +417,10 @@
         break;
       case "new_chat":
         await triggerNewChatInModel(payload);
+        break;
+      case "discover_models":
+      case "switch_model":
+        await sendToModelTab({ type, payload });
         break;
       case "heartbeat_ack":
         break;

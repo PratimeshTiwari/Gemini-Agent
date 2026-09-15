@@ -374,7 +374,12 @@ model. The list says which is which.
 Once the agent is running, you can use built-in slash commands to manage your session:
 - Type `/help` in the CLI to see all available commands.
 - Type `/config` to choose which web model (Gemini, ChatGPT) implements and which one reviews it. Setting a reviewer on the *other* model is what Duo means, and it is the only kind of review worth a second tab — there is no separate `/mode` screen any more, though the name still answers.
-- Type `/effort` to pick how hard the agent works — one ladder from `flash` to `deep`. It sets the prompt profile *and* names the browser tab that profile is written for.
+- Type `/effort` to pick how hard the agent works — one ladder from `flash` to `deep`. It sets
+  the prompt profile **and switches the browser's mode picker to match**, so a prompt written
+  for Pro is not typed into a Flash tab. The first `/effort` of a session asks the browser what
+  your plan offers and falls back to a hint; after that it switches on its own, and says which
+  model it chose. Nothing is hardcoded — the names and the list differ by subscription, so it
+  reads the picker and matches on what each option is *for*.
 - Type `/allowlist` to view and manage your auto-approved and auto-rejected command rules.
 - Type `/settings` for one page of everything that is set, including the Context tab above.
 - Type `/open <path>` to open a file in your editor.

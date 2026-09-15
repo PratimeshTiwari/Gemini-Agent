@@ -1,6 +1,6 @@
 import { getState, setState } from './state.js';
 import { broadcastToSidePanel, sendToServer } from './messaging.js';
-import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus } from './content.js';
+import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab } from './content.js';
 
 /**
  * The socket to the local agent, and the retry policy around it.
@@ -217,6 +217,12 @@ async function handleServerMessage(message) {
       break;
     case 'new_chat':
       await triggerNewChatInModel(payload);
+      break;
+    case 'discover_models':
+    case 'switch_model':
+      // Straight to the model tab. Neither injects a prompt, so neither goes
+      // through the extension lock — reading the picker is not a turn.
+      await sendToModelTab({ type, payload });
       break;
     case 'heartbeat_ack':
       break;

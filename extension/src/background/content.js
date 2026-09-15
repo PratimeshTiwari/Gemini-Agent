@@ -305,6 +305,30 @@ export async function injectPromptIntoModel(payload) {
   }
 }
 
+/**
+ * Send one message to an existing model tab, and do nothing else.
+ *
+ * Unlike `injectPromptIntoModel` this never opens a tab and never activates one:
+ * reading the mode picker is not a turn, and the whole point of doing it is to
+ * avoid surprises — opening a window to find out which model is selected would
+ * be a worse cure than the disease.
+ */
+export async function sendToModelTab(message, targetModel = 'gemini') {
+  const targetUrl = MODEL_URLS[targetModel];
+  if (!targetUrl) return false;
+
+  const tabs = await chrome.tabs.query({ url: targetUrl });
+  if (tabs.length === 0) return false;
+
+  try {
+    await chrome.tabs.sendMessage(tabs[tabs.length - 1].id, message);
+    return true;
+  } catch (err) {
+    console.warn(`[Agent CLI] ${message.type} could not reach the ${targetModel} tab:`, err.message);
+    return false;
+  }
+}
+
 export async function triggerNewChatInModel(payload) {
   const targetModel = payload.targetModel || 'gemini';
   const targetUrl = MODEL_URLS[targetModel];

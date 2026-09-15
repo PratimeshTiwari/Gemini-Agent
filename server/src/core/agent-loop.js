@@ -810,6 +810,43 @@ export class AgentLoop {
   }
 
   /**
+   * What the browser's mode picker is offering, as last reported.
+   *
+   * Null until the extension has looked. That distinction matters: "no list yet"
+   * and "a list with nothing suitable in it" call for different things to be
+   * said, and `planModelSwitch` tells them apart.
+   */
+  noteModelOptions(models, switchedTo) {
+    if (!Array.isArray(models)) return;
+    this.modelOptions = models;
+    if (switchedTo) {
+      this._notify(`🔀 Browser mode switched to ${switchedTo}.`);
+    }
+  }
+
+  /**
+   * Ask the browser what it is offering. Cheap, and safe to repeat.
+   *
+   * Not through `injectPrompt`, which wraps everything as `inject_prompt` and
+   * takes the extension lane — this is a question about the page, not a turn.
+   * `sendToPanel` broadcasts verbatim, and takes the background callbacks
+   * because a slash command runs outside a turn, where `this.callbacks` is null.
+   */
+  _toExtension(type, payload = {}) {
+    const target = this.callbacks || this._backgroundCallbacks;
+    target?.sendToPanel?.({ id: randomUUID(), type, payload, timestamp: Date.now() });
+  }
+
+  requestModelOptions() {
+    this._toExtension('discover_models');
+  }
+
+  /** Ask the browser to select one, by the label it reported. */
+  switchModelTo(label) {
+    if (label) this._toExtension('switch_model', { label });
+  }
+
+  /**
    * Start the running total again, after the thread has been replaced.
    *
    * `contextChars` counts everything ever typed into the browser tab, which is

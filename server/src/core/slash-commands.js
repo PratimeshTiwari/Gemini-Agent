@@ -21,6 +21,7 @@ import path from 'path';
 import * as paths from './paths.js';
 import { EFFORT_LEVELS, resolveEffort, isEffort } from './effort.js';
 import { logError } from './error-log.js';
+import { planModelSwitch } from './model-match.js';
 
 /**
  * Run one slash command.
@@ -188,9 +189,33 @@ export async function handleSlashCommand(loop, command, args) {
         loop.modelConfig.effort = chosen.id;
         loop._saveConfig();
         loop.promptBuilder.resetPromptState();
+
+        // Switch the browser too, rather than asking the user to.
+        //
+        // Every rung has always named the tab it expects, and the only thing
+        // that happened was a hint — so a prompt written for Pro was routinely
+        // typed into a Flash tab, which CLAUDE.md names as the worst case: the
+        // long prompt goes to the model that handles long prompts worst.
+        //
+        // `planModelSwitch` matches against what the picker is *actually*
+        // offering, because the names move and the list differs by plan. If the
+        // browser has not been asked yet, it is asked now and the hint stands
+        // for this one time.
+        const plan = planModelSwitch(chosen.id, loop.modelOptions || []);
+        let browserLine;
+        if (plan.action === 'switch') {
+          loop.switchModelTo(plan.model.label);
+          browserLine = `🔀 Switching the browser to **${plan.model.label}**.`;
+        } else if (plan.action === 'none') {
+          browserLine = `✓ The browser is already on **${plan.model.label}**.`;
+        } else {
+          loop.requestModelOptions?.();
+          browserLine = `💡 Set your browser tab to **${chosen.browser}** — the prompt is written `
+            + `for it. _(${plan.reason}; asking the browser now, so next time this is automatic.)_`;
+        }
+
         return {
-          message: `${renamed}${chosen.label}\n\n${chosen.blurb}\n\n`
-            + `💡 Set your browser tab to **${chosen.browser}** — the prompt is written for it.`,
+          message: `${renamed}${chosen.label}\n\n${chosen.blurb}\n\n${browserLine}`,
         };
       }
 
