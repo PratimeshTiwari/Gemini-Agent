@@ -164,7 +164,11 @@ export class RiskClassifier {
 
       // Small modifications are safe
       if (totalDeletedLines <= 20) {
-        return { level: 'safe', reason: `Small edit: ${totalDeletedLines} lines changed` };
+        // "1 lines changed", and it counts deletions while saying "changed".
+        return {
+          level: 'safe',
+          reason: `Small edit: ${totalDeletedLines} line${totalDeletedLines === 1 ? '' : 's'} removed`,
+        };
       }
     }
 

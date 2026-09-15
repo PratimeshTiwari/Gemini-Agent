@@ -550,6 +550,7 @@ export function App({ agentLoop, wsServer }) {
       setDiffRequest,
       setFocus,
       setHistory,
+      setInputAtEnd,
       setIsProcessing,
       setPlanReviewReady,
       setStatus,

@@ -47,6 +47,7 @@ export function buildAgentCallbacks({
   setDiffRequest,
   setFocus,
   setHistory,
+  setInputAtEnd,
   setIsProcessing,
   setPlanReviewReady,
   setStatus,
@@ -126,9 +127,41 @@ export function buildAgentCallbacks({
         agentLoop.isProcessing = false;
         agentLoop.abortExtensionWork();
         setIsProcessing(false);
+
+        // Take the turn back out before asking for it again.
+        //
+        // `handleUserMessage` pushes the user's message to `conversationHistory`
+        // *before* it tries to send, so by the time we get here it is already
+        // recorded — and telling someone to "submit your prompt again" then put
+        // it in twice. The prompt is handed back to the input box instead, so
+        // retyping is not needed at all.
+        const dropped = agentLoop.conversationHistory
+          .slice().reverse().find((t) => t.role === 'user');
+        if (dropped) {
+          const at = agentLoop.conversationHistory.lastIndexOf(dropped);
+          if (at !== -1) {
+            agentLoop.conversationHistory.splice(at, 1);
+            // The session file is append-only, so the turn is already in it.
+            // Rewriting keeps the two copies agreeing — otherwise `--continue`
+            // resurrects a turn that was never sent.
+            try { agentLoop.sessionStore?.saveHistory?.(agentLoop.conversationHistory); } catch { /* not worth failing the notice */ }
+          }
+          setInputAtEnd?.(dropped.content || '');
+        }
+
         setHistory(prev => [
-          ...prev, 
-          { role: 'assistant', content: '⚠️ **Gemini Extension Reconnecting...**\n\nAutomatically launched `https://gemini.google.com/app` in your browser. Once the tab opens, please submit your prompt again.' }
+          ...prev,
+          // `isLocal`, like every other UI-only message: it is not in
+          // `conversationHistory`, and counting it as loop history shifts
+          // `mergeLoopHistory` by one and costs a turn on screen.
+          {
+            role: 'assistant',
+            isLocal: true,
+            timestamp: Date.now(),
+            content: '⚠️ **Gemini Extension Reconnecting…**\n\nOpened '
+              + '`https://gemini.google.com/app` in your browser. Your prompt is back in '
+              + 'the input box — press enter once the tab is up.',
+          },
         ]);
       }
     },
