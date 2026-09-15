@@ -231,10 +231,40 @@ for (const [label, file] of [['gemini', GEMINI], ['chatgpt', CHATGPT]]) {
   });
 
   test(`${label}: a bullet list nested in a numbered one`, () => {
+    // Three spaces, not two, and the exact number is the whole test. A nested
+    // list has to start at or past its parent item's *content* column, which
+    // `1. ` puts at three. At two it is below the column, so the parent item
+    // closes and the sublist reopens as a sibling of the list — which renders
+    // as a flat list. This assertion read ` {2}` until 2026-09-16 and was
+    // pinning the bug.
     const out = md('<ol><li>First<ul><li>sub a</li></ul></li><li>Second</li></ol>');
     assert.match(out, /^1\. First/m);
-    assert.match(out, /^ {2}- sub a/m);
+    assert.match(out, /^ {3}- sub a/m);
     assert.match(out, /^2\. Second/m);
+  });
+
+  test(`${label}: a numbered list nested in a numbered one`, () => {
+    const out = md('<ol><li>Outer<ol><li>Inner</li></ol></li><li>Next</li></ol>');
+    assert.match(out, /^1\. Outer/m);
+    assert.match(out, /^ {3}1\. Inner/m);
+    assert.match(out, /^2\. Next/m);
+  });
+
+  test(`${label}: a loose item does not break after its marker`, () => {
+    // A loose list item holds block children, and a block child opens with a
+    // newline. Landing that straight after the marker leaves the item empty
+    // and orphans its own body as a sibling of the list.
+    const out = md('<ol><li><p>Run this:</p><pre><code>npm test</code></pre></li></ol>');
+    assert.match(out, /^1\. Run this:/m, `the marker was left empty:\n${out}`);
+    assert.match(out, /npm test/);
+  });
+
+  test(`${label}: a wide marker indents by its own width`, () => {
+    // `10. ` is four columns, so nine items in it is not a hypothetical.
+    const items = Array.from({ length: 10 }, (_, i) => `<li>item ${i + 1}</li>`).join('');
+    const out = md(`<ol>${items.replace('<li>item 10</li>', '<li>item 10<ul><li>deep</li></ul></li>')}</ol>`);
+    assert.match(out, /^10\. item 10/m);
+    assert.match(out, /^ {4}- deep/m);
   });
 
   test(`${label}: a numbered list nested in a bullet one`, () => {

@@ -37,8 +37,74 @@ marked.use(markedTerminal({
   }
 }));
 
-/** A fenced block: language, then the body. */
-const FENCE = /^```([^\n`]*)\n([\s\S]*?)^```[ \t]*$/gm;
+/**
+ * Lists are drawn from the token tree, not from `marked-terminal`'s.
+ *
+ * Its list renderer is line-based: `listitem` prefixes every item with a `* `
+ * marker, and `list` then rewrites those markers a line at a time — replacing
+ * each one with `n. ` when the list is ordered. Nested lists are rendered
+ * first, so by the time the outer list scans, its body already holds the
+ * child's finished, indented lines, and `isPointedLine` matches those too
+ * (`^(?:indent)*(?:\*|\d+\.)`). The parent therefore numbers its children as
+ * if they were its own items, and keeps counting:
+ *
+ *     1. Install the deps        1. Install the deps
+ *       * with npm         -->     * with npm
+ *       2. with pnpm               * with pnpm
+ *     3. Run it                  2. Run it
+ *
+ * Both wrong columns come from one counter. It only bites when the *outer*
+ * list is ordered — the unordered path leaves an already-marked line alone —
+ * which is why "numbered list with sub-points", the shape Gemini reaches for
+ * whenever it explains steps, was the one that came out wrong.
+ *
+ * A token walk cannot have the bug: an item's children are rendered into that
+ * item's body and never re-scanned by its parent. The indent is the item's own
+ * content column, the same rule the content scripts use when they scrape a
+ * list back out of the page — `- ` is two, `1. ` is three, `10. ` is four.
+ */
+marked.use({
+  renderer: {
+    list(token) {
+      let n = Number(token.start || 1);
+      const lines = token.items.map((item) => {
+        const marker = token.ordered ? `${n++}. ` : '* ';
+        const tick = item.task ? (item.checked ? '[X] ' : '[ ] ') : '';
+        const body = this.parser
+          .parse(item.tokens, !!item.loose)
+          // A loose item's first child is a block and opens with its own
+          // newline, which would otherwise land straight after the marker.
+          .replace(/^\s+/, '')
+          .trimEnd()
+          // Continuation lines — a nested list, a second paragraph, a fenced
+          // block — sit under the text, not under the marker.
+          .replace(/\n(?=[^\n])/g, `\n${' '.repeat(marker.length + tick.length)}`);
+        return `${marker}${tick}${body}`;
+      });
+      // Leading newline so the list separates from the text above it; the
+      // trailing pair is the blank line every block element ends with here.
+      return `\n${lines.join('\n')}\n\n`;
+    },
+  },
+});
+
+/**
+ * A fenced block: its indentation, its language, then the body.
+ *
+ * The indent is captured and the closing fence must match it, because a fence
+ * inside a list item is indented to that item's content column — "1. Run
+ * this:" followed by the block is a shape the model writes constantly. Anchored
+ * at column 0 this missed all of them, so they reached `marked` as ordinary
+ * code and came out without the rules that mark a block's edges, and `ctrl+y`
+ * could not see them at all. An unindented fence captures an empty group and
+ * behaves exactly as before.
+ */
+const FENCE = /^([ \t]*)```([^\n`]*)\n([\s\S]*?)^\1```[ \t]*$/gm;
+
+/** Give back the lines of a lifted block without the indent that held it. */
+const dedent = (code, indent) => (indent
+  ? code.replace(new RegExp(`^${indent}`, 'gm'), '')
+  : code);
 
 /**
  * The fenced code blocks in a reply, in the order they appear.
@@ -52,7 +118,7 @@ const FENCE = /^```([^\n`]*)\n([\s\S]*?)^```[ \t]*$/gm;
 export function extractCodeBlocks(content) {
   const out = [];
   for (const m of String(content || '').matchAll(FENCE)) {
-    out.push({ lang: (m[1] || '').trim(), code: m[2].replace(/\n$/, '') });
+    out.push({ lang: (m[2] || '').trim(), code: dedent(m[3], m[1]).replace(/\n$/, '') });
   }
   return out;
 }
@@ -288,8 +354,16 @@ export function renderMarkdown(content) {
      * and a sentinel that does not come back out is a code block deleted.
      */
     const blocks = [];
-    const stashed = source.replace(FENCE, (_m, lang, code) => {
-      blocks.push(renderBlock((lang || '').trim(), code.replace(/\n$/, '')));
+    const stashed = source.replace(FENCE, (_m, indent, lang, code) => {
+      blocks.push(renderBlock((lang || '').trim(), dedent(code, indent).replace(/\n$/, '')));
+      // The sentinel drops the indent, so the restored block sits flush left
+      // even inside a list item. Carrying the indent would put it back only on
+      // the block's *first* line — the restored text is several lines and the
+      // sentinel is one — and indenting all of them is the thing this file
+      // decided against at the top: a drag-select takes the leading spaces
+      // with it, and there is no copy button to fall back on. Flush left also
+      // closes the list, which costs nothing: the item after it carries its
+      // own `start`, so the numbering continues.
       return `x0codeblock${blocks.length - 1}x0`;
     });
 
@@ -297,7 +371,12 @@ export function renderMarkdown(content) {
       .parse(stashed
         .replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[22m')
         .replace(/^###\s+(.*$)/gm, '\x1b[1;32m$1\x1b[0m'))
-      .trim();
+      .trim()
+      // Every block here ends in a blank line and the list renderer opens with
+      // one, so a list after a paragraph is separated twice. Safe to collapse
+      // at this point and not after: the fenced blocks, the one place a run of
+      // blank lines is content, are still standing in as sentinels.
+      .replace(/\n{3,}/g, '\n\n');
 
     out = out.replace(/x0codeblock(\d+)x0/g, (m, i) => blocks[Number(i)] ?? m);
   } catch {

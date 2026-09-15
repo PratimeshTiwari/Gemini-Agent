@@ -1015,9 +1015,9 @@ function extractTextContent(element) {
 
   /**
    * @param {Node} node
-   * @param {{listDepth: number, pre: boolean}} ctx
+   * @param {{pre: boolean}} ctx
    */
-  const render = (node, ctx = { listDepth: 0, pre: false }) => {
+  const render = (node, ctx = { pre: false }) => {
     if (!node) return '';
 
     if (node.nodeType === Node.TEXT_NODE) {
@@ -1095,10 +1095,9 @@ function extractTextContent(element) {
       case 'OL':
         // The items add their own leading newlines; the list closes itself so
         // whatever follows is not swallowed by the last item.
-        return `${children({ listDepth: ctx.listDepth + 1 })}\n`;
+        return `${children()}\n`;
 
       case 'LI': {
-        const depth = Math.max(0, ctx.listDepth - 1);
         const parent = node.parentElement;
         const ordered = parent && parent.tagName === 'OL';
         const index = ordered
@@ -1110,10 +1109,20 @@ function extractTextContent(element) {
         const box = node.querySelector('input[type="checkbox"]');
         const tick = box ? (box.checked || box.hasAttribute('checked') ? '[x] ' : '[ ] ') : '';
 
-        // Trimmed at the front only: a nested list inside this item has already
-        // produced its own newlines and they have to survive.
-        const body = children().replace(/^[ \t]+/, '').trimEnd();
-        return `\n${'  '.repeat(depth)}${marker}${tick}${body}`;
+        // Leading newlines go too, not just spaces. A *loose* item holds block
+        // children (`<li><p>text</p><pre>…</pre></li>`), and those open with a
+        // newline — which lands straight after the marker, leaving an empty
+        // item and orphaning its own content as a sibling of the list.
+        const body = children().replace(/^\s+/, '').trimEnd();
+
+        // Continuation lines are indented to *this item's* content column, not
+        // by a constant. `- ` is two columns, `1. ` is three, `10. ` is four,
+        // and a task box adds four more. Two spaces under a `1. ` parent is
+        // below the content column, so the nested list closed the parent and
+        // reopened as a sibling: every list nested under a numbered item came
+        // out flat. Blank lines stay blank rather than becoming trailing space.
+        const pad = ' '.repeat(marker.length + tick.length);
+        return `\n${marker}${tick}${body.replace(/\n(?=[^\n])/g, `\n${pad}`)}`;
       }
 
       case 'DT':

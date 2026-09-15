@@ -28,6 +28,20 @@ test('the ordinary shapes a model emits', async (t) => {
     assert.doesNotMatch(cleanContent, /read_file/);
   });
 
+  await t.test('an indented fence is still the clean path, not the fallback', () => {
+    // A fence inside a list item is indented, and the model writes lists
+    // unprompted. The fallback would find the JSON either way — the thing that
+    // would break is the *reply*: the fallback removes only the object, so the
+    // orphaned ``` fence is left on screen.
+    const { toolCalls, cleanContent } = parse(
+      '1. Run this:\n\n   ```json\n   {"name":"read_file","args":{"path":"a.js"}}\n   ```\n\n2. Then check it.',
+    );
+    assert.equal(toolCalls.length, 1);
+    assert.equal(toolCalls[0].args.path, 'a.js');
+    assert.doesNotMatch(cleanContent, /```/, `a bare fence was left in the reply:\n${cleanContent}`);
+    assert.match(cleanContent, /Then check it/);
+  });
+
   await t.test('an array in one block is several calls', () => {
     const { toolCalls } = parse(block('[{"name":"read_file","args":{"path":"a.js"}},{"name":"read_file","args":{"path":"b.js"}}]'));
     assert.deepEqual(toolCalls.map((c) => c.args.path), ['a.js', 'b.js']);

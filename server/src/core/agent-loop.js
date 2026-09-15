@@ -1443,8 +1443,14 @@ export class AgentLoop {
       args: z.record(z.any()).default({})
     });
 
-    // First try the standard markdown regex for speed and to remove backticks cleanly
-    const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n```/gi;
+    // First try the standard markdown regex for speed and to remove backticks cleanly.
+    // `[ \t]*` before the closing fence because a fence is indented whenever it
+    // sits inside a list item, which the model does unprompted ("1. Run this:"
+    // followed by the block). Without it the clean path misses and the
+    // brace-matching fallback below picks the call up instead — it finds the
+    // JSON, but it cannot know the backticks around it were part of the same
+    // thing, so the bare fence is left behind in the visible reply.
+    const TOOL_CALL_REGEX = /```(?:json|tool_call)?[ \t]*\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n[ \t]*```/gi;
     cleanContent = cleanContent.replace(TOOL_CALL_REGEX, (fullMatch, jsonGroup) => {
       let parsed;
       try {
