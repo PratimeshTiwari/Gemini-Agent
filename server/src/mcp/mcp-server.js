@@ -8,6 +8,7 @@
 
 import { searchFiles } from './tools/search-files.js';
 import { grepSearch } from './tools/grep-search.js';
+import { findSymbol, findReferences } from './tools/find-symbol.js';
 import { readFile } from './tools/read-file.js';
 import { editFile } from './tools/edit-file.js';
 import { createFile } from './tools/create-file.js';
@@ -47,6 +48,28 @@ const TOOL_DEFINITIONS = [
       contextLines: { type: 'number', description: 'Lines of surrounding code to include with each match (0-5, default 0)', required: false },
     },
     handler: grepSearch,
+  },
+  {
+    name: 'find_symbol',
+    description: 'Find where a symbol is DEFINED — a class, function, method, or const. '
+      + 'Parses the code rather than matching text, so it returns the definition and not the forty call sites, '
+      + 'and never the name inside a comment or a string. Use it instead of grep_search whenever you know the '
+      + 'exact name and want the definition. JavaScript and JSX only; it says so when a file could not be read.',
+    parameters: {
+      name: { type: 'string', description: 'Exact symbol name, case-sensitive', required: true },
+    },
+    handler: findSymbol,
+  },
+  {
+    name: 'find_references',
+    description: 'Find every place a symbol is USED — calls, imports, JSX tags. Parses the code, so a mention '
+      + 'in a comment or a same-named object key is not a hit. This is the "who calls this?" and "what breaks if '
+      + 'I change this?" question, which grep_search answers badly. Results are grouped by file, busiest first.',
+    parameters: {
+      name: { type: 'string', description: 'Exact symbol name, case-sensitive', required: true },
+      includeDefinition: { type: 'boolean', description: 'Include the definition itself (default true)', required: false },
+    },
+    handler: findReferences,
   },
   {
     name: 'read_file',

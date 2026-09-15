@@ -114,6 +114,45 @@ Parameters:
 `,
   },
   {
+    name: 'find_symbol',
+    dispatch: 'mcp',
+    flash: ` — Where a symbol is DEFINED (parses the code, not the text). Args: name (string, exact, case-sensitive)
+`,
+    pro: `
+Find where a symbol is **defined** — a class, function, method or const.
+
+This parses the code, so it returns the definition and not the forty call sites, and never the
+name inside a comment or a string. Whenever you know the exact name and want to see how something
+is written, this is one call where grep_search is a page of matches you then have to read.
+
+JavaScript and JSX only. If a file could not be parsed the result says so — "no definition found"
+plus a note about what was skipped means *not found here*, not "does not exist", and the next move
+is grep_search.
+
+Parameters:
+  - name (string, required): the exact symbol name, case-sensitive
+
+`,
+  },
+  {
+    name: 'find_references',
+    dispatch: 'mcp',
+    flash: ` — Every place a symbol is USED — calls, imports, JSX tags. Args: name (string, exact), includeDefinition? (bool)
+`,
+    pro: `
+Find every place a symbol is **used** — calls, imports, JSX tags.
+
+"Who calls this?" and "what breaks if I change this?" are the questions grep_search answers worst:
+it cannot tell a call from the same word in a comment, or from an object key that happens to
+match. This can. Results are grouped by file, busiest first, and the definition is marked.
+
+Parameters:
+  - name (string, required): the exact symbol name, case-sensitive
+  - includeDefinition (boolean, optional): list the definition too (default true)
+
+`,
+  },
+  {
     name: 'read_file',
     dispatch: 'mcp',
     flash: ` — Read a file. Args: path (string), startLine? (number), endLine? (number)
