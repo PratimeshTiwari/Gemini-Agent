@@ -145,7 +145,23 @@ async function main() {
   // and migration is the first thing to touch it.
   if (config.scope) setActiveScope(config.scope);
 
-  runMigrations(config.workspace);
+  /**
+   * A migration that throws must not be the thing that stops the agent.
+   *
+   * Each one guards its own file operations, but this call was unguarded — so
+   * an unexpected filesystem state, or a bug in a *new* migration arriving with
+   * a pull, would take startup down before there was any UI to report it. That
+   * is the shape of "the update broke it": the failure is in the one code path
+   * that runs before anything can say so.
+   *
+   * Reported and continued. A skipped migration is a layout that stays old,
+   * which is recoverable; a dead startup is not.
+   */
+  try {
+    runMigrations(config.workspace);
+  } catch (err) {
+    console.warn(`⚠️  Migration skipped: ${err.message}`);
+  }
 
   const configHome = ensureConfigDir();
   

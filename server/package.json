@@ -35,5 +35,8 @@
   "devDependencies": {
     "@types/react": "^19.2.18",
     "tsx": "^4.23.12"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }
