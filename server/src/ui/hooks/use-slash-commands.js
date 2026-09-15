@@ -16,6 +16,29 @@ import { canPickFolder, pickFolder } from '../folder-picker.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Leave, after letting go of the port.
+ *
+ * `process.exit()` does not run the SIGINT handler in `main.js`, which is the
+ * only thing that calls `wsServer.stop()` — so every one of these exits left
+ * the bridge's socket bound. That does not matter for `/exit`, and matters a
+ * great deal for the restart paths: the supervisor relaunches immediately, the
+ * new process finds the port still held, and `main.js` answers `EADDRINUSE` by
+ * asking "Port 7777 is already in use by another process. Do you want to kill
+ * it?" through an inquirer prompt — into a terminal that Ink is in the middle
+ * of tearing down. Which is what "it crashed and said something was already
+ * open" was.
+ *
+ * The paint delay stays: Ink needs a frame to show what it just said before
+ * the screen goes.
+ */
+async function leave(code, { wsServer, agentLoop, delay = 120 }) {
+  await new Promise((r) => setTimeout(r, delay));
+  try { await wsServer?.stop?.(); } catch { /* going anyway */ }
+  try { agentLoop?.taskManager?.cleanup?.(); } catch { /* going anyway */ }
+  process.exit(code);
+}
+
+/**
  * Run a "/" command.
  *
  * Some are answered here (they only touch UI state), the rest are handed to
@@ -94,7 +117,7 @@ export async function handleSlashCommand(query, {
     if (command === 'exit') {
       setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: '👋 Goodbye! Agent shutting down.', isLocal: true }]);
       setIsProcessing(false);
-      setTimeout(() => process.exit(0), 100);
+      leave(0, { wsServer, agentLoop, delay: 100 });
       return;
     }
 
@@ -119,7 +142,7 @@ export async function handleSlashCommand(query, {
       setIsProcessing(false);
       // Let the frame paint, then leave. Ink restores the terminal on exit,
       // which is why this is an ordinary exit rather than an exec in place.
-      setTimeout(() => process.exit(75), 120);
+      leave(75, { wsServer, agentLoop });
       return;
     }
 
@@ -505,7 +528,7 @@ export async function handleSlashCommand(query, {
       }
       setHistory(prev => [...prev, { role: 'assistant', content: `📂 Restarting in \`${target}\`…`, isLocal: true }]);
       setIsProcessing(false);
-      setTimeout(() => process.exit(75), 120);
+      leave(75, { wsServer, agentLoop });
     }
 
     if (command === 'switch-workspace') {

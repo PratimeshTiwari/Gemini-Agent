@@ -256,15 +256,40 @@ export function App({ agentLoop, wsServer }) {
   const [terminalWidth, setTerminalWidth] = useState(
     (stdout && stdout.columns) || process.stdout.columns || 80,
   );
+  /**
+   * A narrower terminal has to reprint, or the settled transcript smears.
+   *
+   * `<Static>` rows are written once and Ink cannot repaint them, so they keep
+   * whatever width they were wrapped at. Narrow the window and the terminal
+   * re-wraps that committed text itself, mid-paragraph, against a live frame
+   * that has already re-laid-out — which is the spill you get from dragging the
+   * window while the app is drawing.
+   *
+   * Reprinting is the same move `ctrl+e` makes and the same one `/clear` makes:
+   * clear, bump the epoch, let `<Static>` lay the transcript out again at the
+   * width it is now. Only on a **width** change — height alone does not re-wrap
+   * anything — and debounced, because a drag fires this continuously and
+   * clearing on every tick would be its own kind of flicker.
+   */
+  const lastWidthRef = useRef((stdout && stdout.columns) || 80);
   useEffect(() => {
-    if (!stdout) return;
+    if (!stdout) return undefined;
+    let settle;
     const onResize = () => {
       setTerminalHeight(stdout.rows || 24);
-      setTerminalWidth(stdout.columns || 80);
+      const width = stdout.columns || 80;
+      setTerminalWidth(width);
+      if (width === lastWidthRef.current) return;
+      lastWidthRef.current = width;
+      clearTimeout(settle);
+      settle = setTimeout(() => resetScreen(), 150);
     };
     stdout.on('resize', onResize);
-    return () => stdout.off('resize', onResize);
-  }, [stdout]);
+    return () => {
+      clearTimeout(settle);
+      stdout.off('resize', onResize);
+    };
+  }, [stdout, resetScreen]);
 
   const turns = groupTurns(history);
 
