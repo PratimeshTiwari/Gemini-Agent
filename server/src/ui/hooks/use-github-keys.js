@@ -94,5 +94,17 @@ export function handleGithubKey(char, key, { github, agentLoop, handleSubmit, se
     return true;
   }
 
+  /**
+   * `?` prints the bindings the row no longer has space for.
+   *
+   * The hint row was cut from seven to four because seven wrapped badly at 78
+   * columns. The other three did not stop existing, so something has to say
+   * where they went — a shortcut nobody can discover is a shortcut nobody uses.
+   */
+  if (char === '?') {
+    github.showHelp?.();
+    return true;
+  }
+
   return true; // the tab swallows everything else; the agent hotkeys are not its
 }

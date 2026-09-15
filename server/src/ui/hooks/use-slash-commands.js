@@ -8,6 +8,7 @@ import { listPlans } from '../../core/plan-archive.js';
 import { listCommandDays, readCommands } from '../../core/command-log.js';
 import { resolveWorkspaceInput, validateWorkspace } from '../../core/workspaces.js';
 import { SLASH_COMMANDS } from '../constants.js';
+import { AGENT_COMMANDS } from '../../core/slash-commands.js';
 import { oneLine } from '../format.js';
 import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
 import { canPickFolder, pickFolder } from '../folder-picker.js';
@@ -852,8 +853,9 @@ export async function handleSlashCommand(query, {
 
 
     // Handle standard agent loop commands
-    const validAgentCommands = ['plan', 'auto', 'context', 'undo', 'workspace', 'memory', 'compact', 'clear', 'agent-dir', 'config', 'mode', 'effort', 'model', 'reasoning', 'allowlist', 'github'];
-    if (validAgentCommands.includes(command)) {
+    // From the module that handles them, not a copy kept here. The copy is how
+    // `/name` shipped fully implemented and answering "No such command".
+    if (AGENT_COMMANDS.has(command)) {
       // A command that throws must still hand the prompt back. Without this the
       // rejection escaped, `setIsProcessing(false)` below never ran, and the CLI
       // sat spinning with nothing on screen — which is exactly how a `/compact`

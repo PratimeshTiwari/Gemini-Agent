@@ -153,6 +153,14 @@ export function useGithubTab({ agentLoop, wsServer, activeTab }) {
     openPrExplorer, openComments, dispatchComment, addAvoidWord, togglePlanExpanded,
     clearNewEvent,
 
+    /**
+     * The bindings the hint row no longer has space for.
+     *
+     * Four fit on a line at 78 columns; seven wrapped and stranded a separator.
+     * The other three did not stop existing, so `?` has to say where they went.
+     */
+    showHelp: () => setView((v) => (v === 'help' ? 'activity' : 'help')),
+
     /** True while a text field on the tab owns the letters — see use-github-keys. */
     get isTyping() {
       return !agentLoop.githubHandler || authRejected || view === 'avoid_words';

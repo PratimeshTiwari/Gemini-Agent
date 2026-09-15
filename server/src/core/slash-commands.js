@@ -31,6 +31,25 @@ import { planModelSwitch } from './model-match.js';
  * @param {string[]} args
  * @returns {Promise<{message: string}>} what to put in the transcript
  */
+/**
+ * The commands this module handles.
+ *
+ * Exported because the UI has to know which ones to forward, and it used to
+ * know by way of a **hand-written array** — a fourth list in a project that had
+ * already been bitten three times by lists that have to agree with something
+ * else. `/name` was added to the switch below and not to that array, so it
+ * answered "No such command" while being fully implemented, which is the same
+ * shape as a tool that runs and is never named in the prompt.
+ *
+ * `slash-commands.test.js` checks this against the `case` labels in the switch,
+ * so adding one and forgetting the other fails the build rather than the user.
+ */
+export const AGENT_COMMANDS = new Set([
+  'plan', 'auto', 'memory', 'mode', 'config', 'name', 'clear', 'context',
+  'compact', 'undo', 'agent-dir', 'model', 'reasoning', 'effort', 'allowlist',
+  'github', 'workspace',
+]);
+
 export async function handleSlashCommand(loop, command, args) {
   switch (command) {
     case 'plan':

@@ -27,13 +27,26 @@ export function GithubTab({ agentLoop, wsServer, github, maxRows }) {
     ? <TokenSetup agentLoop={agentLoop} wsServer={wsServer} github={github} />
     : github.view === 'avoid_words'
       ? <AvoidWords github={github} maxRows={maxRows} />
-      : github.view === 'pr_explorer'
+      : github.view === 'help'
+        ? <GithubHelp />
+        : github.view === 'pr_explorer'
         ? <PrExplorer agentLoop={agentLoop} github={github} maxRows={maxRows} />
         : <Activity agentLoop={agentLoop} github={github} maxRows={maxRows} />;
 
+  /**
+   * No border and no heading.
+   *
+   * The only other box-drawn frame in the product is the input field, and that
+   * border *means* something — it is the mode, yellow for plan and cyan for
+   * auto. A cyan frame here said nothing and read, at a glance, like the prompt
+   * had grown to fill the screen. It also cost four rows of a live frame the
+   * rest of the app budgets to the row.
+   *
+   * The heading went with it: you arrive by pressing `^o`, and the status bar
+   * below already says `● github`. It told you where you were after you knew.
+   */
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor="cyan" paddingX={1} width="100%">
-      <Text bold color="cyan">GitHub PR dashboard</Text>
+    <Box flexDirection="column" width="100%">
       {body}
     </Box>
   );
@@ -155,24 +168,71 @@ function AvoidWords({ github, maxRows }) {
  * both invisible from the PR explorer, which is where you go when the list
  * looks wrong.
  */
+/** Every binding on this tab, since the row only carries four. */
+function GithubHelp() {
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text bold>Keys</Text>
+      {[
+        ['↑ ↓', 'move through the list'],
+        ['⏎', 'open the plan in your editor'],
+        ['space', 'expand the comment'],
+        ['r', 'poll GitHub now'],
+        ['p', 'browse pull requests'],
+        ['a', 'avoid words — comments to skip'],
+        ['^o', 'back to the agent'],
+        ['esc', 'back'],
+      ].map(([key, what]) => (
+        <Text key={key}>
+          {'  '}<Text color="cyan">{key.padEnd(6)}</Text>
+          <Text dimColor>{what}</Text>
+        </Text>
+      ))}
+      <Box marginTop={1}><KeyHints hints={[['?', 'back'], ['esc', 'back']]} /></Box>
+    </Box>
+  );
+}
+
 function GithubStatus({ agentLoop, github }) {
   const status = agentLoop?.githubHandler?.getStatus?.() || {};
   const token = formatTokenExpiry(status.tokenExpiry, github?.authRejected);
   const watched = status.prsWatched || 0;
 
+  /**
+   * One line, ranked, and quiet about what is merely the default.
+   *
+   * It used to print five fields of equal weight — `connecting… · token ok ·
+   * 0 PRs watched · CI watch on · polled never` — so nothing stood out, two of
+   * them contradicted each other at a glance, and at 78 columns the last one
+   * was already being cut off.
+   *
+   * Identity first: "0 PRs watched" reads very differently once you can see it
+   * is watching as the wrong account, which is the reasoning `getStatus()`
+   * already has for reporting `username` at all.
+   *
+   * `CI watch` appears only when it is **off**, and the poll time only once a
+   * poll has happened — the same rule the main status bar follows for `0
+   * pastes`. A field that always says the same thing is not information.
+   */
+  const trouble = github?.authRejected || token.tone === 'red';
+
   return (
     <Text wrap="truncate">
-      {status.username
+      {trouble ? <Text color="yellow">{'! '}{token.label}</Text> : null}
+      {!trouble && status.username
         ? <Text color="cyan" bold>@{status.username}</Text>
-        : <Text dimColor>connecting…</Text>}
-      <Text dimColor>{'  ·  '}</Text>
-      <Text color={token.tone}>{token.label}</Text>
-      <Text dimColor>{'  ·  '}{watched} PR{watched === 1 ? '' : 's'} watched</Text>
-      <Text dimColor>{'  ·  '}CI watch </Text>
-      <Text color={status.ciWatchEnabled ? 'green' : 'gray'}>
-        {status.ciWatchEnabled ? 'on' : 'off'}
-      </Text>
-      <Text dimColor>{'  ·  '}polled {formatPollTime(status.lastPollTime)}</Text>
+        : null}
+      {!trouble && !status.username ? <Text dimColor>connecting…</Text> : null}
+
+      {!trouble && status.username ? (
+        <Text dimColor>{'  ·  '}{watched} PR{watched === 1 ? '' : 's'}</Text>
+      ) : null}
+      {!trouble && status.lastPollTime ? (
+        <Text dimColor>{'  ·  '}polled {formatPollTime(status.lastPollTime)}</Text>
+      ) : null}
+      {!trouble && status.ciWatchEnabled === false ? (
+        <Text dimColor>{'  ·  '}CI watch off</Text>
+      ) : null}
     </Text>
   );
 }
@@ -253,7 +313,12 @@ function Activity({ agentLoop, github, maxRows }) {
       )}
 
       <Box flexDirection="column" marginTop={1}>
-        <Text bold>Recent activity</Text>
+        {/*
+          The heading earns its place only when there is a list under it. An
+          empty state used to cost three rows — heading, sentence, and the
+          blank line above them — to say nothing is happening.
+        */}
+        {recent.length > 0 ? <Text bold>Recent activity</Text> : null}
         {recent.length === 0
           ? <Text dimColor>Nothing yet — waiting for PR comments or CI runs.</Text>
           : recent.map((activity) => {
@@ -261,11 +326,36 @@ function Activity({ agentLoop, github, maxRows }) {
               const isSelected = activity.id === selectedPlanId;
               const isExpanded = expandedComments.has(activity.id);
               const body = activity.payload?.comment?.body || '';
+              /**
+               * Who said it, not what the classifier called it.
+               *
+               * The row used to read `PR #42 — plan generated · requires_review`.
+               * `requires_review` is the **only** non-noise value
+               * `comment-classifier.js` can return, and anything it calls noise
+               * is dropped before a plan is written — so on a comment row that
+               * word was a constant. `plan generated` was another: every row in
+               * this list is a plan.
+               *
+               * Meanwhile the author was already in the payload and not shown,
+               * which is the wrong way round — "@alice commented" is what this
+               * list is scanned for.
+               *
+               * There is no LLM verdict to put here instead. The classifier
+               * stopped categorising when the AI took that over, and what the
+               * AI produces is the plan itself, not a label; inventing one to
+               * display would be the second classifier that was removed.
+               */
+              const author = activity.payload?.comment?.author;
+              const what = author
+                ? `@${author} commented`
+                : activity.payload?.category === 'ci_failure'
+                  ? 'CI failed'
+                  : 'plan written';
               return (
                 <Box key={activity.id} flexDirection="column">
                   <Text color={isSelected ? 'cyan' : 'white'} wrap="truncate">
-                    {isSelected ? '❯ ' : '  '}PR #{activity.payload.prNumber} — plan generated
-                    <Text dimColor> · {activity.payload.category}</Text>
+                    {isSelected ? '❯ ' : '  '}PR #{activity.payload.prNumber}
+                    <Text dimColor>{'  ·  '}</Text>{what}
                   </Text>
                   {body ? (
                     <Text dimColor wrap={isExpanded ? 'wrap' : 'truncate'}>
@@ -286,14 +376,18 @@ function Activity({ agentLoop, github, maxRows }) {
       </Box>
 
       <Box marginTop={1}>
+        {/*
+          Four, not seven. At 78 columns seven wrapped mid-list and left a
+          separator stranded at the start of the second row — `KeyHints` uses
+          `flexWrap`, which knows nothing about the separators it wraps
+          between. The transcript settled this already: the status bar carries
+          what is live and `/help` lists the rest.
+        */}
         <KeyHints hints={[
           ['↑↓', 'move'],
-          ['space', 'expand'],
           ['⏎', 'open plan'],
-          ['a', 'avoid words'],
-          ['p', 'PRs'],
           ['r', 'refresh'],
-          ['^o', 'agent'],
+          ['?', 'more'],
         ]} />
       </Box>
     </Box>
