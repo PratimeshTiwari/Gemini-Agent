@@ -144,38 +144,10 @@ body {
 }
 
 /* Context Bar */
-.context-bar {
-  width: 60px;
-  height: 6px;
-  background: var(--bg-tertiary);
-  border-radius: 3px;
-  overflow: hidden;
-  position: relative;
-}
 
-.context-fill {
-  height: 100%;
-  background: var(--green);
-  border-radius: 3px;
-  transition: width 0.5s ease, background-color 0.5s ease;
-  width: 0%;
-}
 
-.context-fill.warning {
-  background: var(--orange);
-}
 
-.context-fill.danger {
-  background: var(--red);
-}
 
-#context-label {
-  font-size: 10px;
-  color: var(--text-muted);
-  position: absolute;
-  right: 0;
-  top: -14px;
-}
 
 /* ── Message Stream ───────────────────────────────────── */
 #message-stream {

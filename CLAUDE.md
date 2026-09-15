@@ -410,6 +410,11 @@ question someone asks six weeks later, and because two of them were not simply u
   is worth a word: the companion *does* write `plan-review.json`, but that is its own draft
   state while you are commenting, and the comments reach the CLI inside
   `plan-approval.json`. The path helper was the dead part, not the feature.
+- **The side panel's context meter** — markup, CSS and `updateContextBar()`, which nothing
+  called. Worse than unused: the server never sends token counts to the panel at all, so the
+  bar read a permanent **0%** while your context could be at 90%. A meter that is always
+  wrong is worse than no meter, and the CLI has the real one in its status bar. Putting it
+  back is a feature — it needs a new message type — not a missing call.
 - **Three test seams that no test used** — `__tabLanes` and `__sessionTabs` in the
   extension's `content.js`, and `resetSymbolIndexes`. Written in the same commits as the
   things they were meant to test, and then not needed. A seam nobody pulls is API surface
@@ -421,6 +426,18 @@ which meant nothing ever wrote `recent-workspaces.json` — so `listWorkspaceCan
 silently offered nothing. The reader, the writer and the picker row all existed; the call did
 not. `main.js` makes it now, after the workspace existence check, so a path that does not
 resolve is not offered back as somewhere you have been. Verified: 0 recents before, 2 after.
+
+**Found and deliberately left alone.** The side panel handles ten message types and the
+server sends at least three more it drops on the floor — `response_stream`,
+`github_processing_started`, `github_processing_finished`. That is an incomplete surface
+rather than dead code: deleting the sends would remove a panel feature, adding handlers is
+one. Worth knowing that every streamed chunk currently crosses the socket to the panel and
+is discarded.
+
+An old `.agent/config.json` can also carry `contextFolders` and `modelConfig.reasoner`,
+fossils of features deleted in Direction phases 2 and 7. Nothing in the source reads either.
+They are left in place on purpose: config saving deliberately preserves keys it does not
+own — that was a bug fix — and auto-pruning known-dead keys would fight it for no gain.
 
 **Dependencies: none unused.** Every entry in all four `package.json` files is imported,
 used in a script, or `@types/react`, which is types-only and exists for editor JSX

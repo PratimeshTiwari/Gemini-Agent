@@ -15,8 +15,6 @@ const connectionText = document.getElementById('connection-text');
 const modeToggle = document.getElementById('mode-toggle');
 const modeIcon = document.getElementById('mode-icon');
 const modeText = document.getElementById('mode-text');
-const contextFill = document.getElementById('context-fill');
-const contextLabel = document.getElementById('context-label');
 
 // ── State ────────────────────────────────────────────────────────────
 let currentMode = 'plan';
@@ -294,17 +292,6 @@ window.respondToDiff = function(diffId, action) {
     if (actions) actions.remove();
   }
 };
-
-// ── Context Bar ─────────────────────────────────────────────────────
-function updateContextBar(used, total) {
-  const pct = total > 0 ? Math.round((used / total) * 100) : 0;
-  contextFill.style.width = `${pct}%`;
-  contextLabel.textContent = `${pct}%`;
-
-  contextFill.classList.remove('warning', 'danger');
-  if (pct > 75) contextFill.classList.add('danger');
-  else if (pct > 50) contextFill.classList.add('warning');
-}
 
 // ── Incoming Message Handler ────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

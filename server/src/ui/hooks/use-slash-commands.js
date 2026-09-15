@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import * as paths from '../../core/paths.js';
 import { createSkill, listSkills, skillSearchPath } from '../../core/skills.js';
 import { describeDestructive } from '../destructive.js';
@@ -15,7 +14,6 @@ import { canPickFolder, pickFolder } from '../folder-picker.js';
 import { summariseTraces, formatMs } from '../../core/trace-log.js';
 import { channelHealth, formatRate, MIN_TURNS_FOR_RATE } from '../../core/channel-health.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Leave, after letting go of the port.
