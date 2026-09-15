@@ -209,9 +209,11 @@ export async function handleSlashCommand(loop, command, args) {
         } else if (plan.action === 'none') {
           browserLine = `✓ The browser is already on **${plan.model.label}**.`;
         } else {
+          loop._pendingEffortSwitch = chosen.id;
           loop.requestModelOptions?.();
-          browserLine = `💡 Set your browser tab to **${chosen.browser}** — the prompt is written `
-            + `for it. _(${plan.reason}; asking the browser now, so next time this is automatic.)_`;
+          browserLine = `🔀 Asking the browser to switch to the ${chosen.browser} tier…`
+            + `\n\n_If nothing happens: reload the extension at \`chrome://extensions\` and `
+            + 'hard-refresh the Gemini tab, then try again._';
         }
 
         return {

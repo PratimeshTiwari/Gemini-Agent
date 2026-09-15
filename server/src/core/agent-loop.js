@@ -58,6 +58,7 @@ function oneLineError(result) {
 }
 import * as paths from './paths.js';
 import { resolveEffort, effortFromConfig } from './effort.js';
+import { planModelSwitch } from './model-match.js';
 import { handleSlashCommand as runSlashCommand } from './slash-commands.js';
 import { stripImageData } from './prompt-builder.js';
 import { validateWorkspace } from './workspaces.js';
@@ -821,7 +822,18 @@ export class AgentLoop {
     this.modelOptions = models;
     if (switchedTo) {
       this._notify(`🔀 Browser mode switched to ${switchedTo}.`);
+      return;
     }
+
+    // A rung asked for a switch before the list existed. Finish it now rather
+    // than making the user run `/effort` twice to get what they asked for the
+    // first time — which is indistinguishable from it not working.
+    const wanted = this._pendingEffortSwitch;
+    this._pendingEffortSwitch = null;
+    if (!wanted) return;
+
+    const plan = planModelSwitch(wanted, models);
+    if (plan.action === 'switch') this.switchModelTo(plan.model.label);
   }
 
   /**

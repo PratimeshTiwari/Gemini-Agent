@@ -217,6 +217,13 @@ export class WebSocketServer {
         this.extensionConnectMs = Date.now() - this.listeningAt;
         if (this.agentLoop) this.agentLoop.extensionConnectMs = this.extensionConnectMs;
       }
+
+      if (client.type === 'extension' && this.agentLoop) {
+        // Ask what the mode picker is offering, now, so `/effort` has an answer
+        // the first time it is used rather than spending that call discovering.
+        // A beat, because the content script may still be mounting into the tab.
+        setTimeout(() => this.agentLoop.requestModelOptions?.(), 1500);
+      }
     }
 
     switch (type) {
