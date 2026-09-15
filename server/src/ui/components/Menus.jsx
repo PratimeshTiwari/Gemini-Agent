@@ -25,6 +25,21 @@ import { FOCUS_INPUT } from '../constants.js';
  * used to get applied without anyone agreeing to them.
  */
 /** Settings rows that are a switch, not a choice. Flipped without leaving the page. */
+/**
+ * Change a setting, and put the answer where it can actually be read.
+ *
+ * Every one of these used to set `activeMenu` back to `returnTo` and then push
+ * the command's reply into the transcript — and when a menu was opened *from
+ * `/settings`*, `returnTo` is the settings page, so the page reopened on top
+ * of the message. The setting changed and the confirmation was invisible,
+ * which is indistinguishable from nothing having happened. `/effort`,
+ * `/config` and the whole allowlist screen had it.
+ *
+ * So: when there is a page to go back to, go back to it and say nothing — the
+ * row you are looking at is the confirmation, and it re-reads live state. When
+ * there is not, close and let the transcript answer, which is where a reply
+ * belongs when nothing is covering it.
+ */
 const TOGGLES = new Set(['/plan', '/auto', '/memory on', '/memory off', '/allowlist enable', '/allowlist disable']);
 
 /** `2026-09-10 14:32`, in the reader's own timezone. */
@@ -47,6 +62,26 @@ export function Menus({
   setInput,
   setInputAtEnd,
 }) {
+  /**
+   * Run a setting change and land somewhere it can be seen. See TOGGLES above.
+   *
+   * Back to the page it came from, saying nothing, because the row *is* the
+   * confirmation and it re-reads live state. Only when there is no page to go
+   * back to does the transcript get the reply — there, nothing is covering it.
+   */
+  const applyAndReturn = React.useCallback(async (menu, command, args) => {
+    const result = await agentLoop.handleSlashCommand(command, args);
+    if (menu?.returnTo) {
+      setActiveMenu(menu.returnTo);
+      return;
+    }
+    setActiveMenu(null);
+    setFocus(FOCUS_INPUT);
+    if (result?.message) {
+      setHistory((prev) => [...prev, { role: 'assistant', content: result.message, isLocal: true }]);
+    }
+  }, [agentLoop, setActiveMenu, setFocus, setHistory]);
+
   // Every menu's footer promised `esc cancel` and nothing listened: the agent's
   // own key bindings go inert while a modal is up, and SelectInput knows only
   // the arrows and Enter. So escape lands here, and only here — one step back
@@ -239,10 +274,7 @@ export function Menus({
                   if (item.value !== activeMenu.at) setActiveMenu((m) => ({ ...m, at: item.value }));
                 }}
                 onSelect={async (item) => {
-                  setActiveMenu(activeMenu.returnTo || null);
-                  const result = await agentLoop.handleSlashCommand('effort', [item.value]);
-                  setHistory(prev => [...prev, { role: 'assistant', content: result.message, isLocal: true }]);
-                  setFocus(FOCUS_INPUT);
+                  await applyAndReturn(activeMenu, 'effort', [item.value]);
                 }}
               />
               <Box marginTop={1}>
@@ -267,12 +299,7 @@ export function Menus({
           const reviewer = agentLoop.modelConfig?.reviewer || null;
           const other = main === 'gemini' ? 'chatgpt' : 'gemini';
           const isDuo = Boolean(reviewer) && reviewer !== main;
-          const run = async (args) => {
-            setActiveMenu(activeMenu.returnTo || null);
-            const result = await agentLoop.handleSlashCommand('config', args);
-            setHistory(prev => [...prev, { role: 'assistant', content: result.message, isLocal: true }]);
-            setFocus(FOCUS_INPUT);
-          };
+          const run = async (args) => { await applyAndReturn(activeMenu, 'config', args); };
 
           return (
             <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
@@ -617,8 +644,26 @@ export function Menus({
                       setActiveMenu({ ...activeMenu, view: 'list', pending: null });
                       return;
                     }
-                    close();
-                    handleSubmit(`/allowlist remove ${cmd}`);
+                    /**
+                     * Done here, not handed to the transcript.
+                     *
+                     * This used to `close()` and submit — and `close()` goes
+                     * *back to settings* when that is where the menu was opened
+                     * from, so the rule was removed, the confirmation went to a
+                     * transcript hidden behind the reopened page, and the list
+                     * you were looking at never updated. From settings it was
+                     * indistinguishable from nothing happening.
+                     *
+                     * A settings change belongs in the screen that owns it, the
+                     * way the plan/auto and memory toggles already work.
+                     */
+                    agentLoop.handleSlashCommand('allowlist', ['remove', cmd]);
+                    setActiveMenu({
+                      ...activeMenu,
+                      view: 'list',
+                      pending: null,
+                      rules: agentLoop.commandRules,
+                    });
                   }}
                 />
                 <Text dimColor>↑↓ move · enter choose · esc back</Text>
@@ -710,8 +755,11 @@ export function Menus({
                     setInputAtEnd(item.value === '\u0000add' ? '/allowlist add ' : '/allowlist block ');
                     return;
                   }
-                  close();
-                  handleSubmit(`/allowlist ${item.value}`);
+                  // In place, for the same reason as the removal above: from
+                  // settings, `close()` reopens the page and the answer lands
+                  // where it cannot be read.
+                  agentLoop.handleSlashCommand('allowlist', [item.value]);
+                  setActiveMenu({ ...activeMenu, rules: agentLoop.commandRules });
                 }}
               />
               <Text dimColor>↑↓ move · enter choose · esc cancel</Text>
