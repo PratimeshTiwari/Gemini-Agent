@@ -227,7 +227,16 @@ export const planReviewPath = (workspace) => statePath(workspace, 'plan-review.j
 export const backupsDir = (workspace) => path.join(agentDir(workspace), 'backups');
 export const contextDir = (workspace) => path.join(agentDir(workspace), 'context');
 export const contextSummaryPath = (workspace) => path.join(contextDir(workspace), 'summary.md');
-export const plansDir = (workspace) => path.join(agentDir(workspace), 'github-pr-plans');
+/**
+ * Where the GitHub agent writes what it worked out about a PR comment.
+ *
+ * Renamed from `github-pr-plans`. Two different things were called "plans":
+ * `/plans` reads `.agent/artifacts/plans/` and `/github plans` read this, with
+ * different formats, different code and the same word — so "where is the plan?"
+ * had two answers and no way to tell which was meant. These are reviews of
+ * somebody's comment, which is what they have always been.
+ */
+export const plansDir = (workspace) => path.join(agentDir(workspace), 'github-reviews');
 export const logsDir = (workspace) => path.join(agentDir(workspace), 'logs');
 export const sessionsDirLocal = (workspace) => path.join(agentDir(workspace), 'sessions');
 
@@ -260,7 +269,7 @@ export const errorLogPath = (workspace) => path.join(logsDir(workspace), 'errors
 
 // ── Workspace-relative (for configs and prompts that need a relative name) ──
 
-export const REL_PLANS_DIR = `${AGENT_DIR}/github-pr-plans`;
+export const REL_PLANS_DIR = `${AGENT_DIR}/github-reviews`;
 export const REL_GITHUB_STATE = `${AGENT_DIR}/state/github.json`;
 export const REL_ARTIFACTS_DIR = `${AGENT_DIR}/artifacts`;
 

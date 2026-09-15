@@ -265,6 +265,48 @@ export function migrateMemory(workspace) {
 }
 
 /**
+ * `.agent/github-pr-plans/` → `.agent/github-reviews/`.
+ *
+ * Two different things were called "plans": `/plans` reads
+ * `.agent/artifacts/plans/` and `/github plans` read `github-pr-plans/`,
+ * different formats and different code under one word, so "where is the plan?"
+ * had two answers and no way to tell which was meant.
+ *
+ * Unlike the pre-`.agent` migration this runs on an install that already *has*
+ * a `.agent/` — that is the only kind that can have the old directory — so it
+ * cannot ride `migrateWorkspace`'s "only when .agent is absent" guard and is
+ * called from `runMigrations` directly. It is a no-op on the second run.
+ *
+ * Refuses to clobber. If both exist the old one is left where it is and said
+ * out loud: merging two directories of generated markdown is a decision, and
+ * making it silently on startup is how someone loses the half they wanted.
+ *
+ * @returns {string[]} a one-line description if anything moved
+ */
+export function migrateGitHubReviews(workspace) {
+  const legacy = path.join(paths.agentDir(workspace), 'github-pr-plans');
+  const target = paths.plansDir(workspace);
+  if (!fs.existsSync(legacy) || legacy === target) return [];
+
+  if (fs.existsSync(target)) {
+    console.warn(
+      `⚠️  Both ${paths.AGENT_DIR}/github-pr-plans and ${paths.AGENT_DIR}/github-reviews exist. `
+      + 'Left the old one alone — move anything you want out of it, then delete it.',
+    );
+    return [];
+  }
+
+  try {
+    fs.renameSync(legacy, target);
+    return ['github-pr-plans/ → github-reviews/'];
+  } catch (err) {
+    // A failed rename must not stop the agent starting.
+    console.warn(`⚠️  Could not rename github-pr-plans: ${err.message}`);
+    return [];
+  }
+}
+
+/**
  * Files that used to be read as instructions and no longer are.
  *
  * `rules.md` and `mistakes.md` were two of the several places a project could
@@ -290,7 +332,8 @@ export function runMigrations(workspace) {
   const { migrated, items } = migrateWorkspace(workspace);
   const homeItems = migrateHome(workspace);
   const memoryItems = migrateMemory(workspace);
-  const all = [...items, ...homeItems, ...memoryItems];
+  const reviewItems = migrateGitHubReviews(workspace);
+  const all = [...items, ...homeItems, ...memoryItems, ...reviewItems];
 
   if (all.length > 0) {
     console.log(

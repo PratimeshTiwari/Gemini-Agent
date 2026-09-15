@@ -1,5 +1,5 @@
 /**
- * PlanGenerator — Unit Tests
+ * ReviewWriter — Unit Tests
  *
  * Plans are one file per item under <outputDir>/PR-<n>/, not one file per PR.
  * That layout is what lets github-event-handler skip a comment it has already
@@ -10,13 +10,13 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 import { existsSync, rmSync, readFileSync, mkdirSync } from 'fs';
 import { resolve, join } from 'path';
-import { PlanGenerator } from '../../src/github/plan-generator.js';
+import { ReviewWriter } from '../../src/github/review-writer.js';
 
 const TEST_WORKSPACE = resolve(import.meta.dirname, '../../.test-workspace');
 const PLAN_DIR = '.agent/github-pr-plans';
 const planPath = (...parts) => resolve(TEST_WORKSPACE, PLAN_DIR, ...parts);
 
-describe('PlanGenerator', () => {
+describe('ReviewWriter', () => {
   let generator;
 
   beforeEach(() => {
@@ -24,7 +24,7 @@ describe('PlanGenerator', () => {
       rmSync(TEST_WORKSPACE, { recursive: true });
     }
     mkdirSync(TEST_WORKSPACE, { recursive: true });
-    generator = new PlanGenerator(TEST_WORKSPACE, PLAN_DIR);
+    generator = new ReviewWriter(TEST_WORKSPACE, PLAN_DIR);
   });
 
   afterEach(() => {

@@ -2,7 +2,7 @@
  * GitHub Event Handler
  *
  * Orchestrator that wires GitHubPoller events to the CommentClassifier,
- * CILogParser, and PlanGenerator. This is the glue layer.
+ * CILogParser, and ReviewWriter. This is the glue layer.
  *
  * Flow:
  *   GitHubPoller.on('new_comment') → classify → generate plan
@@ -19,9 +19,10 @@ import { join } from 'path';
 import { GitHubPoller } from './github-poller.js';
 import { CommentClassifier } from './comment-classifier.js';
 import { CILogParser } from './ci-log-parser.js';
-import { PlanGenerator } from './plan-generator.js';
+import { ReviewWriter } from './review-writer.js';
 import { resolveGitHubConfig } from './github-config.js';
-import { GITHUB_REVIEW_PROMPT } from './github-review-prompt.js';
+import { WorkQueue } from './work-queue.js';
+import { analyseComment } from './review-task.js';
 
 export class GitHubEventHandler extends EventEmitter {
   /**
@@ -62,16 +63,26 @@ export class GitHubEventHandler extends EventEmitter {
     this.poller = new GitHubPoller({ token, workspace, config: this.config });
     this.classifier = new CommentClassifier();
     this.ciParser = new CILogParser();
-    this.planGenerator = new PlanGenerator(workspace, this.config.planOutputDir);
+    this.planGenerator = new ReviewWriter(workspace, this.config.planOutputDir);
 
     // ── Concurrency Queue ──────────────────────────────────────────
-    // One comment is analyzed at a time. Others queue up.
-    // 30s cooldown between completions to avoid Gemini rate limits.
-    this._commentQueue = [];          // [{ pr, comment, force }]
-    this._isProcessingComment = false;
-    this._currentAnalysis = null;     // { commentId, prNumber, author } for UI
-    this._processedCommentIds = new Set(); // Dedup within current session
-    this.COMMENT_COOLDOWN_MS = 30000; // 30s between consecutive analyses
+    // One comment at a time, never the same one twice, and a pause between —
+    // see work-queue.js for what each of those three rules is paying for.
+    this.COMMENT_COOLDOWN_MS = 30000;
+    this._queue = new WorkQueue({
+      cooldownMs: this.COMMENT_COOLDOWN_MS,
+      identify: ({ comment }) => comment.id,
+      run: ({ pr, comment }) => this._analyzeComment(pr, comment),
+      onStart: ({ pr, comment }) => this.emit('processing_started', {
+        commentId: comment.id, prNumber: pr.number, author: comment.author, body: comment.body,
+      }),
+      onFinish: ({ pr, comment }) => this.emit('processing_finished', {
+        commentId: comment.id, prNumber: pr.number,
+      }),
+      onError: (err, { pr }) => this.emit('error', {
+        message: `Analysis of PR #${pr.number} failed: ${err.message}`,
+      }),
+    });
 
     // Stats
     this.stats = {
@@ -180,50 +191,20 @@ export class GitHubEventHandler extends EventEmitter {
    * Deduplicates automatically; force=true bypasses dedup.
    */
   _enqueueComment({ pr, comment, force = false }) {
-    const key = comment.id;
-
-    // Dedup: skip if already processed or already in queue
-    if (!force) {
-      if (this._processedCommentIds.has(key)) return;
-      if (this._commentQueue.some(item => item.comment.id === key)) return;
-    }
-
-    this._commentQueue.push({ pr, comment });
-    this._drainCommentQueue();
+    this._queue.add({ pr, comment }, { force });
   }
 
-  /**
-   * Process the next item in the queue (one at a time).
-   */
-  async _drainCommentQueue() {
-    if (this._isProcessingComment || this._commentQueue.length === 0) return;
+  /** What is being analysed right now, for the dashboard. */
+  get _currentAnalysis() {
+    const item = this._queue.current;
+    return item
+      ? { commentId: item.comment.id, prNumber: item.pr.number, author: item.comment.author }
+      : null;
+  }
 
-    this._isProcessingComment = true;
-    const { pr, comment } = this._commentQueue.shift();
-
-    this._processedCommentIds.add(comment.id);
-    this._currentAnalysis = { commentId: comment.id, prNumber: pr.number, author: comment.author };
-
-    this.emit('processing_started', {
-      commentId: comment.id,
-      prNumber: pr.number,
-      author: comment.author,
-      body: comment.body,
-    });
-
-    try {
-      await this._analyzeComment(pr, comment);
-    } finally {
-      this._currentAnalysis = null;
-      this._isProcessingComment = false;
-
-      this.emit('processing_finished', { commentId: comment.id, prNumber: pr.number });
-
-      // Cooldown before next item
-      if (this._commentQueue.length > 0) {
-        setTimeout(() => this._drainCommentQueue(), this.COMMENT_COOLDOWN_MS);
-      }
-    }
+  /** Whether an analysis is in flight. Read by the tests and the dashboard. */
+  get _isProcessingComment() {
+    return this._queue.busy;
   }
 
   /**
@@ -233,48 +214,15 @@ export class GitHubEventHandler extends EventEmitter {
     const classification = this.classifier.classify(comment, this.config.ignoreAuthors, this.config.avoidWords || []);
     if (classification.category === 'noise') return;
 
-    let aiAnalysis = null;
-    if (this.agentLoop) {
-      // Build structured context for the AI analysis
-      const diffContext = comment.diff_hunk
-        ? `<diff_context>\n\`\`\`diff\n${comment.diff_hunk}\n\`\`\`\n</diff_context>`
-        : '';
-
-      const fileContext = comment.path
-        ? `<file_context path="${comment.path}"${comment.line ? ` line="${comment.line}"` : ''} />`
-        : '';
-
-      const prompt = `${GITHUB_REVIEW_PROMPT}
-
-<pr_context>
-  <pr title="${pr.title}" number="${pr.number}" branch="${pr.head_ref || 'unknown'}" />
-  <comment author="${comment.author}">
-${comment.body}
-  </comment>
-  ${fileContext}
-  ${diffContext}
-</pr_context>
-
-Investigate this review comment using your tools and produce ONE consolidated markdown plan.
-CRITICAL: Do NOT run \`git checkout\` or switch branches. The user may have unsaved work.`;
-
-      try {
-        const response = await this.agentLoop.runHeadlessTask(prompt);
-        if (response.success) {
-          aiAnalysis = response.result;
-        } else {
-          logError(this.agentLoop.workspace, {
-            flow: 'github', op: 'analyze_comment',
-            message: response.error || 'the analysis returned no result',
-          });
-        }
-      } catch (e) {
-        logError(this.agentLoop.workspace, {
-          flow: 'github', op: 'analyze_comment',
-          message: e.message, detail: e.stack,
-        });
-      }
-    }
+    // The prompt and the call live in review-task.js. It never throws: a
+    // failed analysis must still leave a review on disk, or a flaky tab loses
+    // the record of the comment entirely.
+    const aiAnalysis = await analyseComment({
+      pr,
+      comment,
+      workspace: this.agentLoop?.workspace || this.workspace,
+      ask: this.agentLoop ? (prompt) => this.agentLoop.runHeadlessTask(prompt) : null,
+    });
 
     const result = this.planGenerator.generateCommentPlan({ pr, comment, classification, aiAnalysis });
     if (result.skipped) return;

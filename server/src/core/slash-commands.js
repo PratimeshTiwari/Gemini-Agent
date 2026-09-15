@@ -303,15 +303,21 @@ export async function handleSlashCommand(loop, command, args) {
       }
 
       switch (subCommand) {
+        // `reviews`, because `/plans` already meant something else. These are
+        // what the agent worked out about somebody's comment; `/plans` reads
+        // `.agent/artifacts/plans/`, a different format written by a different
+        // path. `plans` still answers, because someone who learned the old word
+        // should get their list rather than "unknown subcommand".
+        case 'reviews':
         case 'plans': {
-          const plans = loop.githubHandler.listPlans();
-          if (plans.length === 0) {
-            return { message: '📋 No plan files generated yet. Waiting for PR comments...' };
+          const reviews = loop.githubHandler.listPlans();
+          if (reviews.length === 0) {
+            return { message: '📋 No reviews written yet. Waiting for PR comments...' };
           }
-          const planList = plans.map(p =>
+          const list = reviews.map(p =>
             `  📄 ${p.fileName} (modified: ${p.lastModified.toLocaleString()})`
           ).join('\n');
-          return { message: `📋 Generated Plans (${plans.length}):\n${planList}` };
+          return { message: `📋 PR reviews (${reviews.length}) — \`.agent/github-reviews/\`:\n${list}` };
         }
 
         case 'refresh': {
@@ -367,7 +373,7 @@ export async function handleSlashCommand(loop, command, args) {
             `  Last Poll: ${status.lastPollTime || 'Never'}`,
             `  Plan Directory: ${status.planDir}`,
             ``,
-            `  Commands: /github plans | /github refresh | /github ci-watch <on|off> | /github clear-state | /github remove-token | /github stats`,
+            `  Commands: /github reviews | /github refresh | /github ci-watch <on|off> | /github clear-state | /github remove-token | /github stats`,
           ];
           return { message: statusLines.join('\n') };
         }
