@@ -175,7 +175,24 @@ function bridgeAlive() {
 function invalidate() {
   if (bridgeInvalidated) return;
   bridgeInvalidated = true;
-  console.warn('[Agent CLI] Extension was reloaded; this content script is orphaned. '
+  // `console.info`, not `console.warn`, and the level is the whole point.
+  //
+  // Chrome's extension **Errors** panel collects `warn` and `error` from content
+  // scripts, so warning here put a routine, expected, self-repairing event in a
+  // list labelled Errors — one entry per open model tab, persisting until
+  // someone clears it. It was reported twice as "is this a problem?", which is
+  // the answer: the message was fine and the level was making it look like a
+  // fault.
+  //
+  // Expected, because reloading the extension orphans every content script by
+  // definition. Self-repairing, because `reinjectModelTabs()` runs on every
+  // service-worker start and injects a fresh copy. Once, because
+  // `bridgeInvalidated` guards it and the nudge timer is cleared below.
+  //
+  // Still logged, because "why did the agent go quiet?" is a real question and
+  // this is its answer — it just belongs in the console for whoever is looking,
+  // not in an alarm list for everyone who ever pressed Reload.
+  console.info('[Agent CLI] Extension was reloaded; this content script is orphaned. '
     + 'A fresh one is injected on the extension\'s next start, or reload this tab.');
   for (const stop of onInvalidated) {
     try { stop(); } catch {}
