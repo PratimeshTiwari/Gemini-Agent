@@ -192,6 +192,12 @@ the pre-filled menu commands too — all had it.
 
 ## Next session's P0 — found by running it, 2026-09-15
 
+**All four are done** (`ce7f9b9`, `9f27b14`, and the reconnect/grammar commit),
+along with two more reported the same day: the `/workspace` restart crash and the
+resize smear (`14e0c27`). Kept because the reasoning is the part worth having,
+and because fixing the first uncovered three more behind it.
+
+
 Reported by the owner from use, each one verified here before being written
 down. **None is fixed.** They are first because two of them cost real money and
 one of them is a feature that has never once run.
