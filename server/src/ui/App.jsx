@@ -824,6 +824,7 @@ export function App({ agentLoop, wsServer }) {
               verbose={verbose}
               status={status}
               liveBudget={liveBudget}
+              terminalWidth={terminalWidth}
             />
           ))}
       </Static>
@@ -876,6 +877,7 @@ export function App({ agentLoop, wsServer }) {
               status={status}
               liveBudget={liveBudget}
               tick={animTick}
+              terminalWidth={terminalWidth}
             />
           ))}
 

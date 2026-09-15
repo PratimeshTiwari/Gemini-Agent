@@ -3,7 +3,7 @@ import { Box, Text } from 'ink';
 import { DiffRows } from './DiffRows.jsx';
 import { rowsFromPatch } from '../diff-preview.js';
 import { Dots } from './RunningLine.jsx';
-import { renderMarkdown, oneLine, summarizeResult, clampForDisplay, formatCommandResult } from '../format.js';
+import { renderMarkdown, oneLine, summarizeResult, clampForDisplay, formatCommandResult, blockLines } from '../format.js';
 import { parseTurnActions } from '../transcript.js';
 
 /**
@@ -40,7 +40,7 @@ function userMessageText(content, isLive) {
  * `verbose` (ctrl+e) opens every step's raw output. Because committed rows
  * cannot be repainted, App reprints the transcript when it changes.
  */
-export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick = 0 }) {
+export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick = 0, terminalWidth = 80 }) {
   // Only shown when it can actually be worked out. A turn whose messages were
   // never stamped has no duration, and printing one anyway is how this shipped
   // reading `Worked for -6.2s`.
@@ -56,11 +56,33 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
 
   return (
     <Box flexDirection="column" marginBottom={1} width="100%">
+      {/*
+        The user's own message, as a full-width bar.
+
+        Ink's `backgroundColor` paints the characters and not the line, so a
+        background on ordinary text stops where the words stop. `blockLines`
+        wraps and pads instead, which is the only way to get an even edge — and
+        it has to do the wrapping itself, because only the side that wraps can
+        pad what it produced.
+
+        The row count is unchanged: Ink was wrapping this text to the same
+        width anyway. What is new is that we know the count, rather than
+        inferring it.
+      */}
       {turn.userMsg && (
-        <Box marginBottom={1} width="100%">
-          <Text bold wrap="wrap">
-            <Text color="white">❯</Text> {userMessageText(turn.userMsg.content, isLive)}
-          </Text>
+        <Box flexDirection="column" marginBottom={1} width="100%">
+          {blockLines(userMessageText(turn.userMsg.content, isLive), terminalWidth, 2)
+            .map((line, i) => (
+              // eslint-disable-next-line react/no-array-index-key
+              // `white` explicitly, not the terminal's default foreground.
+              // `backgroundColor="gray"` is ANSI bright-black, which is dark on
+              // every theme — so on a light terminal the default foreground is
+              // also dark and the bar becomes unreadable. White on bright-black
+              // reads on both.
+              <Text key={i} backgroundColor="gray" color="white" bold>
+                {i === 0 ? ' ❯ ' : '   '}{line}
+              </Text>
+            ))}
         </Box>
       )}
 

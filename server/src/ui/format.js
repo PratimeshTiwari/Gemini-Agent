@@ -307,3 +307,52 @@ export function renderMarkdown(content) {
   RENDER_CACHE.set(source, out);
   return out;
 }
+
+
+/**
+ * Lay text out as a full-width block, for the user's own message.
+ *
+ * Ink's `backgroundColor` paints the *characters*, not the line, so a
+ * background applied to ordinary text stops where the words stop — a ragged
+ * highlight rather than the bar Claude Code draws. Getting a bar means wrapping
+ * and padding here rather than letting Ink wrap, because only the side doing
+ * the wrapping can pad each resulting line.
+ *
+ * Padded to `width - 1`, not `width`. Filling the final column leaves the
+ * cursor in a deferred-wrap state that some terminals resolve by moving to the
+ * next line — which would insert a blank row per line of the block, and rows
+ * that appear without being budgeted are how the live frame outgrows the
+ * viewport.
+ *
+ * Long words are broken rather than allowed to overhang: a path or a URL wider
+ * than the terminal would otherwise push past the padding and break the bar on
+ * exactly the messages most likely to contain one.
+ *
+ * @param {string} text
+ * @param {number} width - the terminal's column count
+ * @param {number} [indent] - columns the caller draws before the text
+ * @returns {string[]} one padded line per rendered row
+ */
+export function blockLines(text, width, indent = 0) {
+  const inner = Math.max(8, (Number(width) || 80) - 1 - indent);
+  const out = [];
+
+  for (const paragraph of String(text ?? '').split('\n')) {
+    if (paragraph === '') { out.push(''.padEnd(inner)); continue; }
+    let line = '';
+    for (const word of paragraph.split(' ')) {
+      let w = word;
+      // A single word longer than the line gets broken, not overhung.
+      while (w.length > inner) {
+        if (line) { out.push(line.padEnd(inner)); line = ''; }
+        out.push(w.slice(0, inner));
+        w = w.slice(inner);
+      }
+      if (!line) line = w;
+      else if (line.length + 1 + w.length <= inner) line += ` ${w}`;
+      else { out.push(line.padEnd(inner)); line = w; }
+    }
+    out.push(line.padEnd(inner));
+  }
+  return out;
+}
