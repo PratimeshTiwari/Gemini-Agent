@@ -893,6 +893,19 @@ have a key.
   thirty clears, which is now a documented limit rather than a silent one. Asked whether
   *resizing* glitches: it does not — a drag firing five SIGWINCH events produces exactly one
   debounced reprint, and the control run that never resizes is identical.
+
+  **The floor is one row now, and used to be three.** `Math.max(3, …)` never meant "at least
+  three if there is room" — it meant three even when there is not, and the frame then asks
+  for more rows than the terminal has. It was the bug twice: once from the furniture above,
+  and again when `/update`'s two notice rows reproduced it at 13 rows (9 + 2 + a floored 3 is
+  14). Whenever there *is* room the subtraction already yields more than three, so the floor
+  only ever bound in the case where binding it was wrong.
+
+  **A row you draw is a row you budget, and a row that wraps is two.** `/update`'s reload
+  notice was ~105 characters, which wraps at 80 columns: charged as one row, drawn as two,
+  and 1 `ESC[2J` at 13x80 and 10x80 where there had been none. `wrap="truncate"` on anything
+  in the live frame is load-bearing, not tidiness. The arithmetic test caught the first of
+  these; only the pty run caught the second.
 - **No mouse tracking, ever.** Terminal mouse reporting and native scroll are mutually
   exclusive: a terminal that is tracking hands the app the wheel and suppresses drag-select. The
   app therefore enables nothing, and `cli-ui.jsx` writes the disable sequences once on startup
