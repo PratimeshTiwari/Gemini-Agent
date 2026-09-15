@@ -692,9 +692,25 @@ export function Menus({
                     setActiveMenu({ ...activeMenu, view: 'list' });
                     return;
                   }
+                  /**
+                   * The two prefill rows have to close the menu *completely*.
+                   *
+                   * `close()` returns to `/settings` when that is where this
+                   * was opened from — right for cancelling, wrong here. The
+                   * prompt is hidden while any menu is open
+                   * (`promptVisible = … && !activeMenu`), so the prefill landed
+                   * in a box nobody could see and the row looked dead. That is
+                   * what "add/remove does not work" was: the command itself is
+                   * fine, and typing `/allowlist add npm test` has always
+                   * worked.
+                   */
+                  if (item.value === '\u0000add' || item.value === '\u0000block') {
+                    setActiveMenu(null);
+                    setFocus(FOCUS_INPUT);
+                    setInputAtEnd(item.value === '\u0000add' ? '/allowlist add ' : '/allowlist block ');
+                    return;
+                  }
                   close();
-                  if (item.value === '\u0000add') { setInputAtEnd('/allowlist add '); return; }
-                  if (item.value === '\u0000block') { setInputAtEnd('/allowlist block '); return; }
                   handleSubmit(`/allowlist ${item.value}`);
                 }}
               />

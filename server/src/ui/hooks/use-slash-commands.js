@@ -629,7 +629,7 @@ export async function handleSlashCommand(query, {
             agentLoop.promptBuilder?.resetPromptState?.();
           }
           const found = listSkills(agentLoop.workspace, agentLoop.skillFolders).length;
-          setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `✅ Watching \`${abs}\` for skills — ${found} skill${found === 1 ? '' : 's'} visible now.`, isLocal: true }]);
+          setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `✔ Watching \`${abs}\` for skills — ${found} skill${found === 1 ? '' : 's'} visible now.`, isLocal: true }]);
           setIsProcessing(false);
           return;
         }
@@ -681,7 +681,7 @@ export async function handleSlashCommand(query, {
         setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
           role: 'assistant',
           isLocal: true,
-          content: `✅ Created skill **${result.name}**\n\n\`${result.file}\`\n\n`
+          content: `✔ Created skill **${result.name}**\n\n\`${result.file}\`\n\n`
             + 'Fill in the `description` — it is the only part always in the prompt, and it is '
             + 'what the agent matches against to decide whether to read the rest.',
         }]);

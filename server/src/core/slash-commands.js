@@ -132,7 +132,7 @@ export async function handleSlashCommand(loop, command, args) {
         loop._saveConfig();
         loop.promptBuilder.resetPromptState();
         return {
-          message: `✅ ${role} → **${model}**\n\nNow running **${loop.topology}**`
+          message: `✔ ${role} → **${model}**\n\nNow running **${loop.topology}**`
             + `${loop.topology === 'duo' ? ` — ${loop.mainModel} implements, ${loop.modelConfig.reviewer} reviews.` : ' — one model, start to finish.'}`,
         };
       }
@@ -296,7 +296,7 @@ export async function handleSlashCommand(loop, command, args) {
         if (!rules.allow.includes(rest)) rules.allow.push(rest);
         rules.block = rules.block.filter((c) => c !== rest);
         loop._saveConfig();
-        return { message: `✅ Allowed: \`${rest}\`` };
+        return { message: `✔ Allowed: \`${rest}\`` };
       }
       if (action === 'block' && rest) {
         if (!rules.block.includes(rest)) rules.block.push(rest);
@@ -323,7 +323,7 @@ export async function handleSlashCommand(loop, command, args) {
         loop._saveConfig();
         return {
           message: rules.enabled
-            ? '✅ Command rules **enabled** — allowed commands run without asking.'
+            ? '✔ Command rules **enabled** — allowed commands run without asking.'
             : '⛔ Command rules **disabled** — every command asks for approval.',
         };
       }
@@ -388,7 +388,7 @@ export async function handleSlashCommand(loop, command, args) {
           const toggle = args?.[1]?.toLowerCase();
           if (toggle === 'on') {
             loop.githubHandler.setCIWatch(true);
-            return { message: '✅ CI failure watching enabled.' };
+            return { message: '✔ CI failure watching enabled.' };
           } else if (toggle === 'off') {
             loop.githubHandler.setCIWatch(false);
             return { message: '⛔ CI failure watching disabled. Only comments will be tracked.' };
@@ -422,7 +422,7 @@ export async function handleSlashCommand(loop, command, args) {
             `  Comments Processed: ${status.totalCommentsProcessed}`,
             `  CI Failures Processed: ${status.totalCIFailuresProcessed}`,
             `  Plans Generated: ${status.totalPlansGenerated}`,
-            `  CI Watch: ${status.ciWatchEnabled ? '✅ ON' : '⛔ OFF'}`,
+            `  CI Watch: ${status.ciWatchEnabled ? '✔ ON' : '⛔ OFF'}`,
             `  Poll Interval: ${status.pollInterval}`,
             `  Last Poll: ${status.lastPollTime || 'Never'}`,
             `  Plan Directory: ${status.planDir}`,
