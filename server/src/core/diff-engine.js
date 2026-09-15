@@ -8,7 +8,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, copyFileSync, readdirSync, unlinkSync } from 'fs';
 import { backupsDir } from './paths.js';
 import { planBackupPruning } from './backup-pruner.js';
-import { resolve, dirname, relative } from 'path';
+import { resolve, dirname, relative, isAbsolute, join } from 'path';
 import { createPatch, applyPatch, structuredPatch } from 'diff';
 import { randomUUID } from 'crypto';
 
@@ -265,14 +265,31 @@ export class DiffEngine {
     if (!existsSync(this.backupDir)) {
       mkdirSync(this.backupDir, { recursive: true });
     }
-    const relPath = relative(this.workspace, absPath);
-    const backupPath = resolve(this.backupDir, `${relPath}.${Date.now()}.bak`);
+    const backupPath = resolve(this.backupDir, `${this._backupName(absPath)}.${Date.now()}.bak`);
     const backupDir = dirname(backupPath);
     if (!existsSync(backupDir)) {
       mkdirSync(backupDir, { recursive: true });
     }
     writeFileSync(backupPath, content, 'utf-8');
     this._pruneBackups(backupDir);
+  }
+
+  /**
+   * Where a file's backup goes, relative to the backup directory.
+   *
+   * This was `relative(workspace, absPath)` used directly, and the tools accept
+   * absolute paths — so editing a file outside the workspace produced a
+   * relative path of `../../../tmp/x`, and `resolve(backupDir, that)` wrote the
+   * backup *outside the backup directory and outside the workspace*. With
+   * workspace `/a/b/c`, a backup of `/tmp/x` landed at `/a/b/tmp/x.bak`.
+   *
+   * Anything outside goes under `_external/` with its absolute path preserved
+   * below that, so the backup is still findable and can no longer escape.
+   */
+  _backupName(absPath) {
+    const rel = relative(this.workspace, absPath);
+    if (rel && !rel.startsWith('..') && !isAbsolute(rel)) return rel;
+    return join('_external', absPath.replace(/^([A-Za-z]:)?[\\/]+/, ''));
   }
 
   /**

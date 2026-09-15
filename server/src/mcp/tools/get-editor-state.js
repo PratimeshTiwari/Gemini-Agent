@@ -11,7 +11,10 @@ export default {
     required: []
   },
   async execute(args, context) {
-    const stateFile = editorStatePath(context.workspaceIndexer ? context.workspaceIndexer.workspaceRoot : process.cwd());
+    // `context.workspace` is what MCPServer always passes; reaching through
+    // the indexer for a workspace path was a hack that happened to work, and it
+    // would have broken the moment the indexer was deleted.
+    const stateFile = editorStatePath(context.workspace || process.cwd());
     
     try {
       const content = await fs.readFile(stateFile, 'utf-8');

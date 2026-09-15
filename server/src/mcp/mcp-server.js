@@ -8,6 +8,7 @@
 
 import { searchFiles } from './tools/search-files.js';
 import { grepSearch } from './tools/grep-search.js';
+import { findSymbol, findReferences } from './tools/find-symbol.js';
 import { readFile } from './tools/read-file.js';
 import { editFile } from './tools/edit-file.js';
 import { createFile } from './tools/create-file.js';
@@ -16,8 +17,11 @@ import { runCommand } from './tools/run-command.js';
 import { openInEditor } from './tools/open-in-editor.js';
 import { runBackground } from './tools/run-background.js';
 import { manageTask } from './tools/manage-task.js';
-import semanticSearch from './tools/semantic-search.js';
 import getEditorState from './tools/get-editor-state.js';
+import recallHistory from './tools/recall-history.js';
+import getDiagnostics from './tools/get-diagnostics.js';
+import { logError } from '../core/error-log.js';
+import { validateArgs } from './validate-args.js';
 
 // Tool registry with schemas
 const TOOL_DEFINITIONS = [
@@ -32,14 +36,40 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'grep_search',
-    description: 'Search for text content across all files in the codebase. Like ripgrep. Use for finding code patterns, function definitions, imports, etc.',
+    description: 'Search file contents across the codebase, like ripgrep. Results are grouped by file, most matches first. '
+      + 'Pass SEVERAL patterns at once when you are not sure what this codebase calls something — ["rate limit", "throttle", "quota"] '
+      + 'is one search, not three, and guessing wrong three times in a row costs three round trips. '
+      + 'Use contextLines when a bare matching line would not tell you whether it is the right one.',
     parameters: {
-      pattern: { type: 'string', description: 'The text or regex pattern to search for', required: true },
-      isRegex: { type: 'boolean', description: 'If true, treat pattern as a regex', required: false },
-      includes: { type: 'array', description: 'Glob patterns to filter files (e.g., ["*.js", "*.ts"])', required: false },
-      maxResults: { type: 'number', description: 'Maximum results (default: 50)', required: false },
+      pattern: { type: 'string', description: 'Text or regex to find. May also be an array of terms, which are searched together (OR).', required: true },
+      isRegex: { type: 'boolean', description: 'If true, every pattern is treated as a regex', required: false },
+      includes: { type: 'array', description: 'Globs to restrict the search (e.g. ["*.js", "*.ts"])', required: false },
+      maxResults: { type: 'number', description: 'Maximum matches (default 50, max 500)', required: false },
+      contextLines: { type: 'number', description: 'Lines of surrounding code to include with each match (0-5, default 0)', required: false },
     },
     handler: grepSearch,
+  },
+  {
+    name: 'find_symbol',
+    description: 'Find where a symbol is DEFINED — a class, function, method, or const. '
+      + 'Parses the code rather than matching text, so it returns the definition and not the forty call sites, '
+      + 'and never the name inside a comment or a string. Use it instead of grep_search whenever you know the '
+      + 'exact name and want the definition. JavaScript and JSX only; it says so when a file could not be read.',
+    parameters: {
+      name: { type: 'string', description: 'Exact symbol name, case-sensitive', required: true },
+    },
+    handler: findSymbol,
+  },
+  {
+    name: 'find_references',
+    description: 'Find every place a symbol is USED — calls, imports, JSX tags. Parses the code, so a mention '
+      + 'in a comment or a same-named object key is not a hit. This is the "who calls this?" and "what breaks if '
+      + 'I change this?" question, which grep_search answers badly. Results are grouped by file, busiest first.',
+    parameters: {
+      name: { type: 'string', description: 'Exact symbol name, case-sensitive', required: true },
+      includeDefinition: { type: 'boolean', description: 'Include the definition itself (default true)', required: false },
+    },
+    handler: findReferences,
   },
   {
     name: 'read_file',
@@ -53,7 +83,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'edit_file',
-    description: 'Propose edits to an existing file. Each edit specifies old text to find and new text to replace it with. The edit will be shown as a diff for user approval before being applied.',
+    description: 'Propose edits to an existing file. Each edit specifies old text to find and new text to replace it with. Depending on the mode and the file, the edit is either applied straight away or shown to the user as a diff to approve. The result tells you which happened — report that, never assume it is waiting for approval.',
     parameters: {
       path: { type: 'string', description: 'File path to edit', required: true },
       edits: {
@@ -66,7 +96,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'create_file',
-    description: 'Create a new file with the specified content. Parent directories will be created automatically. The file creation will be shown for user approval.',
+    description: 'Create a new file with the specified content. Parent directories will be created automatically. Depending on the mode and the file, it is either written straight away or shown to the user to approve. The result tells you which happened — report that, never assume it is waiting for approval.',
     parameters: {
       path: { type: 'string', description: 'File path to create', required: true },
       content: { type: 'string', description: 'File content', required: true },
@@ -113,26 +143,33 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'manage_task',
-    description: 'Interact with background tasks. Actions: status (check if running), read_logs (read output), send_input (send stdin text), kill (terminate), list (show all tasks).',
+    description: 'Interact with background tasks. Actions: status (check if running), read_logs (read output), send_input (send stdin text), kill (terminate), list (show all tasks), watch (be woken automatically when the task logs a failure — use this after starting a dev server or watcher so you find out it broke without polling), unwatch (stop).',
     parameters: {
-      action: { type: 'string', description: 'Action: status, read_logs, send_input, kill, list', required: true },
+      action: { type: 'string', description: 'Action: status, read_logs, send_input, kill, list, watch, unwatch', required: true },
       taskId: { type: 'string', description: 'Task ID (required for all actions except list)', required: false },
       lines: { type: 'number', description: 'Number of log lines to read (default: 50)', required: false },
       input: { type: 'string', description: 'Text to send to stdin (required for send_input)', required: false },
+      pattern: { type: 'string', description: 'For watch: a regex to look for in the output. Omit to use the built-in failure patterns (error, failed, exception, traceback, EADDRINUSE, Cannot find module, ...).', required: false },
     },
     handler: manageTask,
   },
   {
-    name: semanticSearch.name,
-    description: semanticSearch.description,
-    parameters: semanticSearch.schema.properties,
-    handler: semanticSearch.execute,
+    name: recallHistory.name,
+    description: recallHistory.description,
+    parameters: recallHistory.schema.properties,
+    handler: recallHistory.execute,
   },
   {
     name: getEditorState.name,
     description: getEditorState.description,
     parameters: getEditorState.schema.properties,
     handler: getEditorState.execute,
+  },
+  {
+    name: getDiagnostics.name,
+    description: getDiagnostics.description,
+    parameters: getDiagnostics.schema.properties,
+    handler: getDiagnostics.execute,
   },
 ];
 
@@ -176,12 +213,30 @@ export class MCPServer {
       };
     }
 
+    // The schema below is the one the prompt showed the model as the contract,
+    // and until now nothing checked the call against it — a wrong-typed argument
+    // reached the handler and failed inside it with a message written for a
+    // stack trace. There is no tool-call API here to do this, so this is the
+    // layer that has to. It also coerces "10" to 10, which is a working turn
+    // that used to be thrown away. See ./validate-args.js.
+    const checked = validateArgs(name, tool.parameters, args);
+    if (!checked.ok) {
+      logError(this.workspace, {
+        flow: 'tool',
+        op: `${name}:bad_args`,
+        message: checked.message.split('\n')[0],
+        meta: { args: Object.keys(args || {}) },
+      });
+      return { success: false, error: checked.message };
+    }
+    const validArgs = checked.value;
+
     let retries = 0;
     let lastErr = null;
 
     while (retries < 3) {
       try {
-        const result = await tool.handler(args, {
+        const result = await tool.handler(validArgs, {
           workspace: this.workspace,
           diffEngine: this.diffEngine,
           ...context,
@@ -199,6 +254,18 @@ export class MCPServer {
         break; // Non-retriable error
       }
     }
+
+    // Every tool failure is written down, whether or not the model recovers
+    // from it. A tool that fails often is a tool whose description is wrong or
+    // whose arguments the model keeps guessing — that pattern is invisible if
+    // only the give-ups are recorded.
+    logError(this.workspace, {
+      flow: 'tool',
+      op: name,
+      message: lastErr.message,
+      detail: lastErr.stack,
+      meta: { code: lastErr.code, retries, args: Object.keys(args || {}) },
+    });
 
     // Format OS errors into human-readable instructions for the LLM
     let errorMsg = lastErr.message;

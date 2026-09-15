@@ -40,8 +40,6 @@ export class FileWatcher {
     this.watcher.on('change', (filePath) => this._handleChange('modified', filePath));
     this.watcher.on('add', (filePath) => this._handleChange('added', filePath));
     this.watcher.on('unlink', (filePath) => this._handleChange('deleted', filePath));
-    
-    console.log(`[FileWatcher] Watching ${this.workspacePath} for external changes...`);
   }
 
   stop() {
