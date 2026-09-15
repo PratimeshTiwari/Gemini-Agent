@@ -198,13 +198,26 @@ export function readErrors(workspace, { flow, limit = 50 } = {}) {
  * What is breaking, by flow — the question `/logs` is actually answering.
  * @returns {{ total: number, since: string|null, byFlow: Array<{flow, label, count, last, lastMessage}> }}
  */
-export function summarizeErrors(workspace) {
-  // Two sources, one accounting. Lines on disk each stand for themselves plus
-  // any tally already written onto them; entries still inside their collapse
-  // window have not reached disk at all and stand only for their repeat count.
-  // Getting this wrong double-counts the first occurrence of every storm.
-  const onDisk = readErrors(workspace, { limit: 1000 })
-    .map((r) => ({ record: r, weight: r.tally ? (r.repeatedSince || 0) : 1 }));
+/**
+ * Every failure, each carrying how many occurrences it stands for.
+ *
+ * Two sources, one accounting. Lines on disk each stand for themselves plus any
+ * tally already written onto them; entries still inside their collapse window
+ * have not reached disk at all and stand only for their repeat count. Getting
+ * this wrong double-counts the first occurrence of every storm.
+ *
+ * Exported because anything counting failures has to get this right, and there
+ * is no second way to do it — `channel-health.js` counts by `op` where
+ * `summarizeErrors` counts by `flow`, and both need this weighting.
+ *
+ * `pending` marks the ones that have not reached disk, which is what `since`
+ * has to exclude — "failures since <time>" is a claim about the log file.
+ *
+ * @returns {Array<{record: object, weight: number, pending: boolean}>}
+ */
+export function weightedErrors(workspace, { limit = 1000 } = {}) {
+  const onDisk = readErrors(workspace, { limit })
+    .map((r) => ({ record: r, weight: r.tally ? (r.repeatedSince || 0) : 1, pending: false }));
 
   const pending = [];
   for (const state of recent.values()) {
@@ -217,11 +230,19 @@ export function summarizeErrors(workspace) {
         time: new Date(state.at).toISOString(),
       },
       weight: state.count,
+      pending: true,
     });
   }
 
+  return [...pending, ...onDisk];
+}
+
+export function summarizeErrors(workspace) {
+  const entriesAll = weightedErrors(workspace);
+  const onDisk = entriesAll.filter((e) => !e.pending);
+
   const byFlow = new Map();
-  for (const { record, weight } of [...pending, ...onDisk]) {
+  for (const { record, weight } of entriesAll) {
     const bucket = byFlow.get(record.flow)
       || { flow: record.flow, count: 0, last: null, lastMessage: null };
     bucket.count += weight;
@@ -232,9 +253,8 @@ export function summarizeErrors(workspace) {
     byFlow.set(record.flow, bucket);
   }
 
-  const entries = [...pending, ...onDisk];
   return {
-    total: entries.reduce((n, e) => n + e.weight, 0),
+    total: entriesAll.reduce((n, e) => n + e.weight, 0),
     since: onDisk.length > 0 ? onDisk[onDisk.length - 1].record.time : null,
     byFlow: [...byFlow.values()]
       .map((b) => ({ ...b, label: FLOWS[b.flow] || b.flow }))

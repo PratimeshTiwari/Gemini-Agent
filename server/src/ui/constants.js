@@ -24,7 +24,7 @@ const SLASH_COMMANDS = [
   { name: 'image', desc: 'Attach an image — a path, or bare for the clipboard' },
   { name: 'plans', desc: 'Past plans, newest first' },
   { name: 'commands', desc: 'Every shell command the agent has run, by day' },
-  { name: 'logs', desc: 'What has been failing, grouped by flow' },
+  { name: 'logs', desc: 'What has been failing — `/logs rates` for how often' },
   { name: 'restart', desc: 'Restart the server' },
   { name: 'exit', desc: 'Quit the agent' },
 ];

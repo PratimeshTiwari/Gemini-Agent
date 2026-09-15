@@ -13,6 +13,7 @@ import { oneLine } from '../format.js';
 import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
 import { canPickFolder, pickFolder } from '../folder-picker.js';
 import { summariseTraces, formatMs } from '../../core/trace-log.js';
+import { channelHealth, formatRate, MIN_TURNS_FOR_RATE } from '../../core/channel-health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -321,6 +322,34 @@ export async function handleSlashCommand(query, {
       if (arg === 'clear') {
         const n = clearErrors(agentLoop.workspace);
         setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `🧹 Cleared ${n} logged failure${n === 1 ? '' : 's'}.`, isLocal: true }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      /**
+       * `/logs rates` — how often the text channel itself fails.
+       *
+       * There is no tool-call API here, and `CLAUDE.md` records the question of
+       * whether to add one as a fork. It also says the honest thing: any claim
+       * about how far behind the text channel is stays an estimate until this
+       * view exists. Every number has been logged for months and never read.
+       */
+      if (arg === 'rates') {
+        const h = channelHealth(agentLoop.workspace);
+        const width = Math.max(...h.rows.map((r) => r.label.length));
+        const body = h.rows.map((r) => `  ${r.label.padEnd(width)}  ${String(r.count).padStart(4)}`
+          + `   ${formatRate(r.rate).padStart(6)}`
+          + `\n    _${r.detail}_`).join('\n');
+        const note = h.enough
+          ? `Over **${h.turns}** turns that came back from the browser.`
+          : `**${h.turns}** turn${h.turns === 1 ? '' : 's'} recorded — too few to rate `
+            + `(${MIN_TURNS_FOR_RATE} needed). The counts are real; the percentages wait.`;
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+          role: 'assistant', isLocal: true,
+          content: `### 📉 Text-channel failures\n\n${note}\n\n${body}\n\n`
+            + '_The denominator is `traces.jsonl`: one entry per turn the browser answered, '
+            + 'which is the population these failures are drawn from._',
+        }]);
         setIsProcessing(false);
         return;
       }
