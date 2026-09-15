@@ -25,6 +25,77 @@ on. Almost everything below follows from that.
 
 ---
 
+## What it looks like now, and what it could
+
+Drawn at 78 columns, which is a narrow-but-ordinary terminal. Row counts are of
+the dashboard itself — the app's own status bar sits below all of these and is
+not counted.
+
+### Now — the empty state, which is what you see most
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│ GitHub PR dashboard                                                        │
+│                                                                            │
+│ connecting…  ·  token ok  ·  0 PRs watched  ·  CI watch on  ·  polled neve │
+│                                                                            │
+│ Recent activity                                                            │
+│ Nothing yet — waiting for PR comments or CI runs.                          │
+│                                                                            │
+│ ↑↓ move · space expand · ⏎ open plan · a avoid words · p PRs               │
+│   · r refresh · ^o agent                                                   │
+└────────────────────────────────────────────────────────────────────────────┘
+● github  ·  agent ^o  ·  /help                    plan ⇥  ·  DEEP  ·  0% of 96k
+```
+
+**11 rows**, of which one is content. The status line is already being cut off
+at this width. The hints wrap and leave a `·` stranded at the start of a row.
+
+### After — the same state
+
+```
+connecting…
+
+Nothing yet — waiting for PR comments or CI runs.
+
+↑↓ move  ·  ⏎ open plan  ·  r refresh  ·  ? more
+```
+
+**5 rows.** No border, no title (the status bar below already says `● github`),
+no heading over an empty list, and the fields that are only saying "still the
+default" are gone until they are not.
+
+### After — once it is actually doing something
+
+```
+@pratimesh  ·  3 PRs  ·  polled 2m ago
+Analysing @alice on PR #42  ·  queue 1
+
+❯ PR #42 — plan generated  ·  requires_review
+    💬 Please rename this variable to something clearer…
+    → PR-42/comment-9.md
+  PR #41 — CI failed  ·  build
+    → PR-41/ci-1788.md
+
+↑↓ move  ·  ⏎ open plan  ·  r refresh  ·  ? more
+```
+
+Identity first, because "0 PRs watched" reads very differently once you can see
+it is watching as the wrong account — which is the reasoning `getStatus()`
+already has for reporting `username` at all.
+
+### After — when it needs you
+
+The one case that should be loud, and currently is not:
+
+```
+! GitHub rejected the stored token  ·  /github remove-token to clear it
+
+↑↓ move  ·  ⏎ open plan  ·  r refresh  ·  ? more
+```
+
+---
+
 ## What is actually wrong
 
 ### 1. A border nothing else has — `GithubTab.jsx:35`
@@ -92,8 +163,9 @@ is wrapping between.
 
 ### 7. It is permanently as tall as its busiest state
 
-Border, title, status, blank, activity heading, empty line, blank, seven hints
-— **13 rows to tell you there is nothing to look at.**
+Border, title, blank, status, blank, activity heading, empty line, blank, and
+seven hints over two rows — **11 rows to tell you there is nothing to look
+at**, one of which is the sentence saying so.
 
 ---
 
@@ -154,7 +226,26 @@ Two honest options:
 
 A middle path: keep the tab for *browsing* (PR explorer, plans), and let new
 activity arrive in the transcript as one dim line — the way a failed terminal
-command does, offered rather than inserted.
+command does, offered rather than inserted. Drawn, because this is the part
+worth looking at before deciding:
+
+```
+ ❯ why is the poller re-reading comments?
+
+ ● Because the watermark only moves when something was found — otherwise a
+   poll that returns nothing could skip a comment written during it.
+
+   ⌁ PR #42 · @alice commented — plan written    ^o to look
+                                                                    ← one dim
+ ❯ show me the plan                                                   row, here
+```
+
+One row, dim, in the flow you are already reading, and `^o` still opens the
+tab when you want the detail. Nothing interrupts, nothing is inserted into
+your prompt, and there is no second status bar to keep in sync.
+
+The cost is honest too: on a busy repo that row appears often, and it appears
+*between* your turns rather than in a place you chose to look.
 
 **This one needs you.** It is the difference between tidying a screen and
 deciding the feature's shape.
@@ -172,7 +263,10 @@ deciding the feature's shape.
 ## Rows, if 1–4 are done
 
 ```
-now      13 rows to say nothing is happening
-after     4 rows
+now      11 rows to say nothing is happening, one of them content
+after      5 rows
 ```
+
+Counted from the drawings above, at 78 columns. The app's own status bar is
+below all of them and unchanged.
 
