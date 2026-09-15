@@ -930,178 +930,212 @@ async function selectModelByLabel(label) {
 }
 
 /**
- * Extract clean text content from an element, preserving code blocks and basic formatting.
+ * Turn the reply's DOM into markdown.
+ *
+ * **Why this is a walker and not a list of fixes.** It used to be a series of
+ * `querySelectorAll` passes — one for code, one for bold, one for lists — over
+ * a clone, finishing with `clone.textContent`. That works for the tags someone
+ * thought of and silently mangles everything else, because `textContent`
+ * concatenates with no separator. Measured on the old version:
+ *
+ * ```
+ * <blockquote>      the quote marker vanished
+ * <hr>              vanished entirely
+ * <del>wrong</del>  read as ordinary text — the meaning inverted
+ * <img>             vanished
+ * <details>         "MoreHidden detail"
+ * <dl><dt><dd>      "TermDefinition.After."
+ * <table>           "FactorNative API AgentsCostMetered token costs..."
+ * ```
+ *
+ * The reported table bug was not a special case; it was the default. So the
+ * question worth answering is not "which tags are missing" but "what happens to
+ * a tag nobody listed", and the answer here is: block elements get separated,
+ * inline elements do not. A tag this does not know still comes out readable,
+ * which is the property the old version could not have.
+ *
+ * Nothing is dropped silently. Anything with no markdown equivalent falls
+ * through to its own text, in the right place.
  */
+
 function extractTextContent(element) {
   if (!element) return '';
 
-  // Clone the element to avoid modifying the DOM
-  const clone = element.cloneNode(true);
+  // Declared inside, not at module scope. `test/load-content-script.js` lifts
+  // one function out of this file by brace matching — deliberately, so the
+  // tests run the shipped source with nothing mocked — which means anything
+  // this closes over at module scope is invisible to it. A helper the tests
+  // cannot reach is a helper the tests do not cover.
+  /** Elements that end the line they are on. Everything else flows inline. */
+  const BLOCK_TAGS = new Set([
+    'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DD', 'DETAILS', 'DIALOG', 'DIV',
+    'DL', 'DT', 'FIELDSET', 'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2',
+    'H3', 'H4', 'H5', 'H6', 'HEADER', 'HGROUP', 'HR', 'LI', 'MAIN', 'NAV', 'OL',
+    'P', 'PRE', 'SECTION', 'TABLE', 'UL',
+  ]);
 
-  // Replace code blocks with fenced blocks
-  // Gemini wraps a code block in <code-block>, which holds a header chip — the
-  // language name and a copy button — as well as the <pre><code>. ChatGPT puts a
-  // similar header inside the <pre>. Matching `pre code, code-block` and then
-  // replacing `parentElement` got three things wrong at once:
-  //
-  //  - `textContent` of the wrapper is the chip *plus* the code, so the label and
-  //    the copy button's own text were welded onto the first line of code
-  //    (`JavaScriptcontent_copy// 1. Using async/await`).
-  //  - the language lives on the inner <code>, not the wrapper, so the fence came
-  //    out bare and the CLI had nothing to highlight with.
-  //  - replacing the block's *parent* took the parent's other children with it,
-  //    which silently deleted prose sitting beside the block.
-  //
-  // So: match the outermost block, read the language off the inner <code>, take
-  // the text from the <pre>, and replace the block itself — never its parent.
-  clone.querySelectorAll('code-block, pre').forEach((block) => {
-    // Replacing an outer <code-block> detaches the <pre> inside it, and the list
-    // from querySelectorAll is static — skip what is no longer in the clone.
-    if (!clone.contains(block)) return;
+  /** Never part of a reply, whatever it contains. */
+  const DROP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'BUTTON']);
 
-    const pre = block.matches('pre') ? block : block.querySelector('pre');
-    const codeEl = (pre || block).querySelector('code');
-    const source = codeEl || pre || block;
+  /** The language of a code block, wherever this site happens to keep it. */
+  function codeLanguage(el) {
+    if (!el) return '';
+    const attr = el.getAttribute && el.getAttribute('data-language');
+    if (attr) return attr;
+    const cls = el.className && typeof el.className === 'string' ? el.className : '';
+    return (cls.match(/language-(\w+)/) || [])[1] || '';
+  }
 
-    const langOf = (el) => {
-      if (!el) return '';
-      const attr = el.getAttribute('data-language');
-      if (attr) return attr;
-      const cls = typeof el.className === 'string' ? el.className : '';
-      return cls.match(/language-(\w+)/)?.[1] || '';
-    };
-    const lang = langOf(codeEl) || langOf(pre) || langOf(block);
-
-    block.replaceWith(
-      document.createTextNode(`\n\`\`\`${lang}\n${source.textContent}\n\`\`\`\n`),
-    );
-  });
-
-  // Replace inline code
-  clone.querySelectorAll('code').forEach(code => {
-    const replacement = document.createTextNode(`\`${code.textContent}\``);
-    code.replaceWith(replacement);
-  });
-
-  // Convert Bold
-  clone.querySelectorAll('strong, b').forEach(el => {
-    el.replaceWith(document.createTextNode(`**${el.textContent}**`));
-  });
-
-  // Convert Italic
-  clone.querySelectorAll('em, i').forEach(el => {
-    el.replaceWith(document.createTextNode(`*${el.textContent}*`));
-  });
-
-  // Convert Links
-  clone.querySelectorAll('a').forEach(el => {
-    const href = el.getAttribute('href') || '';
-    el.replaceWith(document.createTextNode(`[${el.textContent}](${href})`));
-  });
-
-  // Convert Headers
-  clone.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(el => {
-    const level = parseInt(el.tagName.substring(1), 10);
-    const hashes = '#'.repeat(level);
-    el.replaceWith(document.createTextNode(`\n${hashes} ${el.textContent}\n`));
-  });
-
-  // Preserve newlines for block elements (only direct leaf blocks to avoid nested multiplication)
-  clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
-  clone.querySelectorAll('p').forEach(p => p.append('\n\n'));
-  
-  // For divs, only append a newline if they directly contain text
-  clone.querySelectorAll('div').forEach(div => {
-    let hasDirectText = false;
-    for (const child of div.childNodes) {
-      if (child.nodeType === Node.TEXT_NODE && child.textContent.trim().length > 0) {
-        hasDirectText = true;
-        break;
-      }
-    }
-    if (hasDirectText) {
-      div.append('\n');
-    }
-  });
-
-  /**
-   * Tables, as markdown rather than as one run-on word.
-   *
-   * Nothing handled `<table>` at all, and `clone.textContent` concatenates
-   * cells with no separator — so a three-column comparison arrived as
-   * `FactorNative API AgentsGemini-AgentCostMetered token costs...`. Reported
-   * from use with the Gemini tab and the CLI side by side.
-   *
-   * Emitted as pipe rows because `marked-terminal` already draws those, and
-   * `format.js` already configures `tableOptions` for them — the renderer was
-   * ready and the scrape was never giving it anything to render. The header
-   * separator is what makes it a table rather than three lines of pipes.
-   *
-   * Cells are flattened to one line: a newline inside a pipe row ends the row,
-   * so a cell containing a list would silently truncate the table.
-   */
-  clone.querySelectorAll('table').forEach((table) => {
+  /** One table, as markdown pipe rows. */
+  function tableToMarkdown(table, render) {
     const rows = [...table.querySelectorAll('tr')];
-    if (rows.length === 0) return;
+    if (rows.length === 0) return '';
 
-    const cellsOf = (tr) => [...tr.querySelectorAll('th, td')]
-      .map((cell) => cell.textContent.replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim());
+    const cellsOf = (tr) => [...tr.children]
+      .filter((c) => c.tagName === 'TD' || c.tagName === 'TH')
+      // Flattened to one line: a newline inside a pipe row ends the row, so a
+      // cell containing a list would silently truncate the table.
+      .map((c) => render(c).replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim());
 
     const body = rows.map(cellsOf).filter((cells) => cells.length > 0);
-    if (body.length === 0) return;
+    if (body.length === 0) return '';
 
-    // A table with no <th> still needs a header row, or it is not markdown.
     const width = Math.max(...body.map((cells) => cells.length));
-    const pad = (cells) => {
+    const line = (cells) => {
       const out = cells.slice(0, width);
       while (out.length < width) out.push('');
       return `| ${out.join(' | ')} |`;
     };
 
-    const lines = [pad(body[0]), `|${' --- |'.repeat(width)}`];
-    for (const cells of body.slice(1)) lines.push(pad(cells));
-    table.replaceWith(document.createTextNode(`\n\n${lines.join('\n')}\n\n`));
-  });
+    // A table with no <th> still needs a header row, or it is not markdown.
+    const lines = [line(body[0]), `|${' --- |'.repeat(width)}`];
+    for (const cells of body.slice(1)) lines.push(line(cells));
+    return `\n\n${lines.join('\n')}\n\n`;
+  }
 
   /**
-   * List items, at the depth they were actually written.
-   *
-   * `li.prepend('- ')` gave every item the same marker however deep it sat, so
-   * two levels of bullets came out flat — and Gemini writes anything structured
-   * as nested bullets. Depth is counted from the ancestors rather than tracked,
-   * because the nested `<ul>` lives *inside* the parent `<li>` and a recursive
-   * walk emits the children twice.
-   *
-   * Ordered lists get numbers. `- 1.` was never right, and a list of steps that
-   * reads as bullets loses the one thing the ordering was carrying.
+   * @param {Node} node
+   * @param {{listDepth: number, pre: boolean}} ctx
    */
-  clone.querySelectorAll('li').forEach((li) => {
-    let depth = 0;
-    for (let p = li.parentElement; p && p !== clone; p = p.parentElement) {
-      if (p.tagName === 'UL' || p.tagName === 'OL') depth += 1;
+  const render = (node, ctx = { listDepth: 0, pre: false }) => {
+    if (!node) return '';
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent || '';
+      // Source indentation is not content. Inside <pre> it is.
+      return ctx.pre ? text : text.replace(/\s+/g, ' ');
     }
-    const indent = '  '.repeat(Math.max(0, depth - 1));
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
 
-    const parent = li.parentElement;
-    const marker = parent && parent.tagName === 'OL'
-      ? `${[...parent.children].filter((c) => c.tagName === 'LI').indexOf(li) + 1}. `
-      : '- ';
+    const tag = node.tagName;
+    if (DROP_TAGS.has(tag)) return '';
 
-    // Prepend only. Appending a newline as well puts a blank line *between*
-    // items, which markdown reads as separate lists — so the indented children
-    // stopped being children and `marked` drew every bullet at one level. The
-    // leading newline is all the separation an item needs.
-    li.prepend(`\n${indent}${marker}`);
-  });
+    const children = (over = {}) => [...node.childNodes]
+      .map((child) => render(child, { ...ctx, ...over })).join('');
 
-  // The list as a whole still has to end, or the next block runs into the last
-  // item and is swallowed by it.
-  clone.querySelectorAll('ul, ol').forEach((list) => {
-    if (!list.parentElement || list.parentElement.tagName !== 'LI') list.append('\n');
-  });
+    switch (tag) {
+      case 'CODE-BLOCK':
+      case 'PRE': {
+        const pre = tag === 'PRE' ? node : node.querySelector('pre');
+        const code = (pre || node).querySelector('code');
+        const source = code || pre || node;
+        const lang = codeLanguage(code) || codeLanguage(pre) || codeLanguage(node);
+        // `textContent` of the source, not of the wrapper: Gemini's wrapper
+        // holds a header chip whose label and copy button would otherwise be
+        // welded onto the first line of code.
+        return `\n\n\`\`\`${lang}\n${source.textContent.replace(/\n+$/, '')}\n\`\`\`\n\n`;
+      }
 
-  // Replace multiple consecutive newlines (3 or more) with just 2 newlines to avoid huge gaps
-  return clone.textContent.trim().replace(/\n{3,}/g, '\n\n');
+      // Inline code, but only when it is not the body of a block handled above.
+      case 'CODE':
+        return `\`${node.textContent}\``;
+
+      case 'STRONG':
+      case 'B':
+        return `**${children()}**`;
+      case 'EM':
+      case 'I':
+        return `*${children()}*`;
+      case 'DEL':
+      case 'S':
+      case 'STRIKE':
+        // Not cosmetic: without it, struck-through text reads as an assertion.
+        return `~~${children()}~~`;
+
+      case 'BR':
+        return '\n';
+      case 'HR':
+        return '\n\n---\n\n';
+
+      case 'A': {
+        const href = node.getAttribute('href') || '';
+        const text = children();
+        return href ? `[${text}](${href})` : text;
+      }
+      case 'IMG': {
+        const alt = node.getAttribute('alt') || '';
+        const src = node.getAttribute('src') || '';
+        return src ? `![${alt}](${src})` : '';
+      }
+
+      case 'H1': case 'H2': case 'H3':
+      case 'H4': case 'H5': case 'H6':
+        return `\n\n${'#'.repeat(Number(tag[1]))} ${children().trim()}\n\n`;
+
+      case 'BLOCKQUOTE': {
+        const body = children().trim();
+        if (!body) return '';
+        return `\n\n${body.split('\n').map((l) => `> ${l}`.trimEnd()).join('\n')}\n\n`;
+      }
+
+      case 'TABLE':
+        return tableToMarkdown(node, (cell) => render(cell, ctx));
+
+      case 'UL':
+      case 'OL':
+        // The items add their own leading newlines; the list closes itself so
+        // whatever follows is not swallowed by the last item.
+        return `${children({ listDepth: ctx.listDepth + 1 })}\n`;
+
+      case 'LI': {
+        const depth = Math.max(0, ctx.listDepth - 1);
+        const parent = node.parentElement;
+        const ordered = parent && parent.tagName === 'OL';
+        const index = ordered
+          ? [...parent.children].filter((c) => c.tagName === 'LI').indexOf(node) + 1
+          : 0;
+        const marker = ordered ? `${index}. ` : '- ';
+
+        // A checkbox in an item is a task list, and the state is the point.
+        const box = node.querySelector('input[type="checkbox"]');
+        const tick = box ? (box.checked || box.hasAttribute('checked') ? '[x] ' : '[ ] ') : '';
+
+        // Trimmed at the front only: a nested list inside this item has already
+        // produced its own newlines and they have to survive.
+        const body = children().replace(/^[ \t]+/, '').trimEnd();
+        return `\n${'  '.repeat(depth)}${marker}${tick}${body}`;
+      }
+
+      case 'DT':
+        return `\n\n**${children().trim()}**`;
+      case 'DD':
+        return `\n: ${children().trim()}`;
+
+      case 'SUMMARY':
+        return `\n\n**${children().trim()}**\n`;
+
+      default:
+        // The whole point: a tag nobody listed still comes out readable.
+        // Block elements are separated, inline ones flow.
+        return BLOCK_TAGS.has(tag) ? `\n${children()}\n` : children();
+    }
+  };
+
+  return render(element)
+    // Trailing spaces left by collapsed whitespace at a line end.
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /**

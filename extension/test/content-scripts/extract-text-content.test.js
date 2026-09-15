@@ -169,3 +169,106 @@ for (const [label, file] of [['gemini', GEMINI], ['chatgpt', CHATGPT]]) {
     assert.match(out, /2\.\s*Second step/);
   });
 }
+
+/**
+ * The tags nobody listed.
+ *
+ * The scrape used to be a series of `querySelectorAll` passes finishing with
+ * `clone.textContent`, which works for the tags someone thought of and silently
+ * mangles the rest. The reported table bug was not a special case — it was the
+ * default. Measured on the old version:
+ *
+ *     <blockquote>      the quote marker vanished
+ *     <hr>              vanished entirely
+ *     <del>wrong</del>  read as ordinary text — the meaning inverted
+ *     <img>             vanished
+ *     <details>         "MoreHidden detail"
+ *     <dl><dt><dd>      "TermDefinition.After."
+ *
+ * So these do not test a list of tags. They test the property the old version
+ * could not have: **a tag this does not know still comes out readable**, because
+ * block elements are separated and inline ones flow.
+ */
+for (const [label, file] of [['gemini', GEMINI], ['chatgpt', CHATGPT]]) {
+  const md = (html) => scrape(file, html);
+
+  test(`${label}: a blockquote keeps its marker`, () => {
+    assert.match(md('<blockquote><p>A quoted claim.</p></blockquote><p>After.</p>'),
+      /^> A quoted claim\./m);
+  });
+
+  test(`${label}: a rule is a rule, not nothing`, () => {
+    assert.match(md('<p>Before.</p><hr><p>After.</p>'), /\n---\n/);
+  });
+
+  test(`${label}: struck-through text does not read as an assertion`, () => {
+    // The worst of the old failures: `<del>wrong</del>` came out as "wrong",
+    // so a retraction read as a claim.
+    assert.match(md('<p>This is <del>wrong</del> right.</p>'), /~~wrong~~/);
+  });
+
+  test(`${label}: an image leaves a reference rather than a gap`, () => {
+    assert.match(md('<p>See <img src="/a.png" alt="a diagram"> here.</p>'),
+      /!\[a diagram\]\(\/a\.png\)/);
+  });
+
+  test(`${label}: a definition list is not one run-on word`, () => {
+    const out = md('<dl><dt>Term</dt><dd>Definition.</dd></dl><p>After.</p>');
+    assert.ok(!/TermDefinition/.test(out), `still concatenated:\n${out}`);
+    assert.match(out, /\*\*Term\*\*/);
+  });
+
+  test(`${label}: details and summary separate`, () => {
+    const out = md('<details><summary>More</summary><p>Hidden detail.</p></details>');
+    assert.ok(!/MoreHidden/.test(out), `still concatenated:\n${out}`);
+  });
+
+  test(`${label}: a task list keeps which boxes are ticked`, () => {
+    const out = md('<ul><li><input type="checkbox" checked>Done</li>'
+      + '<li><input type="checkbox">Todo</li></ul>');
+    assert.match(out, /- \[x\] Done/);
+    assert.match(out, /- \[ \] Todo/);
+  });
+
+  test(`${label}: a bullet list nested in a numbered one`, () => {
+    const out = md('<ol><li>First<ul><li>sub a</li></ul></li><li>Second</li></ol>');
+    assert.match(out, /^1\. First/m);
+    assert.match(out, /^ {2}- sub a/m);
+    assert.match(out, /^2\. Second/m);
+  });
+
+  test(`${label}: a numbered list nested in a bullet one`, () => {
+    const out = md('<ul><li>Top<ol><li>one</li><li>two</li></ol></li></ul>');
+    assert.match(out, /^- Top/m);
+    assert.match(out, /^ {2}1\. one/m);
+    assert.match(out, /^ {2}2\. two/m);
+  });
+
+  test(`${label}: three levels deep`, () => {
+    const out = md('<ul><li>A<ul><li>B<ul><li>C</li></ul></li></ul></li></ul>');
+    assert.match(out, /^- A/m);
+    assert.match(out, /^ {2}- B/m);
+    assert.match(out, /^ {4}- C/m);
+  });
+
+  test(`${label}: a tag it has never heard of is still separated`, () => {
+    // The property, rather than a tag. A custom element between two paragraphs
+    // must not weld them together.
+    const out = md('<p>a</p><some-widget>widget text</some-widget><p>b</p>');
+    assert.ok(!/awidget/.test(out), `unknown block ran into its neighbour:\n${out}`);
+    assert.match(out, /widget text/);
+  });
+
+  test(`${label}: an inline tag it has never heard of still flows`, () => {
+    // The other half: not everything unknown should be given its own line.
+    const out = md('<p>a <my-badge>NEW</my-badge> b</p>');
+    assert.match(out, /a NEW b/);
+  });
+
+  test(`${label}: script and style never reach the reply`, () => {
+    const out = md('<p>Visible.</p><script>alert(1)</script><style>.x{color:red}</style>');
+    assert.ok(!out.includes('alert'), `script content leaked:\n${out}`);
+    assert.ok(!out.includes('color:red'), `style content leaked:\n${out}`);
+    assert.match(out, /Visible\./);
+  });
+}
