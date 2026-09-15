@@ -17,9 +17,12 @@ manual run.
   clean fast-forward.** The owner has said the PR is theirs; do not open it.
   `git rev-list --left-right --count main...v1-stable` prints `0	<n>`; the `0`
   on the left is the whole claim.
-- **`v1-stable` has no upstream tracking ref locally**, though `origin/v1-stable`
-  exists and matches HEAD. Nothing is unpushed; `git status` just cannot say so.
-  One command if it is annoying: `git branch --set-upstream-to=origin/v1-stable`.
+- **`v1-stable` has no upstream tracking ref locally**, so `git status` cannot
+  tell you whether you are ahead. One command if it is annoying:
+  `git branch --set-upstream-to=origin/v1-stable`.
+- **This session's commits are not pushed.** Pushing the branch is what makes
+  the new one-liner installer resolve at all (see below), so it is the first
+  decision to make tomorrow.
 
 ---
 
@@ -59,6 +62,30 @@ meaning — which scored 11/15 before and 15/15 after.
 The probe is kept as a test (`extension/test/content-scripts/markdown-roundtrip.test.js`).
 The fixtures pin the DOM shapes the two sites emit; the probe pins the general
 property, which is the half that catches a construct nobody wrote a fixture for.
+
+**3. A one-line installer.** `setup.sh` already did everything after a clone;
+it now does the clone too, so `curl … | bash` works from nothing. It detects
+which mode it is in by looking for a sibling `server/package.json` rather than
+by `$0`, which is not a path when the script arrives through a pipe. Re-running
+it fast-forwards instead of re-cloning, refuses a non-checkout sitting at the
+target rather than writing over it, and offers — never assumes — a line in the
+shell rc file. Questions are read from `/dev/tty`, because under `curl | bash`
+stdin *is the script*, and a `read` there eats the rest of the source.
+
+Also corrected two things `setup.sh` asserted that were no longer true: the
+companion `.vsix` version, and a status bar that has not used 🟢/🟡 for a while.
+
+**It is not live yet, and one check says so:**
+
+```bash
+curl -fsSI https://raw.githubusercontent.com/PratimeshTiwari/Gemini-Agent/main/setup.sh
+```
+
+`main` has no `setup.sh` at any version — 404, verified. The README leads with
+the `main` URL because that is what it should be after the merge, and carries
+the `v1-stable` URL directly underneath for meanwhile. **The `v1-stable` URL
+serves what is pushed, so today's bootstrap only exists there once this branch
+is pushed.** Nothing here was pushed: that has been the owner's call all along.
 
 ---
 

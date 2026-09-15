@@ -43,22 +43,39 @@ session. No API key, no hosted backend, no telemetry.
 - Google Chrome
 - A logged-in tab on gemini.google.com (the agent has no API key — it drives your own browser session)
 
-### 2. Install
+### 2. Install — one command
 
 ```bash
-git clone <this repo>
-cd Agent-CLI
-./setup.sh
+curl -fsSL https://raw.githubusercontent.com/PratimeshTiwari/Gemini-Agent/main/setup.sh | bash
 ```
 
-`setup.sh` does every step that can be automated — installs both workspaces, builds the
-extension bundle, puts `agent-cli` on your `PATH`, runs the tests — and then prints the two
-that cannot be: loading the Chrome extension, and signing into a chat tab. There is no API
-key to configure, which is exactly why a human has to be logged in somewhere. It is safe to
-re-run; every step checks before it acts.
+Clones to `~/Gemini-Agent`, installs both workspaces, builds the extension bundle, puts
+`agent` on your `PATH`, runs the tests, and offers to add a line to your `~/.zshrc` so the
+command survives a new terminal. Then it prints the two steps that cannot be automated:
+loading the Chrome extension, and signing into a chat tab. There is no API key to configure,
+which is exactly why a human has to be logged in somewhere.
+
+Re-running it is an update, not a second install — it fast-forwards an existing checkout and
+leaves local changes alone. If something is already sitting at the target path and is not a
+checkout, it stops rather than writing over it.
+
+| Knob | |
+| --- | --- |
+| `AGENT_INSTALL_DIR=~/src/agent` | clone somewhere else |
+| `AGENT_BRANCH=v1-stable` | a branch other than `main` |
+| `AGENT_REPO=<url>` | a fork |
+| `--yes` (or `AGENT_YES=1`) | take the default on every question, ask nothing |
+
+Piping a script from the internet into your shell is worth being suspicious of.
+[Read it first](setup.sh) — or clone and run it from the checkout, which is the same script:
+
+```bash
+git clone https://github.com/PratimeshTiwari/Gemini-Agent.git
+cd Gemini-Agent && ./setup.sh
+```
 
 <details>
-<summary>Or do it by hand</summary>
+<summary>Or do every step by hand</summary>
 
 ```bash
 npm install                          # both workspaces
@@ -67,6 +84,42 @@ npm link --workspace=server          # puts agent-cli on your PATH
 ```
 
 </details>
+
+<details>
+<summary>On a locked-down machine — no <code>npm link</code>, no <code>sudo</code></summary>
+
+This is handled, and it needs neither. `npm link` writes into npm's **global prefix**, which
+on a managed machine is usually somewhere you cannot write — and `sudo npm link` is the wrong
+answer to that anyway, because it leaves root-owned files in a tree npm will later try to
+modify as you.
+
+When the link fails, `setup.sh` writes a two-line shim to `~/.local/bin` (or `~/bin`) instead
+— a directory you already own — that calls the checkout by absolute path. If that directory
+is not on your `PATH`, it offers to add the line to your shell rc file. Nothing is written to
+your rc file without asking.
+
+The shim has a second advantage over a link: it survives switching Node versions with `nvm`.
+A link points into the bin directory of whichever Node created it, so changing version
+silently takes the command away.
+
+If even `~/.local/bin` is not writable, `npm start` from the checkout always works.
+
+</details>
+
+> **Which branch — read this before pasting the command above.**
+>
+> Everything is developed on `v1-stable` and reaches `main` through a PR. **Until the first
+> such merge lands, `main` does not contain `setup.sh` at all and the command above returns
+> 404.** Use this one meanwhile — same script, same result:
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/PratimeshTiwari/Gemini-Agent/v1-stable/setup.sh | bash
+> ```
+>
+> After the merge, the `main` command is the right one: it is the released branch, and the
+> `v1-stable` form then tracks development instead. `git rev-list --left-right --count
+> main...v1-stable` says how far apart they currently are — never a number written down here,
+> because that goes stale on the next commit.
 
 ### 3. `agent-cli`, from any folder
 

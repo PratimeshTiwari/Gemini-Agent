@@ -2,22 +2,111 @@
 #
 # setup.sh — everything that can be automated, once.
 #
-# The two steps that cannot be are printed at the end: loading the Chrome
-# extension and signing into a chat tab. There is no API key to configure,
-# which is the whole point — inference happens in your own browser session,
-# so a human has to be logged into it.
+# Two ways in, and the script works out which one it is:
+#
+#   curl -fsSL <raw-url>/setup.sh | bash      # no checkout yet: clone, then run
+#   ./setup.sh                                # inside a checkout: just run
+#
+# The two steps that cannot be automated are printed at the end: loading the
+# Chrome extension and signing into a chat tab. There is no API key to
+# configure, which is the whole point — inference happens in your own browser
+# session, so a human has to be logged into it.
 #
 # Safe to re-run: every step checks before it acts.
+#
+# Knobs, all optional:
+#   AGENT_REPO=<url>        where to clone from
+#   AGENT_BRANCH=<name>     which branch (default: main)
+#   AGENT_INSTALL_DIR=<dir> where to put it (default: ~/Gemini-Agent)
+#   --yes / AGENT_YES=1     take the default on every question, ask nothing
 
 set -euo pipefail
-
-cd "$(dirname "$0")"
-ROOT="$(pwd)"
 
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$1"; }
 step() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+
+ASSUME_YES="${AGENT_YES:-0}"
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes) ASSUME_YES=1 ;;
+  esac
+done
+
+# Ask a yes/no question, defaulting to no.
+#
+# Reads from /dev/tty, never from stdin. Piped from curl, stdin *is the script*
+# — a `read` there eats the rest of the source and the shell runs whatever is
+# left. That is the classic way a curl-pipe installer corrupts itself, so the
+# terminal is addressed directly or the question is not asked at all.
+ask() {
+  [ "$ASSUME_YES" = "1" ] && return 0
+  # `[ -r /dev/tty ]` is not enough. The device node can exist and pass a read
+  # test and still fail to open, when the process has no controlling terminal —
+  # which is the case this whole function exists to survive. Opening it for
+  # real, quietly, in a subshell, is the only test that answers the question.
+  ( : < /dev/tty ) 2>/dev/null || return 1
+  printf '  \033[1m%s\033[0m [y/N] ' "$1" > /dev/tty
+  local reply=''
+  read -r reply < /dev/tty || return 1
+  case "$reply" in [yY]*) return 0 ;; *) return 1 ;; esac
+}
+
+# ── 0. Get the code, if we do not already have it ────────────────────
+#
+# `$0` is not a path when the script arrives through a pipe (it is "bash", or
+# "-"), so the checkout is identified by what is next to the script rather than
+# by how it was invoked: a sibling `server/package.json` means we are in one.
+SELF_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+  SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+if [ -z "$SELF_DIR" ] || [ ! -f "$SELF_DIR/server/package.json" ]; then
+  REPO="${AGENT_REPO:-https://github.com/PratimeshTiwari/Gemini-Agent.git}"
+  BRANCH="${AGENT_BRANCH:-main}"
+  TARGET="${AGENT_INSTALL_DIR:-$HOME/Gemini-Agent}"
+
+  step "Fetching the code"
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "  git is not installed, and this step needs it."
+    echo "  macOS: xcode-select --install   ·   Debian/Ubuntu: sudo apt install git"
+    exit 1
+  fi
+
+  if [ -d "$TARGET/.git" ]; then
+    # Re-running the one-liner is an update, not a second install.
+    ok "found an existing checkout at $TARGET"
+    git -C "$TARGET" fetch --quiet origin "$BRANCH"
+    if [ -n "$(git -C "$TARGET" status --porcelain)" ]; then
+      warn "local changes present — not touching them, using the checkout as it is"
+    else
+      git -C "$TARGET" checkout --quiet "$BRANCH"
+      git -C "$TARGET" merge --quiet --ff-only "origin/$BRANCH" 2>/dev/null \
+        && ok "updated to origin/$BRANCH" \
+        || warn "could not fast-forward to origin/$BRANCH — using the checkout as it is"
+    fi
+  elif [ -e "$TARGET" ]; then
+    # Refusing beats clobbering: this is someone's directory.
+    echo "  $TARGET already exists and is not a git checkout."
+    echo "  Move it, or choose somewhere else:"
+    echo "      AGENT_INSTALL_DIR=~/somewhere-else bash setup.sh"
+    exit 1
+  else
+    git clone --quiet --branch "$BRANCH" "$REPO" "$TARGET"
+    ok "cloned $BRANCH into $TARGET"
+  fi
+
+  # Hand over to the copy that came with the code. `exec` so there is one
+  # process and one exit status, and the script that continues is the one that
+  # matches the tree it is setting up.
+  exec bash "$TARGET/setup.sh" "$@"
+fi
+
+cd "$SELF_DIR"
+ROOT="$(pwd)"
 
 # ── 1. Node ──────────────────────────────────────────────────────────
 step "Checking Node"
@@ -71,6 +160,7 @@ else
   warn "npm link failed — no write access to npm's global prefix, most likely"
   step "Installing a shim instead"
 
+  # Declared at the top of this branch and read again in 4b below.
   SHIM_DIR=""
   for candidate in "$HOME/.local/bin" "$HOME/bin"; do
     case ":$PATH:" in
@@ -108,6 +198,54 @@ SHIM
   fi
 fi
 
+# ── 4b. The shell rc file ────────────────────────────────────────────
+#
+# Only ever *offered*, and only when it would actually change something: if
+# `agent` already resolves, appending a line to someone's rc file is noise they
+# have to read past forever. Writing to a shell rc without asking is the kind
+# of thing that makes an installer unwelcome.
+step "Making 'agent' stick around"
+
+rc_file() {
+  case "$(basename "${SHELL:-}")" in
+    zsh)  printf '%s\n' "$HOME/.zshrc" ;;
+    bash) [ -f "$HOME/.bash_profile" ] && printf '%s\n' "$HOME/.bash_profile" \
+                                       || printf '%s\n' "$HOME/.bashrc" ;;
+    *)    printf '' ;;
+  esac
+}
+
+MARKER="# added by Gemini-Agent setup.sh"
+
+if command -v agent >/dev/null 2>&1; then
+  ok "'agent' already resolves — nothing to add"
+else
+  RC="$(rc_file)"
+  # The line to add depends on which of the two paths above ran: a shim needs
+  # its directory on PATH, no shim at all needs an alias into the checkout.
+  if [ -n "${SHIM_DIR:-}" ] && [ -x "${SHIM_DIR:-}/agent" ]; then
+    LINE="export PATH=\"$SHIM_DIR:\$PATH\"  $MARKER"
+  else
+    LINE="alias agent='node \"$ROOT/server/src/index.js\"'  $MARKER"
+  fi
+
+  if [ -z "$RC" ]; then
+    warn "unrecognised shell (${SHELL:-unset}) — add this yourself:"
+    printf '\n    %s\n\n' "$LINE"
+  elif [ -f "$RC" ] && grep -qF "$MARKER" "$RC"; then
+    ok "$RC already has it"
+  else
+    echo "  This would go at the end of $RC:"
+    printf '\n    %s\n\n' "$LINE"
+    if ask "Add it?"; then
+      printf '\n%s\n' "$LINE" >> "$RC"
+      ok "added to $RC — open a new terminal, or: source $RC"
+    else
+      warn "not added. Add it yourself when you want 'agent' on your PATH."
+    fi
+  fi
+fi
+
 # ── 5. Tests, as a smoke check ───────────────────────────────────────
 step "Running the test suite"
 if npm test --silent >/dev/null 2>&1; then
@@ -137,11 +275,12 @@ $(bold "Then")
      cd ~/code/your-project
      agent-cli
 
-The status bar shows 🟢 once the extension connects, 🟡 while it has not.
+The status bar reads '● agent' in cyan once the extension connects, and
+'○ agent' in yellow while it has not.
 
 $(bold "Optional: the VS Code companion")
 
      Extensions panel → ... → Install from VSIX...
-     $ROOT/vscode-companion/cli-agent-companion-1.3.1.vsix
+     $ROOT/vscode-companion/cli-agent-companion-1.5.0.vsix
 
 EOF
