@@ -1,13 +1,17 @@
 import { connectWebSocket } from './socket.js';
 import { sendToServer } from './messaging.js';
 import { getState } from './state.js';
-import { broadcastTabStatus, reinjectModelTabs, restoreFocusFrom, forgetFocusFrom } from './content.js';
+import { broadcastTabStatus, reinjectModelTabs, restoreFocusFrom, forgetTab } from './content.js';
 
 // Open side panel on extension icon click
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
 // Listen for tab removals / updates to keep server informed of active tabs
-chrome.tabs.onRemoved.addListener(() => {
+chrome.tabs.onRemoved.addListener((tabId) => {
+  // Any tab, not just ones we opened: a main tab the user closes by hand must
+  // stop being remembered, or the next turn sends into a tab that is gone and
+  // reports the site as unreachable.
+  forgetTab(tabId);
   broadcastTabStatus();
 });
 
@@ -43,7 +47,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
           if (finished && payload.isSubagent) {
             if (payload.complete) payload.subagentUrl = sender.tab.url;
-            forgetFocusFrom(sender.tab.id);
+            forgetTab(sender.tab.id);
             chrome.tabs.remove(sender.tab.id)
               .catch(err => console.warn('Failed to auto-close subagent tab:', err));
           }

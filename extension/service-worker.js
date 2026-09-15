@@ -118,8 +118,42 @@
     if (modelTabId === fromTabId) return;
     focusTakenFrom.set(modelTabId, fromTabId);
   }
-  function forgetFocusFrom(modelTabId) {
-    focusTakenFrom.delete(modelTabId);
+  var mainTabs = /* @__PURE__ */ new Map();
+  var subagentTabs = /* @__PURE__ */ new Set();
+  function claimSubagentTab(tabId) {
+    if (tabId !== void 0 && tabId !== null) subagentTabs.add(tabId);
+  }
+  function forgetTab(tabId) {
+    subagentTabs.delete(tabId);
+    focusTakenFrom.delete(tabId);
+    for (const [model, id] of mainTabs) {
+      if (id === tabId) mainTabs.delete(model);
+    }
+  }
+  async function pickMainTab(targetModel = "gemini") {
+    const targetUrl = MODEL_URLS[targetModel];
+    if (!targetUrl) return null;
+    const remembered = mainTabs.get(targetModel);
+    if (remembered !== void 0) {
+      try {
+        const tab = await chrome.tabs.get(remembered);
+        if (tab && tab.url && matchesModelUrl(tab.url, targetModel)) return tab;
+      } catch {
+      }
+      mainTabs.delete(targetModel);
+    }
+    const tabs = await chrome.tabs.query({ url: targetUrl });
+    const usable = tabs.filter((t) => !subagentTabs.has(t.id));
+    if (usable.length === 0) return null;
+    const chosen = usable[usable.length - 1];
+    mainTabs.set(targetModel, chosen.id);
+    return chosen;
+  }
+  function matchesModelUrl(url, targetModel) {
+    const pattern = MODEL_URLS[targetModel];
+    if (!pattern || !url) return false;
+    const host = pattern.replace(/^https?:\/\//, "").replace(/\/\*$/, "").replace(/\*$/, "");
+    return url.includes(host);
   }
   async function trySendToTab(tab, message, targetModel) {
     let originalActiveTabId = null;
@@ -161,10 +195,8 @@
   async function ensureModelTab(targetModel = "gemini") {
     const targetUrl = MODEL_URLS[targetModel];
     if (!targetUrl) return null;
-    const tabs = await chrome.tabs.query({ url: targetUrl });
-    if (tabs.length > 0) {
-      return tabs[tabs.length - 1];
-    }
+    const existing = await pickMainTab(targetModel);
+    if (existing) return existing;
     console.log(`[Agent CLI] No ${targetModel} tab found. Auto-reopening in a new tab...`);
     const openUrl = targetModel === "gemini" ? "https://gemini.google.com/app" : targetModel === "chatgpt" ? "https://chatgpt.com" : targetUrl.replace("/*", "");
     const newTab = await chrome.tabs.create({ url: openUrl, active: true });
@@ -190,6 +222,7 @@
       chrome.tabs.onUpdated.addListener(listener);
     });
     await new Promise((r) => setTimeout(r, 1500));
+    mainTabs.set(targetModel, newTab.id);
     broadcastTabStatus();
     return newTab;
   }
@@ -209,10 +242,12 @@
     let success = false;
     if (payload.isSubagent) {
       const newTab = await chrome.tabs.create({ url: targetUrl.replace("/*", ""), active: false });
+      claimSubagentTab(newTab.id);
       await new Promise((r) => setTimeout(r, 4e3));
       success = await trySendToTab(newTab, message, targetModel);
     } else {
-      let tabs = await chrome.tabs.query({ url: targetUrl });
+      const mine = await pickMainTab(targetModel);
+      let tabs = mine ? [mine] : [];
       if (tabs.length === 0) {
         console.log(`[Agent CLI] No active ${targetModel} tab found. Auto-reopening...`);
         sendToServer({
@@ -264,10 +299,10 @@
   async function sendToModelTab(message, targetModel = "gemini") {
     const targetUrl = MODEL_URLS[targetModel];
     if (!targetUrl) return false;
-    const tabs = await chrome.tabs.query({ url: targetUrl });
-    if (tabs.length === 0) return false;
+    const tab = await pickMainTab(targetModel);
+    if (!tab) return false;
     try {
-      await chrome.tabs.sendMessage(tabs[tabs.length - 1].id, message);
+      await chrome.tabs.sendMessage(tab.id, message);
       return true;
     } catch (err) {
       console.warn(`[Agent CLI] ${message.type} could not reach the ${targetModel} tab:`, err.message);
@@ -278,19 +313,12 @@
     const targetModel = payload.targetModel || "gemini";
     const targetUrl = MODEL_URLS[targetModel];
     if (!targetUrl) return;
-    let tabs = await chrome.tabs.query({ url: targetUrl });
-    if (tabs.length === 0) {
-      const newTab = await ensureModelTab(targetModel);
-      if (newTab) tabs = [newTab];
-    }
-    if (tabs.length === 0) return;
-    for (let i = tabs.length - 1; i >= 0; i--) {
-      try {
-        await chrome.tabs.sendMessage(tabs[i].id, { type: "new_chat", payload });
-        break;
-      } catch (err) {
-        console.warn(`[Agent CLI] Failed to send new_chat to ${targetModel} tab ${tabs[i].id}:`, err);
-      }
+    const tab = await pickMainTab(targetModel) || await ensureModelTab(targetModel);
+    if (!tab) return;
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: "new_chat", payload });
+    } catch (err) {
+      console.warn(`[Agent CLI] Failed to send new_chat to ${targetModel} tab ${tab.id}:`, err);
     }
   }
 
@@ -443,7 +471,8 @@
 
   // src/background/main.js
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
-  chrome.tabs.onRemoved.addListener(() => {
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    forgetTab(tabId);
     broadcastTabStatus();
   });
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -467,7 +496,7 @@
             }
             if (finished && payload.isSubagent) {
               if (payload.complete) payload.subagentUrl = sender.tab.url;
-              forgetFocusFrom(sender.tab.id);
+              forgetTab(sender.tab.id);
               chrome.tabs.remove(sender.tab.id).catch((err) => console.warn("Failed to auto-close subagent tab:", err));
             }
           }
