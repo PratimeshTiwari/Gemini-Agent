@@ -71,14 +71,18 @@ default" are gone until they are not.
 @pratimesh  ·  3 PRs  ·  polled 2m ago
 Analysing @alice on PR #42  ·  queue 1
 
-❯ PR #42 — plan generated  ·  requires_review
+❯ PR #42  ·  @alice commented
     💬 Please rename this variable to something clearer…
     → PR-42/comment-9.md
-  PR #41 — CI failed  ·  build
+  PR #41  ·  CI failed on build
     → PR-41/ci-1788.md
 
 ↑↓ move  ·  ⏎ open plan  ·  r refresh  ·  ? more
 ```
+
+Who said it, not what a classifier called it — see problem 8. "plan generated"
+went too: every row in this list is a plan, so saying so on each one is the
+same kind of constant.
 
 Identity first, because "0 PRs watched" reads very differently once you can see
 it is watching as the wrong account — which is the reasoning `getStatus()`
@@ -167,12 +171,36 @@ Border, title, blank, status, blank, activity heading, empty line, blank, and
 seven hints over two rows — **11 rows to tell you there is nothing to look
 at**, one of which is the sentence saying so.
 
+### 8. The row shows a label that is always the same word, and hides the one that matters
+
+```
+❯ PR #42 — plan generated  ·  requires_review
+```
+
+`requires_review` is not a judgement. It is the **only** non-noise value the
+classifier can return (`comment-classifier.js:51`), and anything it calls noise
+is dropped before a plan is ever written — so on a comment row that word is a
+constant. `websocket-server.js:441` is
+`data.classification?.category || data.type`, which for CI falls back to
+`ci_failure`: one real bit, better said as "CI failed" in the row's own words.
+
+Meanwhile **the author is already in the payload** (`comment: data.comment`)
+and is not shown. "@alice commented" is the thing you scan this list for; "a
+comment happened, and it was not noise" is not.
+
+**And there is no LLM verdict to show instead.** The classifier deliberately
+stopped categorising when the AI took that over — `comment-classifier.js`'s own
+header says so — and what the AI produces is the plan itself, not a label.
+Inventing a category to display would be a second classifier, which is the
+thing that was removed. The right answer is the author and the comment, both of
+which are already there.
+
 ---
 
 ## What I would do
 
-Ordered by how much they buy against how much they change. **1–3 are the ones I
-would do whatever else you pick.**
+Ordered by how much they buy against how much they change. **1–5 are the ones
+I would do whatever else you pick** — none of them depends on the answer to 6.
 
 ### 1. Drop the border and the title — `−5 rows`
 
@@ -209,7 +237,13 @@ Seven is too many for one line at 80 columns. The transcript solved this
 already: `/help` lists every binding, and the status bar carries only what is
 live. Keep `↑↓ ⏎ r` here and let `?` or `/help` hold the rest.
 
-### 5. Consider: is it a tab at all?
+### 5. Show who commented; drop `requires_review` — `no row change`
+
+Both are already in the payload. `@alice commented` replaces a word that is
+the same on every row, and "plan generated" goes with it — every row in this
+list *is* a plan.
+
+### 6. Consider: is it a tab at all?
 
 The bigger question, and the reason to decide before building. This is a
 **stream of events** — a comment arrived, a plan was written, CI failed — and
