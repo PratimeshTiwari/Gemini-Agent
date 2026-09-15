@@ -59,6 +59,7 @@ function oneLineError(result) {
 import * as paths from './paths.js';
 import { resolveEffort, effortFromConfig } from './effort.js';
 import { planModelSwitch } from './model-match.js';
+import { archiveTurns } from './session-recall.js';
 import { handleSlashCommand as runSlashCommand } from './slash-commands.js';
 import { stripImageData } from './prompt-builder.js';
 import { validateWorkspace } from './workspaces.js';
@@ -1768,6 +1769,12 @@ ${compactedSummary}`;
       };
 
       // Mutate the history safely
+      // Archive before the rewrite, not after: `saveHistory` overwrites both
+      // copies of history.jsonl, so without this the turns being summarised are
+      // gone from disk and not merely from the thread. `recall` searches what
+      // lands here, which is the whole reason it can answer anything.
+      archiveTurns(this.workspace, toCompact);
+
       this.conversationHistory = [compactedTurn, ...toKeep];
       this.sessionStore.saveHistory(this.conversationHistory);
       this.promptBuilder.resetPromptState();

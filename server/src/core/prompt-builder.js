@@ -597,6 +597,8 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
 ## run_background — Spawn background process. Args: command (string), cwd? (string)
 ## manage_task — Manage background tasks. Args: action ("status"|"read_logs"|"send_input"|"kill"|"list"), taskId? (string)
 ## get_editor_state — Get current editor state. No args.
+## recall_history — Search earlier turns of this conversation, including ones a summary replaced. Args: query (string), limit? (number)
+## get_diagnostics — The editor's errors and warnings (VS Code Problems panel). Args: path? (string), severity? ("error"|"warning")
 ## ask_subagent — Delegate to Gemini subagent. Args: prompt (string)
 ## ask_researcher — Delegate read-only codebase exploration. Args: prompt (string)
 `;
@@ -735,6 +737,23 @@ Parameters:
 ## get_editor_state
 Gets the user's current editor state (active file, cursor position, and visible text) if the VS Code companion extension is installed. Use this to understand what the user is currently looking at.
 Parameters: None
+
+## recall_history
+Search earlier turns of this conversation, including ones that a summary replaced and that you can
+no longer see. When the context refers to a decision, a filename, an error or a preference whose
+detail you no longer have, look it up here rather than asking the user to repeat it or guessing.
+Matching is literal and case-insensitive, so search for the exact term.
+Parameters:
+  - query (string, required): The exact term to look for.
+  - limit (number, optional): How many matches to return. Default 5, maximum 10.
+
+## get_diagnostics
+Read the editor's current errors and warnings — the VS Code Problems panel — for the workspace.
+Use it after editing a file to check the change compiles and lints, and before starting work to see
+what is already broken. Requires the VS Code companion extension.
+Parameters:
+  - path (string, optional): Only report problems for this file.
+  - severity (string, optional): "error" to exclude warnings.
 
 ## ask_subagent
 Delegate a task to a generic parallel Gemini subagent. It will run in the background and return the result.

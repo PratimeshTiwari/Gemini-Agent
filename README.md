@@ -347,7 +347,10 @@ there because every round is a prompt typed into your browser, and a model that
 keeps going is spending your quota. It stops, says so, and `continue` resumes.
 
 When the conversation outgrows the effort rung's budget, older turns are replaced
-by a summary automatically, and the agent tells you what it compacted.
+by a summary automatically, and the agent tells you what it compacted. **The turns
+themselves are kept** — the agent can search back through them when it needs a
+detail the summary left out, rather than asking you to repeat it. They live in
+`.agent/sessions/archive.jsonl`.
 
 ## 🔍 Seeing what the agent is being told
 
@@ -515,7 +518,8 @@ Everything the agent writes into a workspace lives in one directory, `.agent/`:
 ├── state/             # editor.json, github.json, plan-approval.json
 ├── backups/           # file backups powering /undo
 ├── github-pr-plans/   # GitHub PR agent output
-├── sessions/          # conversation history (local copy)
+├── sessions/          # conversation history, and archive.jsonl — turns a
+│                     #   summary replaced, kept so the agent can look them up
 └── logs/
     ├── errors.jsonl     # every failure, tagged with the flow it came from (/logs)
     ├── traces.jsonl     # how long each browser turn took, per stage

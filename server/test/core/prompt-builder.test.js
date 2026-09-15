@@ -508,3 +508,31 @@ describe('PromptBuilder — the prompt may not name a tool that does not exist',
     assert.deepEqual([...offenders], [], `prompt names undispatchable tool(s): ${[...offenders]}`);
   });
 });
+
+describe('PromptBuilder — a dispatchable tool the prompt never mentions is unreachable', () => {
+  /**
+   * The other direction, and the one that bit.
+   *
+   * The existing guard catches a prompt naming a tool that does not exist.
+   * `recall_history` was the opposite: registered in `TOOL_DEFINITIONS`, fully
+   * working, and absent from the prompt — because `_buildToolDefinitions` is
+   * two hand-written lists rather than a render of that array, which `CLAUDE.md`
+   * has recorded as a drift risk since P2. A tool the model is never told about
+   * is a tool that does not exist, and nothing said so.
+   */
+  test('every tool in TOOL_DEFINITIONS appears in the prompt', async () => {
+    const { MCPServer } = await import('../../src/mcp/mcp-server.js');
+    const server = new MCPServer(ws);
+    const registered = server.getToolDefinitions
+      ? server.getToolDefinitions().map((t) => t.name)
+      : (server.tools || []).map((t) => t.name);
+
+    assert.ok(registered.length > 0, 'could not read the tool registry');
+
+    const pb = new PromptBuilder(ws, ws);
+    const prompt = build(pb, { modelConfig: { effort: 'standard', main: 'gemini' } });
+
+    const missing = registered.filter((name) => !prompt.includes(name));
+    assert.deepEqual(missing, [], `dispatchable but never mentioned: ${missing.join(', ')}`);
+  });
+});

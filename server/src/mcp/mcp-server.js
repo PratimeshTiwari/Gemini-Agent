@@ -17,6 +17,7 @@ import { openInEditor } from './tools/open-in-editor.js';
 import { runBackground } from './tools/run-background.js';
 import { manageTask } from './tools/manage-task.js';
 import getEditorState from './tools/get-editor-state.js';
+import recallHistory from './tools/recall-history.js';
 import getDiagnostics from './tools/get-diagnostics.js';
 import { logError } from '../core/error-log.js';
 import { validateArgs } from './validate-args.js';
@@ -128,6 +129,12 @@ const TOOL_DEFINITIONS = [
       pattern: { type: 'string', description: 'For watch: a regex to look for in the output. Omit to use the built-in failure patterns (error, failed, exception, traceback, EADDRINUSE, Cannot find module, ...).', required: false },
     },
     handler: manageTask,
+  },
+  {
+    name: recallHistory.name,
+    description: recallHistory.description,
+    parameters: recallHistory.schema.properties,
+    handler: recallHistory.execute,
   },
   {
     name: getEditorState.name,

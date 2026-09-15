@@ -230,6 +230,18 @@ export const contextSummaryPath = (workspace) => path.join(contextDir(workspace)
 export const plansDir = (workspace) => path.join(agentDir(workspace), 'github-pr-plans');
 export const logsDir = (workspace) => path.join(agentDir(workspace), 'logs');
 export const sessionsDirLocal = (workspace) => path.join(agentDir(workspace), 'sessions');
+
+/**
+ * Turns that compaction replaced with a summary.
+ *
+ * Compaction rewrites `history.jsonl` in place — both copies — so what it drops
+ * is gone from disk, not merely from the model's view. That makes "look it up
+ * in the session log" impossible, which is what the recall tool needs. Dropped
+ * turns are appended here first, so the detail survives the summary.
+ *
+ * Append-only and never read into a prompt on its own: it is searched on demand.
+ */
+export const archivePath = (workspace) => path.join(sessionsDirLocal(workspace), 'archive.jsonl');
 /** Session history kept alongside the project. */
 export const localSessionPath = (workspace) => path.join(sessionsDirLocal(workspace), 'history.jsonl');
 export const tmpDir = (workspace) => path.join(agentDir(workspace), 'tmp');
