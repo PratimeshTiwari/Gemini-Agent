@@ -17,6 +17,7 @@
 import { resolve, dirname } from 'path';
 import { homeDir, ensureDir, setActiveScope, resolveState, codeDir } from './core/paths.js';
 import { runMigrations } from './core/migrate.js';
+import { hostEditor } from './core/host-editor.js';
 import { rememberWorkspace } from './core/workspaces.js';
 import { existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -43,7 +44,14 @@ function parseArgs() {
     continue: false,
     sessions: false,
     sessionId: null,
-    editor: process.env.EDITOR || 'code',
+    /**
+     * `--editor` and `$EDITOR` are explicit choices and win. The fallback used
+     * to be a bare `'code'`, which is not installed by any VS Code *fork* — so
+     * from a terminal inside one, `/open` fell through to the OS default for
+     * the file type and opened a markdown file in RStudio. Asking which editor
+     * is hosting this terminal answers that properly; see core/host-editor.js.
+     */
+    editor: process.env.EDITOR || hostEditor() || 'code',
     github: true,
     ciWatch: true,
   };

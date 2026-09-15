@@ -8,6 +8,7 @@
 import { exec } from 'child_process';
 import { existsSync } from 'fs';
 import { resolve, relative } from 'path';
+import { isVSCodeFamily } from '../../core/host-editor.js';
 
 /**
  * The shell command that opens this file, and whether it carries the line.
@@ -36,8 +37,10 @@ export function editorCommand(editor, absPath, line) {
   const quoted = `"${editor}"`;
   let command;
 
-  if (['code', 'cursor', 'code-insiders', 'codium', 'vscodium', 'windsurf'].includes(name)) {
-    // VS Code and its forks all take --goto for line:column.
+  if (isVSCodeFamily(name)) {
+    // VS Code and its forks all take --goto for line:column. Matched on shape
+    // rather than a list of names — every fork is a new binary, and a list is
+    // the thing that keeps being out of date.
     command = line ? `${quoted} --goto "${absPath}:${line}:1"` : `${quoted} "${absPath}"`;
   } else if (['subl', 'sublime', 'sublime_text'].includes(name)) {
     command = line ? `${quoted} "${absPath}:${line}"` : `${quoted} "${absPath}"`;

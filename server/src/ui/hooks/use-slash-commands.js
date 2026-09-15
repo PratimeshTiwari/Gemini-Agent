@@ -13,7 +13,7 @@ import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
 import { canPickFolder, pickFolder } from '../folder-picker.js';
 import { summariseTraces, formatMs } from '../../core/trace-log.js';
 import { channelHealth, formatRate, MIN_TURNS_FOR_RATE } from '../../core/channel-health.js';
-import { checkForUpdate, isDirty, pullUpdate, UPDATE_BRANCH, savePendingReload, readPendingReload, clearPendingReload } from '../../core/update.js';
+import { checkForUpdate, isDirty, pullUpdate, savePendingReload, readPendingReload, clearPendingReload } from '../../core/update.js';
 
 
 /**
@@ -242,30 +242,12 @@ export async function handleSlashCommand(query, {
             + 'this checkout has no remote, or has never fetched it.');
           return;
         }
-        if (!state.available) {
-          /**
-           * `main` is what people run, so that reads plainly; anything else
-           * names both sides.
-           *
-           * On a branch *ahead* of main — the normal state while developing —
-           * "up to date" on its own reads like the check did nothing, so it
-           * says what was compared. On main it would just be repeating itself.
-           */
-          say(state.branch === UPDATE_BRANCH
-            ? `✔ Up to date with \`${state.upstream}\`.`
-            : `✔ Up to date — nothing on \`${state.upstream}\` that \`${state.branch}\` `
-              + 'does not already have.');
-          return;
-        }
+        // Which branch it compared, and how far ahead yours is, is not what
+        // was asked. "Is there an update?" has a one-word answer.
+        if (!state.available) { say('✔ Up to date.'); return; }
 
         const n = state.behind;
-        const lines = [
-          `### ${n} update${n === 1 ? '' : 's'} available`,
-          '',
-          `\`${state.upstream}\` has ${n} commit${n === 1 ? '' : 's'} `
-            + `that \`${state.branch}\` does not.`,
-          '',
-        ];
+        const lines = [`### ${n} update${n === 1 ? '' : 's'} available`, ''];
         // Said here rather than after the pull is attempted: it is the one
         // thing that would stop this working, and knowing now is worth more
         // than finding out when you ask for it.
@@ -327,13 +309,41 @@ export async function handleSlashCommand(query, {
       }
       const abs = target.startsWith('/') ? target : `${agentLoop.workspace}/${target}`;
       const { exec } = await import('child_process');
-      // Same ladder every other open in the app uses: the configured editor, then
-      // whatever the desktop would do with it.
-      exec(`"${agentLoop.editor || 'code'}" "${abs}" || open "${abs}" || xdg-open "${abs}"`);
-      setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
-        role: 'assistant', isLocal: true, timestamp: Date.now(),
-        content: `📂 Opened \`${abs}\`.`,
-      }]);
+      const editor = agentLoop.editor || 'code';
+
+      /**
+       * Say which editor actually took it, not just that something did.
+       *
+       * The old version ran `editor || open || xdg-open` and reported
+       * "Opened <path>" whatever happened — so when `code` was not installed
+       * and macOS handed a `.md` to RStudio, the message read exactly the same
+       * as success. Same fault as `open_in_editor` claiming a line number it
+       * had not sent: the report has to describe what happened, or it is worse
+       * than no report.
+       */
+      exec(`"${editor}" "${abs}"`, (err) => {
+        if (!err) {
+          setHistory(prev => [...prev, {
+            role: 'assistant', isLocal: true, timestamp: Date.now(),
+            content: `Opened \`${abs}\` in ${editor.split(/[\\/]/).pop()}.`,
+          }]);
+          return;
+        }
+        // The desktop's own answer, which is a different thing and is named as
+        // one: it opens whatever is registered for the file type.
+        const fallback = process.platform === 'darwin' ? 'open' : 'xdg-open';
+        exec(`${fallback} "${abs}"`, (err2) => {
+          setHistory(prev => [...prev, {
+            role: 'assistant', isLocal: true, timestamp: Date.now(),
+            content: err2
+              ? `! Could not open \`${abs}\` — \`${editor}\` failed and so did \`${fallback}\`.`
+              : `Opened \`${abs}\` with the desktop default — \`${editor}\` is not runnable.`
+                + '\n\n_Set one with `--editor <command>` or `$EDITOR` if that is the wrong app._',
+          }]);
+        });
+      });
+
+      setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }]);
       setIsProcessing(false);
       return;
     }
