@@ -15,6 +15,12 @@
  * prompt, and the user presses Enter or does not. An agent that starts editing
  * because a command you ran in another window failed is a worse tool than one
  * that waits to be asked, however clever the loop looks in a demo.
+ *
+ * The same idea applies one level up, and the companion owns that half: it
+ * forwards nothing until you point it at a terminal. Forwarding every failure
+ * from every terminal was the wrong dose — reported from use, three markers
+ * piled into one prompt, one of them a typo the user had made in their own
+ * shell and already fixed.
  */
 
 import fs from 'fs';
@@ -84,7 +90,10 @@ export function drainTerminalQueue(workspace) {
     });
   }
 
-  // Only the last few: a broken watcher can fail every second, and a hundred
-  // markers in the input box is not a useful thing to hand anyone.
+  // Only the last few. The dose is set on the *other* side now — the companion
+  // forwards nothing until you point it at a terminal — so this is a backstop
+  // rather than the policy: a watched terminal running a broken watcher can
+  // still fail every second, and a hundred markers in the input box is not a
+  // useful thing to hand anyone.
   return out.slice(-3);
 }

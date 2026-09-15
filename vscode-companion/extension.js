@@ -64,9 +64,45 @@ function activate(context) {
     // Only failures are forwarded, and only their tail. A passing `npm test` is
     // not news, and a full build log is tens of thousands of characters that
     // would be typed into a browser chat tab verbatim.
+    //
+    // **And only from terminals you asked for.** Forwarding every failure from
+    // every terminal was the wrong dose: reported from use, three markers piled
+    // into one prompt, one of them a typo the user had made in their own shell
+    // and already fixed. A failure you know about, from a command you ran
+    // deliberately, is noise you have to delete by hand before the prompt is
+    // usable again.
+    //
+    // "Offered, not acted on" is the right design and this is it applied one
+    // level up: the agent is offered a terminal, rather than helping itself to
+    // all of them. Per session, because a terminal is a per-session thing —
+    // there is nothing to persist that would still mean anything next time.
     if (typeof vscode.window.onDidStartTerminalShellExecution === 'function') {
         const MAX_OUTPUT_CHARS = 4000;
         const running = new Map(); // execution -> collected output
+        const watched = new Set(); // Terminal objects the user opted in
+        let offered = false;       // the one-time nudge, per session
+
+        sub(vscode.commands.registerCommand('agentCli.watchTerminal', () => {
+            const terminal = vscode.window.activeTerminal;
+            if (!terminal) {
+                vscode.window.showWarningMessage('Agent CLI: no active terminal.');
+                return;
+            }
+            if (watched.has(terminal)) {
+                watched.delete(terminal);
+                vscode.window.showInformationMessage(
+                    `Agent CLI: no longer watching "${terminal.name}".`);
+            } else {
+                watched.add(terminal);
+                offered = true; // they know the feature exists now
+                vscode.window.showInformationMessage(
+                    `Agent CLI: watching "${terminal.name}". Failed commands will be offered to the agent.`);
+            }
+        }));
+
+        // A closed terminal must not be held here: `watched` would keep the
+        // object alive and a reused name would look like it was still opted in.
+        sub(vscode.window.onDidCloseTerminal((terminal) => watched.delete(terminal)));
 
         sub(vscode.window.onDidStartTerminalShellExecution(async (event) => {
             const execution = event.execution;
@@ -95,6 +131,24 @@ function activate(context) {
             // is not the same as success — but it is not a failure either, and
             // guessing would fill the queue with noise.
             if (event.exitCode === undefined || event.exitCode === 0) return;
+
+            if (!watched.has(event.terminal)) {
+                // Said once per session, and never again. Without it the
+                // feature is invisible to anyone who has not read the README —
+                // and a feature nobody can find is the same as one that is off.
+                // With it on every failure it would be the nagging that
+                // forwarding-everything already was.
+                if (!offered) {
+                    offered = true;
+                    vscode.window.showInformationMessage(
+                        'Agent CLI can offer failed commands from this terminal to the agent.',
+                        'Watch this terminal',
+                    ).then((choice) => {
+                        if (choice) vscode.commands.executeCommand('agentCli.watchTerminal');
+                    });
+                }
+                return;
+            }
 
             const output = (getOutput ? getOutput() : '').slice(-MAX_OUTPUT_CHARS);
             appendState('terminal.jsonl', {

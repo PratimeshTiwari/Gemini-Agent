@@ -165,7 +165,7 @@ To install:
 
 1. In VS Code, open the Extensions panel (`Cmd+Shift+X`).
 2. `...` menu → **Install from VSIX...**
-3. Pick `vscode-companion/cli-agent-companion-1.3.1.vsix`.
+3. Pick `vscode-companion/cli-agent-companion-1.5.0.vsix`.
 
 It talks to the CLI through files in `.agent/state/`, so it works whether or not the agent is
 running — a selection queued before you start `agent-cli` is waiting for you when you do.
@@ -325,6 +325,12 @@ pushing the transcript off screen, and shows `… N more lines` when it does.
   *offered*, not inserted: the status bar shows `2 failed ^f` and nothing touches
   your prompt until you ask. Something you chose to attach goes in; something
   that merely happened to you waits.
+
+  And only from terminals you point at: right-click a terminal → **Agent CLI:
+  Watch This Terminal for Failures**, or run it from the command palette.
+  Forwarding every failure from every terminal meant a typo you had already
+  fixed arrived as a marker you then had to delete. Per session, because a
+  terminal is a per-session thing.
 
 ### Reading what came back
 
