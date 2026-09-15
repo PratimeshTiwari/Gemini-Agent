@@ -61,6 +61,55 @@ export const FOCUS_TERMINAL = 'terminal';
  */
 export const RESERVED_ROWS = 9;
 
+/**
+ * Below this many rows the furniture no longer fits, so some of it is dropped.
+ *
+ * `liveBudget` has a floor — the in-flight turn is given at least a few rows
+ * however short the terminal is — which means the frame has a *minimum* height
+ * of `RESERVED_ROWS + floor`, and a terminal shorter than that overflows on
+ * every render however much the turn gives up. That is Ink's clear-and-repaint
+ * path, the one that deletes the scrollback seven times a second.
+ *
+ * Measured under a pty, one turn, extension connected, no palette:
+ *
+ * ```
+ * rows  13  →   0 ESC[2J
+ * rows  12  →   1
+ * rows  10  → 166
+ * ```
+ *
+ * 13 is where `terminalHeight - RESERVED_ROWS` stops clearing the floor of 3,
+ * which is why the threshold is a measurement and a derivation agreeing rather
+ * than a guess.
+ *
+ * After: 0 at 10, 12, 13, 14, 24 and 30 rows. The floor moved from 13 to **9**
+ * — 9 rows still costs one clear and 8 costs thirty, because six rows of
+ * furniture and a one-row turn is the least this UI can draw and an 8-row
+ * terminal cannot hold even that. That is a documented floor rather than a
+ * silent one: a terminal that small should be cramped, not quietly destroying
+ * its own scrollback.
+ */
+export const COMPACT_BELOW_ROWS = 13;
+
+/**
+ * Rows of furniture for the frame about to be drawn at this height.
+ *
+ * Three of the nine are blank: the margin above the prompt, the margin above
+ * the status bar, and the one under the thinking line. They are there so the
+ * transcript, the thing you type into and the state line read as three blocks
+ * rather than one — worth three rows at any ordinary size, and worth nothing at
+ * all on a terminal that cannot fit the blocks they separate.
+ *
+ * Spacing is what gets dropped, never a row carrying information: a short
+ * terminal should be cramped, not lying about what the agent is doing.
+ */
+export function reservedRows(terminalHeight) {
+  return terminalHeight < COMPACT_BELOW_ROWS ? RESERVED_ROWS - 3 : RESERVED_ROWS;
+}
+
+/** Whether the frame at this height is dropping its spacing. */
+export const isCompactHeight = (terminalHeight) => terminalHeight < COMPACT_BELOW_ROWS;
+
 export const THINKING_MESSAGES = [
   'Thinking…',
   'Gemining…',

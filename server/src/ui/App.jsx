@@ -8,7 +8,7 @@ import { AgentTerminal } from './components/AgentTerminal.jsx';
 import { Dots } from './components/RunningLine.jsx';
 import { InputBar } from './components/InputBar.jsx';
 import { clampForDisplay } from './format.js';
-import { SLASH_COMMANDS, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES, RESERVED_ROWS } from './constants.js';
+import { SLASH_COMMANDS, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES, reservedRows, isCompactHeight } from './constants.js';
 import { resolveEffort } from '../core/effort.js';
 import { groupTurns } from './transcript.js';
 import { expandPastes, attachedPastes } from './paste.js';
@@ -328,7 +328,13 @@ export function App({ agentLoop, wsServer }) {
     Math.min(input.split('\n').length, promptMaxRows) - 1,
   );
 
-  const liveBudget = Math.max(3, terminalHeight - RESERVED_ROWS
+  // A terminal too short for the furniture drops its spacing rather than
+  // overflowing the viewport — see COMPACT_BELOW_ROWS. The floor comes down
+  // with it: giving the turn three rows it has no room for is what put the
+  // frame over the viewport in the first place.
+  const compact = isCompactHeight(terminalHeight);
+
+  const liveBudget = Math.max(compact ? 1 : 3, terminalHeight - reservedRows(terminalHeight)
     - promptExtraRows
     - (slashOpen ? slashMatches.length : 0)
     - (extensionConnected ? 0 : 1)
@@ -813,6 +819,7 @@ export function App({ agentLoop, wsServer }) {
             thinkingText={thinkingText}
             artifacts={artifacts}
             verbose={verbose}
+            compact={compact}
           />
 
           <Menus
@@ -860,7 +867,7 @@ export function App({ agentLoop, wsServer }) {
         row already separated the bar from the prompt, and the line was drawing
         a boundary that was never in doubt.
       */}
-      <Box marginTop={1} paddingX={1} flexDirection="row" justifyContent="space-between" width="100%">
+      <Box marginTop={compact ? 0 : 1} paddingX={1} flexDirection="row" justifyContent="space-between" width="100%">
         <Box flexShrink={1} overflow="hidden">
         <Text wrap="truncate">
           {activeTab === 'agent' ? (

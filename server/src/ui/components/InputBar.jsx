@@ -55,6 +55,7 @@ export function InputBar({
   pastes,
   thinkingText,
   verbose,
+  compact,
 }) {
   const hasArtifacts = Boolean(artifacts?.task || artifacts?.walkthrough);
   const promptVisible = !diffRequest && !terminalOpen && !activeMenu;
@@ -74,7 +75,7 @@ export function InputBar({
   return (
     <>
       {isProcessing && !diffRequest && (
-        <Box flexDirection="column" marginBottom={1}>
+        <Box flexDirection="column" marginBottom={compact ? 0 : 1}>
           <Text color="cyan">
             <RunningLine tick={animTick} text={isToolRunningRef.current ? status : thinkingText} />
             <Text dimColor>
@@ -97,7 +98,7 @@ export function InputBar({
         the other is how the frame outgrows the viewport.
       */}
       {promptVisible && (
-        <Box flexDirection="column" marginTop={1}>
+        <Box flexDirection="column" marginTop={compact ? 0 : 1}>
           {hasArtifacts && !isProcessing && (
             <Box flexDirection="column" marginBottom={1}>
               <Text color="cyan">
