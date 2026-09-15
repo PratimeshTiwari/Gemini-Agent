@@ -18,31 +18,26 @@ const RESPONSE_MAX_TIMEOUT = 300000; // 5 min absolute max (safety net)
 // signal at all. Give up much sooner when there is still nothing to report.
 const NO_RESPONSE_TIMEOUT = 45000;
 
-// ── Anti-Throttling Hack ─────────────────────────────────────────────
-// Chrome drastically throttles setTimeout and requestAnimationFrame in background tabs.
-// Playing a silent looping audio element forces Chrome to keep the tab fully active.
-function enableAntiThrottling() {
-  if (window._antiThrottlingEnabled) return;
-  window._antiThrottlingEnabled = true;
-
-  const audio = document.createElement('audio');
-  // 1-second silent WAV base64
-  audio.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
-  audio.loop = true;
-  audio.volume = 0.01;
-  
-  const playAudio = () => {
-    audio.play().catch(err => console.log('Anti-throttling audio play blocked by autoplay policy.', err));
-  };
-
-  // Attempt to play on any user interaction, just in case
-  document.addEventListener('click', playAudio, { once: true });
-  document.addEventListener('keydown', playAudio, { once: true });
-  
-  // Attempt to play immediately (sometimes works if tab has high engagement index)
-  playAudio();
-}
-enableAntiThrottling();
+// ── Keeping a background tab awake ───────────────────────────────────
+//
+// There were two mechanisms for this and nobody had chosen between them.
+//
+// The one that lived here looped a silent WAV to stop Chrome throttling a
+// background tab. It never worked in the case it existed for: Chrome's autoplay
+// policy blocks playback without a user gesture or a high media-engagement
+// score, and the fallback bound `click` and `keydown` with `{ once: true }` —
+// events a **backgrounded** tab never receives. So it played in tabs that did
+// not need it and stayed silent in the ones that did, while its own catch block
+// logged the reason to a console nobody had open.
+//
+// (Both `EXTENSION-PLAN.md` and `HANDOFF.md` recorded the cause as the `<audio>`
+// element never being appended to the document. That is true and it is not the
+// bug — a detached `<audio>` plays fine in Chrome; that is what `new Audio()`
+// is. The autoplay policy is the reason.)
+//
+// The Tab Wakeup Protocol in `src/background/content.js` is the one that works:
+// it activates the tab before sending, which is a real user-visible cost paid
+// deliberately, and hands focus back when the turn ends.
 
 // ── DOM Selectors ────────────────────────────────────────────────────
 // Centralized selectors — update these when Google changes the UI

@@ -12,10 +12,9 @@
  */
 
 import { EventEmitter } from 'events';
-import { logPath, ensureParent } from '../core/paths.js';
 import { execSync } from 'child_process';
+import { logError } from '../core/error-log.js';
 import { unlinkSync } from 'fs';
-import { appendFileSync } from 'fs';
 import { join } from 'path';
 import { GitHubPoller } from './github-poller.js';
 import { CommentClassifier } from './comment-classifier.js';
@@ -255,10 +254,16 @@ CRITICAL: Do NOT run \`git checkout\` or switch branches. The user may have unsa
         if (response.success) {
           aiAnalysis = response.result;
         } else {
-          appendFileSync(ensureParent(logPath(this.agentLoop.workspace)), `[analyzeComment] Failed: ${response.error}\n`);
+          logError(this.agentLoop.workspace, {
+            flow: 'github', op: 'analyze_comment',
+            message: response.error || 'the analysis returned no result',
+          });
         }
       } catch (e) {
-        appendFileSync(ensureParent(logPath(this.agentLoop.workspace)), `[analyzeComment] Exception: ${e.stack}\n`);
+        logError(this.agentLoop.workspace, {
+          flow: 'github', op: 'analyze_comment',
+          message: e.message, detail: e.stack,
+        });
       }
     }
 
