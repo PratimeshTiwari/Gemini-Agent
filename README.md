@@ -98,6 +98,19 @@ agent-cli --help
 - Your shell may be caching an old lookup. Run `hash -r` (zsh/bash) or open a new terminal.
 - `npm link` installs into your **current Node version's** bin directory. If you switch Node
   versions with `nvm`, re-run `npm link --workspace=server` on the new version.
+- **`npm link` refused, on a managed or work machine?** It writes into npm's *global* prefix,
+  which you often cannot write to there. `sudo npm link` is the wrong answer — it leaves
+  root-owned files in a tree npm later tries to modify as you. `./setup.sh` detects this and
+  installs a two-line shim into `~/.local/bin` instead, which needs no privileges and, unlike a
+  link, keeps working when you switch Node versions. If that directory is not on your `PATH` it
+  prints the one line to add. To do it by hand:
+
+  ```bash
+  mkdir -p ~/.local/bin
+  printf '#!/bin/sh\nexec node "%s/server/src/index.js" "$@"\n' "$PWD" > ~/.local/bin/agent
+  cp ~/.local/bin/agent ~/.local/bin/agent-cli
+  chmod +x ~/.local/bin/agent ~/.local/bin/agent-cli
+  ```
 - Upgrading from an older checkout? The command used to be `gemini-agent`. It was renamed —
   use `agent-cli`, and remove any old shell alias pointing at the previous name.
 

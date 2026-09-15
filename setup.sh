@@ -59,8 +59,53 @@ if npm link --workspace=server --silent 2>/dev/null; then
     warn "linked, but the shell has not noticed yet — run 'hash -r' or open a new terminal"
   fi
 else
-  warn "npm link failed (permissions?). Try: sudo npm link --workspace=server"
-  warn "Or skip it and run the agent from here with: npm start"
+  # `npm link` writes into the *global* prefix, which on a managed machine is
+  # usually somewhere you cannot write — and `sudo npm link` is the wrong answer
+  # to that, because it leaves root-owned files in a tree npm will later try to
+  # modify as you.
+  #
+  # A shim needs none of it: two lines of sh in a directory you already own,
+  # calling this checkout by absolute path. It also survives switching Node
+  # versions with nvm, which a link does not — the link points at the bin
+  # directory of whichever Node created it.
+  warn "npm link failed — no write access to npm's global prefix, most likely"
+  step "Installing a shim instead"
+
+  SHIM_DIR=""
+  for candidate in "$HOME/.local/bin" "$HOME/bin"; do
+    case ":$PATH:" in
+      *":$candidate:"*) [ -d "$candidate" ] && [ -w "$candidate" ] && SHIM_DIR="$candidate" && break ;;
+    esac
+  done
+
+  # Nothing suitable already on PATH: make the conventional one and say the line.
+  ON_PATH_ALREADY=1
+  if [ -z "$SHIM_DIR" ]; then
+    SHIM_DIR="$HOME/.local/bin"
+    mkdir -p "$SHIM_DIR" 2>/dev/null || true
+    ON_PATH_ALREADY=0
+  fi
+
+  if [ -w "$SHIM_DIR" ]; then
+    for name in agent agent-cli; do
+      cat > "$SHIM_DIR/$name" <<SHIM
+#!/bin/sh
+# Installed by Gemini-Agent's setup.sh because npm link was not available.
+# Points at the checkout it was run from; move the checkout and re-run setup.
+exec node "$ROOT/server/src/index.js" "\$@"
+SHIM
+      chmod +x "$SHIM_DIR/$name"
+    done
+    ok "agent, agent-cli → $SHIM_DIR"
+
+    if [ "$ON_PATH_ALREADY" -eq 0 ]; then
+      warn "$SHIM_DIR is not on your PATH yet. Add this to ~/.zshrc (or ~/.bashrc):"
+      printf '\n    export PATH="%s:$PATH"\n\n' "$SHIM_DIR"
+    fi
+  else
+    warn "could not write a shim to $SHIM_DIR either"
+    warn "Run it from this directory with: npm start"
+  fi
 fi
 
 # ── 5. Tests, as a smoke check ───────────────────────────────────────
