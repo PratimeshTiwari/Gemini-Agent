@@ -39,15 +39,38 @@ session. No API key, no hosted backend, no telemetry.
 
 ### 1. Prerequisites
 
-- [Node.js](https://nodejs.org/) v18 or newer
+- [Node.js](https://nodejs.org/) v20 or newer (`engines` in `package.json`; `setup.sh` checks it)
 - Google Chrome
 - A logged-in tab on gemini.google.com (the agent has no API key — it drives your own browser session)
 
-### 2. Install — one command
+### 2. Install
+
+Two ways, and they end in the same place. **Automatic** is one command;
+**manual** is the same steps typed out, for anyone who would rather see them.
+
+Whichever you pick, steps 4 and 5 below are yours either way — loading a Chrome
+extension and signing into a chat tab are things no installer can do for you.
+
+#### Automatic
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/PratimeshTiwari/Gemini-Agent/main/setup.sh | bash
 ```
+
+> **Which branch — read this before pasting the command above.**
+>
+> Everything is developed on `v1-stable` and reaches `main` through a PR. **Until the first
+> such merge lands, `main` does not contain `setup.sh` at all and the command above returns
+> 404.** Use this one meanwhile — same script, same result:
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/PratimeshTiwari/Gemini-Agent/v1-stable/setup.sh | bash
+> ```
+>
+> After the merge, the `main` command is the right one: it is the released branch, and the
+> `v1-stable` form then tracks development instead. `git rev-list --left-right --count
+> main...v1-stable` says how far apart they currently are — never a number written down here,
+> because that goes stale on the next commit.
 
 Clones to `~/Gemini-Agent`, installs both workspaces, builds the extension bundle, puts
 `agent` on your `PATH`, runs the tests, and offers to add a line to your `~/.zshrc` so the
@@ -67,23 +90,32 @@ checkout, it stops rather than writing over it.
 | `--yes` (or `AGENT_YES=1`) | take the default on every question, ask nothing |
 
 Piping a script from the internet into your shell is worth being suspicious of.
-[Read it first](setup.sh) — or clone and run it from the checkout, which is the same script:
+[Read it first](setup.sh) — or clone and run it from the checkout, which is the same script
+and the same result:
 
 ```bash
 git clone https://github.com/PratimeshTiwari/Gemini-Agent.git
 cd Gemini-Agent && ./setup.sh
 ```
 
-<details>
-<summary>Or do every step by hand</summary>
+#### Manual
 
 ```bash
+git clone https://github.com/PratimeshTiwari/Gemini-Agent.git
+cd Gemini-Agent
+
 npm install                          # both workspaces
 npm run build --workspace=extension  # Chrome loads the bundle, not the sources
-npm link --workspace=server          # puts agent-cli on your PATH
+npm link --workspace=server          # puts `agent` and `agent-cli` on your PATH
+npm test                             # optional, and a good smoke check
 ```
 
-</details>
+The build step is not optional on a fresh clone. `extension/service-worker.js` is a
+committed artifact and Chrome loads *that*, not the sources under
+`extension/src/background/` — skip it and you ship whatever was committed last.
+
+If `npm link` fails, see the locked-down note below; it is a normal outcome on a work
+machine, not a broken install.
 
 <details>
 <summary>On a locked-down machine — no <code>npm link</code>, no <code>sudo</code></summary>
@@ -106,24 +138,9 @@ If even `~/.local/bin` is not writable, `npm start` from the checkout always wor
 
 </details>
 
-> **Which branch — read this before pasting the command above.**
->
-> Everything is developed on `v1-stable` and reaches `main` through a PR. **Until the first
-> such merge lands, `main` does not contain `setup.sh` at all and the command above returns
-> 404.** Use this one meanwhile — same script, same result:
->
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/PratimeshTiwari/Gemini-Agent/v1-stable/setup.sh | bash
-> ```
->
-> After the merge, the `main` command is the right one: it is the released branch, and the
-> `v1-stable` form then tracks development instead. `git rev-list --left-right --count
-> main...v1-stable` says how far apart they currently are — never a number written down here,
-> because that goes stale on the next commit.
-
 ### 3. `agent-cli`, from any folder
 
-`npm link` (or `setup.sh`) puts two commands on your `PATH`, both pointing at the same program:
+Either path puts two commands on your `PATH`, both pointing at the same program:
 
 | Command | |
 | --- | --- |
@@ -179,6 +196,10 @@ agent-cli --port 7788                      # if 7777 is taken
 
 ### 4. Install the Chrome extension bridge
 
+**This step is manual on both paths.** `setup.sh` prints these instructions at the end
+rather than performing them: loading an unpacked extension is a browser-UI action, and
+signing in is yours by definition.
+
 This is what makes the agent work without an API key: it types your prompt into a
 real chat tab and scrapes the reply back.
 
@@ -188,8 +209,8 @@ real chat tab and scrapes the reply back.
 4. It appears as **Agent CLI Bridge** — pin it to your toolbar so you can see its status.
 5. Open [gemini.google.com](https://gemini.google.com) and sign in. Leave the tab open.
 
-The CLI shows `🟢 Agent` in its status bar once the extension connects. While it shows
-`🟡`, the tab isn't open or the extension isn't loaded.
+The CLI's status bar reads `● agent` in cyan once the extension connects. While it reads
+`○ agent` in yellow, the tab isn't open or the extension isn't loaded.
 
 > If you edit anything under `extension/src/background/`, rebuild the bundle —
 > Chrome loads `extension/service-worker.js`, not the sources:

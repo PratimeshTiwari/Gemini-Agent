@@ -112,13 +112,17 @@ ROOT="$(pwd)"
 step "Checking Node"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "  Node is not installed. Get it from https://nodejs.org (v18 or newer)."
+  echo "  Node is not installed. Get it from https://nodejs.org (v20 or newer)."
   exit 1
 fi
 
+# 20, matching `engines` in package.json. It used to check 18, which let a v18
+# user through this gate and then fail on npm's own check a step later — a
+# worse failure than the one this is here to give, because it arrives after
+# the script has said the version is fine.
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-if [ "$NODE_MAJOR" -lt 18 ]; then
-  echo "  Node $(node -v) is too old — v18 or newer is required."
+if [ "$NODE_MAJOR" -lt 20 ]; then
+  echo "  Node $(node -v) is too old — v20 or newer is required."
   exit 1
 fi
 ok "node $(node -v)"

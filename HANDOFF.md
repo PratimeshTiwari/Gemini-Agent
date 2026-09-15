@@ -72,8 +72,23 @@ target rather than writing over it, and offers — never assumes — a line in t
 shell rc file. Questions are read from `/dev/tty`, because under `curl | bash`
 stdin *is the script*, and a `read` there eats the rest of the source.
 
-Also corrected two things `setup.sh` asserted that were no longer true: the
-companion `.vsix` version, and a status bar that has not used 🟢/🟡 for a while.
+The README's setup section is now two named paths — **Automatic** (the one
+command) and **Manual** (the same steps typed out) — with the note that steps 4
+and 5 belong to the human on both, since loading an unpacked extension and
+signing into a tab are not things an installer can do.
+
+Three stale facts fell out while checking it, all of the same kind — a document
+asserting something about the code that had since moved:
+
+| said | actually |
+| --- | --- |
+| companion `.vsix` 1.3.1 (setup.sh) | 1.5.0 |
+| status bar `🟢`/`🟡` (setup.sh *and* README §4) | `● agent` / `○ agent` |
+| Node v18 (setup.sh's gate *and* README §1) | `engines` says >= 20 |
+
+The Node one had teeth: the gate passed a v18 user and npm then failed them a
+step later, which is worse than the check this is here to give, because it
+arrives after the script has said the version is fine.
 
 **It is not live yet, and one check says so:**
 
