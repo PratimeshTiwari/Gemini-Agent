@@ -123,3 +123,40 @@ describe('extractCodeBlocks — what ctrl+y copies', () => {
     assert.equal(block.code, '  already indented');
   });
 });
+
+describe('nested lists and copyable code blocks, which fought over one setting', () => {
+  /**
+   * `tab` indents lists *and* code blocks in `marked-terminal`, and the two
+   * wanted opposite things. It was set to 0 so a drag-select over a fenced
+   * block would not take two spaces with it — and that flattened every nested
+   * list, reported from use with the Gemini tab and the CLI side by side.
+   *
+   * It is 2 again, and the code blocks are still clean, because they no longer
+   * reach `marked` at all: `renderMarkdown` lifts fenced blocks out first.
+   * These two tests are the conflict, so it cannot be resolved by halves again.
+   */
+  const NESTED = 'Intro.\n\n- Top one\n- Parent:\n  - Child A\n  - Child B\n\nAfter.';
+
+  test('a nested bullet is drawn deeper than its parent', () => {
+    const body = lines(NESTED);
+    const top = body.find((l) => l.includes('Top one')) ?? '';
+    const child = body.find((l) => l.includes('Child A')) ?? '';
+    const indent = (l) => l.length - l.trimStart().length;
+    assert.ok(indent(child) > indent(top),
+      `child indented ${indent(child)}, parent ${indent(top)} — the nesting was flattened`);
+  });
+
+  test('and the code in a block is still flush left', () => {
+    // The other half. If someone sets tab back to 0 to fix a list, this fails.
+    const body = lines('- a list item\n\n```js\nconst x = 1;\n```');
+    assert.ok(body.includes('const x = 1;'),
+      'the code block picked up an indent, so a drag-select takes it too');
+  });
+
+  test('both at once, which is the case that was broken', () => {
+    const body = lines(NESTED + '\n\n```js\nconst x = 1;\n```');
+    assert.ok(body.includes('const x = 1;'));
+    const child = body.find((l) => l.includes('Child A')) ?? '';
+    assert.ok(child.startsWith(' '), 'the nested item lost its indent');
+  });
+});

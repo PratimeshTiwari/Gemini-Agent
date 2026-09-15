@@ -9,22 +9,27 @@ import { marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
 
 /**
- * `tab: 0`, because the two spaces were being copied.
+ * `tab` indents lists *and* code blocks, and the two wanted different things.
  *
- * `marked-terminal` indents a fenced block by `tab` spaces, and a terminal
- * drag-select takes those spaces with it — so every code block this agent
- * produced had to be re-indented by hand after pasting it anywhere. There is no
- * clickable copy button here and there cannot be: that needs mouse tracking,
- * and a terminal that is tracking hands the app the wheel and suppresses
- * drag-select, which would take away the very thing being fixed.
+ * It was 2, and a drag-select over a fenced block took those two spaces with
+ * it — so every code block had to be re-indented by hand after pasting it
+ * anywhere. There is no clickable copy button here and there cannot be: that
+ * needs mouse tracking, which suppresses drag-select and would take away the
+ * thing being fixed. So it went to 0.
  *
- * Losing the indent loses the only thing that marked where a block started and
- * ended, so `renderCodeBlocks` puts that back as a dim rule on its own line —
- * above and below, never beside, so a drag that starts on the first line of
- * code and ends on the last picks up the code and nothing else.
+ * **That flattened every nested list**, reported from use with the Gemini tab
+ * and the CLI side by side: `marked` parsed the nesting correctly and
+ * `marked-terminal` drew all of it at one level, because `tab` is what it
+ * indents children by. Two levels of bullets is how Gemini writes anything
+ * structured, so this was the more expensive half.
+ *
+ * It is back to 2, and the code blocks stay copy-clean, because they no longer
+ * reach `marked` at all — `renderMarkdown` lifts fenced blocks out first and
+ * `renderBlock` draws them, un-indented, with a dim rule marking the edges.
+ * Fixing the second bug is what made the first fix unnecessary.
  */
 marked.use(markedTerminal({
-  tab: 0,
+  tab: 2,
   width: 100,
   showSectionPrefix: false,
   tableOptions: {

@@ -538,9 +538,80 @@ function extractTextContent(element) {
     }
   });
 
-  clone.querySelectorAll('li').forEach(li => {
-    li.prepend('- ');
-    li.append('\n');
+  /**
+   * Tables, as markdown rather than as one run-on word.
+   *
+   * Nothing handled `<table>` at all, and `clone.textContent` concatenates
+   * cells with no separator — so a three-column comparison arrived as
+   * `FactorNative API AgentsGemini-AgentCostMetered token costs...`. Reported
+   * from use with the Gemini tab and the CLI side by side.
+   *
+   * Emitted as pipe rows because `marked-terminal` already draws those, and
+   * `format.js` already configures `tableOptions` for them — the renderer was
+   * ready and the scrape was never giving it anything to render. The header
+   * separator is what makes it a table rather than three lines of pipes.
+   *
+   * Cells are flattened to one line: a newline inside a pipe row ends the row,
+   * so a cell containing a list would silently truncate the table.
+   */
+  clone.querySelectorAll('table').forEach((table) => {
+    const rows = [...table.querySelectorAll('tr')];
+    if (rows.length === 0) return;
+
+    const cellsOf = (tr) => [...tr.querySelectorAll('th, td')]
+      .map((cell) => cell.textContent.replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim());
+
+    const body = rows.map(cellsOf).filter((cells) => cells.length > 0);
+    if (body.length === 0) return;
+
+    // A table with no <th> still needs a header row, or it is not markdown.
+    const width = Math.max(...body.map((cells) => cells.length));
+    const pad = (cells) => {
+      const out = cells.slice(0, width);
+      while (out.length < width) out.push('');
+      return `| ${out.join(' | ')} |`;
+    };
+
+    const lines = [pad(body[0]), `|${' --- |'.repeat(width)}`];
+    for (const cells of body.slice(1)) lines.push(pad(cells));
+    table.replaceWith(document.createTextNode(`\n\n${lines.join('\n')}\n\n`));
+  });
+
+  /**
+   * List items, at the depth they were actually written.
+   *
+   * `li.prepend('- ')` gave every item the same marker however deep it sat, so
+   * two levels of bullets came out flat — and Gemini writes anything structured
+   * as nested bullets. Depth is counted from the ancestors rather than tracked,
+   * because the nested `<ul>` lives *inside* the parent `<li>` and a recursive
+   * walk emits the children twice.
+   *
+   * Ordered lists get numbers. `- 1.` was never right, and a list of steps that
+   * reads as bullets loses the one thing the ordering was carrying.
+   */
+  clone.querySelectorAll('li').forEach((li) => {
+    let depth = 0;
+    for (let p = li.parentElement; p && p !== clone; p = p.parentElement) {
+      if (p.tagName === 'UL' || p.tagName === 'OL') depth += 1;
+    }
+    const indent = '  '.repeat(Math.max(0, depth - 1));
+
+    const parent = li.parentElement;
+    const marker = parent && parent.tagName === 'OL'
+      ? `${[...parent.children].filter((c) => c.tagName === 'LI').indexOf(li) + 1}. `
+      : '- ';
+
+    // Prepend only. Appending a newline as well puts a blank line *between*
+    // items, which markdown reads as separate lists — so the indented children
+    // stopped being children and `marked` drew every bullet at one level. The
+    // leading newline is all the separation an item needs.
+    li.prepend(`\n${indent}${marker}`);
+  });
+
+  // The list as a whole still has to end, or the next block runs into the last
+  // item and is swallowed by it.
+  clone.querySelectorAll('ul, ol').forEach((list) => {
+    if (!list.parentElement || list.parentElement.tagName !== 'LI') list.append('\n');
   });
 
   return clone.textContent.trim().replace(/\n{3,}/g, '\n\n');

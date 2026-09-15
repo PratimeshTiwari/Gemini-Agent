@@ -84,3 +84,88 @@ for (const [label, file] of [['gemini', GEMINI], ['chatgpt', CHATGPT]]) {
     assert.doesNotMatch(out, /```/);
   });
 }
+
+/**
+ * Structure the scrape was throwing away: tables and nested lists.
+ *
+ * Reported from use, with the Gemini tab and the CLI side by side. A
+ * three-column comparison table arrived as
+ * `FactorNative API Agents (Claude Code, Aider)Gemini-Agent (Browser Bridge)Cost…`
+ * — every cell concatenated, because nothing handled `<table>` at all and
+ * `clone.textContent` simply runs the cells together. And a two-level bullet
+ * list came out flat, because `li.prepend('- ')` gives the same prefix at every
+ * depth.
+ *
+ * Both are losses the server cannot detect: what arrives is well-formed text,
+ * just not the text that was on screen.
+ */
+
+/** The shape Gemini produces for a comparison table. */
+const TABLE = `
+  <p>Here is the comparison.</p>
+  <table>
+    <thead><tr><th>Factor</th><th>Native API</th><th>Browser Bridge</th></tr></thead>
+    <tbody>
+      <tr><td>Cost</td><td>Metered ($)</td><td>Free</td></tr>
+      <tr><td>Fragility</td><td>Low</td><td>High</td></tr>
+    </tbody>
+  </table>
+  <p>That is the trade-off.</p>`;
+
+/** Two levels of bullets, which is how Gemini writes anything structured. */
+// Written with no whitespace between tags, the way a real DOM is. Pretty-printed
+// HTML puts the indentation into text nodes, and a nested item then *looks*
+// indented in the output whatever the scrape did — which is a test that passes
+// for the wrong reason.
+const NESTED = '<ul>'
+  + '<li>Zero Inference Costs: no per-token fees.</li>'
+  + '<li>Thoughtful Safety:<ul>'
+  + '<li>Diff Engine: edits produce structured diffs.</li>'
+  + '<li>Risk Classifier: commands are evaluated first.</li>'
+  + '</ul></li>'
+  + '<li>Full Local Tooling: ripgrep, git, subagents.</li>'
+  + '</ul>';
+
+const ORDERED = `<ol><li>First step</li><li>Second step</li></ol>`;
+
+for (const [label, file] of [['gemini', GEMINI], ['chatgpt', CHATGPT]]) {
+  test(`${label}: a table survives as a table`, () => {
+    const out = scrape(file, TABLE);
+    // The cells must not be run together — that is the reported bug.
+    assert.ok(!/FactorNative/.test(out), `cells were concatenated:\n${out}`);
+    // Markdown pipe rows, which marked-terminal already knows how to draw.
+    assert.match(out, /\|\s*Factor\s*\|\s*Native API\s*\|\s*Browser Bridge\s*\|/);
+    assert.match(out, /\|\s*-+\s*\|/, 'no header separator, so it is not a table');
+    assert.match(out, /\|\s*Cost\s*\|\s*Metered \(\$\)\s*\|\s*Free\s*\|/);
+    assert.match(out, /\|\s*Fragility\s*\|\s*Low\s*\|\s*High\s*\|/);
+  });
+
+  test(`${label}: prose either side of a table is kept`, () => {
+    const out = scrape(file, TABLE);
+    assert.match(out, /Here is the comparison\./);
+    assert.match(out, /That is the trade-off\./);
+  });
+
+  test(`${label}: nested bullets keep their depth`, () => {
+    const out = scrape(file, NESTED);
+    const line = (needle) => out.split('\n').find((l) => l.includes(needle)) ?? '';
+    const top = line('Zero Inference Costs');
+    const sub = line('Diff Engine');
+    assert.match(top, /^-\s/, `top-level item was indented: ${JSON.stringify(top)}`);
+    assert.match(sub, /^\s{2,}-\s/, `nested item was not indented: ${JSON.stringify(sub)}`);
+  });
+
+  test(`${label}: a parent item keeps its own text`, () => {
+    // The nested <ul> lives inside the parent <li>, so a naive fix drops the
+    // parent's own words or repeats the children under it twice.
+    const out = scrape(file, NESTED);
+    assert.match(out, /Thoughtful Safety/);
+    assert.equal((out.match(/Diff Engine/g) || []).length, 1, 'the child was emitted twice');
+  });
+
+  test(`${label}: an ordered list is numbered, not bulleted`, () => {
+    const out = scrape(file, ORDERED);
+    assert.match(out, /1\.\s*First step/);
+    assert.match(out, /2\.\s*Second step/);
+  });
+}
