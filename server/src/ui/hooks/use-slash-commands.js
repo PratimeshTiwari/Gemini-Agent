@@ -185,8 +185,8 @@ export async function handleSlashCommand(query, {
       setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
         role: 'assistant', isLocal: true,
         content: running
-          ? '🔄 Restarting when this turn finishes — `esc` to stop it and go now.'
-          : '🔄 Restarting…',
+          ? '⟳ Restarting when this turn finishes — `esc` to stop it and go now.'
+          : '⟳ Restarting…',
       }]);
       setIsProcessing(false);
       // Let the frame paint, then leave. Ink restores the terminal on exit,
@@ -214,7 +214,7 @@ export async function handleSlashCommand(query, {
       if (args[0] === 'done') {
         const had = readPendingReload();
         clearPendingReload();
-        say(had ? '✅ Cleared. Nothing left to reload.' : 'Nothing was waiting to be reloaded.');
+        say(had ? '✔ Cleared. Nothing left to reload.' : 'Nothing was waiting to be reloaded.');
         return;
       }
 
@@ -252,15 +252,15 @@ export async function handleSlashCommand(query, {
            * says what was compared. On main it would just be repeating itself.
            */
           say(state.branch === UPDATE_BRANCH
-            ? `✅ Up to date with \`${state.upstream}\`.`
-            : `✅ Up to date — nothing on \`${state.upstream}\` that \`${state.branch}\` `
+            ? `✔ Up to date with \`${state.upstream}\`.`
+            : `✔ Up to date — nothing on \`${state.upstream}\` that \`${state.branch}\` `
               + 'does not already have.');
           return;
         }
 
         const n = state.behind;
         const lines = [
-          `### ⬆️ ${n} update${n === 1 ? '' : 's'} available`,
+          `### ${n} update${n === 1 ? '' : 's'} available`,
           '',
           `\`${state.upstream}\` has ${n} commit${n === 1 ? '' : 's'} `
             + `that \`${state.branch}\` does not.`,
@@ -271,7 +271,7 @@ export async function handleSlashCommand(query, {
         // than finding out when you ask for it.
         const dirty = await isDirty(agentLoop.agentSourceDir);
         if (dirty) {
-          lines.push('⚠️ There are uncommitted changes in the agent\'s own repo, so this cannot',
+          lines.push('! There are uncommitted changes in the agent\'s own repo, so this cannot',
             'be pulled yet. Commit or stash them first — `/update` will not pull over your work.');
         } else {
           lines.push('`/update pull` to take them.');
@@ -281,11 +281,11 @@ export async function handleSlashCommand(query, {
       }
 
       const outcome = await pullUpdate(agentLoop.agentSourceDir);
-      if (!outcome.ok) { say(`⚠️ ${outcome.error}`); return; }
-      if (!outcome.files.length) { say('✅ Already up to date.'); return; }
+      if (!outcome.ok) { say(`! ${outcome.error}`); return; }
+      if (!outcome.files.length) { say('✔ Already up to date.'); return; }
 
       const n = outcome.files.length;
-      const lines = [`### ⬆️ Updated — ${n} file${n === 1 ? '' : 's'} changed`, ''];
+      const lines = [`### Updated — ${n} file${n === 1 ? '' : 's'} changed`, ''];
       if (outcome.install) {
         lines.push('`package.json` moved, so dependencies need reinstalling:', '',
           '```bash', 'npm install', '```', '');
@@ -762,8 +762,8 @@ export async function handleSlashCommand(query, {
       setHistory(prev => [...prev, {
         role: 'assistant', isLocal: true,
         content: running
-          ? `📂 Switching to \`${target}\` when this turn finishes — \`esc\` to stop it and go now.`
-          : `📂 Restarting in \`${target}\`…`,
+          ? `⟳ Switching to \`${target}\` when this turn finishes — \`esc\` to stop it and go now.`
+          : `⟳ Restarting in \`${target}\`…`,
       }]);
       setIsProcessing(false);
       leaveWhenIdle(75, { wsServer, agentLoop });
