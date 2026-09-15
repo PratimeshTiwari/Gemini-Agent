@@ -51,6 +51,10 @@ export function agentMdState(body) {
   return 'loaded';
 }
 
+/** The checklist is model-written and nothing prunes it, so it is bounded. */
+const MAX_TASK_ITEMS = 40;
+const MAX_TASK_CHARS = 2000;
+
 export class PromptBuilder {
   constructor(workspace, agentSourceDir) {
     this.workspace = workspace;
@@ -144,6 +148,13 @@ export class PromptBuilder {
       // context line, not two competing headers.
       const anchor = this._buildToolAnchor(topology, modelConfig);
       parts.push(anchor ? `${contextLine} ${anchor}` : contextLine);
+    }
+
+    // The checklist it wrote, so it can tick the exact line rather than guess
+    // at one. Every turn, because ticking is a per-turn act — see _loadTaskList.
+    const taskList = this._loadTaskList();
+    if (taskList) {
+      parts.push(`<task_checklist path=".agent/artifacts/task.md">\n${taskList}\n</task_checklist>`);
     }
 
     // Current user message. Nothing follows it: the last thing the model reads
@@ -302,7 +313,7 @@ with a long serial chain of read_file calls, \`ask_subagent\` for a self-contain
 They run in parallel and return to you. Delegating judgement is what you cannot do here.
 
 - When tasks are complex, create a plan first (save it to \`.agent/artifacts/implementation_plan.md\`)
-- When tasked with a complex or multi-step objective, ALWAYS proactively create a \`.agent/artifacts/task.md\` checklist using the \`create_file\` tool to plan your work, similar to Antigravity IDE. Update it as you progress.
+- When tasked with a complex or multi-step objective, ALWAYS proactively create a \`.agent/artifacts/task.md\` checklist using the \`create_file\` tool to plan your work, similar to Antigravity IDE. Its current contents are given back to you in \`<task_checklist>\` on every turn — tick an item the moment it is done, with \`edit_file\` replacing that exact line's \`- [ ]\` with \`- [x]\`. The user is reading that file to see where you are.
 - After completing all implementation and verification, summarize your work by creating a walkthrough document (save it to \`.agent/artifacts/walkthrough.md\`). Document changes made, what was tested, and validation results.
 - After implementing changes, self-review: re-read the edited files and verify correctness
 - If you're not confident in a change, tell the user explicitly rather than guessing`;
@@ -599,6 +610,53 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
    * Derived from the full definitions rather than a second hand-kept list, so the
    * two cannot drift. The chat thread still holds the real schemas from turn 0.
    */
+  /**
+   * The checklist the model wrote, handed back to it.
+   *
+   * **The same write-only trap as memory, in a second place.** The system
+   * prompt tells the model to create `.agent/artifacts/task.md` and "tick items
+   * off as you go", and the file it writes is read by exactly one thing: the
+   * UI, to draw a row above the prompt. No prompt has ever carried its contents
+   * back. Measured: absent from turn 0, from every tool-result turn, and from
+   * twenty-five further turns including refreshes.
+   *
+   * So ticking a box meant the model either guessing the exact line text for
+   * `edit_file` — which fails outright on a mismatch — or rewriting the whole
+   * file from a memory that compaction erodes. Neither is something a model
+   * does reliably, and the observed behaviour was the predictable one: the
+   * checklist gets created and never updated.
+   *
+   * Unlike memory this rides on **every** turn, because ticking is a per-turn
+   * act. It is the same argument as the tool anchor: a small payload that
+   * prevents a failure beats a large one that detects it. A checklist is a few
+   * hundred characters; the turn that silently stops tracking progress costs
+   * more than that.
+   *
+   * Bounded like memory, for the same reason — it is model-written and nothing
+   * prunes it.
+   */
+  _loadTaskList() {
+    try {
+      const file = paths.artifactPath(this.workspace, 'task.md');
+      if (!existsSync(file)) return '';
+      const body = readFileSync(file, 'utf-8').trim();
+      if (!body) return '';
+
+      const lines = body.split('\n');
+      const items = lines.filter((l) => /^\s*[-*]\s*\[[ xX]\]/.test(l));
+      // Only the checklist itself. A long preamble is the model's own prose,
+      // which it does not need read back to it.
+      const kept = (items.length ? items : lines).slice(0, MAX_TASK_ITEMS);
+      let text = kept.join('\n');
+      if (text.length > MAX_TASK_CHARS) text = `${text.slice(0, MAX_TASK_CHARS)}\n…`;
+      const dropped = (items.length ? items.length : lines.length) - kept.length;
+      return dropped > 0 ? `${text}\n… and ${dropped} more` : text;
+    } catch {
+      // An unreadable artifact must not take the prompt down.
+      return '';
+    }
+  }
+
   /**
    * The one line that rides on *every* turn.
    *

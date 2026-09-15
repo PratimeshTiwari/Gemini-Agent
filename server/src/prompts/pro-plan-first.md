@@ -14,7 +14,9 @@ looks easier. If an item turns out to be wrong, say so and revise the list — s
 abandoning it is how a task ends up half-done.
 
 For anything past a couple of steps, write the checklist to `.agent/artifacts/task.md` with
-`create_file` and tick items off as you go. The user reads that file.
+`create_file`. Its current contents come back to you in `<task_checklist>` on every turn, so
+tick an item the moment it is done: `edit_file` on that exact line, `- [ ]` to `- [x]`. Do it
+as you go rather than all at the end — the user is reading that file to see where you are.
 
 ## STEP 2: TASK CLASSIFICATION
 
