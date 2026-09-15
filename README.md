@@ -387,6 +387,103 @@ Once the agent is running, you can use built-in slash commands to manage your se
 - Type `/logs` to read failures grouped by where they came from, and `/commands` for
   every shell command the agent has run, blocked or rejected.
 
+## 🗂 One repo, or a monorepo
+
+There is nothing to configure for the ordinary case, and one flag for the other.
+
+### A single repo
+
+Open it and go. The agent creates `<your repo>/.agent/` on first run and keeps
+everything there.
+
+```bash
+cd ~/work/my-api
+agent
+```
+
+### A group of repos under one folder
+
+Put **one** `.agent/` at the top of the group. Every repo underneath then shares
+your skills and your config, while keeping its own history, artifacts and logs
+separate — so `/undo` in one repo cannot reach into another, and a plan written
+for one does not show up in the other's list.
+
+```
+/work/base-repo/
+├── .agent/                 ← the one you create
+│   ├── skills/             shared by every repo below
+│   ├── config.json         shared defaults
+│   ├── api/                just this repo: sessions, artifacts, logs, memory
+│   └── web/                just this repo
+├── AGENT.md                instructions for every repo below
+├── api/
+│   └── AGENT.md            instructions for api only — nearest wins
+└── web/
+```
+
+The agent finds that directory by walking **up** from wherever you start, the
+way git finds `.git`. Which repo you are working on is the **scope**, and it is
+chosen at launch — never guessed from which files get touched:
+
+```bash
+cd /work/base-repo && agent --scope api    # or, identically:
+cd /work/base-repo/api && agent
+```
+
+Both land on the same state. The scope shows in the status bar, and `/scope`
+says where you are. Tools still take absolute paths, so cross-repo work is
+possible — it is only state that is separated.
+
+**What is shared and what is not**, which is the part worth knowing:
+
+| shared across the group | kept per repo |
+| --- | --- |
+| `skills/` | `sessions/` — conversation history |
+| `config.json` defaults | `memory.md` — what it learned here |
+| | `artifacts/`, `backups/`, `logs/`, `state/` |
+| | `config.json` overrides |
+
+`AGENT.md` is not in that table because it does not live in `.agent/` at all —
+it sits with the code, and every one from your home directory down to the repo
+is read, nearest last. See [Project instructions](#-project-instructions).
+
+### Setting up skills
+
+A skill is one markdown file. There is no registry and nothing to install:
+
+```bash
+agent                              # from anywhere in the project
+/skills new code-review            # creates it and opens it in your editor
+```
+
+That writes `<the group root>/.agent/skills/code-review.md` — shared, because
+skills usually are. Two variations:
+
+```bash
+/skills new --global deploy        # ~/.agent/skills — every project you open
+/skills dir add ~/team-skills      # a folder you keep elsewhere, e.g. a git repo of them
+```
+
+Fill in the frontmatter and the body:
+
+```markdown
+---
+name: code-review
+description: Reviewing a diff or a pull request before it merges.
+---
+
+Check the diff against AGENT.md's conventions first, then look for
+missing tests, then for anything that changes a public signature.
+```
+
+**Only the `description` is ever in the prompt** — one line per skill. The agent
+opens the file itself when that line matches what it is doing, so twenty skills
+cost twenty lines, not twenty files.
+
+To check what is actually loaded, `/skills dir` lists the folders and
+`/settings` → **Context** shows how many were found in each, and flags a folder
+you added that has since gone missing.
+
 ## 📂 Where the agent keeps its files
 
 Everything the agent writes into a workspace lives in one directory, `.agent/`:
