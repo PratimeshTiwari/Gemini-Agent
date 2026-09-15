@@ -13,7 +13,7 @@ import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
 import { canPickFolder, pickFolder } from '../folder-picker.js';
 import { summariseTraces, formatMs } from '../../core/trace-log.js';
 import { channelHealth, formatRate, MIN_TURNS_FOR_RATE } from '../../core/channel-health.js';
-import { checkForUpdate, isDirty, pullUpdate, savePendingReload, readPendingReload, clearPendingReload } from '../../core/update.js';
+import { checkForUpdate, isDirty, pullUpdate, UPDATE_BRANCH, savePendingReload, readPendingReload, clearPendingReload } from '../../core/update.js';
 
 
 /**
@@ -237,12 +237,24 @@ export async function handleSlashCommand(query, {
           say('The agent is not running from a git checkout, so there is nothing to update from.');
           return;
         }
-        if (state.reason === 'branch tracks nothing') {
-          say(`On \`${state.branch}\`, which has no remote branch to compare against.`);
+        if (state.reason && state.reason.startsWith('no origin/')) {
+          say(`There is no \`${state.reason.slice(3)}\` to compare against — `
+            + 'this checkout has no remote, or has never fetched it.');
           return;
         }
         if (!state.available) {
-          say(`✅ Up to date — \`${state.branch}\` matches \`${state.upstream}\`.`);
+          /**
+           * `main` is what people run, so that reads plainly; anything else
+           * names both sides.
+           *
+           * On a branch *ahead* of main — the normal state while developing —
+           * "up to date" on its own reads like the check did nothing, so it
+           * says what was compared. On main it would just be repeating itself.
+           */
+          say(state.branch === UPDATE_BRANCH
+            ? `✅ Up to date with \`${state.upstream}\`.`
+            : `✅ Up to date — nothing on \`${state.upstream}\` that \`${state.branch}\` `
+              + 'does not already have.');
           return;
         }
 
@@ -250,7 +262,8 @@ export async function handleSlashCommand(query, {
         const lines = [
           `### ⬆️ ${n} update${n === 1 ? '' : 's'} available`,
           '',
-          `\`${state.branch}\` is ${n} commit${n === 1 ? '' : 's'} behind \`${state.upstream}\`.`,
+          `\`${state.upstream}\` has ${n} commit${n === 1 ? '' : 's'} `
+            + `that \`${state.branch}\` does not.`,
           '',
         ];
         // Said here rather than after the pull is attempted: it is the one

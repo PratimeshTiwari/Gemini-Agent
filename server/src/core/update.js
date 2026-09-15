@@ -45,12 +45,23 @@ async function git(dir, args, { timeout = 5000 } = {}) {
 }
 
 /**
- * Is there anything to pull?
+ * The branch that *is* the released agent.
  *
- * Deliberately reports the *upstream of the current branch* rather than
- * hardcoding `main`. Someone on a feature branch is not behind main in any
- * sense they care about, and telling them they are is how a notice gets
- * ignored.
+ * Not the current branch's upstream, which is what this compared against
+ * first. Work happens on a branch and lands on `main` through a PR — that is
+ * the rule in `CLAUDE.md` — so `main` moving is the only thing that means
+ * "there is a newer agent than the one you are running". A dev branch being
+ * level with its own remote copy says nothing, and reporting it as "up to
+ * date" answered a question nobody asked.
+ */
+export const UPDATE_BRANCH = 'main';
+
+/**
+ * Is there a newer agent than this one?
+ *
+ * Measured against `origin/main` whatever branch you happen to be on. On a
+ * feature branch ahead of `main` the answer is no, correctly: nothing has been
+ * released that you do not already have.
  *
  * @returns {Promise<{available: boolean, behind: number, branch: string|null,
  *                    upstream: string|null, reason?: string}>}
@@ -64,24 +75,12 @@ export async function checkForUpdate(dir) {
 
   const branch = await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']);
 
-  /**
-   * The configured upstream, or `origin/<branch>` if there is one.
-   *
-   * `@{u}` is empty whenever nobody ran `--set-upstream`, which is the normal
-   * state of a branch someone created locally and pushed — this repo's own
-   * `v1-stable` is exactly that. Falling back to the remote branch of the same
-   * name is what the person meant, and checking it exists first keeps that a
-   * fact rather than a guess.
-   */
-  let upstream = await git(dir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
-  if (!upstream && branch) {
-    const remote = await git(dir, ['rev-parse', '--verify', '--quiet', `origin/${branch}`]);
-    if (remote) upstream = `origin/${branch}`;
-  }
-  if (!upstream) return { ...none, branch, reason: 'branch tracks nothing' };
-
   // The one network call, and the only reason this is async.
-  await git(dir, ['fetch', '--quiet'], { timeout: FETCH_TIMEOUT_MS });
+  await git(dir, ['fetch', 'origin', UPDATE_BRANCH, '--quiet'], { timeout: FETCH_TIMEOUT_MS });
+
+  const upstream = `origin/${UPDATE_BRANCH}`;
+  const exists = await git(dir, ['rev-parse', '--verify', '--quiet', upstream]);
+  if (!exists) return { ...none, branch, reason: `no ${upstream}` };
 
   const counts = await git(dir, ['rev-list', '--left-right', '--count', `HEAD...${upstream}`]);
   const behind = Number(counts?.split(/\s+/)[1] ?? 0);
@@ -183,18 +182,17 @@ export async function pullUpdate(dir) {
   }
 
   const from = await git(dir, ['rev-parse', 'HEAD']);
-  // The same fallback `checkForUpdate` uses: a bare `git pull` fails outright
-  // on a branch with no tracking config, which is most branches people make.
-  const branch = await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']);
-  const tracked = await git(dir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
-  const args = tracked
-    ? ['pull', '--ff-only', '--quiet']
-    : ['pull', '--ff-only', '--quiet', 'origin', branch];
-  const pulled = await git(dir, args, { timeout: FETCH_TIMEOUT_MS * 3 });
+  // From the same place `checkForUpdate` measured against, or the two would
+  // disagree about what an update even is. Fast-forward only: a branch with
+  // its own commits is not behind `main` in a way a pull can settle, and
+  // merging on someone's behalf is not this command's business.
+  const pulled = await git(dir, ['pull', '--ff-only', '--quiet', 'origin', UPDATE_BRANCH],
+    { timeout: FETCH_TIMEOUT_MS * 3 });
   if (pulled === null) {
     return {
       ok: false,
-      error: 'The pull failed. It is fast-forward only, so a diverged branch needs a merge by hand.',
+      error: `Could not fast-forward to origin/${UPDATE_BRANCH}. `
+        + 'This branch has commits of its own, so it needs a merge by hand.',
     };
   }
 

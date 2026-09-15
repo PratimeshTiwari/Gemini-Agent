@@ -85,6 +85,35 @@ describe('needsInstall', () => {
   });
 });
 
+describe('it measures against main, not the branch you happen to be on', () => {
+  /**
+   * It compared the current branch to *its own* upstream first, which answers
+   * nothing useful: work happens on a branch and lands on `main` through a PR,
+   * so `main` moving is the only thing that means "there is a newer agent than
+   * the one you are running". A dev branch being level with its own remote copy
+   * is not news.
+   */
+  test('the comparison is always origin/main', async () => {
+    const state = await checkForUpdate(process.cwd());
+    if (state.reason) return; // no remote in this environment
+    assert.equal(state.upstream, 'origin/main');
+  });
+
+  test('a branch ahead of main is up to date, which is correct', async () => {
+    // Nothing has been released that you do not already have.
+    const state = await checkForUpdate(process.cwd());
+    if (state.reason) return;
+    assert.equal(typeof state.available, 'boolean');
+    assert.ok(state.behind >= 0);
+  });
+
+  test('it still reports which branch you are on', async () => {
+    const state = await checkForUpdate(process.cwd());
+    if (state.reason === 'not a git checkout') return;
+    assert.ok(state.branch, 'the report does not say where you are');
+  });
+});
+
 describe('checkForUpdate never throws, whatever it is pointed at', () => {
   test('a directory that is not a checkout', async () => {
     const out = await checkForUpdate(tmpdir());
