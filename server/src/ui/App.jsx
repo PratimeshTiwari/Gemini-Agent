@@ -649,7 +649,10 @@ export function App({ agentLoop, wsServer }) {
   // definitions, every tool result fed back, not just the turns we kept a copy
   // of. Summing conversationHistory reported a fraction of the real number.
   const syncTokenEstimate = agentLoop.contextTokens ?? 0;
-  const tokenLimit = 50000;
+  // The rung's real budget, not a constant. This was hardcoded to 50000 while
+  // `/context` and the settings page both reported the actual one — three
+  // places, two answers, and the bar was the one people watch.
+  const tokenLimit = agentLoop.contextLimit || 50000;
   const tokenPct = Math.round((syncTokenEstimate / tokenLimit) * 100);
   const tokenColor = tokenPct > 80 ? 'red' : tokenPct > 50 ? 'yellow' : 'cyan';
   const runningTasks = tasks.filter(t => t.status === 'running').length;

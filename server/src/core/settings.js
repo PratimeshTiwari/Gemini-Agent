@@ -57,7 +57,7 @@ export function describeSettings(agentLoop) {
   // Everything the tab holds, not just the turns kept locally — see
   // AgentLoop.contextTokens.
   const tokens = agentLoop?.contextTokens ?? 0;
-  const limit = agentLoop?.contextManager?.maxTokens || 50000;
+  const limit = agentLoop?.contextLimit || 50000;
   const pending = safe(() => agentLoop.diffEngine.getPendingDiffs().length, 0);
   const applied = safe(() => agentLoop.diffEngine.appliedDiffs.length, 0);
 

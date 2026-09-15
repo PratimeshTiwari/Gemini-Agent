@@ -161,20 +161,46 @@ export class AgentLoop {
     this.isProcessing = true;
 
     // Check Context Size Warning and Auto-Compact
-    if (!this.isCompacting && this.contextManager.needsCompaction(this.conversationHistory)) {
+    // `contextTokens`, not `conversationHistory`. This read the history array
+    // for as long as it existed; `Number([…])` is NaN, `NaN > x` is false, and
+    // so auto-compaction never once ran. The count is what the browser tab is
+    // actually carrying — the system prompt and every tool result included —
+    // which is what `needsCompaction`'s own doc asks for.
+    if (!this.isCompacting && this.contextManager.needsCompaction(this.contextTokens, this.contextLimit)) {
       this.callbacks.sendToPanel({
         id: randomUUID(),
         type: 'status',
         payload: { message: '⏳ Context limit reached. Auto-compacting older history in background...' },
         timestamp: Date.now(),
       });
-      // Fire and forget, runs in the background
-      this._compactHistory().catch(err => {
-        logError(this.workspace, {
-          flow: 'agent', op: 'auto_compact',
-          message: `Auto-compaction failed: ${err.message}`, detail: err.stack,
+      // Runs alongside the turn, but its report is not thrown away.
+      //
+      // This was fire-and-forget, and `_compactHistory` *returns* the account
+      // of what it did — how many turns went, whether the model summarised them
+      // or the local fallback did, and the before/after size. Discarding it left
+      // auto-compaction entirely silent: the notice above is a transient status
+      // that the thinking-message cycle overwrites before it paints, so the
+      // user's history would be rewritten underneath them with no trace at all.
+      // Which is the same silence as it never running, and is why nobody
+      // noticed that it never ran.
+      this._compactHistory()
+        .then((result) => {
+          if (!result?.message) return;
+          const note = {
+            role: 'assistant',
+            content: `🗜️ **Context was auto-compacted.**\n\n${result.message}`,
+            timestamp: Date.now(),
+          };
+          this.conversationHistory.push(note);
+          this.sessionStore.appendTurn(note);
+        })
+        .catch(err => {
+          logError(this.workspace, {
+            flow: 'agent', op: 'auto_compact',
+            message: `Auto-compaction failed: ${err.message}`, detail: err.stack,
+          });
+          this._notify(`⚠️ Auto-compaction failed: ${err.message}`);
         });
-      });
     }
 
     try {
@@ -745,6 +771,44 @@ export class AgentLoop {
    */
   get contextTokens() {
     return Math.round(this.contextChars / 4);
+  }
+
+  /**
+   * The budget the active rung is working to.
+   *
+   * Derived, not stored. `ContextManager.maxTokens` was a field set once from
+   * the *default* rung, with a comment claiming it was replaced per turn —
+   * nothing replaced it, so the compaction threshold ignored `/effort` entirely
+   * and the flash rung's 24k budget was never in force. Deriving it is the same
+   * call phase 6 made about `topology`: a value that has to track another is
+   * read, not kept.
+   */
+  get contextLimit() {
+    return resolveEffort(this.modelConfig?.effort).contextBudget;
+  }
+
+  /**
+   * Start the running total again, after the thread has been replaced.
+   *
+   * `contextChars` counts everything ever typed into the browser tab, which is
+   * why it is the honest measure — but compaction throws that thread away and
+   * starts a new one from the summary. Carrying the old total past that would
+   * leave the agent believing it was still full and compacting forever.
+   *
+   * This was **called and never defined**. `_compactHistory` therefore threw
+   * `this._resetContextCount is not a function` at the very end — after it had
+   * already rewritten `conversationHistory` and saved it — so the history was
+   * compacted, the count was not reset, and the report of what happened was
+   * never returned. `/compact` failed the same way for any conversation long
+   * enough to get past its `length <= 5` early return, which is every
+   * conversation worth compacting.
+   *
+   * It survived because the auto path swallowed the rejection into a log nobody
+   * reads, and the auto path could not fire at all — the two bugs hid each
+   * other.
+   */
+  _resetContextCount(chars) {
+    this.contextChars = Math.max(0, Number(chars) || 0);
   }
 
   /** The model the main conversation runs on. Subagents name their own. */
@@ -1504,7 +1568,7 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
    */
   async _getContextInfo() {
     const used = this.contextTokens;
-    const limit = this.contextManager?.maxTokens || 50000;
+    const limit = this.contextLimit;
     const pct = Math.min(100, Math.round((used / limit) * 100));
 
     const turns = this.conversationHistory.length;
