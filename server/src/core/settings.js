@@ -18,6 +18,7 @@
  * @property {string} [run]   slash command to run when picked; absent = read-only
  */
 
+import fs from 'fs';
 import { resolveEffort } from './effort.js';
 import * as paths from './paths.js';
 import { countToday } from './command-log.js';
@@ -42,8 +43,19 @@ export const SETTING_GROUPS = ['Settings', 'Status', 'Context'];
  *
  * @returns {SettingRow[]}
  */
+/** Read something that may not be there, without taking the screen down. */
+function safeRead(fn, fallback) {
+  try { return fn() ?? fallback; } catch { return fallback; }
+}
+
 export function describeSettings(agentLoop) {
   const mc = agentLoop?.modelConfig || {};
+  // The on-disk config, for keys that live there rather than on the loop.
+  // `agentName` is one: the banner reads it from the file, so the screen has
+  // to read it from the same place or the two disagree.
+  const cfg = safeRead(() => JSON.parse(
+    fs.readFileSync(paths.configPath(agentLoop.workspace), 'utf8'),
+  ), {});
   const effort = resolveEffort(mc.effort);
   const main = mc.main || 'gemini';
   const reviewer = mc.reviewer && mc.reviewer !== main ? mc.reviewer : null;
@@ -137,8 +149,12 @@ export function describeSettings(agentLoop) {
     {
       group: 'Settings',
       label: 'Agent name',
-      value: mc.agentName || agentLoop?.agentName || 'Agent CLI',
-      hint: 'shown in the banner',
+      // `config.agentName`, which is where the banner reads it. This used to
+      // read `modelConfig.agentName` — a key nothing has ever written — so the
+      // screen reported "Agent CLI" while the banner said something else.
+      value: cfg?.agentName || 'Agent CLI',
+      hint: 'shown in the banner — `/name <text>` to change it',
+      run: '/name',
     },
     {
       group: 'Status',

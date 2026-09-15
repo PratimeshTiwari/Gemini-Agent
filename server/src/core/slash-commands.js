@@ -130,6 +130,41 @@ export async function handleSlashCommand(loop, command, args) {
       };
     }
 
+    /**
+     * Name the agent, which until now could only be done by editing a file.
+     *
+     * `config.agentName` has always been read — the banner uses it — and
+     * *nothing has ever written it* except a migration from a layout that no
+     * longer exists. So on a fresh clone there was no file to edit and no
+     * command to run, and the only way to discover the feature was to find the
+     * key in someone else's config.
+     */
+    case 'name': {
+      const wanted = args.join(' ').trim();
+      const current = loop.agentName;
+      if (!wanted) {
+        return {
+          message: current
+            ? `The agent is called **${current}**.\n\n_\`/name <text>\` to change it, \`/name default\` to undo._`
+            : 'The agent has no name set — the banner reads "Agent CLI".\n\n_`/name <text>` to give it one._',
+        };
+      }
+
+      // Drawn as a figlet wordmark, so a long one is a wall of ASCII.
+      if (wanted.length > 20) {
+        return { message: `! "${wanted}" is too long for the banner — 20 characters or fewer.` };
+      }
+
+      const clearing = wanted.toLowerCase() === 'default' || wanted.toLowerCase() === 'reset';
+      loop.agentName = clearing ? '' : wanted;
+      loop._saveConfig();
+      return {
+        message: clearing
+          ? 'Name cleared — the banner reads "Agent CLI" again.\n\n_Restart to see it._'
+          : `The agent is called **${wanted}**.\n\n_Restart to see it in the banner._`,
+      };
+    }
+
     case 'clear':
       loop.conversationHistory = [];
       loop.sessionStore.clear();

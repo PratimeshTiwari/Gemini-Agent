@@ -779,6 +779,9 @@ export class AgentLoop {
           this.modelConfig = merged;
         }
         if (data.commandRules) this.commandRules = { ...this.commandRules, ...data.commandRules };
+        // Read by the banner and, since it had no writer, settable only by
+        // editing this file by hand. `/name` writes it now.
+        if (typeof data.agentName === 'string') this.agentName = data.agentName;
         if (Array.isArray(data.skillFolders)) this.skillFolders = data.skillFolders;
         // `topology` used to be stored beside `modelConfig` and could contradict
         // it. Folded into the one thing it was ever describing: is there a
@@ -820,12 +823,29 @@ export class AgentLoop {
       // a derived value in a config file is one someone will edit and be
       // ignored for editing.
       const { topology: _dropped, ...rest } = existing;
+
+      /**
+       * `agentName` is written only when this loop actually has one.
+       *
+       * Writing it unconditionally destroyed it: a caller that saves without
+       * having loaded — and the partial fakes in the tests are exactly that —
+       * has `undefined` here, which would replace a name set by hand with
+       * nothing. That is the fault this whole merge exists to prevent, so it
+       * has to hold for the key that prompted the merge in the first place.
+       *
+       * Empty string is the *clear* signal, since `undefined` already means
+       * "no opinion": `/name default` sets it, and the key is dropped.
+       */
+      if (this.agentName === '') delete rest.agentName;
+      const named = this.agentName ? { agentName: this.agentName } : {};
+
       fs.writeFileSync(configPath, JSON.stringify({
         ...rest,
         modelConfig: this.modelConfig,
         commandRules: this.commandRules,
         skillFolders: this.skillFolders,
         memoryEnabled: this.memoryManager ? this.memoryManager.memoryEnabled : true,
+        ...named,
       }, null, 2));
     } catch (err) {
       logError(this.workspace, {
