@@ -10,8 +10,11 @@ agent is told about this project.
 ## State
 
 - Branch `v1-stable`, tree clean, nothing unpushed.
-- **`main` is 121 commits behind and still a clean fast-forward.** The owner has
-  said the PR is theirs; do not open it.
+- **`main` is behind by everything on this branch, and the merge is still a
+  clean fast-forward.** The owner has said the PR is theirs; do not open it.
+  The number is deliberately not written here — it said 121 for one day and was
+  wrong 21 commits later. `git rev-list --left-right --count main...v1-stable`
+  prints `0	<n>`; the `0` on the left is the part that matters.
 - `npm test`: **921 server + 37 extension**, all green.
 - Every plan file that used to live here is finished and gone. There is no
   backlog document any more, and nothing was dropped to achieve that.
@@ -72,8 +75,9 @@ refresh was missed.
 
 ### If it all passes
 
-Merge `v1-stable` into `main` — 121 commits, still a clean fast-forward. That
-number only stays free while nothing lands on `main`.
+Merge `v1-stable` into `main`. Still a clean fast-forward — the `0` on the left
+of `git rev-list --left-right --count main...v1-stable` is what says so, and it
+only stays free while nothing lands on `main` from elsewhere.
 
 ---
 

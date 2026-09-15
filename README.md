@@ -588,9 +588,20 @@ missing one**, since the model reaches for it and concludes the code is not ther
 
 ### Unreleased — heading for v1.0
 
-`v1-stable`, **113 commits ahead of `main`** and still a clean fast-forward. Six
-sessions of work that has not been through a PR yet. The largest release by far,
-so it is grouped by area rather than listed flat.
+Everything on `v1-stable` that has not been through a PR — several sessions of
+work, and the largest release by far, so it is grouped by area rather than
+listed flat.
+
+**How far ahead it is, as of now:**
+
+```bash
+git rev-list --left-right --count main...v1-stable   # "0  <n>" — a clean fast-forward
+```
+
+Deliberately not written out here. This paragraph said "113 commits ahead" for
+about a day, during which it was wrong roughly forty times — a count in prose
+is stale the moment the next commit lands, and the command is both shorter and
+always right.
 
 #### The engine
 - **Prompt economics.** The full system prompt goes out on turn 0 and every Nth
