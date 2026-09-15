@@ -214,9 +214,6 @@ export async function endSession(sessionId) {
   }
 }
 
-/** Test seam. */
-export const __sessionTabs = () => sessionTabs;
-
 /** Whether a tab belongs to a subagent turn. */
 export const isSubagentTab = (tabId) => subagentTabs.has(tabId);
 
@@ -236,11 +233,6 @@ export function forgetTab(tabId) {
   for (const [model, id] of mainTabs) {
     if (id === tabId) mainTabs.delete(model);
   }
-}
-
-/** Test seam: the lane bookkeeping, with nothing else attached. */
-export function __tabLanes() {
-  return { mainTabs, subagentTabs };
 }
 
 /**

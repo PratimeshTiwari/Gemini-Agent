@@ -377,8 +377,3 @@ export function symbolIndex(workspace) {
   if (!indexes.has(workspace)) indexes.set(workspace, new SymbolIndex(workspace));
   return indexes.get(workspace).refresh();
 }
-
-/** Test seam: forget every cached index. */
-export function resetSymbolIndexes() {
-  indexes.clear();
-}

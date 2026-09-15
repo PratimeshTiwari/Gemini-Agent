@@ -17,6 +17,7 @@
 import { resolve, dirname } from 'path';
 import { homeDir, ensureDir, setActiveScope, resolveState, codeDir } from './core/paths.js';
 import { runMigrations } from './core/migrate.js';
+import { rememberWorkspace } from './core/workspaces.js';
 import { existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from './bridge/websocket-server.js';
@@ -145,6 +146,20 @@ async function main() {
     console.error(`❌ Workspace directory not found: ${config.workspace}`);
     process.exit(1);
   }
+
+  /**
+   * Record where we are, so `/set-workspace` can offer it next time.
+   *
+   * `listWorkspaceCandidates` has always had a `recent` category and
+   * `readRecents()` has always read the file — and **nothing ever wrote it**,
+   * so that half of the picker silently offered nothing. The reader, the
+   * writer and the picker row all existed; the call did not. Found by auditing
+   * exports with no callers.
+   *
+   * After the existence check, so a path that does not resolve is not offered
+   * back to you as somewhere you have been.
+   */
+  rememberWorkspace(config.workspace);
 
   // Determine agent source directory (the 'server' folder)
   const __filename = fileURLToPath(import.meta.url);

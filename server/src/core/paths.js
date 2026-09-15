@@ -222,11 +222,9 @@ export const chatQueuePath = (workspace) => statePath(workspace, 'chat-queue.jso
  */
 export const terminalQueuePath = (workspace) => statePath(workspace, 'terminal.jsonl');
 /** Comments left on a plan while reviewing it, before the review is submitted. */
-export const planReviewPath = (workspace) => statePath(workspace, 'plan-review.json');
 
 export const backupsDir = (workspace) => path.join(agentDir(workspace), 'backups');
 export const contextDir = (workspace) => path.join(agentDir(workspace), 'context');
-export const contextSummaryPath = (workspace) => path.join(contextDir(workspace), 'summary.md');
 /**
  * Where the GitHub agent writes what it worked out about a PR comment.
  *
@@ -262,7 +260,6 @@ export const tmpDir = (workspace) => path.join(agentDir(workspace), 'tmp');
  * for directories further up the tree.
  */
 export const skillsDir = (workspace) => path.join(sharedAgentDir(workspace), 'skills');
-export const skillPath = (workspace, name) => path.join(skillsDir(workspace), `${name}.md`);
 export const logPath = (workspace) => path.join(logsDir(workspace), 'agent.log');
 /** Structured failure log, one JSON object per line. See core/error-log.js. */
 export const errorLogPath = (workspace) => path.join(logsDir(workspace), 'errors.jsonl');
@@ -271,7 +268,6 @@ export const errorLogPath = (workspace) => path.join(logsDir(workspace), 'errors
 
 export const REL_PLANS_DIR = `${AGENT_DIR}/github-reviews`;
 export const REL_GITHUB_STATE = `${AGENT_DIR}/state/github.json`;
-export const REL_ARTIFACTS_DIR = `${AGENT_DIR}/artifacts`;
 
 // ── Home-scoped ──────────────────────────────────────────────────────
 
@@ -323,8 +319,6 @@ export const homeSessionPath = (workspace) =>
 /** Shared home folder the legacy hashed session files were kept in. */
 export const legacySessionsDir = () => path.join(homeDir(), 'sessions');
 
-export const globalContextPath = (workspace) =>
-  path.join(workspaceHomeDir(workspace), 'context', 'summary.md');
 
 // ── Helpers ──────────────────────────────────────────────────────────
 

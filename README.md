@@ -704,6 +704,13 @@ so it is grouped by area rather than listed flat.
   launch reaches the same place with no window where the transcript on screen
   belongs to the old scope.
 
+#### Housekeeping
+- **Removed as dead:** `TokenCounter` (a 30-line class nothing could reach), five `paths.js`
+  helpers with no caller — two of them leftovers of the deleted retrieval subsystem — and
+  three test seams no test ever used. `chalk` as a dependency.
+- **Fixed, found by the same audit:** `/set-workspace` has always had a **recent** category
+  and nothing ever wrote the file it reads, so it silently offered nothing. One missing call.
+
 #### Not done, on purpose
 - **The two bridges were not collapsed** (~600 duplicated lines). The cost it
   removes is "fix it twice", and fixing the scrape twice took one commit — the

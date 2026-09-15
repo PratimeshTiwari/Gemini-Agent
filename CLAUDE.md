@@ -104,7 +104,7 @@ server/src/
 ├── core/             # agent-loop, prompt-builder, diff-engine, risk-classifier,
 │                     # task-manager, paths, migrate, workspaces
 ├── bridge/           # websocket-server (the Chrome-extension transport)
-├── context/          # token budget: code-minifier, token-counter,
+├── context/          # token budget: code-minifier, symbol-index,
 │                     # context-manager, memory-manager
 ├── github/           # PR agent: poller, comment-classifier, ci-log-parser, plan-generator
 ├── mcp/              # mcp-server.js + tools/
@@ -204,7 +204,7 @@ persistent allow/block rules live in `commandRules`  (`/allowlist`).
 
 ### Context engine
 
-`context/` — `code-minifier`, `token-counter`, `context-manager`, `memory-manager`. `CodeMinifier.minifyJson` is on the hot
+`context/` — `code-minifier`, `context-manager`, `memory-manager`, `symbol-index`. `CodeMinifier.minifyJson` is on the hot
 path: `PromptBuilder.buildToolResultBatch` embeds every tool result in the next prompt, and
 serialising them compact rather than pretty-printed is ~40% fewer characters there.
 
@@ -394,6 +394,39 @@ Standing constraints on this project. These are choices, not limitations to rout
   `PromptBuilder`'s economics become dead code — and it contradicts "no API keys" above,
   which is the identity of the project. The framing that preserves the thesis: the browser
   bridge stays the default, an API backend is opt-in for people who already have a key.
+
+### Removed as dead, 2026-09-16
+
+Found by auditing every export for a caller. Recorded because "why is this gone?" is a
+question someone asks six weeks later, and because two of them were not simply unused.
+
+- **`context/token-counter.js`** — a whole 30-line class, `TokenCounter`, reachable from
+  nothing. Its only remaining mention was a *comment* in `agent-loop.js`. Token estimation
+  moved to `contextChars` counted where it crosses the bridge, which is the one place that
+  cannot be wrong about it; the class was left behind.
+- **Five `paths.js` exports** with no caller anywhere, including inside `paths.js`:
+  `contextSummaryPath` and `globalContextPath` (leftovers of the retrieval subsystem deleted
+  in Direction phase 1), `skillPath`, `REL_ARTIFACTS_DIR`, and `planReviewPath`. The last one
+  is worth a word: the companion *does* write `plan-review.json`, but that is its own draft
+  state while you are commenting, and the comments reach the CLI inside
+  `plan-approval.json`. The path helper was the dead part, not the feature.
+- **Three test seams that no test used** — `__tabLanes` and `__sessionTabs` in the
+  extension's `content.js`, and `resetSymbolIndexes`. Written in the same commits as the
+  things they were meant to test, and then not needed. A seam nobody pulls is API surface
+  with no reason to exist.
+
+**One thing the audit found was not dead but unwired.** `rememberWorkspace` had no callers,
+which meant nothing ever wrote `recent-workspaces.json` — so `listWorkspaceCandidates`'s
+`recent` category, which reads that file and has always been in the `/set-workspace` picker,
+silently offered nothing. The reader, the writer and the picker row all existed; the call did
+not. `main.js` makes it now, after the workspace existence check, so a path that does not
+resolve is not offered back as somewhere you have been. Verified: 0 recents before, 2 after.
+
+**Dependencies: none unused.** Every entry in all four `package.json` files is imported,
+used in a script, or `@types/react`, which is types-only and exists for editor JSX
+intellisense. `@inquirer/prompts` looks unused to a naive grep and is not — `main.js` reaches
+it through `await import()` on the `EADDRINUSE` path. `chalk` was the one genuinely dead
+dependency and went earlier the same day.
 
 ### Measured and discarded
 
