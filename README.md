@@ -292,14 +292,95 @@ rather than burning a session on variations of one broken command.
 your terminal emulator and there is no API for them. Run the process through `run_background`
 so the agent owns the pipe, or point it at a log file.
 
+## ⌨️ Using the prompt
+
+### Writing more than one line
+
+The prompt is a real multi-line editor.
+
+| key | what it does |
+| --- | --- |
+| `ctrl+j` | newline, without sending — **works in every terminal** |
+| `shift+enter` | the same, where your terminal reports the modifier |
+| `enter` | send |
+| `↑` `↓` | move **a line** when the prompt has several; recall previous commands when the caret is already on the first or last line |
+| `←` `→` | move by character |
+| `ctrl+u` | clear the prompt · `ctrl+w` delete the last word |
+
+`shift+enter` needs the kitty keyboard protocol, which the terminal has to
+support — VS Code's built-in terminal does not, for instance. `ctrl+j` is a
+literal line feed and no terminal can take it away, so it is the one to learn.
+
+A prompt taller than a third of the window scrolls inside itself rather than
+pushing the transcript off screen, and shows `… N more lines` when it does.
+
+### Attaching things
+
+- **Paste** anything. More than four lines is folded to `[Pasted text #1 +42 lines]`
+  so it costs one row; the model still gets all of it when you send.
+- **`ctrl+v`** attaches an image from the clipboard.
+- **"Add to Agent Chat"** in VS Code (`cmd+alt+l`) drops the selection in as
+  `@file.js:12-30`.
+- **`ctrl+f`** attaches commands that failed in a VS Code terminal. They are
+  *offered*, not inserted: the status bar shows `2 failed ^f` and nothing touches
+  your prompt until you ask. Something you chose to attach goes in; something
+  that merely happened to you waits.
+
+### Reading what came back
+
+- **`ctrl+e`** expands or collapses every step of every turn. Expanded steps show
+  full output — settled turns are ordinary scrollback and are not truncated.
+- **File edits are drawn as a diff**, green for additions and red for removals,
+  both in the transcript and on the approval prompt.
+- Scroll, select and copy with the mouse exactly as in any other command's
+  output. The agent never takes the mouse.
+
+### When it asks before acting
+
+Commands that destroy more than they name stop and ask first, showing what is at
+stake — `/clear`, `/new`, `/allowlist clear`, `/github clear-state`. Cancel is
+always the default, so a reflex `enter` changes nothing. Commands that name their
+target (`/memory forget 3`, `/allowlist remove <cmd>`) just do it.
+
+A single turn is capped at 30 tool rounds. Nothing failing is required — it is
+there because every round is a prompt typed into your browser, and a model that
+keeps going is spending your quota. It stops, says so, and `continue` resumes.
+
+When the conversation outgrows the effort rung's budget, older turns are replaced
+by a summary automatically, and the agent tells you what it compacted.
+
+## 🔍 Seeing what the agent is being told
+
+`/settings` → **Context** lists the files actually feeding the prompt, not just
+how much is in it:
+
+```
+  Instructions   AGENT.md            template — looks like the unedited template
+  Memory file    .agent/memory.md    7 facts
+  Skills         .agent/skills       3 skills
+  Skills         ~/notes/skills      missing — you added this folder and it is not there any more
+```
+
+Press **enter** on any row to open that file in your editor, or use
+`/open <path>` directly.
+
+This matters because `AGENT.md` is *walked* — every level from your code up to
+the project root, nearest last — so which files are in play is not obvious, and
+a stock template that was never filled in looks exactly like a real one to the
+model. The list says which is which.
+
 ## ⚙️ Configuration & Commands
 
 Once the agent is running, you can use built-in slash commands to manage your session:
 - Type `/help` in the CLI to see all available commands.
-- Type `/mode` to switch between Solo and Duo — Duo puts a reviewer on the *other* model, which is the only kind of review worth the second tab.
-- Type `/config` to choose which web model (Gemini, ChatGPT) acts as your primary and which reviews it.
+- Type `/config` to choose which web model (Gemini, ChatGPT) implements and which one reviews it. Setting a reviewer on the *other* model is what Duo means, and it is the only kind of review worth a second tab — there is no separate `/mode` screen any more, though the name still answers.
 - Type `/effort` to pick how hard the agent works — one ladder from `flash` to `deep`. It sets the prompt profile *and* names the browser tab that profile is written for.
 - Type `/allowlist` to view and manage your auto-approved and auto-rejected command rules.
+- Type `/settings` for one page of everything that is set, including the Context tab above.
+- Type `/open <path>` to open a file in your editor.
+- Type `/compact` to fold older turns into a summary by hand, or `/clear` to drop them.
+- Type `/logs` to read failures grouped by where they came from, and `/commands` for
+  every shell command the agent has run, blocked or rejected.
 
 ## 📂 Where the agent keeps its files
 
@@ -315,7 +396,9 @@ Everything the agent writes into a workspace lives in one directory, `.agent/`:
 ├── backups/           # file backups powering /undo
 ├── github-pr-plans/   # GitHub PR agent output
 ├── sessions/          # conversation history (local copy)
-└── logs/agent.log
+└── logs/
+    ├── errors.jsonl     # every failure, tagged with the flow it came from (/logs)
+    └── commands/        # one file per day: every shell command run (/commands)
 ```
 
 Your conversation history is saved **twice**: once next to the project in
