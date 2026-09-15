@@ -208,6 +208,106 @@ function findElement(selectorList) {
 }
 
 /**
+ * Finding the page's furniture when the selectors stop matching.
+ *
+ * 22 selectors in 6 ladders, against a page Google redesigns without warning.
+ * When a ladder misses, `describeScrapeFailure` writes a good error and the turn
+ * is lost — and every turn stays lost until someone notices and ships a new
+ * selector. The element is usually still there and still findable by *what it
+ * is*, which is slower than a selector and far better than a dead turn.
+ *
+ * The rule learned building the mode picker's fallback: **a fallback that cannot
+ * fire is worse than none**, because the ladder looks like it has a safety net.
+ * Each of these was checked against gemini.google.com with the real ladder
+ * disabled, and each is reported when it fires — a recovery is still news, and
+ * `/logs extension` is where you would find out that the DOM moved.
+ */
+
+/** Visible, and big enough to be the thing rather than a decoration. */
+function isVisible(el) {
+  if (!el) return false;
+  const rect = el.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return false;
+  const style = window.getComputedStyle(el);
+  return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+}
+
+const area = (el) => {
+  const r = el.getBoundingClientRect();
+  return r.width * r.height;
+};
+
+/**
+ * The prompt box: the largest visible editable region on the page.
+ *
+ * Gemini's is a Quill editor, so it is a `contenteditable` div rather than a
+ * textarea, and any rename of its classes leaves that unchanged. Size is what
+ * separates it from the small editable bits a chat page collects — a rename
+ * box, an inline edit on a previous turn.
+ */
+function findInputStructurally() {
+  const candidates = [...document.querySelectorAll('[contenteditable="true"], textarea')]
+    .filter(isVisible);
+  if (candidates.length === 0) return null;
+  return candidates.sort((a, b) => area(b) - area(a))[0];
+}
+
+/**
+ * There is deliberately no structural fallback for the send button.
+ *
+ * It was written, and measured against gemini.google.com, and it was wrong in
+ * the way that matters: with the composer focused, the nearest enabled button to
+ * the prompt box is the **mode picker** (37px away), and the next is **Dictate**
+ * (122px). Neither `type` nor position separates send from the rest — `type`
+ * reads `submit` on Dictate, Upload & tools, Temporary chat, Settings *and*
+ * Close sidebar.
+ *
+ * So there is no honest signal for "this is send" other than what the label
+ * says, and the ladder already matches on that. A fallback here would not
+ * degrade to failing, it would degrade to **pressing the wrong button** — start
+ * a voice recording, open the tools menu, switch the conversation to temporary.
+ * Failing loudly is the better outcome, and `describeScrapeFailure` already
+ * names `find_send_button` when it happens.
+ *
+ * The rule this is an instance of: a fallback that cannot fire is worse than
+ * none, and one that fires wrongly is worse than that.
+ */
+
+/**
+ * Tell the server the ladder missed but the page was still usable.
+ *
+ * Not silent: a selector that has drifted is a bug with a deadline, and the only
+ * warning is that a fallback had to do the work. The bridge lifts `[stage]` out
+ * of the message into `op`, so this reads as `selector_drift` in
+ * `/logs extension` rather than as noise.
+ */
+function reportDrift(what, found) {
+  const describe = (el) => {
+    if (!el) return 'nothing';
+    const label = el.getAttribute('aria-label');
+    return `<${el.tagName.toLowerCase()}${label ? ` aria-label="${label}"` : ''}${el.className && typeof el.className === 'string' ? ` class="${el.className.split(' ').slice(0, 2).join(' ')}"` : ''}>`;
+  };
+  safeSend({
+    type: 'error',
+    payload: {
+      op: 'selector_drift',
+      message: `[selector_drift] SELECTORS.${what} matched nothing; found ${describe(found)} by shape instead. `
+        + 'The turn continued — update the selector before it stops working.',
+    },
+  });
+}
+
+/** The ladder, then the shape, then give up — and say which happened. */
+function findInputResilient() {
+  const byLadder = findElement(SELECTORS.inputField);
+  if (byLadder) return byLadder;
+  const byShape = findInputStructurally();
+  if (byShape) reportDrift('inputField', byShape);
+  return byShape;
+}
+
+
+/**
  * Get the current number of response blocks in the DOM.
  */
 function getResponseCount() {
@@ -233,7 +333,9 @@ async function injectPrompt(text) {
   traceStart();
 
   try {
-    const input = findElement(SELECTORS.inputField);
+    // The ladder first, then the shape — a redesigned class name should
+    // cost a log line, not the turn.
+    const input = findInputResilient();
     if (!input) {
       throw new Error('[find_input] Could not find the Gemini input field — the editor selector has probably changed');
     }
@@ -695,7 +797,7 @@ async function readModelOptions() {
  * picker and nothing else.
  */
 function findModelTriggerStructurally() {
-  const input = findElement(SELECTORS.inputField);
+  const input = findInputResilient();
   if (!input) return null;
 
   // Everything else in the composer that opens a menu — attachments, canvas,
