@@ -146,3 +146,39 @@ test('nextPasteId', async (t) => {
     assert.equal(nextPasteId(), 1);
   });
 });
+
+test('an expanded marker closes its fence', async (t) => {
+  /**
+   * A marker sits on a line with whatever the user typed around it, and most
+   * attachments are fenced. Observed in use:
+   *
+   *     ``` A command failed in the editor's terminal (exit 1):
+   *     ``` why is this failing?
+   *
+   * The closing fence has prose on the same line, so it is not a clean close
+   * for anything parsing the markdown — the model included — and the question
+   * asked *about* the block reads as part of it.
+   */
+  const fenced = [{
+    marker: '@terminal:npm test',
+    text: "A command failed (exit 1):\n```\n$ npm test\nboom\n```",
+  }];
+
+  await t.test('text after the marker starts on its own line', () => {
+    const out = expandPastes('@terminal:npm test why is this failing?', fenced);
+    const lines = out.split('\n');
+    const close = lines.findLastIndex((l) => l.trim() === '```');
+    assert.ok(close >= 0, 'the fence did not close at all');
+    assert.equal(lines[close], '```', 'the close still has something on its line');
+    assert.ok(out.includes('why is this failing?'));
+  });
+
+  await t.test('a marker on its own is not padded twice', () => {
+    const out = expandPastes('@terminal:npm test', fenced);
+    assert.ok(!out.endsWith('\n\n'), 'a blank line was added where none was needed');
+  });
+
+  await t.test('an unfenced attachment is left exactly as it was', () => {
+    assert.equal(expandPastes('see @x here', [{ marker: '@x', text: 'plain' }]), 'see plain here');
+  });
+});

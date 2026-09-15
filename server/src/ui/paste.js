@@ -51,9 +51,34 @@ export function pasteMarker(id, text) {
 export function expandPastes(input, pastes) {
   let out = String(input ?? '');
   for (const paste of pastes) {
-    if (out.includes(paste.marker)) out = out.split(paste.marker).join(paste.text);
+    if (out.includes(paste.marker)) out = out.split(paste.marker).join(closeCleanly(paste.text));
   }
   return out;
+}
+
+/**
+ * A marker sits on a line with whatever the user typed around it.
+ *
+ * Most attachments are fenced — a selection from the editor, a failed command
+ * and its output — and a marker followed by " why is this failing?" expanded to
+ * a closing fence with prose on the same line:
+ *
+ * ```text
+ * ``` A command failed in the editor's terminal (exit 1):
+ * ``` why is this failing?
+ * ```
+ *
+ * That is not a clean fence close for anything parsing the markdown, the model
+ * included, so the question it was asked about the block reads as part of the
+ * block. One newline after the close fixes it.
+ *
+ * Only when the text ends in a fence, and only if one is not there already:
+ * padding every expansion would put blank lines into prompts that never had a
+ * fence in them.
+ */
+function closeCleanly(text) {
+  const body = String(text ?? '');
+  return /```[ \t]*$/.test(body) ? `${body}\n` : body;
 }
 
 /**

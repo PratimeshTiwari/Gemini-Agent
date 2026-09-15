@@ -38,15 +38,24 @@ export class GitHubEventHandler extends EventEmitter {
     this.agentLoop = agentLoop;
     this.config = resolveGitHubConfig(configOverrides);
 
-    // Auto-detect current repo to lock PR watching to this workspace
-    try {
-      const gitUrl = execSync('git config --get remote.origin.url', { cwd: workspace, encoding: 'utf-8' }).trim();
-      const match = gitUrl.match(/github\.com[:/]([^\/]+\/[^\/]+?)(?:\.git)?$/i);
-      if (match && match[1]) {
-        this.config.repos = [match[1]];
+    // Auto-detect the current repo, so PR watching is locked to this workspace.
+    //
+    // Only when nothing was asked for. `resolveGitHubConfig` already reads
+    // `GITHUB_REPOS`, and this overwrote the result unconditionally — so the env
+    // var was ignored in exactly the case someone would set it: watching a repo
+    // that is not the one checked out here. An explicit `repos` override had the
+    // same fate.
+    const asked = configOverrides.repos?.length || process.env.GITHUB_REPOS;
+    if (!asked) {
+      try {
+        const gitUrl = execSync('git config --get remote.origin.url', { cwd: workspace, encoding: 'utf-8' }).trim();
+        const match = gitUrl.match(/github\.com[:/]([^\/]+\/[^\/]+?)(?:\.git)?$/i);
+        if (match && match[1]) {
+          this.config.repos = [match[1]];
+        }
+      } catch (e) {
+        // Not a git repo or no origin, fallback to auto-discover
       }
-    } catch (e) {
-      // Not a git repo or no origin, fallback to auto-discover
     }
 
     // Initialize components

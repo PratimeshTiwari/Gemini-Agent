@@ -11,6 +11,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import { looksLikeMultipleDrafts, looksLikeCapabilityDenial, looksLikeProviderError } from './drift-detector.js';
 import { logError } from './error-log.js';
+import { describeInstructionSources } from './instruction-sources.js';
 import { logCommand } from './command-log.js';
 
 /**
@@ -1710,10 +1711,30 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
       ['Workspace', this.workspace],
     ];
 
+    /**
+     * What is in the window, *and* where it came from.
+     *
+     * The numbers above answer how much; these answer what. Until the Context
+     * tab got them there was no answer anywhere in the product to "which files
+     * is it reading?", and the consequence was not hypothetical: this repo's own
+     * `AGENT.md` was the unedited stock template, going into every turn-0 prompt
+     * as the project's context, with nothing able to say so.
+     *
+     * The same rows as the tab, from the same function — one report on two
+     * surfaces rather than a second implementation that can disagree.
+     */
+    const sources = describeInstructionSources(this);
+    const width = Math.max(10, ...sources.map((r) => r.label.length));
+    const sourceLines = sources.length
+      ? ['', '', '**Feeding the prompt**', '', ...sources.map((r) => `  ${r.group.padEnd(9)} ${r.label.padEnd(width)}  `
+          + (r.state === 'loaded' ? r.detail : `${r.state} — ${r.detail}`))]
+      : [];
+
     return {
       message: `### 📊 Context\n\n`
         + rows.map(([k, v]) => `  ${k.padEnd(10)} ${v}`).join('\n')
-        + `\n\n_\`/compact\` to summarise it · \`/clear\` to drop it_`,
+        + sourceLines.join('\n')
+        + `\n\n_\`/compact\` to summarise it · \`/clear\` to drop it · \`/open <path>\` to read one_`,
     };
   }
 
