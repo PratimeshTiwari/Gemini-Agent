@@ -79,7 +79,54 @@ number only stays free while nothing lands on `main`.
 
 ## Real work that is waiting, in order
 
-**1. The side panel drops three message types the server sends.**
+**1. `/update` — notice a merge, pull it, and say what needs reloading.**
+Requested 2026-09-16. Feasible, and everything it needs already exists.
+
+*Why it is worth building:* this project ships three artifacts from one repo and
+**two of them are not updated by pulling.** `extension/service-worker.js` is a
+committed bundle Chrome only picks up on a reload, content scripts only on a
+hard refresh, and the `.vsix` has to be reinstalled by hand. So "git pull" leaves
+you running new server code against an old bridge — and the symptom is the agent
+going quiet, not an error. That has already cost time twice this week.
+
+Three parts, and the third is the one with the value in it:
+
+- **Notice.** `agentSourceDir` already resolves to this repo and it is a git
+  checkout, so the check is `git fetch` plus a count against the current
+  branch's upstream. It must run **after the UI is up, in the background, and
+  fail silently** — a network call on the startup path is a hang waiting for an
+  aeroplane. Report it in the status bar the way `2 failed ^f` already is, not
+  as a modal.
+- **Pull.** `/update`: refuse outright on a dirty tree — never pull over
+  someone's work — then pull, run `npm install` only if the lockfile moved, and
+  restart through the supervisor that already exists (`RESTART_EXIT_CODE = 75`
+  in `index.js`).
+- **The checklist, which is the actual feature.** After pulling, `git diff
+  --name-only <before>..<after>` says exactly which surfaces changed, so the
+  prompt asks only for steps that matter:
+  - anything under `extension/` → reload the extension **and** hard-refresh the
+    model tabs
+  - a changed `vscode-companion/*.vsix` → reinstall it
+  - only `server/` → nothing to do; the restart covered it
+
+  A generic "you may want to reload things" is the version people learn to
+  ignore.
+
+*The part that needs care:* the checklist has to be shown **after** the restart,
+by the new version, so it has to survive the restart. `index.js` already does
+exactly this for the workspace handover (`takeHandover()`, `next-workspace`) —
+same pattern, a small file, read once. And it should persist until acknowledged
+rather than scrolling away, since the whole point is that missing it is silent.
+
+*The harder half, worth doing second:* knowing whether the user actually
+reloaded, rather than nagging until they tick a box. The honest way is to have
+the extension report a build stamp on `identify` and compare it against the
+`service-worker.js` on disk — then the reminder disappears by itself when the
+reload happens, and reappears only when it genuinely has not. Ship the
+acknowledged-checklist version first; it is useful on its own and the detection
+is a strict improvement on top.
+
+**2. The side panel drops three message types the server sends.**
 `response_stream`, `github_processing_started`, `github_processing_finished`
 reach it through `socket.js`'s `default:` branch and are discarded. So the panel
 never shows streaming text or GitHub activity, and every streamed chunk crosses
@@ -88,21 +135,21 @@ surface* rather than dead code, deliberately: deleting the sends removes a panel
 feature, adding handlers is one. The panel is a supported front-end, so this is
 a genuine gap with a clear shape.
 
-**2. `/logs rates` needs a week of use, not work.** It reads all zeros today —
+**3. `/logs rates` needs a week of use, not work.** It reads all zeros today —
 `errors.jsonl` has 3 lines and `traces.jsonl` does not exist yet. The view was
 built precisely so the data gets read; it cannot answer anything until the data
 is there. Two open questions depend on it: whether
 `REFRESH_INTERVAL_MESSAGES = 20` is the right number, and whether
 `multiple_drafts` has ever fired at all.
 
-**3. The batch task could hold its tab across *models*, not just turns.** What
+**4. The batch task could hold its tab across *models*, not just turns.** What
 landed yesterday keys a session to one tab. `_executeSubagent('gemini', …)` is
 still hard-coded in `runHeadlessTask`, so a batch task always runs on Gemini
 whatever `modelConfig` says. Deliberate for now — nothing but Gemini has been
 exercised on that path — and it is the obvious next step if ChatGPT becomes a
 real background option.
 
-**4. `/skills` has never been examined.** Reachable and aligned, and the *shape*
+**5. `/skills` has never been examined.** Reachable and aligned, and the *shape*
 of the feature was never looked at: `/skills dir` prints a four-entry search
 path, `skillFolders` is an escape hatch from config, creating one opens an
 editor. Whether that is the right set of moves is an open question, not a bug
