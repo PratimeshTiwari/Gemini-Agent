@@ -13,7 +13,8 @@ documentation.
 
 - Branch `v1-stable`, tree clean. **Check `git log origin/v1-stable..HEAD`**
   rather than trusting a number here. The owner pushes by hand.
-- `main` is **113 commits behind and still a clean fast-forward**. **The owner
+- `main` is **112 commits behind and still a clean fast-forward** (as of this
+  commit; `git rev-list --left-right --count main...v1-stable` is the truth). **The owner
   has said the PR is theirs and they will do it.** Do not open it.
 - `npm test`: **915 server + 37 extension**, all green.
 - **The extension needs reloading in Chrome and the Gemini tab hard-refreshing**
