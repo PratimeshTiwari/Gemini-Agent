@@ -60,6 +60,41 @@ a real regression.
 There is no lint script; `.eslintrc.json` (eslint:recommended) and `.prettierrc`
 (100 cols, single quotes, trailing commas) exist for editor integration.
 
+### The pty harness — how anything user-visible gets measured
+
+Most of the numbers in this file came from a harness that drives the **real CLI under a pty**
+with a fake extension answering prompts from a script, so a full turn — inject, reply, tool
+call, tool result, next prompt — runs with no browser and no Gemini account. It lives in the
+session scratchpad, not the repo. Rebuild it from this:
+
+- **`drive.py`** — `pty.fork()` the CLI with `--workspace <scratch> --port <p> --editor <shim>
+  --no-github`. `PATH` is prefixed with a `bin/` of shims for `open`, `code`, `xdg-open` and
+  `cursor` that log their argv instead of launching anything, which is how "did it open the
+  editor" became checkable. Steps are a JSON list: type text, send a key, resize the window
+  (`{"resize": [rows, cols]}`), or write a file into `.agent/state/` to stand in for the VS
+  Code companion. It counts bytes, `ESC[2J`, `ESC[3J` and erase-lines per step — which is what
+  makes a frame regression visible at all.
+- **`fake-extension.js`** — connects with a `chrome-extension://` origin, sends
+  `{type:'identify', payload:{clientType:'extension'}}` (`clientType`, not `client`), and
+  answers each `inject_prompt` from a scripted list. It logs every prompt it is given, which
+  is where the per-turn character counts come from.
+- **`ext-cadence.js`** — the real extension in headless Chrome against a server whose
+  `verifyClient` **refuses every handshake**, so each retry becomes an observable timestamp.
+- **`scrape-test.mjs`** — the scrape lifted verbatim out of the bridge and run against a
+  Gemini-shaped DOM in jsdom.
+
+**Check the harness before believing anything, positive or negative.** It has lied at least
+six times, and most of those looked like product bugs first: a port the extension never dials;
+a file-seeding step that also typed its content into the prompt; an extractor that dropped an
+`async` keyword; a fake extension that answered subagent requests without `isSubagent`, so
+compaction hung; a `ClipboardEvent` probe that silently did nothing, making an empty composer
+look like proof the send button was unfindable; and a `ws` import that was wrong, so a "resize
+during a live turn" measurement had no live turn in it.
+
+**A passing test lies the same way.** `toolCatalogDrift()` compared an empty registry to an
+empty catalog and went green — it needed a negative control per branch before the pass meant
+anything.
+
 ## Layout
 
 ```
@@ -341,16 +376,45 @@ make both sides share the same base, not to resolve 120 files by hand.
 
 ## Product decisions
 
-Standing constraints on this project (the fuller reasoning, and the measurements, are in
-`DECISIONS.md`). These are choices,
-not limitations to route around:
+Standing constraints on this project. These are choices, not limitations to route around:
 
-- **Gemini Web only, for now** — other bridges exist (`chatgpt-bridge.js`, `claude-bridge.js`)
-  and work for subagents, but Gemini is the primary target.
+- **Gemini Web only, for now** — other bridges exist (`chatgpt-bridge.js`) and work for
+  subagents, but Gemini is the primary target.
 - **Purely local** — no hosted backend, no telemetry, no API keys. Inference happens in the
   user's own browser session, which is the whole point of the extension bridge.
 - **Two front-ends** — the terminal CLI and the Chrome side panel are both supported surfaces.
 - **One answer per turn** — never emit drafts or A/B alternatives for the user to pick between.
+- **The two bridges stay separate.** ~600 duplicated lines across `gemini-bridge.js` and
+  `chatgpt-bridge.js`, and it is why the ChatGPT image bug survived for months. Collapsing
+  them was planned and **declined**: the cost it removes is "fix it twice", and fixing the
+  scrape twice took one commit. The jsdom tests run against *both* files, so a divergence
+  fails the build — most of the value, none of the risk of breaking both bridges at once.
+- **An API backend is a fork, not a plan.** It would remove the ceiling — structured tool
+  calls, real parallelism, caching, and `looksLikeCapabilityDenial` plus half of
+  `PromptBuilder`'s economics become dead code — and it contradicts "no API keys" above,
+  which is the identity of the project. The framing that preserves the thesis: the browser
+  bridge stays the default, an API backend is opt-in for people who already have a key.
+
+### Measured and discarded
+
+Kept so they are not re-tried.
+
+- **The extension's "address theory" was wrong.** The reconnect, not the address, was the
+  whole connectivity problem. With the shipped bundle refusing every handshake: attempts at
+  4.7s, 20.7s, 50.7s, 80.7s — steady state **exactly 30.0s**, the `chrome.alarms` clamp
+  floor. Headless Chrome reclaims service workers harder than a real browser, so that is a
+  lower bound rather than a verdict.
+- **The anti-throttling audio hack never worked, and not for the reason three documents
+  recorded.** They said the `<audio>` element was created and never appended — true, and not
+  the bug, because a detached `<audio>` plays fine in Chrome. The real reason is in its own
+  catch block: autoplay policy blocks playback without a user gesture, and the fallback bound
+  `click`/`keydown` with `{ once: true }`, which a **backgrounded** tab never receives. So it
+  played in tabs that did not need it and stayed silent in the ones it existed for. Deleted;
+  the Tab Wakeup Protocol is the mechanism that works.
+- **The batch loop's flat re-serialisation was diagnosed as an oversight and was not.** Every
+  batch turn opened a fresh tab closed when the turn ended, so turn 2 had never seen turn 1 —
+  there was no thread to opt into. Measured at **81% resent** over ten turns (156,140
+  characters where 28,943 were new) before the tab was held for the life of the task.
 
 ## Direction
 

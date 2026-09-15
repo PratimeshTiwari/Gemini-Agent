@@ -323,10 +323,7 @@
         sendToServer(errorMsg);
         return;
       }
-      for (let i = tabs.length - 1; i >= 0; i--) {
-        success = await trySendToTab(tabs[i], message, targetModel);
-        if (success) break;
-      }
+      success = await trySendToTab(tabs[0], message, targetModel);
     }
     if (!success) {
       const errorMsg = {

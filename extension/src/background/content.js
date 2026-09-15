@@ -471,10 +471,12 @@ export async function injectPromptIntoModel(payload) {
       return;
     }
 
-    for (let i = tabs.length - 1; i >= 0; i--) {
-      success = await trySendToTab(tabs[i], message, targetModel);
-      if (success) break;
-    }
+    // One tab, because `pickMainTab` chose it. This used to walk every matching
+    // tab newest-first, trying each in turn — the fallback that went with
+    // addressing tabs by URL pattern. With a lane that owns its tab there is
+    // nothing to fall back to, and a loop over a one-element array reads as if
+    // there were.
+    success = await trySendToTab(tabs[0], message, targetModel);
   }
 
   if (!success) {
