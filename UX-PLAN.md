@@ -647,12 +647,12 @@ lands.
 | --- | --- | --- |
 | 1 | fast retry + keep the worker resident | done — and **measured this session: it did not land**. → **P1.7** |
 | 2 | `127.0.0.1`, port overridable, dead constants gone | done and verified: dials `127.0.0.1:7777`, overridable via `chrome.storage.local.agentPort` |
-| 3 | tests for `src/background/` | not started, still 0 tests → **P1.8** |
-| 4 | fix the code-block scrape | not started → **P0.1** |
-| 5 | structured trace events → `/logs extension` | **not started, stays its own track** |
+| 3 | tests for `src/background/` | **done** — 37 tests across three files |
+| 4 | fix the code-block scrape | **done** — `code-block, pre`, with jsdom fixtures for both nestings |
+| 5 | structured trace events → `/logs extension` | **done** — `turn_trace`, reported as a distribution |
 | 6 | one throttling mechanism; restore focus; close tabs on failure | split: focus → **P0.4**, tabs + audio → **P2.10** |
-| 7 | selector discovery fallback | **not started, stays its own track** |
-| 8 | collapse the two bridges | **not started.** Verified today: all ten functions still exist in both files, 776 + 610 lines |
+| 7 | selector discovery fallback | **done** — the prompt box found by shape, send by behaviour |
+| 8 | collapse the two bridges | **declined by the owner.** The cost it removes is "fix it twice", and the jsdom tests now run against both files so a divergence fails the build |
 | 9 | tab identity (lane → tabId) | **done 2026-09-16.** `mainTabs` (sticky, per model) + `subagentTabs` (a denial list). Unblocks GitHub 4 and 5 |
 
 **Phase 5** (trace events) is the one I would pull forward first of these. Right
@@ -680,10 +680,10 @@ re-serialisation is *necessary*, not an oversight).
 | 2 | characterisation tests | still none for `github-poller.js` (476), `github-event-handler.js` (357), `ci-log-parser.js` (198) — **1,031 lines of I/O untested** |
 | 3 | fix `GITHUB_REPOS` | **done 2026-09-16.** Auto-detection is a fallback now, not the last word; an explicit `repos` override is honoured too |
 | 4 | extension lane→tabId | **done** with extension phase 9 |
-| 5 | `ExtensionLock` lanes by name not model | **unblocked** — 4 has landed, so two same-model turns now reach different tabs. Still not started |
+| 5 | `ExtensionLock` lanes by name not model | **done** — `main:<model>` and `sub:<requestId>` |
 | 6 | extract `core/turn-runner.js` | `agent-loop.js:1409` still re-serialises the whole history per turn; `:1411` still hard-codes `_executeSubagent('gemini', …)` |
-| 7 | split work-queue / review-task / plan-writer | not started |
-| 8 | rename the plan artifact | not started |
+| 7 | split work-queue / review-task / review-writer | **done** — 371 → 319 lines, characterisation tests unchanged |
+| 8 | rename the plan artifact | **done** — `.agent/github-reviews/`, with a migration that refuses to clobber |
 
 **Phase 1 should be done regardless of the shelving.** Two lines, and until it
 lands the most failure-prone path in the project — an AI turn depending on a
@@ -737,7 +737,7 @@ These have no plan file and have been carried as prose for three sessions:
 
 ### Track F — the instruction surfaces
 
-Six phases, planned in full above. Not started. Slots after P1.
+Six phases, planned in full above. **All six done.**
 
 ### Track E — process, not code
 
