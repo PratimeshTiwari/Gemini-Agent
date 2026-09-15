@@ -1,4 +1,5 @@
 import { getState, setState } from './state.js';
+import { retryDelay, resolvePort, socketUrlFor } from './policy.js';
 import { broadcastToSidePanel, sendToServer } from './messaging.js';
 import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab } from './content.js';
 
@@ -31,11 +32,9 @@ import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendT
  * *while disconnected* is the point, and why it stops the moment a socket opens.
  */
 
-const DEFAULT_PORT = 7777;
-
-/** How long to wait before each successive attempt, then this cadence forever. */
-const RETRY_LADDER_MS = [250, 500, 1000, 2000, 4000, 8000];
-const RETRY_STEADY_MS = 5000;
+// The ladder, the floor it must stay under, and the port rules live in
+// `policy.js` — they are arithmetic and validation, and keeping them there is
+// what lets `node --test` cover the decisions this file has always got wrong.
 
 /**
  * Chrome terminates an idle service worker after ~30s. Any extension API call
@@ -64,16 +63,15 @@ let attempt = 0;
 async function getPort() {
   try {
     const { agentPort } = await chrome.storage.local.get('agentPort');
-    const n = parseInt(agentPort, 10);
-    return Number.isInteger(n) && n > 0 && n < 65536 ? n : DEFAULT_PORT;
+    return resolvePort(agentPort);
   } catch {
-    return DEFAULT_PORT;
+    return resolvePort(undefined);
   }
 }
 
 /** 127.0.0.1, not `localhost`: it says what it means and skips the hosts file. */
 async function socketUrl() {
-  return `ws://127.0.0.1:${await getPort()}`;
+  return socketUrlFor(await getPort());
 }
 
 export async function connectWebSocket() {
@@ -143,7 +141,7 @@ export async function connectWebSocket() {
  * is the only thing left that can bring it back.
  */
 function scheduleRetry() {
-  const delay = RETRY_LADDER_MS[attempt] ?? RETRY_STEADY_MS;
+  const delay = retryDelay(attempt);
   attempt++;
 
   clearTimeout(retryTimer);

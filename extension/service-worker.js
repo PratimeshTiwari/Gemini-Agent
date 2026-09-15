@@ -16,6 +16,22 @@
     });
   }
 
+  // src/background/policy.js
+  var RETRY_LADDER_MS = [250, 500, 1e3, 2e3, 4e3, 8e3];
+  var RETRY_STEADY_MS = 5e3;
+  var DEFAULT_PORT = 7777;
+  function retryDelay(attempt2) {
+    const n = Number.isInteger(attempt2) && attempt2 >= 0 ? attempt2 : 0;
+    return RETRY_LADDER_MS[n] ?? RETRY_STEADY_MS;
+  }
+  function resolvePort(stored) {
+    const n = parseInt(stored, 10);
+    return Number.isInteger(n) && n > 0 && n < 65536 ? n : DEFAULT_PORT;
+  }
+  function socketUrlFor(port) {
+    return `ws://127.0.0.1:${resolvePort(port)}`;
+  }
+
   // src/background/messaging.js
   function broadcastToSidePanel(message) {
     chrome.runtime.sendMessage(message).catch(() => {
@@ -279,9 +295,6 @@
   }
 
   // src/background/socket.js
-  var DEFAULT_PORT = 7777;
-  var RETRY_LADDER_MS = [250, 500, 1e3, 2e3, 4e3, 8e3];
-  var RETRY_STEADY_MS = 5e3;
   var KEEPALIVE_MS = 2e4;
   var ALARM_FALLBACK_MINUTES = 0.5;
   var HEARTBEAT_INTERVAL = 1e4;
@@ -293,14 +306,13 @@
   async function getPort() {
     try {
       const { agentPort } = await chrome.storage.local.get("agentPort");
-      const n = parseInt(agentPort, 10);
-      return Number.isInteger(n) && n > 0 && n < 65536 ? n : DEFAULT_PORT;
+      return resolvePort(agentPort);
     } catch {
-      return DEFAULT_PORT;
+      return resolvePort(void 0);
     }
   }
   async function socketUrl() {
-    return `ws://127.0.0.1:${await getPort()}`;
+    return socketUrlFor(await getPort());
   }
   async function connectWebSocket() {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -350,7 +362,7 @@
     };
   }
   function scheduleRetry() {
-    const delay = RETRY_LADDER_MS[attempt] ?? RETRY_STEADY_MS;
+    const delay = retryDelay(attempt);
     attempt++;
     clearTimeout(retryTimer);
     retryTimer = setTimeout(() => connectWebSocket(), delay);
