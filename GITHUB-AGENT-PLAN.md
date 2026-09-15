@@ -247,6 +247,37 @@ would go, so it is a smaller design, not a different one.
 
 ---
 
+## Status — 2026-09-16
+
+**Phases 1-8 are done.** Phase 0 is a manual browser test only the owner can
+run, and it gated nothing that shipped.
+
+One finding reshaped two of them, and is recorded in `core/turn-runner.js`
+rather than left here, because that is where someone will meet it:
+
+**The flat re-serialisation is necessary, not an oversight.** Evidence §1 below
+says the background path "opted out of" `PromptBuilder`'s protection by
+resending the whole history every turn. It did not — it has nothing to opt
+into. Every send goes through `_executeSubagent`, which sets `isSubagent: true`;
+the extension answers that by creating a **fresh tab** and closes it when the
+turn ends. Turn 2 is a browser tab that has never seen turn 1, so the
+re-serialisation is the only thing making a multi-turn batch task work at all.
+Removing it needs one tab held across a task's turns — a change to the bridge,
+not a refactor, and the lane work is its prerequisite.
+
+The same correction applies to phase 6's second claim: it does not remove the
+third tool list "by construction", and should not. That list is a deliberate
+subset in a shape of its own, carrying a correction the full definitions do not
+("use `pattern` NOT `query`"), and generating it would change what the
+background agent is told on a path only a real browser can verify. Its
+*membership* is checked against `core/tool-catalog.js` instead, which is the
+half that actually broke elsewhere.
+
+What phase 6 did buy is the seam: a loop that runs with stubs, which is what
+phase 7 needed and what nothing had before.
+
+---
+
 ## Phases
 
 Ordered so the tests land before the risk, and so the extension work — which is
@@ -255,14 +286,14 @@ independently testable in a browser — comes before the refactor that depends o
 | # | phase | why here | risk |
 | --- | --- | --- | --- |
 | 0 | **Measure parallel Gemini tabs** | the assumption the lane design rests on | — |
-| 1 | Failures → `error-log.js` (flow `github`); delete the `agent.log` writes | two lines, and until it lands every later phase debugs blind | low |
-| 2 | Characterisation tests: `github-poller.js`, `ci-log-parser.js`, stubbed API | nothing below is safe without them | low, slow |
-| 3 | Fix `GITHUB_REPOS`; move repo detection out of the constructor | a named bug; makes phase 7 testable | low |
-| 4 | Extension: lane→tabId map, restore focus, close tabs on failure, drop `tabs[length-1]` | self-contained, verifiable in a browser, fixes three bugs | medium |
-| 5 | `ExtensionLock`: key lanes by name, not model | tiny diff, unlocks parallelism — **needs phase 4 first** | medium |
-| 6 | Extract `core/turn-runner.js`; `runHeadlessTask` becomes a caller | removes the third tool list and the flat re-serialisation **by construction** | **high** |
-| 7 | Split `work-queue` / `review-task` / `plan-writer` out of the event handler | the `github/` restructure proper, on a tested base | medium |
-| 8 | Rename the plan artifact; migrate existing dirs | cosmetic, needs a migration | low |
+| 1 | Failures → `error-log.js` (flow `github`); delete the `agent.log` writes | **done** | low |
+| 2 | Characterisation tests: poller, parser, **and the orchestrator** | **done** — 50 tests. Three findings recorded rather than fixed: the `#undefined` watermark key, a 👍 costing a browser turn, and `getStatus()` not naming the repos | low, slow |
+| 3 | Fix `GITHUB_REPOS` | **done** — auto-detection is a fallback now, not the last word | low |
+| 4 | Extension: lane→tabId map, restore focus, close tabs on failure, drop `tabs[length-1]` | **done** — `mainTabs` + `subagentTabs`, 12 tests | medium |
+| 5 | `ExtensionLock`: key lanes by name, not model | **done** — `main:<model>` and `sub:<requestId>`. A stalled subagent also stopped taking the user's turn with it | medium |
+| 6 | Extract `core/turn-runner.js`; `runHeadlessTask` becomes a caller | **done** — 17 tests. Neither claimed benefit holds; see Status above | **high** |
+| 7 | Split `work-queue` / `review-task` / `review-writer` out of the event handler | **done** — 371 → 319 lines, every characterisation test unchanged. Extracting the queue turned up an unhandled rejection that could take the CLI down | medium |
+| 8 | Rename the plan artifact; migrate existing dirs | **done** — `.agent/github-reviews/`, `/github reviews`, and a migration that refuses to clobber | low |
 
 **Phase 6 is the careful one.** It touches `prompt-builder.js`, which `CLAUDE.md`
 warns must never be bulk-edited with a regex and whose template literals turn a

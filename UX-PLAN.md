@@ -448,19 +448,26 @@ the question asked *about* the block reads as part of it.
 **Fixed:** one newline, and only when the text ends in a fence, so prompts that
 never had one do not collect blank lines.
 
-### 11b. The terminal queue drains every failure, forever
+### 11b. The terminal queue drains every failure, forever — **done, 2026-09-16**
 
 Observed in use: three `@terminal:` markers accumulated in one prompt, one of
 them a typo the owner had made in their own shell (`git remote show orign`). The
 companion forwards **every** non-zero exit from any VS Code terminal, and the CLI
 drains all of them into the box.
 
-"Offered, not acted on" is the right design and this is the wrong dose: a
+"Offered, not acted on" is the right design and this was the wrong dose: a
 failure you already know about, from a command you ran deliberately, is noise
-that has to be deleted by hand before the prompt is usable. Options, in order of
-how much they change: drop failures older than a minute or two; keep only the
-most recent one; require the companion's forwarding to be opted into per
-terminal. Wants a decision, not a patch.
+that has to be deleted by hand before the prompt is usable.
+
+**The owner chose opt-in per terminal**, the most precise of the three options
+and the only one needing new VS Code UI. The companion forwards nothing until
+you point it at a terminal — right-click → *Agent CLI: Watch This Terminal for
+Failures*. Per session, because a terminal is a per-session thing.
+
+The care went into the nudge: a feature nobody can find is the same as one that
+is off, so the first failure in an unwatched terminal offers to watch it, once
+per session, with a button. On every failure it would be the nagging that
+forwarding-everything already was. `cli-agent-companion-1.5.0.vsix`.
 
 ### 12. The refresh interval is a guess, and it counts the wrong thing
 
@@ -657,10 +664,14 @@ what turns the next regression into a number instead of an argument.
 image bug survived for months, but it is also the one change that can break both
 bridges at once. It wants phases 3 and 5 under it first.
 
-### Track B — `GITHUB-AGENT-PLAN.md` (9 phases, 0 started, shelved by the owner)
+### Track B — `GITHUB-AGENT-PLAN.md` — **unshelved and finished, 2026-09-16**
 
-Shelved, and the diagnosis was re-checked today rather than copied. Every finding
-still holds:
+The owner unshelved it once the UI/extension run was done. **Phases 1-8 have
+landed**; phase 0 is a manual browser test only they can run, and it gated
+nothing that shipped. The table below is the original diagnosis, kept because
+the reasoning is the part worth having — `GITHUB-AGENT-PLAN.md` carries the
+current state and the one finding that reshaped two phases (the flat
+re-serialisation is *necessary*, not an oversight).
 
 | # | phase | state, checked today |
 | --- | --- | --- |
@@ -696,9 +707,13 @@ These have no plan file and have been carried as prose for three sessions:
   — but not from disk. A tool that reads back into `sessions/history.jsonl` turns
   "compaction ate it" from a loss into a lookup, and does not require deciding in
   advance what will matter. **This is the one I would plan next after P0.**
-- **A symbol index** — `find_symbol` / `find_references`, tree-sitter or ctags.
-  The structural half of what a large codebase needs and the half grep is worst
-  at. Listed as a P3 gap and never started.
+- **A symbol index** — **done, 2026-09-16.** `find_symbol` / `find_references`
+  on acorn + acorn-jsx + acorn-walk, the owner's call over ctags and
+  tree-sitter. Measured against the 24% that got `ast-chunker` deleted: **282
+  of 282** of this repo's exported symbols. Two things had to be added or it
+  would have failed the same way — acorn-walk has no JSX visitors (so `.jsx`
+  parses and *then* throws on the walk) and defines `ImportSpecifier` as
+  `ignore`, so "who imports this?" returned nothing. 135 ms cold, 3 ms warm.
 - **Generating tool definitions from `TOOL_DEFINITIONS`** — **done, 2026-09-16.**
   `core/tool-catalog.js` declares all eighteen once, including the five that
   were dispatched from inside `agent-loop.js` and declared nowhere, and
@@ -711,11 +726,14 @@ These have no plan file and have been carried as prose for three sessions:
   recorded and argued from the architecture, not measured. The next large repo is
   the measurement.
 - **The fork — an optional API backend.** Contradicts the standing "no API keys"
-  decision, so it stays a fork rather than a plan. Its cheap half is not a fork at
-  all: `parse_tool_calls`, `tool_amnesia` and `provider_error` are all logged and
-  nobody reads them as *rates*. That overlaps **P2.12** and **P2.13** and is worth
-  doing on its own — any claim about how far the text channel is behind a real
-  tool-call API is an estimate until that view exists.
+  decision, so it stays a fork rather than a plan. **Its cheap half is done:**
+  `/logs rates` reads `parse_tool_calls`, `tool_amnesia`, `provider_error` and
+  `multiple_drafts` as rates, with `traces.jsonl` as the denominator — one entry
+  per turn the browser answered, which is the population those failures are
+  drawn from. It reads all zeros today, which is the point: the view has to
+  exist before the data accrues, or the data never gets read. That is exactly
+  what happened to `multiple_drafts`, instrumented two sessions ago so the
+  question could be answered and never looked at since.
 
 ### Track F — the instruction surfaces
 

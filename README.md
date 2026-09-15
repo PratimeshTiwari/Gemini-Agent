@@ -523,7 +523,7 @@ Everything the agent writes into a workspace lives in one directory, `.agent/`:
 ├── artifacts/         # task.md, plan.md, walkthrough.md — written for you to read
 ├── state/             # editor.json, github.json, plan-approval.json
 ├── backups/           # file backups powering /undo
-├── github-pr-plans/   # GitHub PR agent output
+├── github-reviews/    # what the PR agent worked out about a comment
 ├── sessions/          # conversation history, and archive.jsonl — turns a
 │                     #   summary replaced, kept so the agent can look them up
 └── logs/
@@ -541,3 +541,160 @@ home location with `AGENT_CLI_HOME`.
 Earlier versions spread this across `.gemini/`, `.gemini-agent/` and
 `.agent-github-plans/`. The agent migrates those into `.agent/` automatically the
 first time it starts in a workspace, and prints a one-line summary when it does.
+
+---
+
+## 📜 What changed, and what went away
+
+The removals matter as much as the additions here, so both are listed with the reason.
+The rule behind most of them: **a broken tool is worse than a missing one**, because the
+model reaches for it and concludes the code is not there.
+
+### The engine
+
+**Added** — the browser bridge itself: a Chrome extension that types prompts into a real
+`gemini.google.com` tab and scrapes the reply, so inference happens in your own session
+with no API key and no hosted backend. Tool calls are parsed out of the reply text,
+because there is no structured tool-call API to use.
+
+**Added** — prompt economics. The full system prompt goes out on turn 0 and every Nth
+turn, never every turn: resending a large payload each time trips Gemini's repetition
+filters and A/B-test modals. The *tool anchor* — names only, 56 tokens — rides every turn
+anyway, because the model does not gradually forget its tools, it forgets them completely
+and then denies having any.
+
+**Added** — one lane per tab (`main:<model>`, `sub:<requestId>`), so a background GitHub
+turn and your own prompt genuinely overlap instead of queueing behind each other.
+
+**Removed** — **local LLM support** (2026-09-05). It was a second inference path with its
+own failure modes, competing with the one that is the point of the project.
+
+**Removed** — **the Claude bridge, `swarm` topology and `ask_reasoner`** (~520 lines, 14
+DOM selectors). Cross-model review is genuinely valuable and two bridges deliver it;
+three was maintenance for something a second model already provided.
+
+### Search and context
+
+**Added** — `find_symbol` / `find_references`, exact and structural: they return the
+definition rather than the forty call sites, and never the name in a comment or a string.
+
+**Added** — `grep_search` that takes several patterns at once, because when you do not
+know what a codebase calls something, guessing one term at a time costs a round trip per
+guess.
+
+**Added** — session recall, so the agent can look up turns that compaction replaced with
+a summary. Better than making compaction cleverer, because it does not require deciding
+in advance what will matter.
+
+**Removed** — **`semantic_search` and the whole retrieval subsystem** (~290 lines, plus
+the `madge` dependency and a full-repo read at every startup). Measured: its tokenizer
+split on non-alphanumerics only, so `getUserById` was one token and the query `user`
+could never match it — broken for the query type that dominates code search.
+
+**Removed** — **`ast-chunker`**. It walked `ast.body` only, so every class method and
+every `export const foo = () => {}` was invisible: it resolved **24%** of this repo's own
+top-level symbols. The replacement uses `acorn-walk` and `acorn-jsx` and resolves 282 of
+282.
+
+**Removed** — **an embedding index was considered and rejected**, not overlooked. The
+context window here is a browser chat tab: twenty retrieved chunks is 10,000 tokens typed
+into Gemini per query, most of it unread. Agentic grep → read → grep again sends only
+what the model decided it needed.
+
+### Telling the agent about your project
+
+**Added** — `AGENT.md`, walked up from the code so the nearest file wins, and a Context
+tab that lists every instruction source with its state — loaded, empty, missing, or *an
+unedited template*. That last one was found by pointing it at this repo.
+
+**Removed** — **`rules.md`, `mistakes.md`, `contextFolders`, `/context add|remove|list`,
+`/init-skills`**. Seven mechanisms existed for "tell the model about this project", with
+six different discovery rules between them. The count of *rules* was the mess. Two axes,
+one mechanism each: **where the file is** decides who it applies to, **which file** decides
+whether it is always in context (`AGENT.md`) or fetched on request (`skills/`).
+
+Retired files are **named, never moved**: `AGENT.md` is usually tracked in git, so folding
+`rules.md` into it would write an unasked-for diff into your repo on startup.
+
+**Removed** — **`memory.json`**, converted to `memory.md`. A learned fact is exactly the
+thing that is subtly wrong six weeks later, and a fact you cannot correct in an editor
+does not get corrected.
+
+**Fixed, twice** — the *write-only trap*. `manage_memory` wrote facts to disk and no
+prompt ever carried one back: a tool call per fact, forever, for nothing. The same shape
+turned up again in `.agent/artifacts/task.md` — the model was told to keep a checklist and
+tick it off, and never saw the file again, so ticking meant guessing the exact line text.
+Both now ride the prompt.
+
+### Safety
+
+**Added** — every write becomes a diff with per-hunk accept/reject, a backup and `undo()`.
+Nothing reaches disk unreviewed.
+
+**Added** — a shell lexer, because the command classifier could be walked straight past:
+`echo hi; rm -rf /tmp/x` classified as *safe* on its first word. Every segment is
+classified now and the worst one wins, redirect targets are resolved against the
+workspace, and `sudo` anywhere is critical.
+
+**Added** — the bridge binds to `127.0.0.1` and checks `Origin`. It used to bind to every
+interface with no auth, on a tool that runs shell commands.
+
+**Added** — `.agent/logs/commands/<date>.jsonl`: every command run, blocked or rejected.
+Nothing reads it back into a prompt. It answers "what has this thing actually been doing
+on my computer?" for the person whose computer it is — and `git push --force` does not
+fail, so the error log never sees the one command you would most want to find.
+
+**Added** — `/logs rates`: how often the text channel itself fails, as a rate rather than
+a list. Seven parse failures is not something you can act on; seven in 412 turns is.
+
+### The terminal UI
+
+**Added** — settled turns go to scrollback and only the in-flight turn is live, every live
+row bounded. When Ink's frame outgrows the viewport it clears the screen on *every*
+render: measured at 108 full clears and 3.85 MB of escape codes in 15 seconds, which is
+what "it flickers and I can't scroll or copy" actually was.
+
+**Added** — code blocks you can drag-select cleanly, with the language on a dim rule
+outside what a drag picks up, and `ctrl+y` for the last block.
+
+**Removed** — **mouse tracking, permanently**. A terminal that is tracking hands the app
+the wheel and suppresses drag-select. Everything clickable became a keybinding, so scroll,
+selection and copy stay your terminal's.
+
+**Replaced** — **`ink-text-input`, for the main prompt only**. It read `value.length` into
+its cursor on mount and never moved it forward, so text put into the prompt left the caret
+in front of it and the next thing you typed went *before* your paste.
+`ui/components/PromptInput.jsx` replaces it there; the four places that need a single-line
+field — the question prompt, the scratch shell, the menus and the GitHub tab — still use
+it, because none of them has a cursor to move.
+
+**Removed** — **the transcript selection model**. `ctrl+e` toggles every step at once,
+because Ink cannot repaint what it has committed and there is nothing to point at a single
+row with.
+
+### Configuration
+
+**Removed** — **`reasoningEffort`, `modelTier` and `reasoningLevel` as stored keys**. Nine
+states for five meanings, and the UI apologised for the impossible combinations at the
+point of use instead of preventing them. One ladder now — `flash`, `flash-thinking`,
+`brief`, `standard`, `deep` — with the others derived, so they cannot disagree.
+
+**Removed** — **`topology` as a setting**, `/mode`, and the mode menu. A derived value in
+a config file is one someone edits and is ignored for editing; it is a getter over
+`modelConfig` now.
+
+**Removed** — **the runtime scope switcher**. Its own doc comment said switching scope "is
+closer to opening a different project than to changing a setting" — which is the argument
+against having it as a setting. `--scope` at launch reaches the same place with no window
+where the transcript on screen belongs to the old scope.
+
+### Not done, on purpose
+
+**The two bridges were not collapsed** (~600 duplicated lines). The cost it removes is
+"fix it twice", and fixing the scrape twice took one commit — the jsdom tests now run
+against both files, so a divergence fails the build. Most of the value, none of the risk
+of breaking both bridges at once.
+
+**An optional API backend** stays a fork rather than a plan. It would remove the ceiling —
+structured tool calls, real parallelism, caching — and it contradicts the standing "no API
+keys" decision that is the identity of the project.

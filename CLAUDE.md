@@ -131,8 +131,16 @@ first, detection as the backstop.
 
 `mcp/mcp-server.js` holds a flat `TOOL_DEFINITIONS` array (name, description, parameters,
 handler) with handlers in `mcp/tools/`. To add a tool: write the handler, add one entry to that
-array — the schema is what `PromptBuilder` renders into the prompt, so the description *is* the
-contract. `executeTool` retries transient OS errors (EBUSY/EACCES/EAGAIN/EMFILE/EPERM) with
+array, **and one to `core/tool-catalog.js`** — that is what the prompt is rendered from, and
+`toolCatalogDrift()` fails the build if the two disagree. The description *is* the contract.
+
+`find_symbol` / `find_references` (`context/symbol-index.js`) are the structural half of code
+search, on acorn + acorn-jsx + acorn-walk. Two traps, either of which reproduces the failure
+that got `ast-chunker` deleted: `acorn-jsx` teaches the *parser* and not the walker, so a `.jsx`
+file parses and then throws `No walker function defined for node type JSXElement`; and
+`acorn-walk` defines `ImportSpecifier` as `ignore`, so `import { X }` is never visited and "who
+imports this?" answers nothing. Built lazily and cached by mtime — 135 ms cold, 3 ms warm on
+this repo, 282 of 282 exported symbols. `executeTool` retries transient OS errors (EBUSY/EACCES/EAGAIN/EMFILE/EPERM) with
 backoff and rewrites `errno` codes into LLM-readable instructions.
 
 ### Workspace
@@ -178,7 +186,17 @@ is backed by a local TF-IDF index.
 ### GitHub agent
 
 `github/` polls PRs (`github-poller`), classifies comments (`comment-classifier`), parses CI
-logs (`ci-log-parser`), and writes plans via `plan-generator`.
+logs (`ci-log-parser`), decides what to analyse and when (`work-queue`), builds the prompt
+(`review-task`) and writes the result via `review-writer` into `.agent/github-reviews/`.
+
+That directory used to be `github-pr-plans/`, and `/plans` still means something else —
+`.agent/artifacts/plans/`, a different format written by a different path. One word, two
+answers. `migrateGitHubReviews` renames it on startup and refuses to clobber.
+
+The batch loop is `core/turn-runner.js`, not `agent-loop.js`: `runHeadlessTask` is a caller
+now. **Its flat re-serialisation is necessary, not an oversight** — every batch send opens a
+fresh browser tab that is closed when the turn ends, so turn 2 has never seen turn 1. Removing
+it needs one tab held across a task, which is a bridge change.
 
 ## State and config
 
@@ -383,6 +401,15 @@ usually tracked in git, so the agent would be writing an unasked-for diff into t
 startup — and CLAUDE.md's own rule is that `AGENT.md` can always be trusted to say what the human
 wrote. The pre-`.agent/` migration path is the exception: `.gemini/rules.md` moves to `AGENT.md`
 because `move()` refuses to clobber, so it only lands where there is no `AGENT.md` to disturb.
+
+**The write-only trap has happened twice, and the second one was found by using the
+product.** `.agent/artifacts/task.md` is the same shape: the system prompt tells the model to
+create a checklist and tick items off, the file is read only by `App.jsx` to draw a row, and no
+prompt ever carried it back — verified absent from turn 0, from every tool-result turn, and from
+twenty-five further turns. So ticking meant guessing the exact line for `edit_file`, which fails
+on a mismatch. Fixed the same way: `<task_checklist>` rides every turn (137 characters for a
+three-item list), because ticking is a per-turn act. **If you add an artifact the model is told
+to maintain, the question to ask is what carries it back.**
 
 **The write-only trap, measured (phase 3).** `getAllMemories` had no callers. `manage_memory add`
 wrote to `memory.json`, the system prompt instructed the model to use it, and no prompt ever
