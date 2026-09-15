@@ -253,25 +253,57 @@ function findInputStructurally() {
 }
 
 /**
- * There is deliberately no structural fallback for the send button.
+ * Send: the control that appears when there is something to send.
  *
- * It was written, and measured against gemini.google.com, and it was wrong in
- * the way that matters: with the composer focused, the nearest enabled button to
- * the prompt box is the **mode picker** (37px away), and the next is **Dictate**
- * (122px). Neither `type` nor position separates send from the rest — `type`
- * reads `submit` on Dictate, Upload & tools, Temporary chat, Settings *and*
- * Close sidebar.
+ * Neither position nor `type` identifies it. Measured on gemini.google.com with
+ * the composer focused and text in it, the nearest enabled buttons to the prompt
+ * box are the **mode picker** (37px) and **Dictate** (122px) before send ever
+ * shows at 163px — and `type` reads `submit` on Dictate, Upload & tools,
+ * Temporary chat, Settings and Close sidebar alike. A first attempt at this
+ * selected the microphone, because the exclusion list said `mic|voice|record`
+ * and the label is "Dictate".
  *
- * So there is no honest signal for "this is send" other than what the label
- * says, and the ladder already matches on that. A fallback here would not
- * degrade to failing, it would degrade to **pressing the wrong button** — start
- * a voice recording, open the tools menu, switch the conversation to temporary.
- * Failing loudly is the better outcome, and `describeScrapeFailure` already
- * names `find_send_button` when it happens.
+ * What does identify it is behaviour rather than appearance: **send is the
+ * button that was not available before the prompt had text and is after.**
+ * Measured, with the box emptied and then one character inserted: ten enabled
+ * buttons became eleven, and the one that appeared was "Send message". Nothing
+ * else on the page reacts to the composer having content.
  *
- * The rule this is an instance of: a fallback that cannot fire is worse than
- * none, and one that fires wrongly is worse than that.
+ * That survives a rename, a reskin and a move, which is the whole point — and
+ * it degrades to *nothing* rather than to the wrong button, because if no
+ * button appeared there is no candidate to pick.
  */
+function enabledButtons() {
+  return new Set([...document.querySelectorAll('button')].filter((b) => {
+    if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+    const rect = b.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return false;
+    const style = window.getComputedStyle(b);
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+  }));
+}
+
+/**
+ * @param {Set<Element>} before  enabled buttons as they were before typing
+ * @param {Element} input        the prompt box, for the tie-break
+ */
+function findSendButtonStructurally(before, input) {
+  if (!before) return null;
+  const appeared = [...enabledButtons()].filter((b) => !before.has(b));
+  if (appeared.length === 0) return null;
+  if (appeared.length === 1) return appeared[0];
+
+  // More than one reacted to the text. Proximity is a poor signal on its own but
+  // an acceptable tie-break between buttons that all passed the real test.
+  if (!input) return null;
+  const from = input.getBoundingClientRect();
+  return appeared
+    .map((b) => {
+      const r = b.getBoundingClientRect();
+      return { b, d: Math.hypot(r.left - from.right, r.top - from.bottom) };
+    })
+    .sort((a, b) => a.d - b.d)[0].b;
+}
 
 /**
  * Tell the server the ladder missed but the page was still usable.
@@ -331,6 +363,10 @@ async function injectPrompt(text) {
 
   isInjecting = true;
   traceStart();
+
+  // What was clickable before the prompt had anything in it. Send is whatever is
+  // clickable afterwards and was not — see findSendButtonStructurally.
+  const buttonsBeforeText = enabledButtons();
 
   try {
     // The ladder first, then the shape — a redesigned class name should
@@ -414,7 +450,7 @@ async function injectPrompt(text) {
     // Wait for the send button to become enabled (Gemini validates input and uploads images)
     traceMark('type');
 
-    const sendBtn = await waitForSendButton(input, 30000);
+    const sendBtn = await waitForSendButton(input, 30000, buttonsBeforeText);
 
     if (sendBtn === 'submitted') {
       console.log('[Gemini Bridge] Proceeding since prompt was manually submitted.');
@@ -459,7 +495,7 @@ async function injectPrompt(text) {
  * Wait for the send button to appear and become enabled.
  * Polls every 200ms up to maxWait ms.
  */
-function waitForSendButton(input, maxWait = 30000) {
+function waitForSendButton(input, maxWait = 30000, buttonsBeforeText = null) {
   return new Promise((resolve) => {
     const startTime = Date.now();
 
@@ -472,7 +508,17 @@ function waitForSendButton(input, maxWait = 30000) {
       }
 
       const btn = findElement(SELECTORS.sendButton);
-      
+
+      // The ladder found nothing. Ask which control the text brought with it.
+      if (!btn && buttonsBeforeText) {
+        const byShape = findSendButtonStructurally(buttonsBeforeText, input);
+        if (byShape) {
+          reportDrift('sendButton', byShape);
+          resolve(byShape);
+          return;
+        }
+      }
+
       if (btn) {
         // Check if button is visually enabled (not disabled, not aria-disabled)
         const isDisabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true';
