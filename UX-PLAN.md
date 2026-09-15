@@ -275,6 +275,47 @@ the old content script until a hard refresh, and without that the tab has no
 `switch_model` handler at all. `/logs extension` will say `switch_model` if the
 picker moved under it, and nothing if the message never arrived.
 
+## The frame's other edge — found 2026-09-16, fixed
+
+Asked directly: does resizing an active window glitch the Ink render? Measured
+under the pty harness, and the answer is **no** — the width handler is debounced,
+so a drag firing five SIGWINCH events produces exactly one reprint, and idle sits
+at 0 bytes either side of it.
+
+What the resize test found instead is that **the app breaks below 13 rows**, and
+dragging a window down is simply the likeliest way to arrive there. The control
+run — start small, never resize — is identical, so this was never about resizing
+at all:
+
+```
+          before        after
+13x80        0            0
+12x80        1            0
+12x60       58            0
+10x80      166            0
+ 8x80       —            30
+```
+
+166 full-screen clears in one turn is the flicker bug exactly as `CLAUDE.md`
+describes it. The cause is the floor, which `CLAUDE.md` already listed as a
+gotcha without anyone measuring what it cost: `liveBudget` is
+`Math.max(3, height - RESERVED_ROWS)`, so the frame has a *minimum* height of
+twelve rows. Charging conditional rows to the budget defends the frame from
+above; nothing defended it from below.
+
+Three of the nine reserved rows are blank — the margin above the prompt, the one
+above the status bar, the one under the thinking line. Below `COMPACT_BELOW_ROWS`
+they go, and the floor comes down with them. Spacing is what gets dropped, never
+a row carrying information: a short terminal should be cramped, not lying about
+what the agent is doing.
+
+The floor moves from 13 rows to 9, which covers every realistic split pane. 8
+rows still costs thirty clears — six rows of furniture and a one-row turn is the
+least this UI can draw — and that is a documented limit now rather than a silent
+one.
+
+---
+
 ## P1 — felt continuously, but wants care or a number first
 
 ### 5. The live frame is rewritten twelve times a second
@@ -290,13 +331,24 @@ twenty-two. **This is the seam that produced the scroll glitches twice**, so it
 wants the before/after measurement at four terminal sizes, not a read-through.
 `drive.py` now makes that cheap.
 
-### 6. Code blocks cannot be copied cleanly
+### 6. Code blocks cannot be copied cleanly — **done, 2026-09-16**
 
-`marked-terminal` is configured `tab: 2`, so a drag-select takes the indentation
-with it. Un-indent, mark the block's edges with a dim rule carrying the language
-(outside what a drag picks up), and add `ctrl+y` to copy the last block. There is
-no clickable copy button and there cannot be — that needs mouse tracking, which is
-what would take native selection away.
+`marked-terminal` was configured `tab: 2`, so a drag-select took the indentation
+with it. Now `tab: 0`, with the block's edges drawn as a dim rule on its own line
+above and below — never beside, so it is not in what a drag picks up — carrying
+the language, which is only available now the scrape stops discarding it. Rules
+are as wide as the block's own longest line, capped, so one can never wrap a
+frame the code beside it fits in. `ctrl+y` copies the last block, searching
+*backwards*: an agent turn is usually followed by tool results, and copying
+nothing because the newest message is "✔ read_file" reads as the chord being
+broken.
+
+Fenced blocks are lifted out before marked sees them and put back after, rather
+than rendering each segment separately — separate parses break anything spanning
+a block, so a list with code in an item stops being one list.
+
+There is no clickable copy button and there cannot be — that needs mouse
+tracking, which is what would take native selection away.
 
 Pairs with P0.1: the language is only available to render once the scrape stops
 losing it.
@@ -331,7 +383,7 @@ later.
 
 ## P2 — correctness debt, and unknowns worth turning into numbers
 
-### 9. `open_in_editor` loses the line number when the editor is a path
+### 9. `open_in_editor` loses the line number when the editor is a path — **done, 2026-09-16**
 
 `open-in-editor.js` branches on `editor === 'code' || editor === 'cursor'`, the
 exact string. Measured:
@@ -343,7 +395,16 @@ exact string. Measured:
 
 `config.editor` defaults to `process.env.EDITOR`, which is commonly an absolute
 path. Worse, the tool reports `"Opened src/widget.js at line 2"` either way, so
-the model is told navigation happened when it did not. Match on the basename.
+the model is told navigation happened when it did not.
+
+**Fixed.** It matches the basename, splitting on both separators rather than
+using `path.basename` — that one is the platform's, so a Windows path handed to
+a POSIX process keeps its backslashes and reads as one filename. The forks are
+covered, and the editor path is quoted, which it was not. An editor that cannot
+be aimed now *says* so rather than claiming a jump: that second half was the
+worse one, because the model took its next step believing the user was looking
+at line 2. No flag is invented for an editor we do not know — `nano +2 file`
+opens a file called `+2`.
 
 ### 10. Tabs leak on failure, and the throttling defence never fires
 
@@ -371,7 +432,7 @@ Delete it rather than fix it: the Tab Wakeup Protocol is the mechanism that
 actually works, and two competing hacks for one problem is how this got
 confusing.
 
-### 11. An expanded marker does not terminate its fence
+### 11. An expanded marker does not terminate its fence — **done, 2026-09-16**
 
 Re-measured after the cursor fix, which corrected the *ordering* but not this:
 
@@ -381,8 +442,11 @@ Re-measured after the cursor fix, which corrected the *ordering* but not this:
 ```
 
 The closing fence is followed by text on the same line, so it is not a clean
-fence close for anything parsing the markdown — the model included. One newline
-after the close, not a space before the next thing.
+fence close for anything parsing the markdown — the model included, which means
+the question asked *about* the block reads as part of it.
+
+**Fixed:** one newline, and only when the text ends in a fence, so prompts that
+never had one do not collect blank lines.
 
 ### 11b. The terminal queue drains every failure, forever
 
@@ -532,7 +596,7 @@ existing is the common case and must read as a blank, not a fault.
 | 3 | Enter opens the row's file; fix `open_in_editor`'s editor-name check (P2.9) | B | no new machinery, and P2.9 is a prerequisite not a bonus | low |
 | 4 | Re-validate `skillFolders` on read rather than at add time | C | makes the state current instead of remembered | low |
 | 5 | Detect the unedited template and say so | A | the finding that started this, and one `grep` to detect | low |
-| 6 | `/context` prints the same rows as the tab | A | one report, two surfaces, no second implementation | low |
+| 6 | `/context` prints the same rows as the tab | A | one report, two surfaces, no second implementation | **done 2026-09-16** |
 
 Phase 1 is the only one with any substance; 2–6 are rendering and a string.
 Nothing here needs the owner.
@@ -582,7 +646,7 @@ lands.
 | 6 | one throttling mechanism; restore focus; close tabs on failure | split: focus → **P0.4**, tabs + audio → **P2.10** |
 | 7 | selector discovery fallback | **not started, stays its own track** |
 | 8 | collapse the two bridges | **not started.** Verified today: all ten functions still exist in both files, 776 + 610 lines |
-| 9 | tab identity (lane → tabId) | **not started.** Same work as GitHub phase 4 |
+| 9 | tab identity (lane → tabId) | **done 2026-09-16.** `mainTabs` (sticky, per model) + `subagentTabs` (a denial list). Unblocks GitHub 4 and 5 |
 
 **Phase 5** (trace events) is the one I would pull forward first of these. Right
 now "the extension got slower" is unmeasurable from inside the product — P2 added
@@ -603,9 +667,9 @@ still holds:
 | 0 | measure parallel Gemini tabs | **owner only.** Gates the lane design, nothing else |
 | 1 | failures → `error-log.js` | `github-event-handler.js:258,261` still `appendFileSync` to `agent.log`; grep confirms **nothing reads it**. Two lines |
 | 2 | characterisation tests | still none for `github-poller.js` (476), `github-event-handler.js` (357), `ci-log-parser.js` (198) — **1,031 lines of I/O untested** |
-| 3 | fix `GITHUB_REPOS` | still overwritten at `:47` by the git-remote detection, so the env var is ignored exactly where someone would set it |
-| 4 | extension lane→tabId | same work as extension phase 9 |
-| 5 | `ExtensionLock` lanes by name not model | tiny diff, needs 4 first |
+| 3 | fix `GITHUB_REPOS` | **done 2026-09-16.** Auto-detection is a fallback now, not the last word; an explicit `repos` override is honoured too |
+| 4 | extension lane→tabId | **done** with extension phase 9 |
+| 5 | `ExtensionLock` lanes by name not model | **unblocked** — 4 has landed, so two same-model turns now reach different tabs. Still not started |
 | 6 | extract `core/turn-runner.js` | `agent-loop.js:1409` still re-serialises the whole history per turn; `:1411` still hard-codes `_executeSubagent('gemini', …)` |
 | 7 | split work-queue / review-task / plan-writer | not started |
 | 8 | rename the plan artifact | not started |
@@ -635,13 +699,12 @@ These have no plan file and have been carried as prose for three sessions:
 - **A symbol index** — `find_symbol` / `find_references`, tree-sitter or ctags.
   The structural half of what a large codebase needs and the half grep is worst
   at. Listed as a P3 gap and never started.
-- **Generating tool definitions from `TOOL_DEFINITIONS`.** Blocked, and worse
-  than recorded: `_buildToolDefinitions` keeps two hand-written lists,
-  `runHeadlessTask` has a **third** with a different subset, and five tools
-  (`ask_question`, `ask_subagent`, `ask_researcher`, `ask_reviewer`,
-  `manage_memory`) are dispatched from inside `agent-loop.js` and declared
-  nowhere. GitHub phase 6 removes the third list by construction, which is the
-  real argument for doing that phase even with GitHub shelved.
+- **Generating tool definitions from `TOOL_DEFINITIONS`** — **done, 2026-09-16.**
+  `core/tool-catalog.js` declares all eighteen once, including the five that
+  were dispatched from inside `agent-loop.js` and declared nowhere, and
+  `_buildToolDefinitions` assembles it. All twenty prompt shapes byte-identical.
+  `runHeadlessTask`'s third list stays its own text — a deliberate subset in a
+  different shape — with its membership checked against the catalog.
 - **`/skills` shape.** Reachable and aligned; the shape of the feature was never
   examined.
 - **Search on a genuinely large codebase.** The decision not to build an index is

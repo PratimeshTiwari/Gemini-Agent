@@ -581,12 +581,24 @@ dispatch paths still want scaffolding and are left for the split in P3.
   at first — `trimEnd()` had eaten a trailing newline that the assembled prompt depended on.
   `prompt-loader.test.js` guards it.
 
-  **Not done: generating the tool definitions from `TOOL_DEFINITIONS`.** It cannot be done as
-  described, because `ask_question`, `ask_subagent`, `ask_researcher`, `ask_reviewer` and
-  `manage_memory` are dispatched in `agent-loop.js` and are not in that array at all. Generating
-  needs those declared somewhere first, which is really part of splitting `agent-loop.js` (P3).
-  Until then `_buildToolDefinitions` stays two hand-kept lists that must agree with the array —
-  which is exactly the drift the tests in `prompt-builder.test.js` exist to catch.
+  **Generating the tool definitions — done, 2026-09-16.** It could not be done as originally
+  described: `ask_question`, `ask_subagent`, `ask_researcher`, `ask_reviewer` and `manage_memory`
+  are dispatched in `agent-loop.js` and were in no array at all, so there was nothing complete to
+  generate *from*. `core/tool-catalog.js` is that list — all eighteen, declared once, with which
+  tier sees what and which topology offers it — and `_buildToolDefinitions` is now two lines that
+  assemble it. `_buildToolAnchor` and `_buildToolIndex` already derived from that method, so they
+  followed for free.
+
+  The text was moved mechanically rather than retyped, and all twenty shapes (five efforts × two
+  topologies, tool block and full turn-0 prompt) come out byte-identical — two runs of that
+  comparison caught two real transcription faults first. `runHeadlessTask`'s list stays its own
+  text, because it is a deliberate subset in a different shape carrying a correction the full
+  definitions do not; its *membership* is checked against the catalog instead.
+
+  `toolCatalogDrift()` reports all three disagreements rather than throwing on the first — a tool
+  that runs but is never described, one described that nothing dispatches, and a required
+  parameter missing from the prose. Each branch has a negative control, because a drift check
+  that compares an empty list to an empty list passes forever.
 - **Extension error richness** — *done.* The bridge already read `payload.op`/`stage`; nothing
   sent them. Service-worker errors now carry `op`, `stage`, `targetModel` and the DOM-side
   message that actually failed. Content scripts run in the page and cannot set fields on that
@@ -729,6 +741,16 @@ have a key.
   live row is bounded by `liveBudget` (`terminalHeight - RESERVED_ROWS`). Adding an unbounded
   row to the live region — a full tool result, an artifact dump, a list that grows — brings the
   whole thing back.
+
+  **And it can overflow from below, which is newer.** `liveBudget` has a floor, so the frame had
+  a *minimum* height of `RESERVED_ROWS + 3 = 12` rows and any shorter terminal overflowed however
+  much the in-flight turn gave up. Measured, one turn, extension connected: 13 rows → 0 clears,
+  12 → 1, **10 → 166**. Three of the nine reserved rows are pure spacing, so below
+  `COMPACT_BELOW_ROWS` (13) they are dropped and the floor comes down with them — spacing is what
+  gets shed, never a row carrying information. That moves the floor to 9 rows; 8 still costs
+  thirty clears, which is now a documented limit rather than a silent one. Asked whether
+  *resizing* glitches: it does not — a drag firing five SIGWINCH events produces exactly one
+  debounced reprint, and the control run that never resizes is identical.
 - **No mouse tracking, ever.** Terminal mouse reporting and native scroll are mutually
   exclusive: a terminal that is tracking hands the app the wheel and suppresses drag-select. The
   app therefore enables nothing, and `cli-ui.jsx` writes the disable sequences once on startup
@@ -766,6 +788,11 @@ have a key.
   wait for a *new* block before scraping. Gemini's editor only ingests text via a synthetic
   `ClipboardEvent('paste')` — setting `innerHTML` breaks it (`LEARNINGS.md`).
 - `AGENT.md` at the repo root is *workspace* context read by `prompt-builder.js`, not
-  instructions for you. It belongs to whatever project the agent is pointed at.
+  instructions for you. It belongs to whatever project the agent is pointed at. It was the
+  unedited stock template until 2026-09-16 — 740 bytes of `<!-- Describe your project here -->`
+  going into every turn-0 prompt as this project's context, because `_loadAgentMd` skips a file
+  only when its trimmed body is *empty* and a template full of headings is not. It now says what
+  this project is; `instruction-sources.js` flags the template state so the next one cannot sit
+  there unnoticed.
 - The agent defaults to `--workspace ../`, so running it here makes it operate on its own repo.
   That is why this repo kept accumulating agent state.
