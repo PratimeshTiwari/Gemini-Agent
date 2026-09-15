@@ -77,6 +77,56 @@ const EXTENSION_RESPONSE_TIMEOUT = 7 * 60 * 1000;
 // Regex to extract tool calls from Gemini's response (handles json code blocks)
 const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n```/gi;
 
+/**
+ * What a headless background turn is told it can call.
+ *
+ * Deliberately a *subset* — five read-only tools and `ask_subagent` — and in a
+ * different shape from the interactive prompt, because a GitHub PR turn is
+ * gathering context for a plan rather than editing anything. It also carries a
+ * correction the full definitions do not ("use `pattern` NOT `query`"), earned
+ * from watching this path get it wrong.
+ *
+ * So it is not generated from `core/tool-catalog.js`, and generating it would
+ * change what this agent is told. What it *is* checked against is membership:
+ * `tool-catalog.test.js` asserts every name below exists and is dispatchable,
+ * which is the half that went wrong elsewhere — the system prompt asked for
+ * `write_to_file` by name for weeks and no such tool has ever existed.
+ *
+ * Module scope rather than a local const so that test can read it at all.
+ */
+export const HEADLESS_SYSTEM_PROMPT = `You are a headless background agent running inside the user's code workspace.
+You have access to a local MCP tool server. You MUST use tools to explore the codebase before drawing conclusions.
+
+## TOOLS AVAILABLE (use these exact names and argument keys):
+
+- grep_search({ "pattern": "string", "isRegex": false, "includes": ["*.js"] })
+  → Search for text/patterns across all files. Use "pattern" NOT "query".
+
+- read_file({ "path": "relative/or/absolute/path", "startLine": 1, "endLine": 50 })
+  → Read a file, optionally a line range.
+
+- list_directory({ "path": "." })
+  → List directory contents.
+
+- search_files({ "query": "filename or path fragment" })
+  → Find files by name.
+
+- ask_subagent({ "prompt": "string" })
+  → Spawn a parallel background agent to research a sub-topic for you.
+
+## TOOL CALL FORMAT (exact format required):
+<tool_call>
+{"name": "grep_search", "args": {"pattern": "your search term"}}
+</tool_call>
+
+## RULES:
+1. Make UP TO 5 tool calls to understand the codebase before writing your plan.
+2. After gathering context, produce ONE consolidated final plan in markdown.
+3. Do NOT produce partial plans between tool calls — wait until the end.
+4. Do NOT repeat tool calls you already made.
+5. You can spawn multiple subagents at once by making multiple tool calls.
+6. When done, output ONLY the final plan. Do not include any tool call blocks in the final turn.`;
+
 export class AgentLoop {
   constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome, continueSession = false, agentSourceDir, taskManager }) {
     this.workspace = workspace;
@@ -1534,38 +1584,7 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
     const localHistory = [];
     let providerRetries = 0;
 
-    const baseSystem = `You are a headless background agent running inside the user's code workspace.
-You have access to a local MCP tool server. You MUST use tools to explore the codebase before drawing conclusions.
-
-## TOOLS AVAILABLE (use these exact names and argument keys):
-
-- grep_search({ "pattern": "string", "isRegex": false, "includes": ["*.js"] })
-  → Search for text/patterns across all files. Use "pattern" NOT "query".
-
-- read_file({ "path": "relative/or/absolute/path", "startLine": 1, "endLine": 50 })
-  → Read a file, optionally a line range.
-
-- list_directory({ "path": "." })
-  → List directory contents.
-
-- search_files({ "query": "filename or path fragment" })
-  → Find files by name.
-
-- ask_subagent({ "prompt": "string" })
-  → Spawn a parallel background agent to research a sub-topic for you.
-
-## TOOL CALL FORMAT (exact format required):
-<tool_call>
-{"name": "grep_search", "args": {"pattern": "your search term"}}
-</tool_call>
-
-## RULES:
-1. Make UP TO 5 tool calls to understand the codebase before writing your plan.
-2. After gathering context, produce ONE consolidated final plan in markdown.
-3. Do NOT produce partial plans between tool calls — wait until the end.
-4. Do NOT repeat tool calls you already made.
-5. You can spawn multiple subagents at once by making multiple tool calls.
-6. When done, output ONLY the final plan. Do not include any tool call blocks in the final turn.`;
+    const baseSystem = HEADLESS_SYSTEM_PROMPT;
 
     const finalSystem = systemInstruction ? `${baseSystem}\n\n## ADDITIONAL DIRECTIVE:\n${systemInstruction}` : baseSystem;
 

@@ -19,6 +19,7 @@ import { resolve, relative, join, dirname } from 'path';
 import { CodeMinifier } from '../context/code-minifier.js';
 import { skillCatalogue } from './skills.js';
 import { resolveEffort } from './effort.js';
+import { renderToolDefinitions } from './tool-catalog.js';
 import { prompt } from './prompt-loader.js';
 import { parseMemory, readMemoryEnabled } from '../context/memory-manager.js';
 
@@ -575,212 +576,21 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
     ].filter(Boolean).join('\n');
   }
 
+  /**
+   * What the model is told it can call.
+   *
+   * Assembled from `core/tool-catalog.js` rather than written out here. It used
+   * to be two prose blocks in this method — one per tier — with a third list in
+   * `agent-loop.js` and the runnable registry in `mcp/mcp-server.js`, and
+   * nothing making any of them agree. `recall_history` and `get_diagnostics`
+   * were registered, implemented and unreachable for exactly that reason.
+   *
+   * The text is unchanged: it was moved byte-for-byte and `tool-catalog.test.js`
+   * pins every tier x topology shape against what this method used to return.
+   */
   _buildToolDefinitions(topology = 'single', modelConfig = {}) {
     const tier = resolveEffort(modelConfig.effort).tier;
-    const isFlash = tier === 'flash';
-
-    // Flash gets shorter descriptions. Pro/Flash-thinking gets full descriptions.
-    let tools = `<available_tools>\n`;
-
-    if (isFlash) {
-      // Compact tool definitions for Flash — names + key params only
-      tools += `## ask_question — Ask the user to choose. Blocks until they answer. Args: question (string), options (string[], 2-4 concrete choices), header (string, 2-3 word topic). Several at once: questions ([{question, options, header}], max 4)
-## search_files — Find files by name. Args: query (string)
-## grep_search — Search text across files, grouped by file. Args: pattern (string or string[] — pass several terms when unsure of the wording), isRegex? (bool), includes? (string[]), contextLines? (number)
-## read_file — Read a file. Args: path (string), startLine? (number), endLine? (number)
-## edit_file — Edit a file. Args: path (string), edits ([{oldText, newText}])
-## create_file — Create a file. Args: path (string), content (string)
-## list_directory — List dir contents. Args: path? (string), recursive? (bool)
-## run_command — Run shell command (needs approval). Args: command (string), cwd? (string)
-## open_in_editor — Open file in editor. Args: path (string), line? (number)
-## manage_memory — Remember/forget a durable fact. Args: action ("add"|"remove"), fact? (string), index? (number, the number shown in <memory>)
-## run_background — Spawn background process. Args: command (string), cwd? (string)
-## manage_task — Manage background tasks. Args: action ("status"|"read_logs"|"send_input"|"kill"|"list"), taskId? (string)
-## get_editor_state — Get current editor state. No args.
-## recall_history — Search earlier turns of this conversation, including ones a summary replaced. Args: query (string), limit? (number)
-## get_diagnostics — The editor's errors and warnings (VS Code Problems panel). Args: path? (string), severity? ("error"|"warning")
-## ask_subagent — Delegate to Gemini subagent. Args: prompt (string)
-## ask_researcher — Delegate read-only codebase exploration. Args: prompt (string)
-`;
-    } else {
-      // Full tool definitions for Pro/Flash-thinking
-      tools += `## ask_question
-Put a decision to the user. Execution blocks until they answer, so this is the ONLY way to reach
-them mid-task — a question written in prose is not a question, it just ends your turn.
-
-Ask when the answer changes what you build and you cannot settle it from the code: which of two
-designs they want, which of several files they meant, whether a destructive step is intended.
-Do NOT ask what you could find out yourself with read_file or grep_search, and do NOT ask for
-permission to continue — that is what plan mode and the approval prompts are for.
-
-Write options the user can choose between without reading your mind: each one a concrete course
-of action ("Rewrite the parser to stream"), never a bare yes/no restatement of the question. Two
-to four is the useful range. The user can always type an answer you didn't list, or dismiss the
-question — if they dismiss it, pick the most reasonable reading, say which assumption you made,
-and carry on.
-
-If you have more than one thing to settle, ask them ALL IN ONE CALL via \`questions\`. Asking
-them one at a time costs a full round trip each and makes the user answer, wait, answer again.
-
-Parameters — one question:
-  - question (string, required): The decision, in one sentence
-  - options (array of strings, required): 2-4 concrete choices
-  - header (string, optional): 2-3 words naming the topic, shown as the prompt's title
-
-Parameters — several at once (preferred whenever you have more than one):
-  - questions (array, max 4): [{ question, options, header }] — same fields as above.
-    The user answers them in sequence and you get every answer back in a single result.
-
-Example:
-\`\`\`json
-{"name": "ask_question", "args": {"questions": [
-  {"header": "Storage", "question": "Where should the cache live?", "options": ["In .agent/cache", "In the system temp dir"]},
-  {"header": "Eviction", "question": "How should it be bounded?", "options": ["By age", "By total size"]}
-]}}
-\`\`\`
-
-## search_files
-Search for files by name or path pattern using fuzzy matching.
-Parameters:
-  - query (string, required): File name or path pattern to search for
-  - maxResults (number, optional): Max results to return (default: 20)
-
-## grep_search
-Search file contents across the codebase, like ripgrep. Results come back grouped by file,
-the file with the most matches first.
-
-When you do not know what *this* codebase calls something, search several names at once:
-\`{"pattern": ["rate limit", "throttle", "quota"]}\` is one search, not three. Guessing one
-term at a time costs a full round trip per guess.
-
-Parameters:
-  - pattern (string or array of strings, required): term(s) to find; an array searches for
-    any of them
-  - isRegex (boolean, optional): treat every pattern as a regex
-  - includes (array of strings, optional): globs to restrict the search (e.g. ["*.js"])
-  - maxResults (number, optional): max matches (default 50, max 500)
-  - contextLines (number, optional): lines of surrounding code per match (0-5, default 0).
-    Use it when a bare line would not tell you whether the match is the right one — it is
-    cheaper than reading the whole file to find out.
-
-## read_file
-Read the contents of a file with optional line range.
-Parameters:
-  - path (string, required): File path relative to workspace root
-  - startLine (number, optional): Start line (1-indexed)
-  - endLine (number, optional): End line (1-indexed)
-
-## edit_file
-Propose edits to an existing file. Generates a diff for user approval.
-Parameters:
-  - path (string, required): File path to edit
-  - edits (array, required): Array of { oldText: string, newText: string } objects.
-    oldText is the exact text to find, newText is what to replace it with.
-
-## create_file
-Create a new file with specified content.
-Parameters:
-  - path (string, required): File path to create
-  - content (string, required): Full file content
-
-## list_directory
-List directory contents.
-Parameters:
-  - path (string, optional): Directory path (default: workspace root)
-  - recursive (boolean, optional): List recursively
-  - maxDepth (number, optional): Max depth for recursive listing (default: 3)
-
-## run_command
-Execute a shell command. Always requires user approval.
-Parameters:
-  - command (string, required): Shell command to execute
-  - cwd (string, optional): Working directory
-  - timeout (number, optional): Timeout in seconds (default: 30)
-
-## open_in_editor
-Open a file in the user's code editor.
-Parameters:
-  - path (string, required): File path to open
-  - line (number, optional): Line number to jump to
-
-## manage_memory
-Remember a fact about this project, or forget one. Stored in \`.agent/memory.md\` and given
-back to you in the \`<memory>\` block at the start of a session.
-
-Remember something you had to *work out* and would have to work out again: that the tests
-run with pnpm, that a directory is generated. Not what you can read at any time — a file's
-contents, a function's signature — and not anything about this one task, which ends with it.
-Verify it against the code before storing it: a wrong memory is worse than no memory,
-because it will be believed.
-
-Parameters:
-  - action (string, required): "add" or "remove"
-  - fact (string, optional): the fact, as one sentence (required for "add")
-  - index (number, optional): which fact to forget, numbered as \`<memory>\` shows them
-    (required for "remove")
-
-## run_background
-Spawn a long-running background process (dev servers, watchers, builds). Returns immediately with a taskId.
-Use manage_task to monitor, read logs, send input, or kill the background process.
-Parameters:
-  - command (string, required): The shell command to execute
-  - cwd (string, optional): Working directory (default: workspace root)
-
-## manage_task
-Interact with background tasks spawned by run_background.
-Parameters:
-  - action (string, required): "status" | "read_logs" | "send_input" | "kill" | "list"
-  - taskId (string, optional): Task ID (required for all actions except list)
-  - lines (number, optional): Number of log lines to read (default: 50, for read_logs)
-  - input (string, optional): Text to send to stdin (required for send_input)
-
-## get_editor_state
-Gets the user's current editor state (active file, cursor position, and visible text) if the VS Code companion extension is installed. Use this to understand what the user is currently looking at.
-Parameters: None
-
-## recall_history
-Search earlier turns of this conversation, including ones that a summary replaced and that you can
-no longer see. When the context refers to a decision, a filename, an error or a preference whose
-detail you no longer have, look it up here rather than asking the user to repeat it or guessing.
-Matching is literal and case-insensitive, so search for the exact term.
-Parameters:
-  - query (string, required): The exact term to look for.
-  - limit (number, optional): How many matches to return. Default 5, maximum 10.
-
-## get_diagnostics
-Read the editor's current errors and warnings — the VS Code Problems panel — for the workspace.
-Use it after editing a file to check the change compiles and lints, and before starting work to see
-what is already broken. Requires the VS Code companion extension.
-Parameters:
-  - path (string, optional): Only report problems for this file.
-  - severity (string, optional): "error" to exclude warnings.
-
-## ask_subagent
-Delegate a task to a generic parallel Gemini subagent. It will run in the background and return the result.
-Parameters:
-  - prompt (string, required): The task for the subagent.
-
-## ask_researcher
-Delegate codebase exploration to a read-only researcher subagent — tracing a dependency, finding where
-something is implemented, gathering context across many files. Runs in parallel and returns findings with
-file paths and line numbers. Use it instead of a long serial chain of your own read_file calls.
-Parameters:
-  - prompt (string, required): What to find, and where you have already looked.
-`;
-    }
-
-    if (topology === 'duo') {
-      tools += `
-## ask_reviewer
-Delegate a code review or verification task to the Reviewer Subagent (${modelConfig.reviewer || 'chatgpt'}).
-Parameters:
-  - prompt (string, required): The task, context, and specific questions for the reviewer.
-
-`;
-    }
-
-    tools += `</available_tools>`;
-    return tools;
+    return renderToolDefinitions(tier, topology, modelConfig);
   }
 
   /**
