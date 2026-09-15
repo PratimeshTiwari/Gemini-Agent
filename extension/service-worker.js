@@ -120,12 +120,40 @@
   }
   var mainTabs = /* @__PURE__ */ new Map();
   var subagentTabs = /* @__PURE__ */ new Set();
-  function claimSubagentTab(tabId) {
-    if (tabId !== void 0 && tabId !== null) subagentTabs.add(tabId);
+  var sessionTabs = /* @__PURE__ */ new Map();
+  function claimSubagentTab(tabId, sessionId = null) {
+    if (tabId === void 0 || tabId === null) return;
+    subagentTabs.add(tabId);
+    if (sessionId) sessionTabs.set(sessionId, tabId);
+  }
+  async function sessionTab(sessionId) {
+    if (!sessionId || !sessionTabs.has(sessionId)) return null;
+    const tabId = sessionTabs.get(sessionId);
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab) return tab;
+    } catch {
+    }
+    sessionTabs.delete(sessionId);
+    return null;
+  }
+  async function endSession(sessionId) {
+    const tabId = sessionTabs.get(sessionId);
+    sessionTabs.delete(sessionId);
+    if (tabId === void 0) return;
+    subagentTabs.delete(tabId);
+    focusTakenFrom.delete(tabId);
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch {
+    }
   }
   function forgetTab(tabId) {
     subagentTabs.delete(tabId);
     focusTakenFrom.delete(tabId);
+    for (const [session, id] of sessionTabs) {
+      if (id === tabId) sessionTabs.delete(session);
+    }
     for (const [model, id] of mainTabs) {
       if (id === tabId) mainTabs.delete(model);
     }
@@ -241,10 +269,31 @@
     const message = { type: "inject_prompt", payload };
     let success = false;
     if (payload.isSubagent) {
-      const newTab = await chrome.tabs.create({ url: targetUrl.replace("/*", ""), active: false });
-      claimSubagentTab(newTab.id);
-      await new Promise((r) => setTimeout(r, 4e3));
-      success = await trySendToTab(newTab, message, targetModel);
+      const existing = await sessionTab(payload.sessionId);
+      if (payload.sessionId && payload.continuing && !existing) {
+        const errorMsg = {
+          type: "error",
+          payload: {
+            op: "session_lost",
+            stage: "send",
+            targetModel,
+            sessionId: payload.sessionId,
+            requestId: payload.requestId,
+            message: "The tab holding this task was closed. Resend the full history."
+          }
+        };
+        broadcastToSidePanel(errorMsg);
+        sendToServer(errorMsg);
+        return;
+      }
+      if (existing) {
+        success = await trySendToTab(existing, message, targetModel);
+      } else {
+        const newTab = await chrome.tabs.create({ url: targetUrl.replace("/*", ""), active: false });
+        claimSubagentTab(newTab.id, payload.sessionId);
+        await new Promise((r) => setTimeout(r, 4e3));
+        success = await trySendToTab(newTab, message, targetModel);
+      }
     } else {
       const mine = await pickMainTab(targetModel);
       let tabs = mine ? [mine] : [];
@@ -458,6 +507,9 @@
       case "new_chat":
         await triggerNewChatInModel(payload);
         break;
+      case "end_session":
+        await endSession(payload?.sessionId);
+        break;
       case "discover_models":
       case "switch_model":
         await sendToModelTab({ type, payload });
@@ -496,8 +548,10 @@
             }
             if (finished && payload.isSubagent) {
               if (payload.complete) payload.subagentUrl = sender.tab.url;
-              forgetTab(sender.tab.id);
-              chrome.tabs.remove(sender.tab.id).catch((err) => console.warn("Failed to auto-close subagent tab:", err));
+              if (!payload.sessionId) {
+                forgetTab(sender.tab.id);
+                chrome.tabs.remove(sender.tab.id).catch((err) => console.warn("Failed to auto-close subagent tab:", err));
+              }
             }
           }
           sendToServer({ type, payload });

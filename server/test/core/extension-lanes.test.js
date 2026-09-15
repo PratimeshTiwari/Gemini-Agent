@@ -94,3 +94,41 @@ describe('a stalled tab takes down only its own turn', () => {
     assert.equal(self.extensionLock.anyBusy, false, 'the stalled turn was left holding its lane');
   });
 });
+
+describe('a batch session whose tab was closed', () => {
+  test('resolveSubagent settles the caller and frees its lane', () => {
+    // The extension refuses an incremental prompt when the tab holding a task
+    // is gone. Without this the promise waits out its five-minute timeout while
+    // the lane stays held.
+    const { self } = loop();
+    let settled = null;
+    self.pendingSubagents.set('r1', { resolve: (v) => { settled = v; }, reject: () => {}, targetModel: 'gemini' });
+    self._enqueueExtensionRequest({
+      prompt: 'turn 2', targetModel: 'gemini', isSubagent: true, requestId: 'r1', sessionId: 's1',
+    });
+    assert.equal(self.extensionLock.isBusy(subLane('r1')), true);
+
+    assert.equal(self.resolveSubagent('r1', { sessionLost: true }), true);
+    assert.deepEqual(settled, { sessionLost: true });
+    assert.equal(self.extensionLock.isBusy(subLane('r1')), false, 'the lane wedged');
+    assert.equal(self.pendingSubagents.has('r1'), false);
+  });
+
+  test('an unknown request is a false, not a throw', () => {
+    const { self } = loop();
+    assert.equal(self.resolveSubagent('nope', { sessionLost: true }), false);
+  });
+
+  test('the user\'s own turn is untouched', () => {
+    // A lost background tab must not take down what the user is waiting for.
+    const { self } = loop();
+    self._enqueueExtensionRequest({ prompt: 'user', targetModel: 'gemini' });
+    self.pendingSubagents.set('r1', { resolve: () => {}, reject: () => {}, targetModel: 'gemini' });
+    self._enqueueExtensionRequest({
+      prompt: 'bg', targetModel: 'gemini', isSubagent: true, requestId: 'r1', sessionId: 's1',
+    });
+    self.resolveSubagent('r1', { sessionLost: true });
+    assert.equal(self.extensionLock.isBusy(mainLane('gemini')), true, 'the user\'s lane was freed');
+    assert.equal(self.isProcessing, true);
+  });
+});

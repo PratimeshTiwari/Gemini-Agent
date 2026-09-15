@@ -68,14 +68,93 @@ describe('a task runs to its answer', () => {
     assert.deepEqual(s.toolCalls.map((c) => c.name), ['read_file', 'grep_search']);
   });
 
-  test('the whole history goes out every turn, and that is deliberate', async () => {
-    // Each send reaches a browser tab created for that request and closed
-    // after, so turn 2 is a tab that has never seen turn 1. The flat
-    // re-serialisation is the only thing making a multi-turn task work.
+  test('only what is new goes out after the first turn', async () => {
+    // The tab is held for the life of the task, so turn 2 is the same
+    // conversation and does not need the system prompt again. Measured before
+    // this: 156,140 characters sent where 28,943 were new — 81% resent, growing
+    // every turn, which is the shape that trips Gemini's repetition filters.
     const s = scripted([reply('<call>read_file</call>'), reply('done')]);
     await s.run();
-    assert.match(s.prompts[1], /SYSTEM/, 'turn 2 arrived at a tab with no system prompt');
-    assert.match(s.prompts[1], /do the thing/, 'and no idea what it was asked');
+    assert.match(s.prompts[0], /SYSTEM/, 'turn 1 must carry everything');
+    assert.ok(!s.prompts[1].includes('SYSTEM'), 'the system prompt was sent twice');
+    assert.ok(!s.prompts[1].includes('do the thing'), 'the request was sent twice');
+    assert.match(s.prompts[1], /"name": "read_file"/, 'the tool result never arrived');
+  });
+
+  test('the saving is the point, so measure it at a real size', async () => {
+    // At toy sizes a tool result is bigger than a seven-word system prompt and
+    // the comparison says nothing. The headless system prompt is ~1.6 KB.
+    const prompts = [];
+    let n = 0;
+    await runBatchTask({
+      system: 'SYSTEM PROMPT '.repeat(120),
+      user: 'Analyse this review comment. '.repeat(20),
+      send: async (prompt) => {
+        prompts.push(prompt);
+        n += 1;
+        return n < 4 ? reply('<call>read_file</call>') : reply('the plan');
+      },
+      extractToolCalls: (c) => ({
+        toolCalls: c.includes('<call>') ? [{ id: 'a', name: 'read_file', args: {} }] : [],
+        cleanContent: c.replace(/<call>\w+<\/call>/g, '').trim(),
+      }),
+      executeTool: async () => ({ ok: true }),
+    });
+
+    const total = prompts.reduce((a, p) => a + p.length, 0);
+    // Flat re-serialisation would have resent the whole thread every turn.
+    assert.ok(total < prompts[0].length * prompts.length,
+      `sent ${total} chars over ${prompts.length} turns — no better than flat`);
+    for (const p of prompts.slice(1)) {
+      assert.ok(!p.includes('SYSTEM PROMPT'), 'a later turn resent the system prompt');
+    }
+  });
+
+  test('send is told whether it is continuing, so a flat transport still works', async () => {
+    const flags = [];
+    await runBatchTask({
+      system: 's', user: 'u',
+      send: async (prompt, opts) => {
+        flags.push(opts?.continuing);
+        return flags.length === 1 ? reply('<call>x</call>') : reply('done');
+      },
+      extractToolCalls: (c) => ({
+        toolCalls: c.includes('<call>') ? [{ name: 'x', args: {} }] : [],
+        cleanContent: c.replace(/<call>\w+<\/call>/g, '').trim(),
+      }),
+      executeTool: async () => ({}),
+    });
+    assert.deepEqual(flags, [false, true]);
+  });
+
+  test('a lost tab is recovered by saying it all again, once', async () => {
+    // The extension refuses an incremental prompt when the session's tab is
+    // gone, rather than opening a fresh one — that would get a confident answer
+    // to a question the model never saw.
+    const prompts = [];
+    let n = 0;
+    const out = await runBatchTask({
+      system: 'SYSTEM', user: 'do the thing',
+      send: async (prompt, { continuing }) => {
+        prompts.push({ prompt, continuing });
+        n += 1;
+        if (n === 1) return reply('<call>read_file</call>');
+        if (n === 2) return { sessionLost: true };     // the tab was closed
+        return reply('the plan');
+      },
+      extractToolCalls: (c) => ({
+        toolCalls: c.includes('<call>') ? [{ id: 'a', name: 'read_file', args: {} }] : [],
+        cleanContent: c.replace(/<call>\w+<\/call>/g, '').trim(),
+      }),
+      executeTool: async () => ({ ok: true }),
+    });
+    assert.equal(out.success, true);
+    assert.equal(out.result, 'the plan');
+    assert.equal(prompts.length, 3);
+    assert.equal(prompts[2].continuing, false, 'it retried incrementally into an empty tab');
+    assert.match(prompts[2].prompt, /SYSTEM/, 'the re-send did not carry the system prompt');
+    assert.match(prompts[2].prompt, /do the thing/);
+    assert.match(prompts[2].prompt, /read_file/, 'the tool result was dropped on the way');
   });
 });
 

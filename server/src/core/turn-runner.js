@@ -12,27 +12,34 @@
  * `agent-loop.js` stays separate on purpose — it is stateful with a person
  * waiting, where this is batch and stateless per request.
  *
- * **Two things the plan expected this to fix, which it does not, because the
- * diagnosis was wrong.** Recorded here so the next reader does not act on it.
+ * **The history used to be re-serialised on every turn, and it had to be.**
+ * Every `send` goes through `_executeSubagent`, which sets `isSubagent: true`,
+ * and the extension answered that by creating a **fresh tab** and closing it
+ * when the turn ended — so turn 2 was a browser tab that had never seen turn 1.
+ * There was no thread to rely on. `GITHUB-AGENT-PLAN.md` called that opting out
+ * of `PromptBuilder`'s protection; it was not, there was nothing to opt into.
  *
- * 1. *"The entire history re-serialised every turn"* — true, and **necessary**.
- *    Every `send` here goes through `_executeSubagent`, which sets
- *    `isSubagent: true`; the extension answers that by creating a **fresh tab**
- *    (`content.js`, the `payload.isSubagent` branch) and `main.js` closes it
- *    when the turn ends. So turn 2 is a browser tab that has never seen turn 1.
- *    There is no thread to rely on, and the re-serialisation is the only thing
- *    making a multi-turn batch task work at all. It is not opting out of
- *    `PromptBuilder`'s protection; it has nothing to opt into. Removing it needs
- *    one tab held across a task's turns — a real change to the bridge, not a
- *    refactor, and the lane work in `extension-lock.js` is its prerequisite.
+ * Measured on a ten-turn task with realistic tool results: **156,140 characters
+ * typed into browser tabs where 28,943 were new — 81% resent**, growing every
+ * turn, so turn 10 was a 29 KB prompt. That is precisely the shape `CLAUDE.md`
+ * says trips Gemini's repetition filters.
  *
- * 2. *"Removes the third tool list by construction"* — it does not, and should
- *    not here. The headless tool list is a deliberate subset in a shape of its
- *    own, carrying a correction the full definitions do not ("use `pattern` NOT
- *    `query`"). Generating it would change what this agent is told, on a path
- *    that can only be verified against a real browser. Its *membership* is
- *    checked against `core/tool-catalog.js` by `tool-catalog.test.js`, which is
- *    the half that actually broke elsewhere.
+ * So the tab is held for the life of the task now (`sessionId`), and each turn
+ * after the first sends only what is new. If the tab is gone the extension
+ * **refuses** the turn rather than opening a fresh one — an incremental prompt
+ * in an empty conversation gets a confident answer to a question the model
+ * never saw — and this loop answers that by resending the full history once.
+ *
+ * **A caller without a session still gets the old behaviour.** `send` is told
+ * whether it is `continuing`, and a transport that cannot keep a thread simply
+ * never reports one, so every turn is flat and correct.
+ *
+ * *One thing the plan expected that is still not done:* generating the tool
+ * list "by construction". The headless list is a deliberate subset in a shape
+ * of its own, carrying a correction the full definitions do not ("use `pattern`
+ * NOT `query`"). Generating it would change what this agent is told, on a path
+ * only a real browser can verify. Its *membership* is checked against
+ * `core/tool-catalog.js` instead, which is the half that actually broke.
  *
  * What the extraction does buy is the seam: a loop that can be driven with
  * stubs, which is what GitHub phase 7 needs and what nothing had before.
@@ -58,6 +65,7 @@ export const MAX_BATCH_PROVIDER_RETRIES = 3;
  * @param {(name: string, args: object) => Promise<any>} options.executeTool
  * @param {(prompt: string) => Promise<any>} [options.runSubagent] - handles `ask_subagent`
  * @param {(name: string, args: object) => {level: string, reason: string}} [options.classifyRisk]
+ * @param {() => void} [options.endSession] - release the tab this task was holding
  * @param {number} [options.maxTurns]
  * @param {number} [options.maxProviderRetries]
  * @returns {Promise<{success: boolean, result?: string, error?: string, turns: number}>}
@@ -70,6 +78,7 @@ export async function runBatchTask({
   executeTool,
   runSubagent = null,
   classifyRisk = null,
+  endSession = null,
   maxTurns = MAX_BATCH_TURNS,
   maxProviderRetries = MAX_BATCH_PROVIDER_RETRIES,
 }) {
@@ -81,21 +90,48 @@ export async function runBatchTask({
   let providerRetries = 0;
   let lastCleanContent = '';
   let turns = 0;
+  /** How much of `history` the tab has already been told. */
+  let sent = 0;
+
+  const serialise = (entries) =>
+    `${entries.map((t) => `${t.role.toUpperCase()}:\n${t.content}`).join('\n\n')}\n\nAGENT:\n`;
 
   for (let turn = 0; turn < maxTurns; turn += 1) {
     turns = turn + 1;
 
-    // Flat, and it has to be — see the note at the top of this file. Each send
-    // reaches a tab that has never seen the previous turn.
-    const prompt = `${history.map((t) => `${t.role.toUpperCase()}:\n${t.content}`).join('\n\n')}\n\nAGENT:\n`;
+    // Only what the tab has not seen. On turn 1, or after a lost session, that
+    // is everything; after that it is the tool results and nothing else.
+    const continuing = sent > 0;
+    const prompt = serialise(continuing ? history.slice(sent) : history);
 
-    const response = await send(prompt);
+    let response = await send(prompt, { continuing });
+
+    /**
+     * The tab holding this task was closed mid-run.
+     *
+     * The extension refuses the turn rather than opening a fresh one, because
+     * an incremental prompt in an empty conversation produces a confident
+     * answer to a question the model never saw. Recover by saying it all again,
+     * once — if the second attempt also loses its tab, something is closing
+     * tabs faster than we can use them and retrying forever helps nobody.
+     */
+    if (continuing && response?.sessionLost) {
+      sent = 0;
+      response = await send(serialise(history), { continuing: false });
+    }
+
     if (!response?.success) {
       return { success: false, error: response?.error || 'no response', turns };
     }
+    // Everything up to here is now in the tab's own thread. What follows — the
+    // model's reply and the tool results — is what the next turn has to send.
+    sent = history.length;
 
     const content = response.result || response.content || '';
+    // The model's own reply is already in the thread; keeping it in `history`
+    // is for the *fallback* re-send, not for the next incremental prompt.
     history.push({ role: 'agent', content });
+    sent = history.length;
 
     let toolCalls = [];
     let cleanContent = content;

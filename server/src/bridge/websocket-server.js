@@ -303,6 +303,21 @@ export class WebSocketServer {
           detail: payload?.detail || payload?.stack,
           meta: { targetModel: payload?.targetModel, url: payload?.url, stage: payload?.stage },
         });
+        /**
+         * A lost batch session is recoverable, and must not kill the run.
+         *
+         * The extension refuses an incremental prompt when the tab holding a
+         * task has been closed — rather than opening a fresh one, which would
+         * get a confident answer to a question the model never saw. That is a
+         * *request* failing, not the bridge failing, and `runBatchTask` answers
+         * it by resending the whole history once. Falling through to
+         * `abortExtensionWork()` here would take down the user's turn as well.
+         */
+        if (payload?.op === 'session_lost' && payload?.requestId) {
+          this.agentLoop.resolveSubagent?.(payload.requestId, { sessionLost: true });
+          break;
+        }
+
         // The turn is dead, so hand the bridge lock back — otherwise every
         // later prompt queues behind a request that will never be answered.
         this.agentLoop.isProcessing = false;

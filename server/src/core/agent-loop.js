@@ -1494,7 +1494,20 @@ export class AgentLoop {
     return str.replace(/"(.*?)"/gs, (match) => match.replace(/\n/g, '\\n'));
   }
 
-  async _executeSubagent(targetModel, prompt) {
+  /**
+   * One turn in a background tab.
+   *
+   * `session` makes the tab outlive the turn: the extension keeps it for that
+   * session id, so the next turn finds its own conversation still there and
+   * only has to send what is new. Without it every turn gets a fresh tab, which
+   * is right for a one-shot subagent and wrong for a ten-turn batch task.
+   *
+   * `continuing` says the prompt is incremental. The extension refuses it if
+   * the session's tab is gone rather than quietly opening a new one — an
+   * incremental prompt in an empty conversation gets a confident answer to a
+   * question the model never saw.
+   */
+  async _executeSubagent(targetModel, prompt, { session = null, continuing = false } = {}) {
     return new Promise((resolve, reject) => {
       const requestId = randomUUID();
       this.pendingSubagents.set(requestId, { resolve, reject, targetModel });
@@ -1509,6 +1522,7 @@ export class AgentLoop {
         targetModel,
         requestId,
         isSubagent: true,
+        ...(session ? { sessionId: session, continuing } : {}),
       });
       
       // Safety timeout (5 minutes)
@@ -1620,15 +1634,60 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
    * browser tab, and which model that is has never been exercised for anything
    * but Gemini. Left as it was rather than changed in a refactor.
    */
+  /**
+   * Settle a pending subagent turn from outside the normal response path.
+   *
+   * Used when the bridge learns the turn cannot happen at all — a batch
+   * session whose tab was closed. The caller gets its answer and the lane is
+   * released; without this the promise waits out its five-minute timeout while
+   * the lane stays held.
+   */
+  resolveSubagent(requestId, outcome) {
+    const pending = this.pendingSubagents.get(requestId);
+    if (!pending) return false;
+    this.pendingSubagents.delete(requestId);
+    this._releaseExtension(subLane(requestId));
+    pending.resolve(outcome);
+    return true;
+  }
+
+  /**
+   * Tell the extension a batch session is finished, so its tab can close.
+   *
+   * Best effort by design: a tab that is not closed is a stray tab, which is
+   * untidy. Failing the task because the tidy-up failed would be worse.
+   */
+  _sendEndSession(sessionId) {
+    try {
+      const target = this.callbacks || this._backgroundCallbacks;
+      target?.sendToPanel?.({
+        id: randomUUID(),
+        type: 'end_session',
+        payload: { sessionId },
+        timestamp: Date.now(),
+      });
+    } catch {
+      /* the bridge is gone; the tab will be closed by the user or by Chrome */
+    }
+  }
+
   async runHeadlessTask(prompt, systemInstruction = null) {
     const system = systemInstruction
       ? `${HEADLESS_SYSTEM_PROMPT}\n\n## ADDITIONAL DIRECTIVE:\n${systemInstruction}`
       : HEADLESS_SYSTEM_PROMPT;
 
+    // One tab for the whole task, so each turn sends only what is new. The id
+    // is per task rather than per turn, which is the entire difference.
+    const session = randomUUID();
+
     const outcome = await runBatchTask({
       system,
       user: prompt,
-      send: (text) => this._executeSubagent('gemini', text),
+      send: (text, { continuing } = {}) =>
+        this._executeSubagent('gemini', text, { session, continuing }),
+      endSession: () => this.callbacks?.injectPrompt
+        ? this._sendEndSession(session)
+        : undefined,
       extractToolCalls: (content) => this._extractToolCalls(content),
       executeTool: (name, args) => this.mcpServer.executeTool(name, args, {
         editor: this.editor,

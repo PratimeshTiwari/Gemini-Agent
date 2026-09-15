@@ -1,7 +1,7 @@
 import { getState, setState } from './state.js';
 import { retryDelay, resolvePort, socketUrlFor } from './policy.js';
 import { broadcastToSidePanel, sendToServer } from './messaging.js';
-import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab } from './content.js';
+import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab, endSession } from './content.js';
 
 /**
  * The socket to the local agent, and the retry policy around it.
@@ -215,6 +215,12 @@ async function handleServerMessage(message) {
       break;
     case 'new_chat':
       await triggerNewChatInModel(payload);
+      break;
+    case 'end_session':
+      // A batch task is over, so the tab it was holding can go. Closing it here
+      // rather than when a turn completes is the whole point of a session: the
+      // next turn has to find the thread still there.
+      await endSession(payload?.sessionId);
       break;
     case 'discover_models':
     case 'switch_model':

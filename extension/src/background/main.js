@@ -1,7 +1,7 @@
 import { connectWebSocket } from './socket.js';
 import { sendToServer } from './messaging.js';
 import { getState } from './state.js';
-import { broadcastTabStatus, reinjectModelTabs, restoreFocusFrom, forgetTab } from './content.js';
+import { broadcastTabStatus, reinjectModelTabs, restoreFocusFrom, forgetTab, endSession } from './content.js';
 
 // Open side panel on extension icon click
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -47,9 +47,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
           if (finished && payload.isSubagent) {
             if (payload.complete) payload.subagentUrl = sender.tab.url;
-            forgetTab(sender.tab.id);
-            chrome.tabs.remove(sender.tab.id)
-              .catch(err => console.warn('Failed to auto-close subagent tab:', err));
+            // A tab held for a *batch session* outlives the turn: the whole
+            // point is that the next turn finds the thread still there. It is
+            // closed by an explicit end_session when the task is over.
+            if (!payload.sessionId) {
+              forgetTab(sender.tab.id);
+              chrome.tabs.remove(sender.tab.id)
+                .catch(err => console.warn('Failed to auto-close subagent tab:', err));
+            }
           }
         }
         sendToServer({ type, payload });
