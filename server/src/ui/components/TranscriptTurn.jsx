@@ -74,12 +74,21 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
           {blockLines(userMessageText(turn.userMsg.content, isLive), terminalWidth, 2)
             .map((line, i) => (
               // eslint-disable-next-line react/no-array-index-key
-              // `white` explicitly, not the terminal's default foreground.
-              // `backgroundColor="gray"` is ANSI bright-black, which is dark on
-              // every theme — so on a light terminal the default foreground is
-              // also dark and the bar becomes unreadable. White on bright-black
-              // reads on both.
-              <Text key={i} backgroundColor="gray" color="white" bold>
+              /*
+               * A hex grey, not `backgroundColor="gray"`.
+               *
+               * The named colour is ANSI bright-black, and what a terminal
+               * paints for that is entirely up to its theme — VS Code's renders
+               * it as a *light* grey, so the bar came out brighter than the text
+               * it was meant to sit behind and pulled the eye away from the
+               * reply. A hex value is the same grey everywhere and can be chosen
+               * to sit below the text rather than above it.
+               *
+               * Dark enough to be a background on a dark theme, and white text
+               * keeps it readable on a light one, where it reads as an inverted
+               * bar rather than a highlight.
+               */
+              <Text key={i} backgroundColor="#303030" color="white" bold>
                 {i === 0 ? ' ❯ ' : '   '}{line}
               </Text>
             ))}

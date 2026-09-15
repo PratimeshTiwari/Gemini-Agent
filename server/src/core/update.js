@@ -94,6 +94,22 @@ export async function checkForUpdate(dir) {
 }
 
 /**
+ * Is there uncommitted work in the agent's own repo?
+ *
+ * Asked by `/update` *after* it knows there is something to pull, not before.
+ * Checking first meant a repo with local edits was refused with a complaint
+ * about those edits even when there was nothing to update — the state of your
+ * tree only matters once there is something to apply to it.
+ *
+ * `null` when it cannot be read, which callers treat as "do not claim it is
+ * clean".
+ */
+export async function isDirty(dir) {
+  const status = await git(dir, ['status', '--porcelain']);
+  return status === null ? null : status !== '';
+}
+
+/**
  * Which surfaces a set of changed files touches.
  *
  * The whole value of the feature. A pull that only moved `server/` needs
@@ -156,9 +172,9 @@ export async function pullUpdate(dir) {
   const inRepo = await git(dir, ['rev-parse', '--is-inside-work-tree']);
   if (inRepo !== 'true') return { ok: false, error: 'The agent is not running from a git checkout.' };
 
-  const dirty = await git(dir, ['status', '--porcelain']);
+  const dirty = await isDirty(dir);
   if (dirty === null) return { ok: false, error: 'Could not read the repository status.' };
-  if (dirty !== '') {
+  if (dirty) {
     return {
       ok: false,
       error: 'There are uncommitted changes in the agent\'s own repo. '

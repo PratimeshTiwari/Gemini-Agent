@@ -13,7 +13,7 @@ import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
 import { canPickFolder, pickFolder } from '../folder-picker.js';
 import { summariseTraces, formatMs } from '../../core/trace-log.js';
 import { channelHealth, formatRate, MIN_TURNS_FOR_RATE } from '../../core/channel-health.js';
-import { pullUpdate, savePendingReload, readPendingReload, clearPendingReload } from '../../core/update.js';
+import { checkForUpdate, isDirty, pullUpdate, savePendingReload, readPendingReload, clearPendingReload } from '../../core/update.js';
 
 
 /**
@@ -37,6 +37,49 @@ async function leave(code, { wsServer, agentLoop, delay = 120 }) {
   try { await wsServer?.stop?.(); } catch { /* going anyway */ }
   try { agentLoop?.taskManager?.cleanup?.(); } catch { /* going anyway */ }
   process.exit(code);
+}
+
+/**
+ * Leave, but not out from under a turn that is still running.
+ *
+ * Every restart path — `/restart`, `/workspace`, `/update` — called `leave`
+ * the moment it was asked. Reported from use: switching workspace mid-turn
+ * killed the process, the browser kept generating into a socket nobody was
+ * holding, and the reply was simply never drawn. "It stopped and did not
+ * output" is exactly right, and it is silent, because from the transcript's
+ * point of view the turn just never finished.
+ *
+ * True concurrency is not available here and is not the fix: a restart is
+ * *why* these paths exist. Every collaborator keyed on the workspace — the
+ * session store, memory, config, the command allowlist — is rebuilt by
+ * restarting and was not rebuilt by the in-place switch this replaced.
+ *
+ * So the turn is allowed to finish. The user is told that is what will happen,
+ * and `esc` is the way to have it now: it sends `:stop`, which clears
+ * `isProcessing`, which this notices on its next poll. No extra escape hatch
+ * to build, and the one people already know.
+ *
+ * Polled rather than subscribed because `isProcessing` lives on the agent loop
+ * and has no event — and a poll that is wrong is a second of waiting, where a
+ * missed event is a restart that never happens.
+ *
+ * `ctx.exit` is a seam: `leave` ends in `process.exit`, which a test cannot
+ * call. Everything except that last step is the part worth testing.
+ */
+const IDLE_POLL_MS = 400;
+
+export function leaveWhenIdle(code, ctx, { announce } = {}) {
+  const { agentLoop, exit = leave } = ctx;
+  if (!agentLoop?.isProcessing) return exit(code, ctx);
+
+  announce?.();
+  const timer = setInterval(() => {
+    if (agentLoop.isProcessing) return;
+    clearInterval(timer);
+    exit(code, ctx);
+  }, IDLE_POLL_MS);
+  timer.unref?.();
+  return undefined;
 }
 
 /**
@@ -138,13 +181,17 @@ export async function handleSlashCommand(query, {
         setIsProcessing(false);
         return;
       }
+      const running = agentLoop.isProcessing;
       setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
-        role: 'assistant', content: '🔄 Restarting…', isLocal: true,
+        role: 'assistant', isLocal: true,
+        content: running
+          ? '🔄 Restarting when this turn finishes — `esc` to stop it and go now.'
+          : '🔄 Restarting…',
       }]);
       setIsProcessing(false);
       // Let the frame paint, then leave. Ink restores the terminal on exit,
       // which is why this is an ordinary exit rather than an exec in place.
-      leave(75, { wsServer, agentLoop });
+      leaveWhenIdle(75, { wsServer, agentLoop });
       return;
     }
 
@@ -158,22 +205,67 @@ export async function handleSlashCommand(query, {
      * is derived from what actually changed, and asks for nothing else.
      */
     if (command === 'update') {
-      if (args[0] === 'done') {
-        const had = readPendingReload();
-        clearPendingReload();
-        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
-          role: 'assistant', isLocal: true,
-          content: had ? '✅ Cleared. Nothing left to reload.' : 'Nothing was waiting to be reloaded.',
-        }]);
-        setIsProcessing(false);
-        return;
-      }
-
       const say = (content) => {
         setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true },
           { role: 'assistant', content, isLocal: true }]);
         setIsProcessing(false);
       };
+
+      if (args[0] === 'done') {
+        const had = readPendingReload();
+        clearPendingReload();
+        say(had ? '✅ Cleared. Nothing left to reload.' : 'Nothing was waiting to be reloaded.');
+        return;
+      }
+
+      /**
+       * Bare `/update` reports; `/update pull` acts.
+       *
+       * It used to pull straight away, and it checked the working tree *first*
+       * — so on a repo with uncommitted work it refused with a complaint about
+       * your changes even when there was nothing to pull. Reported from use,
+       * and the order was the whole bug: whether the tree is dirty only matters
+       * once there is something to apply.
+       *
+       * Splitting it also means "is there an update?" is answerable without
+       * committing to taking one, which is the question people actually type
+       * this to ask.
+       */
+      if (args[0] !== 'pull' && args[0] !== 'now') {
+        const state = await checkForUpdate(agentLoop.agentSourceDir);
+        if (state.reason === 'not a git checkout' || state.reason === 'no source directory') {
+          say('The agent is not running from a git checkout, so there is nothing to update from.');
+          return;
+        }
+        if (state.reason === 'branch tracks nothing') {
+          say(`On \`${state.branch}\`, which has no remote branch to compare against.`);
+          return;
+        }
+        if (!state.available) {
+          say(`✅ Up to date — \`${state.branch}\` matches \`${state.upstream}\`.`);
+          return;
+        }
+
+        const n = state.behind;
+        const lines = [
+          `### ⬆️ ${n} update${n === 1 ? '' : 's'} available`,
+          '',
+          `\`${state.branch}\` is ${n} commit${n === 1 ? '' : 's'} behind \`${state.upstream}\`.`,
+          '',
+        ];
+        // Said here rather than after the pull is attempted: it is the one
+        // thing that would stop this working, and knowing now is worth more
+        // than finding out when you ask for it.
+        const dirty = await isDirty(agentLoop.agentSourceDir);
+        if (dirty) {
+          lines.push('⚠️ There are uncommitted changes in the agent\'s own repo, so this cannot',
+            'be pulled yet. Commit or stash them first — `/update` will not pull over your work.');
+        } else {
+          lines.push('`/update pull` to take them.');
+        }
+        say(lines.join('\n'));
+        return;
+      }
 
       const outcome = await pullUpdate(agentLoop.agentSourceDir);
       if (!outcome.ok) { say(`⚠️ ${outcome.error}`); return; }
@@ -202,7 +294,7 @@ export async function handleSlashCommand(query, {
       say(lines.join('\n'));
 
       if (process.env.AGENT_CLI_SUPERVISED && !outcome.install) {
-        setTimeout(() => leave(75, { wsServer, agentLoop }), 1200);
+        setTimeout(() => leaveWhenIdle(75, { wsServer, agentLoop }), 1200);
       }
       return;
     }
@@ -653,9 +745,15 @@ export async function handleSlashCommand(query, {
         setIsProcessing(false);
         return;
       }
-      setHistory(prev => [...prev, { role: 'assistant', content: `📂 Restarting in \`${target}\`…`, isLocal: true }]);
+      const running = agentLoop.isProcessing;
+      setHistory(prev => [...prev, {
+        role: 'assistant', isLocal: true,
+        content: running
+          ? `📂 Switching to \`${target}\` when this turn finishes — \`esc\` to stop it and go now.`
+          : `📂 Restarting in \`${target}\`…`,
+      }]);
       setIsProcessing(false);
-      leave(75, { wsServer, agentLoop });
+      leaveWhenIdle(75, { wsServer, agentLoop });
     }
 
     if (command === 'switch-workspace') {

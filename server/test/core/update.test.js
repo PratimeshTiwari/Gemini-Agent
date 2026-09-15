@@ -19,7 +19,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   reloadSteps, needsInstall, checkForUpdate, pullUpdate,
-  savePendingReload, readPendingReload, clearPendingReload,
+  savePendingReload, readPendingReload, clearPendingReload, isDirty,
 } from '../../src/core/update.js';
 
 const ids = (files) => reloadSteps(files).map((s) => s.id);
@@ -173,5 +173,34 @@ describe('the reminder survives a restart', () => {
     savePendingReload(STEPS);
     writeFileSync(pendingReloadPath(), '{ not json');
     assert.equal(readPendingReload(), null);
+  });
+});
+
+describe('/update reports before it acts', () => {
+  /**
+   * Reported from use: `/update` answered "there are uncommitted changes in the
+   * agent's own repo" on a repo that had **nothing to pull**. The order was the
+   * whole bug — whether your tree is dirty only matters once there is something
+   * to apply to it, and being told about your own edits when no update exists
+   * is a complaint about the wrong thing.
+   */
+  test('isDirty answers about the tree, and nothing else', async () => {
+    // This repo is the checkout under test.
+    const clean = await isDirty(process.cwd());
+    assert.equal(typeof clean, 'boolean');
+  });
+
+  test('a directory that is not a repo is null, not false', async () => {
+    // `false` would be a claim that it is clean, which is not something that
+    // can be known about a non-repo.
+    assert.equal(await isDirty('/no/such/place'), null);
+  });
+
+  test('checkForUpdate does not care about the tree', async () => {
+    // The two questions are independent, and the bug was answering the second
+    // one when the first had not been asked.
+    const state = await checkForUpdate(process.cwd());
+    assert.ok('available' in state);
+    assert.ok(!('dirty' in state), 'the check leaked a tree concern into the version answer');
   });
 });
