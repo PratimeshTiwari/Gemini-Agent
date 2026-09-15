@@ -69,6 +69,7 @@ import { SessionStore } from '../storage/session-store.js';
 import { ContextManager } from '../context/context-manager.js';
 import { MemoryManager } from '../context/memory-manager.js';
 import { ExtensionLock, mainLane, subLane } from '../bridge/extension-lock.js';
+import { runBatchTask } from './turn-runner.js';
 
 
 // Backstop for a prompt the extension never answers. Longer than the content
@@ -1606,106 +1607,47 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
     return { success: false, error: "Subagent failed to use the return_result tool. Raw output: " + (lastCleanContent || "No output provided.") };
   }
 
+  /**
+   * Run a batch task to completion, with no session and nobody waiting.
+   *
+   * The loop itself is `core/turn-runner.js` now: this is the wiring that says
+   * where the model lives and what tools it may reach. Extracting it was
+   * GITHUB-AGENT-PLAN phase 6 — it was a second agent loop inside this one,
+   * with its own dispatch, its own retry and no seam to test against.
+   *
+   * `_executeSubagent('gemini', …)` is still hard-coded rather than reading
+   * `modelConfig`. Deliberate for now: every turn of a batch task opens a fresh
+   * browser tab, and which model that is has never been exercised for anything
+   * but Gemini. Left as it was rather than changed in a refactor.
+   */
   async runHeadlessTask(prompt, systemInstruction = null) {
-    const localHistory = [];
-    let providerRetries = 0;
+    const system = systemInstruction
+      ? `${HEADLESS_SYSTEM_PROMPT}\n\n## ADDITIONAL DIRECTIVE:\n${systemInstruction}`
+      : HEADLESS_SYSTEM_PROMPT;
 
-    const baseSystem = HEADLESS_SYSTEM_PROMPT;
+    const outcome = await runBatchTask({
+      system,
+      user: prompt,
+      send: (text) => this._executeSubagent('gemini', text),
+      extractToolCalls: (content) => this._extractToolCalls(content),
+      executeTool: (name, args) => this.mcpServer.executeTool(name, args, {
+        editor: this.editor,
+        taskManager: this.taskManager,
+      }),
+      runSubagent: (sub) => this._runSubAgentSession(
+        'subagent',
+        `[System: You are running in workspace root: ${this.workspace}. Use tools to explore.]\n\nUser Prompt: ${sub}`,
+        'gemini',
+      ),
+      classifyRisk: (name, args) => this.riskClassifier.classify(name, args),
+    });
 
-    const finalSystem = systemInstruction ? `${baseSystem}\n\n## ADDITIONAL DIRECTIVE:\n${systemInstruction}` : baseSystem;
-
-    localHistory.push({ role: 'system', content: finalSystem });
-    localHistory.push({ role: 'user', content: prompt });
-
-    let lastCleanContent = '';
-    let turnCount = 0;
-
-    for (let turn = 0; turn < 10; turn++) {
-      turnCount = turn + 1;
-      const serializedPrompt = localHistory.map(t => `${t.role.toUpperCase()}:\n${t.content}`).join('\n\n') + '\n\nAGENT:\n';
-
-      const response = await this._executeSubagent('gemini', serializedPrompt);
-      if (!response.success) {
-        return { success: false, error: response.error };
-      }
-
-      const content = response.result || response.content;
-      localHistory.push({ role: 'agent', content });
-
-      let toolCalls = [];
-      let cleanContent = content;
-
-      try {
-        const extracted = this._extractToolCalls(content);
-        toolCalls = extracted.toolCalls;
-        cleanContent = extracted.cleanContent;
-      } catch (err) {
-        localHistory.push({ role: 'system', content: `JSON Parse Error: ${err.message}. Fix your tool call format.` });
-        continue;
-      }
-
-      // Gemini's own failure message arrives through the same path as a real
-      // reply, with no tool calls and some prose — structurally identical to a
-      // finished answer. Left alone it became `lastCleanContent` and was
-      // written to disk as the PR plan.
-      if (toolCalls.length === 0 && looksLikeProviderError(cleanContent)) {
-        providerRetries++;
-        if (providerRetries <= MAX_PROVIDER_RETRIES) {
-          localHistory.push({
-            role: 'system',
-            content: '[System: the previous response was a provider error, not an answer. Retrying the same request.]',
-          });
-          continue;
-        }
-        return { success: false, error: `Gemini kept returning an error: ${cleanContent.trim()}` };
-      }
-
-      // Track the last non-empty clean content as the candidate final plan
-      if (cleanContent.trim()) {
-        lastCleanContent = cleanContent.trim();
-      }
-
-      if (toolCalls.length === 0) {
-        // No more tool calls — this is the final plan turn
-        break;
-      }
-
-      const toolPromises = toolCalls.map(async (call) => {
-        let result;
-        
-        if (call.name === 'ask_subagent') {
-          // Provide workspace context and strictly enforce Gemini for nested subagents
-          const subPrompt = call.args.prompt;
-          const contextMsg = `[System: You are running in workspace root: ${this.workspace}. Use tools to explore.]`;
-          const sessionResult = await this._runSubAgentSession('subagent', `${contextMsg}\n\nUser Prompt: ${subPrompt}`, 'gemini');
-          result = sessionResult;
-        } else {
-          const risk = this.riskClassifier.classify(call.name, call.args);
-
-          if (call.name === 'run_command' && risk.level !== 'safe') {
-            result = { success: false, error: `Command blocked in background agent for security: ${risk.reason}` };
-          } else {
-            try {
-              result = await this.mcpServer.executeTool(call.name, call.args, {
-                editor: this.editor,
-                taskManager: this.taskManager,
-              });
-            } catch (e) {
-              result = { success: false, error: e.message };
-            }
-          }
-        }
-        
-        return { call_id: call.id || randomUUID(), name: call.name, result };
-      });
-
-      const toolResults = await Promise.all(toolPromises);
-      localHistory.push({ role: 'tool', content: JSON.stringify(toolResults, null, 2) });
-    }
-
-    // Return only the final consolidated plan (last clean output)
-    const finalOutput = lastCleanContent || '(No plan generated)';
-    return { success: true, result: `## 🧠 AI Context Analysis\n\n${finalOutput}`, turns: turnCount };
+    if (!outcome.success) return { success: false, error: outcome.error };
+    return {
+      success: true,
+      result: `## 🧠 AI Context Analysis\n\n${outcome.result}`,
+      turns: outcome.turns,
+    };
   }
 
   /**
