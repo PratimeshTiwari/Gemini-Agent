@@ -28,6 +28,27 @@ const MAX_PROVIDER_RETRIES = 2;
  */
 const MAX_FAILED_ROUNDS = 4;
 
+/**
+ * How many tool rounds one user turn may take, succeeding or not.
+ *
+ * `MAX_FAILED_ROUNDS` bounds the loop that is going wrong. Nothing bounded the
+ * loop that is going *right*: a model that keeps returning a valid tool call
+ * runs until it stops choosing to, and a scripted one returning `read_file`
+ * forever managed **750 rounds in 40 seconds**. Against a real browser that is
+ * the user's Gemini quota and a burnt chat tab before they can reach escape.
+ *
+ * The comment on the failing bound reasons that "progress resets it, so a long
+ * run that keeps succeeding never trips" — treating unboundedness as the
+ * feature. But a turn that succeeds seven hundred times has not made progress,
+ * it has made seven hundred round trips, and each one is a prompt typed into a
+ * browser.
+ *
+ * Thirty is well past any real task — the deepest genuine turns here run to
+ * about a dozen — and far short of a runaway. It is a stop, not a verdict: the
+ * turn ends and says where it got to, and you can tell it to carry on.
+ */
+const MAX_ROUNDS_PER_TURN = 30;
+
 /** The first useful line of a failed tool result, for the give-up message. */
 function oneLineError(result) {
   if (typeof result === 'string') return result.split('\n')[0].slice(0, 160);
@@ -227,6 +248,7 @@ export class AgentLoop {
       this._deniedToolsOnce = false;
       // Auto-heal budget, per user turn.
       this._failedRounds = 0;
+      this._roundsThisTurn = 0;
       this._providerRetries = 0;
 
       // Build the full prompt
@@ -1186,6 +1208,41 @@ export class AgentLoop {
     // progress resets it, so a long run that keeps succeeding never trips.
     const anyFailed = toolResults.some((r) => r?.failed);
     this._failedRounds = anyFailed ? (this._failedRounds || 0) + 1 : 0;
+
+    // Every round, not only the failing ones. See MAX_ROUNDS_PER_TURN.
+    this._roundsThisTurn = (this._roundsThisTurn || 0) + 1;
+    if (this._roundsThisTurn >= MAX_ROUNDS_PER_TURN) {
+      this._roundsThisTurn = 0;
+      logError(this.workspace, {
+        flow: 'agent', op: 'round_limit',
+        message: `Stopped a turn at ${MAX_ROUNDS_PER_TURN} tool rounds`,
+        meta: { lastTools: toolResults.map((r) => r?.name).filter(Boolean) },
+      });
+
+      const stopTurn = {
+        role: 'assistant',
+        isLocal: true,
+        content: `🛑 Stopped after ${MAX_ROUNDS_PER_TURN} rounds of tool calls in one turn.\n\n`
+          + 'Nothing failed — it simply kept going, and every round is a prompt typed '
+          + 'into your browser. The work so far is done and on disk.\n\n'
+          + 'Say "continue" to carry on from here, or tell me what to do differently.',
+        timestamp: Date.now(),
+      };
+      this.conversationHistory.push(stopTurn);
+      this.sessionStore.appendTurn(stopTurn);
+
+      // Ended the same way the failing-rounds cap ends one: the turn is over,
+      // the UI is told, and the browser lane is handed back.
+      this.isProcessing = false;
+      this.callbacks.sendToPanel({
+        id: randomUUID(),
+        type: 'agent_response',
+        payload: { content: stopTurn.content },
+        timestamp: Date.now(),
+      });
+      this._releaseExtension();
+      return;
+    }
 
     if (this._failedRounds >= MAX_FAILED_ROUNDS) {
       this._failedRounds = 0;
