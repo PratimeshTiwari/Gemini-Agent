@@ -79,52 +79,25 @@ number only stays free while nothing lands on `main`.
 
 ## Real work that is waiting, in order
 
-**1. `/update` — notice a merge, pull it, and say what needs reloading.**
-Requested 2026-09-16. Feasible, and everything it needs already exists.
+**1. `/update` — built 2026-09-16, needs one real-world run.**
+Everything described below shipped: the background check (1.5s after mount,
+never on the startup path), `/update` refusing on a dirty tree and restarting
+through the supervisor, and the checklist derived from `git diff --name-only`
+so it names only the surfaces that moved. It persists in
+`~/.agent/pending-reload.json` until `/update done`, because the failure it
+prevents is silent. Two rows at the top of the live frame, both truncated and
+both charged to the budget.
 
-*Why it is worth building:* this project ships three artifacts from one repo and
-**two of them are not updated by pulling.** `extension/service-worker.js` is a
-committed bundle Chrome only picks up on a reload, content scripts only on a
-hard refresh, and the `.vsix` has to be reinstalled by hand. So "git pull" leaves
-you running new server code against an old bridge — and the symptom is the agent
-going quiet, not an error. That has already cost time twice this week.
+**What it has never done is run against a real merge.** Test it the first time
+you merge to `main` and pull: the check should notice, `/update` should pull
+and restart, and the reload list should name the extension only if
+`extension/` actually moved. `/update done` clears it.
 
-Three parts, and the third is the one with the value in it:
-
-- **Notice.** `agentSourceDir` already resolves to this repo and it is a git
-  checkout, so the check is `git fetch` plus a count against the current
-  branch's upstream. It must run **after the UI is up, in the background, and
-  fail silently** — a network call on the startup path is a hang waiting for an
-  aeroplane. Report it in the status bar the way `2 failed ^f` already is, not
-  as a modal.
-- **Pull.** `/update`: refuse outright on a dirty tree — never pull over
-  someone's work — then pull, run `npm install` only if the lockfile moved, and
-  restart through the supervisor that already exists (`RESTART_EXIT_CODE = 75`
-  in `index.js`).
-- **The checklist, which is the actual feature.** After pulling, `git diff
-  --name-only <before>..<after>` says exactly which surfaces changed, so the
-  prompt asks only for steps that matter:
-  - anything under `extension/` → reload the extension **and** hard-refresh the
-    model tabs
-  - a changed `vscode-companion/*.vsix` → reinstall it
-  - only `server/` → nothing to do; the restart covered it
-
-  A generic "you may want to reload things" is the version people learn to
-  ignore.
-
-*The part that needs care:* the checklist has to be shown **after** the restart,
-by the new version, so it has to survive the restart. `index.js` already does
-exactly this for the workspace handover (`takeHandover()`, `next-workspace`) —
-same pattern, a small file, read once. And it should persist until acknowledged
-rather than scrolling away, since the whole point is that missing it is silent.
-
-*The harder half, worth doing second:* knowing whether the user actually
-reloaded, rather than nagging until they tick a box. The honest way is to have
-the extension report a build stamp on `identify` and compare it against the
-`service-worker.js` on disk — then the reminder disappears by itself when the
-reload happens, and reappears only when it genuinely has not. Ship the
-acknowledged-checklist version first; it is useful on its own and the detection
-is a strict improvement on top.
+Building it turned up two frame bugs, both now gotchas in `CLAUDE.md`: the
+budget's floor of 3 was never "at least three if there is room", and a
+105-character notice wraps at 80 columns, so it was charged as one row and
+drawn as two. The arithmetic test caught the first; only the pty run caught
+the second.
 
 **2. The side panel drops three message types the server sends.**
 `response_stream`, `github_processing_started`, `github_processing_finished`
