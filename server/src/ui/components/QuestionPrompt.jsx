@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import SelectInput from 'ink-select-input';
 import TextInput from 'ink-text-input';
-import { normalizeQuestionSet, FREEFORM_VALUE } from '../question.js';
+import { normalizeQuestionSet, FREEFORM_VALUE } from '../../core/question.js';
 
 /**
  * The agent's `ask_question` prompt.

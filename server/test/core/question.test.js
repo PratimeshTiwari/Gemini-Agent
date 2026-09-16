@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { normalizeQuestion, normalizeQuestionSet, MAX_QUESTIONS, FREEFORM_VALUE } from '../../src/ui/question.js';
+import { normalizeQuestion, normalizeQuestionSet, MAX_QUESTIONS, FREEFORM_VALUE } from '../../src/core/question.js';
 
 describe('normalizeQuestion', () => {
   test('plain strings become options', () => {

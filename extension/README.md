@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.5.0**
+## Current version: **1.6.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,24 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.6.0 — 2026-09-17
+
+- **Attribute injection in the panel, fixed.** `escapeHtml` was
+  `textContent` → `innerHTML`, the usual idiom, which escapes `<` `>` `&` and
+  **not quotes**. Every template here also interpolates into attributes
+  (`data-value="…"`), so an option label of `" onmouseover="…` closed the
+  attribute and the rest parsed as markup — jsdom built a real event handler
+  from it. That text is scraped off gemini.google.com, so it is third-party
+  input, and the panel is an extension page with `chrome.*` in scope.
+- **Questions render like the terminal's.** `ask_question` args are parsed out
+  of model prose and nothing in them is guaranteed — options arrive as a bare
+  string, as objects, or missing. The server normalises now
+  (`core/question.js`), so both front-ends get one clean shape instead of the
+  panel needing its own copy of the rules. The question's header is shown.
+- **A question can only be answered once**, guarded by a flag rather than by
+  the disabled attribute — a real browser will not click a disabled button, but
+  that is the DOM enforcing a protocol invariant.
 
 ### 1.5.0 — 2026-09-16
 

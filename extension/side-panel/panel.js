@@ -477,13 +477,20 @@ function removeThinking() {
 // this was reported. Answering is therefore not a nicety: it is the only way
 // the turn ever ends.
 
-/** Options arrive as strings or as {label, description}; nothing is guaranteed. */
-function optionLabel(raw) {
-  if (typeof raw === 'string') return raw;
-  if (raw && typeof raw === 'object') return raw.label ?? raw.value ?? raw.option ?? raw.text ?? '';
-  return '';
-}
-
+/**
+ * Render a question the turn is parked on.
+ *
+ * The payload is **normalised by the server** (`core/question.js`), so a
+ * question is always `{header, question, options: [{label, description}]}` and
+ * `payload.questions` is always a non-empty array. That is deliberate: these
+ * args are parsed out of model prose and nothing in them is guaranteed, and
+ * the panel cannot import the server's rules, so the alternative was a second
+ * copy of them here that would drift from the terminal's.
+ *
+ * The fallbacks below are for an *older server* talking to a newer panel, not
+ * for a malformed model — one surface upgrading before the other is the
+ * ordinary case when the extension is reloaded and the agent is not.
+ */
 function appendQuestion(payload) {
   removeThinking();
   const set = Array.isArray(payload?.questions) && payload.questions.length
@@ -495,11 +502,15 @@ function appendQuestion(payload) {
   div.id = 'question-prompt';
 
   div.innerHTML = set.map((q, i) => {
-    const text = (typeof q === 'string' ? q : q?.question) || 'The agent asked a question, but sent no text.';
-    const opts = (typeof q === 'object' && Array.isArray(q?.options) ? q.options : [])
-      .map(optionLabel).filter(Boolean);
+    const text = (typeof q === 'string' ? q : q?.question)
+      || 'The agent asked a question, but sent no text.';
+    const opts = (Array.isArray(q?.options) ? q.options : [])
+      .map((o) => (typeof o === 'string' ? o : o?.label ?? o?.value ?? ''))
+      .filter(Boolean);
+    const header = typeof q === 'object' ? (q?.header || '') : '';
     return `
       <div class="question-block" data-q="${i}" data-question="${escapeHtml(text)}">
+        ${header ? `<div class="question-header">${escapeHtml(header)}</div>` : ''}
         <div class="question-text">${escapeHtml(text)}</div>
         <div class="question-options">
           ${opts.map((o) => `<button class="question-option" data-value="${escapeHtml(o)}">${escapeHtml(o)}</button>`).join('')}
@@ -525,12 +536,21 @@ function appendQuestion(payload) {
     });
   });
 
+  // One answer per question, enforced here rather than by the disabled
+  // attribute the close sets. A real browser will not fire click on a disabled
+  // button, but that is the DOM enforcing a *protocol* invariant, and the cost
+  // of being wrong is a second `question_response` for a promise that is
+  // already resolved. A flag is one line and does not depend on the rendering.
+  let answered = false;
+
   div.querySelector('.question-submit').addEventListener('click', () => {
+    if (answered) return;
     const answers = [...div.querySelectorAll('.question-block')].map((block) => ({
       question: block.dataset.question,
       answer: block.querySelector('.question-freeform').value.trim(),
     }));
     if (answers.some((a) => !a.answer)) return;   // nothing to send yet
+    answered = true;
     chrome.runtime.sendMessage({
       type: 'question_response',
       // One question answers as a bare string; several answer as the paired
@@ -542,6 +562,8 @@ function appendQuestion(payload) {
   });
 
   div.querySelector('.question-dismiss').addEventListener('click', () => {
+    if (answered) return;
+    answered = true;
     chrome.runtime.sendMessage({ type: 'question_response', payload: { cancelled: true } });
     closeQuestion(div, 'dismissed');
   });
@@ -778,8 +800,30 @@ function scrollToBottom() {
   });
 }
 
+/**
+ * Escape for HTML, **including attribute context**.
+ *
+ * This used to be `div.textContent = str; return div.innerHTML`, which is the
+ * idiom everyone reaches for and which does not escape quotes — that round trip
+ * only has to survive re-parsing as *text*. Every template here interpolates
+ * into attributes as well (`data-value="…"`, `class="risk-…"`), and a quote
+ * there closes the attribute and everything after it is parsed as markup:
+ *
+ *     options: ['" onmouseover="…']   ->   <button data-value="" onmouseover="…">
+ *
+ * Verified, not theorised — jsdom parsed exactly that into a real event
+ * handler on the button. It matters here more than on an ordinary page: this
+ * text is *scraped off gemini.google.com*, so it is third-party input, and the
+ * side panel is an extension page with `chrome.*` in scope.
+ *
+ * Explicit replacement rather than the DOM round trip, so the rule is visible
+ * and the function does not need a document.
+ */
 function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }

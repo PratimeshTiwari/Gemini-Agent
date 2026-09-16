@@ -817,3 +817,13 @@ body.is-popup {
   width: 420px;
   height: 600px;
 }
+
+/* The question's own label — "Parser choice" above "Which parser?". The
+   terminal draws this too; the panel was dropping it. */
+.question-header {
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}

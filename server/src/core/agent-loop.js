@@ -59,6 +59,7 @@ function oneLineError(result) {
 }
 import * as paths from './paths.js';
 import { resolveEffort, effortFromConfig } from './effort.js';
+import { normalizeQuestionSet } from './question.js';
 import { planModelSwitch } from './model-match.js';
 import { archiveTurns } from './session-recall.js';
 import { handleSlashCommand as runSlashCommand } from './slash-commands.js';
@@ -1187,14 +1188,41 @@ export class AgentLoop {
       } else if (call.name === 'ask_question') {
         result = await new Promise((resolve) => {
           this.pendingQuestionResolve = resolve;
+          /**
+           * Normalised here, once, rather than by each front-end.
+           *
+           * These args are parsed out of model prose, so nothing in them is
+           * guaranteed: options arrive as strings, as `{label, description}`,
+           * as a single string instead of an array, or not at all. The
+           * terminal has cleaned that up on arrival since `question.js` was
+           * written — the side panel could not, because it cannot import
+           * server code, so it would have needed its own copy of the rules and
+           * they would have drifted.
+           *
+           * It matters more than tidiness: the loop is parked on
+           * `pendingQuestionResolve` until something is chosen, so a surface
+           * that renders a malformed payload as an unanswerable picker hangs
+           * the turn outright.
+           *
+           * `normalizeQuestionSet` is idempotent, so the terminal running it
+           * again on receipt costs nothing and needed no change.
+           */
+          const questions = normalizeQuestionSet({
+            question: call.args.question,
+            options: call.args.options,
+            header: call.args.header,
+            questions: call.args.questions,
+          });
           this.callbacks.sendToPanel({
             id: randomUUID(),
             type: 'ask_question',
+            // The single-question fields ride along too: the terminal reads
+            // `questions` and anything older reads the flat shape.
             payload: {
-              question: call.args.question,
-              options: call.args.options,
-              header: call.args.header,
-              questions: call.args.questions,
+              question: questions[0].question,
+              options: questions[0].options,
+              header: questions[0].header,
+              questions,
             },
             timestamp: Date.now(),
           });
