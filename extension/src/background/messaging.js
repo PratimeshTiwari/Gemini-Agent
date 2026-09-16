@@ -17,7 +17,11 @@ export function sendToServer(message) {
     console.warn('Cannot send to server — not connected');
     broadcastToSidePanel({
       type: 'error',
-      payload: { message: '❌ Not connected to agent server. Is it running?' },
+      payload: {
+        op: 'not_connected',
+        stage: 'send_to_server',
+        message: '❌ Not connected to agent server. Is it running?',
+      },
     });
   }
 }

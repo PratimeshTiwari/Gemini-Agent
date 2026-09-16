@@ -17,6 +17,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { logError } from '../core/error-log.js';
 import {
   localSessionPath,
   homeSessionPath,
@@ -67,7 +68,10 @@ export class SessionStore {
         fs.copyFileSync(this.localFile, ensureParent(this.homeFile));
       }
     } catch (err) {
-      console.error('[SessionStore] Could not reconcile session copies:', err.message);
+      logError(this.workspacePath, {
+        flow: 'storage', op: 'reconcile',
+        message: `Could not reconcile session copies: ${err.message}`, detail: err.stack,
+      });
     }
   }
 
@@ -77,7 +81,11 @@ export class SessionStore {
       try {
         fn(ensureParent(file));
       } catch (err) {
-        console.error(`[SessionStore] Error writing ${path.basename(file)}:`, err.message);
+        logError(this.workspacePath, {
+          flow: 'storage', op: 'write',
+          message: `Error writing ${path.basename(file)}: ${err.message}`,
+          meta: { file },
+        });
       }
     }
   }
@@ -115,7 +123,10 @@ export class SessionStore {
         .filter((line) => line.trim() !== '')
         .map((line) => JSON.parse(line));
     } catch (err) {
-      console.error('[SessionStore] Error loading history:', err.message);
+      logError(this.workspacePath, {
+        flow: 'storage', op: 'load',
+        message: `Error loading history: ${err.message}`, detail: err.stack,
+      });
       return [];
     }
   }
@@ -126,7 +137,11 @@ export class SessionStore {
       try {
         if (fs.existsSync(file)) fs.unlinkSync(file);
       } catch (err) {
-        console.error(`[SessionStore] Error clearing ${path.basename(file)}:`, err.message);
+        logError(this.workspacePath, {
+          flow: 'storage', op: 'clear',
+          message: `Error clearing ${path.basename(file)}: ${err.message}`,
+          meta: { file },
+        });
       }
     }
   }

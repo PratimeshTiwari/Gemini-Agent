@@ -1,18 +1,22 @@
 import { connectWebSocket } from './socket.js';
 import { sendToServer } from './messaging.js';
 import { getState } from './state.js';
-import { broadcastTabStatus } from './content.js';
+import { broadcastTabStatus, reinjectModelTabs, restoreFocusFrom, forgetTab, endSession } from './content.js';
 
 // Open side panel on extension icon click
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
 // Listen for tab removals / updates to keep server informed of active tabs
-chrome.tabs.onRemoved.addListener(() => {
+chrome.tabs.onRemoved.addListener((tabId) => {
+  // Any tab, not just ones we opened: a main tab the user closes by hand must
+  // stop being remembered, or the next turn sends into a tab that is gone and
+  // reports the site as unreachable.
+  forgetTab(tabId);
   broadcastTabStatus();
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' && tab.url && (tab.url.includes('gemini.google.com') || tab.url.includes('chatgpt.com') || tab.url.includes('claude.ai'))) {
+  if (changeInfo.status === 'complete' && tab.url && (tab.url.includes('gemini.google.com') || tab.url.includes('chatgpt.com'))) {
     broadcastTabStatus();
   }
 });
@@ -28,14 +32,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'diff_response':
       case 'gemini_response':
       case 'gemini_response_stream':
-        if (type === 'gemini_response' && payload.complete && payload.isSubagent && sender.tab) {
-          payload.subagentUrl = sender.tab.url;
-          chrome.tabs.remove(sender.tab.id).catch(err => console.warn('Failed to auto-close subagent tab:', err));
+        if (type === 'gemini_response' && sender.tab) {
+          // A turn is over when the reply is complete *or* when it gave up. The
+          // close used to run only on `complete`, so a timed-out subagent left
+          // its tab open — and `runHeadlessTask` runs up to ten turns.
+          const finished = payload.complete || payload.timedOut;
+
+          if (finished) {
+            // Before the close, not after: once the tab is gone Chrome has
+            // already picked a new active tab, and the "do we still hold focus"
+            // check can no longer tell whether the user had moved on.
+            await restoreFocusFrom(sender.tab.id);
+          }
+
+          if (finished && payload.isSubagent) {
+            if (payload.complete) payload.subagentUrl = sender.tab.url;
+            // A tab held for a *batch session* outlives the turn: the whole
+            // point is that the next turn finds the thread still there. It is
+            // closed by an explicit end_session when the task is over.
+            if (!payload.sessionId) {
+              forgetTab(sender.tab.id);
+              chrome.tabs.remove(sender.tab.id)
+                .catch(err => console.warn('Failed to auto-close subagent tab:', err));
+            }
+          }
         }
         sendToServer({ type, payload });
         sendResponse({ success: true });
         break;
 
+      case 'turn_trace':
       case 'github_pr_comment':
       case 'github_pr_viewing':
         sendToServer({ type, payload });
@@ -66,7 +92,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 // Connect on install/startup
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('🤖 Gemini Agent extension installed');
+  console.log('🤖 Agent CLI extension installed');
   connectWebSocket();
 });
 
@@ -83,3 +109,8 @@ chrome.runtime.onConnect.addListener((port) => {
 
 // Try to connect immediately
 connectWebSocket();
+
+// And repair any tab whose content script this worker's start just orphaned.
+// See reinjectModelTabs: without it, a reload of the extension leaves open
+// Gemini tabs looking healthy while every reply is silently dropped.
+reinjectModelTabs();

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gemini Agent Bridge</title>
+  <title>Agent CLI Bridge</title>
   <link rel="stylesheet" href="panel.css">
 </head>
 <body>
@@ -18,10 +18,6 @@
         <span id="mode-icon">🔒</span>
         <span id="mode-text">Plan</span>
       </button>
-      <div id="context-bar" class="context-bar" title="Context usage">
-        <div id="context-fill" class="context-fill"></div>
-        <span id="context-label">0%</span>
-      </div>
     </div>
   </header>
 
@@ -29,7 +25,7 @@
   <main id="message-stream">
     <div id="welcome-message" class="welcome">
       <div class="welcome-icon">🤖</div>
-      <h2>Gemini Agent</h2>
+      <h2>Agent CLI</h2>
       <p>Start the local server and connect to begin.</p>
       <code>cd server && npm start</code>
       <div class="welcome-tips">

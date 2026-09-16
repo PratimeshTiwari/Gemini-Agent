@@ -74,6 +74,75 @@ let lastActivityTime = 0;
 let activityCheckTimer = null;
 let currentRequestData = null;
 
+/**
+ * Talking to the extension, when the extension may no longer be there.
+ *
+ * Reloading the extension orphans every content script already running in a
+ * page: the page keeps executing this code, but its link to the extension is
+ * severed and **`chrome.runtime.sendMessage` throws synchronously** —
+ * `Uncaught Error: Extension context invalidated.` A `.catch()` does not catch
+ * it, because nothing was ever returned to reject.
+ *
+ * That is how a reload silently broke a live turn: Gemini answered, the scrape
+ * worked, `onResponseComplete` called `sendMessage`, it threw, and the agent
+ * sat on "Thinking…" until the five-minute watchdog. Nothing said why.
+ *
+ * So every call goes through here. When the context is gone we stop the timers
+ * and observers this page owns rather than throwing once per tick forever — and
+ * the service worker re-injects a fresh copy on startup, which is what actually
+ * repairs the tab.
+ */
+let bridgeInvalidated = false;
+const onInvalidated = [];
+
+/** The id disappears the moment this context is orphaned. */
+function bridgeAlive() {
+  try {
+    return !bridgeInvalidated && Boolean(chrome.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+function invalidate() {
+  if (bridgeInvalidated) return;
+  bridgeInvalidated = true;
+  // `console.info`, not `console.warn`, and the level is the whole point.
+  //
+  // Chrome's extension **Errors** panel collects `warn` and `error` from content
+  // scripts, so warning here put a routine, expected, self-repairing event in a
+  // list labelled Errors — one entry per open model tab, persisting until
+  // someone clears it. It was reported twice as "is this a problem?", which is
+  // the answer: the message was fine and the level was making it look like a
+  // fault.
+  //
+  // Expected, because reloading the extension orphans every content script by
+  // definition. Self-repairing, because `reinjectModelTabs()` runs on every
+  // service-worker start and injects a fresh copy. Once, because
+  // `bridgeInvalidated` guards it and the nudge timer is cleared below.
+  //
+  // Still logged, because "why did the agent go quiet?" is a real question and
+  // this is its answer — it just belongs in the console for whoever is looking,
+  // not in an alarm list for everyone who ever pressed Reload.
+  console.info('[Agent CLI] Extension was reloaded; this content script is orphaned. '
+    + 'A fresh one is injected on the extension\'s next start, or reload this tab.');
+  for (const stop of onInvalidated) {
+    try { stop(); } catch {}
+  }
+}
+
+/** Send, or quietly give up. Never throws, never rejects. */
+function safeSend(message) {
+  if (!bridgeAlive()) { invalidate(); return Promise.resolve(undefined); }
+  try {
+    const p = chrome.runtime.sendMessage(message);
+    return p && typeof p.catch === 'function' ? p.catch(() => undefined) : Promise.resolve(undefined);
+  } catch (err) {
+    if (/context invalidated/i.test(err?.message || '')) invalidate();
+    return Promise.resolve(undefined);
+  }
+}
+
 // ── DOM Helpers ─────────────────────────────────────────────────────
 
 /**
@@ -114,7 +183,7 @@ async function injectPrompt(text) {
   try {
     const input = findElement(SELECTORS.inputField);
     if (!input) {
-      throw new Error('Could not find ChatGPT input field');
+      throw new Error('[find_input] Could not find the ChatGPT input field — the editor selector has probably changed');
     }
 
     // Record how many responses exist BEFORE we send
@@ -137,19 +206,51 @@ async function injectPrompt(text) {
 
       const dataTransfer = new DataTransfer();
 
-      // Strip image data
+      // Attach the image, rather than deleting it. This used to strip the
+      // <image_data> block and paste the remaining text, so `/image` against
+      // ChatGPT silently sent a prompt that talked about a screenshot nobody
+      // had been given. Same technique as the Gemini bridge: rebuild the data
+      // URL into a real File and let one paste event carry both.
       const imgRegex = /<image_data>\n(data:image\/[^;]+;base64,[^\n]+)\n<\/image_data>/;
-      text = text.replace(imgRegex, '').trim();
+      const imgMatch = text.match(imgRegex);
+      let hasImage = false;
 
-      dataTransfer.setData('text/plain', text);
+      if (imgMatch) {
+        text = text.replace(imgRegex, '').trim();
+        try {
+          const res = await fetch(imgMatch[1]);
+          const blob = await res.blob();
+          const ext = (blob.type.split('/')[1] || 'png');
+          dataTransfer.items.add(new File([blob], `image.${ext}`, { type: blob.type }));
+          hasImage = true;
+          console.log(`[ChatGPT Bridge] Attached image file: image.${ext} (${Math.round(blob.size / 1024)}KB)`);
+        } catch (err) {
+          // The prompt still goes; the model is told the image did not.
+          console.error('[ChatGPT Bridge] Failed to convert image data URL to Blob', err);
+          text = `${text}\n\n(An image was attached but could not be delivered to this tab.)`;
+        }
+      }
+
+      if (text) {
+        dataTransfer.setData('text/plain', text);
+      }
+
       const pasteEvent = new ClipboardEvent('paste', {
         clipboardData: dataTransfer,
         bubbles: true,
         cancelable: true,
       });
 
+      input.focus();
       const pasteHandled = !input.dispatchEvent(pasteEvent);
+
+      // The upload is asynchronous; sending before it lands drops the file.
+      if (hasImage) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
       if (!pasteHandled && text) {
+        input.focus();
         document.execCommand('insertText', false, text);
       }
 
@@ -172,7 +273,7 @@ async function injectPrompt(text) {
       await new Promise(r => setTimeout(r, 1000));
       const currentText = input.tagName === 'TEXTAREA' ? input.value : input.textContent;
       if (currentText.trim().length > 0) {
-        throw new Error("Failed to submit prompt: Send button never became active.");
+        throw new Error("[send_button] Send button never became active — the button selector has probably changed");
       }
     }
 
@@ -263,7 +364,7 @@ function startResponseObserver() {
         streamingUpdateTimer = setInterval(() => {
           if (lastResponseText && lastResponseText !== lastStreamedText) {
             lastStreamedText = lastResponseText;
-            chrome.runtime.sendMessage({
+            safeSend({
               type: 'gemini_response_stream',
               payload: {
                 content: lastResponseText,
@@ -293,7 +394,7 @@ function startResponseObserver() {
       console.warn('[ChatGPT Bridge] Absolute max timeout reached (5 min)');
       clearInterval(streamingUpdateTimer);
       stopResponseObserver();
-      chrome.runtime.sendMessage({
+      safeSend({
         type: 'gemini_response',
         payload: {
           content: lastResponseText || '[No response received — max timeout reached]',
@@ -351,68 +452,221 @@ function extractLatestResponse() {
 }
 
 /**
- * Extract clean text content from an element, preserving code blocks and basic formatting.
+ * Turn the reply's DOM into markdown.
+ *
+ * **Why this is a walker and not a list of fixes.** It used to be a series of
+ * `querySelectorAll` passes — one for code, one for bold, one for lists — over
+ * a clone, finishing with `clone.textContent`. That works for the tags someone
+ * thought of and silently mangles everything else, because `textContent`
+ * concatenates with no separator. Measured on the old version:
+ *
+ * ```
+ * <blockquote>      the quote marker vanished
+ * <hr>              vanished entirely
+ * <del>wrong</del>  read as ordinary text — the meaning inverted
+ * <img>             vanished
+ * <details>         "MoreHidden detail"
+ * <dl><dt><dd>      "TermDefinition.After."
+ * <table>           "FactorNative API AgentsCostMetered token costs..."
+ * ```
+ *
+ * The reported table bug was not a special case; it was the default. So the
+ * question worth answering is not "which tags are missing" but "what happens to
+ * a tag nobody listed", and the answer here is: block elements get separated,
+ * inline elements do not. A tag this does not know still comes out readable,
+ * which is the property the old version could not have.
+ *
+ * Nothing is dropped silently. Anything with no markdown equivalent falls
+ * through to its own text, in the right place.
  */
+
 function extractTextContent(element) {
   if (!element) return '';
 
-  const clone = element.cloneNode(true);
+  // Declared inside, not at module scope. `test/load-content-script.js` lifts
+  // one function out of this file by brace matching — deliberately, so the
+  // tests run the shipped source with nothing mocked — which means anything
+  // this closes over at module scope is invisible to it. A helper the tests
+  // cannot reach is a helper the tests do not cover.
+  /** Elements that end the line they are on. Everything else flows inline. */
+  const BLOCK_TAGS = new Set([
+    'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DD', 'DETAILS', 'DIALOG', 'DIV',
+    'DL', 'DT', 'FIELDSET', 'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2',
+    'H3', 'H4', 'H5', 'H6', 'HEADER', 'HGROUP', 'HR', 'LI', 'MAIN', 'NAV', 'OL',
+    'P', 'PRE', 'SECTION', 'TABLE', 'UL',
+  ]);
 
-  // Replace code blocks with fenced blocks
-  clone.querySelectorAll('pre code, code-block').forEach(codeBlock => {
-    const lang = codeBlock.getAttribute('data-language') ||
-                 codeBlock.className.match(/language-(\w+)/)?.[1] || '';
-    const code = codeBlock.textContent;
-    const replacement = document.createTextNode(`\n\`\`\`${lang}\n${code}\n\`\`\`\n`);
-    codeBlock.parentElement.replaceWith(replacement);
-  });
+  /** Never part of a reply, whatever it contains. */
+  const DROP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'BUTTON']);
 
-  clone.querySelectorAll('code').forEach(code => {
-    const replacement = document.createTextNode(`\`${code.textContent}\``);
-    code.replaceWith(replacement);
-  });
+  /** The language of a code block, wherever this site happens to keep it. */
+  function codeLanguage(el) {
+    if (!el) return '';
+    const attr = el.getAttribute && el.getAttribute('data-language');
+    if (attr) return attr;
+    const cls = el.className && typeof el.className === 'string' ? el.className : '';
+    return (cls.match(/language-(\w+)/) || [])[1] || '';
+  }
 
-  clone.querySelectorAll('strong, b').forEach(el => {
-    el.replaceWith(document.createTextNode(`**${el.textContent}**`));
-  });
+  /** One table, as markdown pipe rows. */
+  function tableToMarkdown(table, render) {
+    const rows = [...table.querySelectorAll('tr')];
+    if (rows.length === 0) return '';
 
-  clone.querySelectorAll('em, i').forEach(el => {
-    el.replaceWith(document.createTextNode(`*${el.textContent}*`));
-  });
+    const cellsOf = (tr) => [...tr.children]
+      .filter((c) => c.tagName === 'TD' || c.tagName === 'TH')
+      // Flattened to one line: a newline inside a pipe row ends the row, so a
+      // cell containing a list would silently truncate the table.
+      .map((c) => render(c).replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim());
 
-  clone.querySelectorAll('a').forEach(el => {
-    const href = el.getAttribute('href') || '';
-    el.replaceWith(document.createTextNode(`[${el.textContent}](${href})`));
-  });
+    const body = rows.map(cellsOf).filter((cells) => cells.length > 0);
+    if (body.length === 0) return '';
 
-  clone.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(el => {
-    const level = parseInt(el.tagName.substring(1), 10);
-    const hashes = '#'.repeat(level);
-    el.replaceWith(document.createTextNode(`\n${hashes} ${el.textContent}\n`));
-  });
+    const width = Math.max(...body.map((cells) => cells.length));
+    const line = (cells) => {
+      const out = cells.slice(0, width);
+      while (out.length < width) out.push('');
+      return `| ${out.join(' | ')} |`;
+    };
 
-  clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
-  clone.querySelectorAll('p').forEach(p => p.append('\n\n'));
-  
-  clone.querySelectorAll('div').forEach(div => {
-    let hasDirectText = false;
-    for (const child of div.childNodes) {
-      if (child.nodeType === Node.TEXT_NODE && child.textContent.trim().length > 0) {
-        hasDirectText = true;
-        break;
+    // A table with no <th> still needs a header row, or it is not markdown.
+    const lines = [line(body[0]), `|${' --- |'.repeat(width)}`];
+    for (const cells of body.slice(1)) lines.push(line(cells));
+    return `\n\n${lines.join('\n')}\n\n`;
+  }
+
+  /**
+   * @param {Node} node
+   * @param {{pre: boolean}} ctx
+   */
+  const render = (node, ctx = { pre: false }) => {
+    if (!node) return '';
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent || '';
+      // Source indentation is not content. Inside <pre> it is.
+      return ctx.pre ? text : text.replace(/\s+/g, ' ');
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+    const tag = node.tagName;
+    if (DROP_TAGS.has(tag)) return '';
+
+    const children = (over = {}) => [...node.childNodes]
+      .map((child) => render(child, { ...ctx, ...over })).join('');
+
+    switch (tag) {
+      case 'CODE-BLOCK':
+      case 'PRE': {
+        const pre = tag === 'PRE' ? node : node.querySelector('pre');
+        const code = (pre || node).querySelector('code');
+        const source = code || pre || node;
+        const lang = codeLanguage(code) || codeLanguage(pre) || codeLanguage(node);
+        // `textContent` of the source, not of the wrapper: Gemini's wrapper
+        // holds a header chip whose label and copy button would otherwise be
+        // welded onto the first line of code.
+        return `\n\n\`\`\`${lang}\n${source.textContent.replace(/\n+$/, '')}\n\`\`\`\n\n`;
       }
-    }
-    if (hasDirectText) {
-      div.append('\n');
-    }
-  });
 
-  clone.querySelectorAll('li').forEach(li => {
-    li.prepend('- ');
-    li.append('\n');
-  });
+      // Inline code, but only when it is not the body of a block handled above.
+      case 'CODE':
+        return `\`${node.textContent}\``;
 
-  return clone.textContent.trim().replace(/\n{3,}/g, '\n\n');
+      case 'STRONG':
+      case 'B':
+        return `**${children()}**`;
+      case 'EM':
+      case 'I':
+        return `*${children()}*`;
+      case 'DEL':
+      case 'S':
+      case 'STRIKE':
+        // Not cosmetic: without it, struck-through text reads as an assertion.
+        return `~~${children()}~~`;
+
+      case 'BR':
+        return '\n';
+      case 'HR':
+        return '\n\n---\n\n';
+
+      case 'A': {
+        const href = node.getAttribute('href') || '';
+        const text = children();
+        return href ? `[${text}](${href})` : text;
+      }
+      case 'IMG': {
+        const alt = node.getAttribute('alt') || '';
+        const src = node.getAttribute('src') || '';
+        return src ? `![${alt}](${src})` : '';
+      }
+
+      case 'H1': case 'H2': case 'H3':
+      case 'H4': case 'H5': case 'H6':
+        return `\n\n${'#'.repeat(Number(tag[1]))} ${children().trim()}\n\n`;
+
+      case 'BLOCKQUOTE': {
+        const body = children().trim();
+        if (!body) return '';
+        return `\n\n${body.split('\n').map((l) => `> ${l}`.trimEnd()).join('\n')}\n\n`;
+      }
+
+      case 'TABLE':
+        return tableToMarkdown(node, (cell) => render(cell, ctx));
+
+      case 'UL':
+      case 'OL':
+        // The items add their own leading newlines; the list closes itself so
+        // whatever follows is not swallowed by the last item.
+        return `${children()}\n`;
+
+      case 'LI': {
+        const parent = node.parentElement;
+        const ordered = parent && parent.tagName === 'OL';
+        const index = ordered
+          ? [...parent.children].filter((c) => c.tagName === 'LI').indexOf(node) + 1
+          : 0;
+        const marker = ordered ? `${index}. ` : '- ';
+
+        // A checkbox in an item is a task list, and the state is the point.
+        const box = node.querySelector('input[type="checkbox"]');
+        const tick = box ? (box.checked || box.hasAttribute('checked') ? '[x] ' : '[ ] ') : '';
+
+        // Leading newlines go too, not just spaces. A *loose* item holds block
+        // children (`<li><p>text</p><pre>…</pre></li>`), and those open with a
+        // newline — which lands straight after the marker, leaving an empty
+        // item and orphaning its own content as a sibling of the list.
+        const body = children().replace(/^\s+/, '').trimEnd();
+
+        // Continuation lines are indented to *this item's* content column, not
+        // by a constant. `- ` is two columns, `1. ` is three, `10. ` is four,
+        // and a task box adds four more. Two spaces under a `1. ` parent is
+        // below the content column, so the nested list closed the parent and
+        // reopened as a sibling: every list nested under a numbered item came
+        // out flat. Blank lines stay blank rather than becoming trailing space.
+        const pad = ' '.repeat(marker.length + tick.length);
+        return `\n${marker}${tick}${body.replace(/\n(?=[^\n])/g, `\n${pad}`)}`;
+      }
+
+      case 'DT':
+        return `\n\n**${children().trim()}**`;
+      case 'DD':
+        return `\n: ${children().trim()}`;
+
+      case 'SUMMARY':
+        return `\n\n**${children().trim()}**\n`;
+
+      default:
+        // The whole point: a tag nobody listed still comes out readable.
+        // Block elements are separated, inline ones flow.
+        return BLOCK_TAGS.has(tag) ? `\n${children()}\n` : children();
+    }
+  };
+
+  return render(element)
+    // Trailing spaces left by collapsed whitespace at a line end.
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /**
@@ -421,7 +675,7 @@ function extractTextContent(element) {
 function onResponseComplete(responseText) {
   stopResponseObserver();
 
-  chrome.runtime.sendMessage({
+  safeSend({
     type: 'gemini_response',
     payload: {
       content: responseText,
@@ -489,27 +743,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 console.log('[ChatGPT Bridge] Content script loaded on:', window.location.href);
 
 // Notify service worker that we're ready
-chrome.runtime.sendMessage({
+safeSend({
   type: 'content_script_ready',
   payload: {
     url: window.location.href,
     model: 'chatgpt',
     timestamp: Date.now(),
   },
-}).catch(() => {
-  // Service worker may not be ready yet
 });
 
-// Keep the service worker alive
+/**
+ * Keep the bridge connected — see the long note in `gemini-bridge.js`. In short:
+ * Chrome terminates the idle service worker and its timers die with it, so the
+ * only reconnect cadence was `chrome.alarms`' 30-second floor. A content script
+ * lives as long as its page, and `sendMessage` wakes the worker.
+ */
+const CONNECT_NUDGE_MS = 3000;
 let keepAlivePort = null;
+
 function connectToServiceWorker() {
+  if (!bridgeAlive()) return;
   try {
     keepAlivePort = chrome.runtime.connect({ name: 'keepAlive' });
     keepAlivePort.onDisconnect.addListener(() => {
       setTimeout(connectToServiceWorker, 1000);
     });
   } catch (err) {
-    // Context invalidated
+    // Context invalidated — the extension was reloaded under this page.
   }
 }
 connectToServiceWorker();
+
+const nudgeTimer = setInterval(() => {
+  safeSend({ type: 'connect' });
+}, CONNECT_NUDGE_MS);
+onInvalidated.push(() => clearInterval(nudgeTimer));

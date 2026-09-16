@@ -1,87 +1,174 @@
 import { getState, setState } from './state.js';
+import { retryDelay, resolvePort, socketUrlFor } from './policy.js';
 import { broadcastToSidePanel, sendToServer } from './messaging.js';
-import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus } from './content.js';
+import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab, endSession } from './content.js';
 
-const WS_URL = 'ws://localhost:7777';
-const RECONNECT_BASE = 1000;
-const RECONNECT_MAX = 30000;
+/**
+ * The socket to the local agent, and the retry policy around it.
+ *
+ * The retry policy is the interesting half, because the obvious version of it
+ * does not work under MV3 and the symptom is "the extension takes half a minute
+ * to notice the agent is running".
+ *
+ * It used to compute an exponential backoff — 1s, 2s, 4s, 8s, 16s, capped at
+ * RECONNECT_MAX = 30000 — and hand the result to `chrome.alarms`. Alarms clamp
+ * to a **30-second floor**, and that cap was exactly the floor, so the whole
+ * ladder collapsed to a constant: every retry was 30 seconds and the arithmetic
+ * above it did nothing. Measured with the real extension in headless Chrome,
+ * timing `listening` → `identify`: **13.6s** with Chrome already running, 25.6s
+ * on a cold start, and in both cases the server saw exactly **one** handshake.
+ * The extension was not retrying and failing, it was not trying.
+ *
+ * Two things fix it, and under MV3 they are one problem:
+ *
+ *  - Retry on `setTimeout` while the worker is alive. Alarms are for long gaps.
+ *  - Keep the worker alive while disconnected. A pending `setTimeout` does not
+ *    stop Chrome terminating an idle worker, and a timer inside a dead worker
+ *    never fires — so a fast ladder without this is a fast ladder that gets
+ *    killed after the first rung.
+ *
+ * Nothing can push at the worker from outside: the agent cannot wake it. So the
+ * extension has to be the thing still looking, which is why being resident
+ * *while disconnected* is the point, and why it stops the moment a socket opens.
+ */
+
+// The ladder, the floor it must stay under, and the port rules live in
+// `policy.js` — they are arithmetic and validation, and keeping them there is
+// what lets `node --test` cover the decisions this file has always got wrong.
+
+/**
+ * Chrome terminates an idle service worker after ~30s. Any extension API call
+ * resets that timer, so one cheap call on an interval keeps the worker resident
+ * — but only while there is nothing to connect to, and never once connected,
+ * where WebSocket traffic and the heartbeat already do it.
+ */
+const KEEPALIVE_MS = 20000;
+
+/** The backstop for the case this file cannot cover: the worker dies anyway. */
+const ALARM_FALLBACK_MINUTES = 0.5; // the clamp floor; asking for less is ignored
+
 const HEARTBEAT_INTERVAL = 10000;
 
 export let ws = null;
 let heartbeatTimer = null;
+let retryTimer = null;
+let keepAliveTimer = null;
+let attempt = 0;
 
-export function connectWebSocket() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-    return;
-  }
-
+/**
+ * The agent's port. `--port` is a documented server flag, so this cannot be a
+ * constant — but it also cannot be discovered, so it is a setting with the
+ * default the server also uses.
+ */
+async function getPort() {
   try {
-    ws = new WebSocket(WS_URL);
-
-    ws.onopen = async () => {
-      console.log('✅ Connected to agent server');
-      await setState({ connected: true, reconnectAttempts: 0, lastError: null });
-
-      ws.send(JSON.stringify({
-        id: crypto.randomUUID(),
-        type: 'identify',
-        payload: { clientType: 'extension' },
-        timestamp: Date.now(),
-      }));
-
-      broadcastTabStatus();
-      startHeartbeat();
-
-      broadcastToSidePanel({
-        type: 'connection_status',
-        payload: { connected: true },
-      });
-    };
-
-    ws.onmessage = async (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        await handleServerMessage(message);
-      } catch (err) {
-        console.error('Failed to parse server message:', err);
-      }
-    };
-
-    ws.onclose = async (event) => {
-      console.log(`🔌 Disconnected from agent server (code: ${event.code})`);
-      ws = null;
-      stopHeartbeat();
-      await setState({ connected: false });
-
-      broadcastToSidePanel({
-        type: 'connection_status',
-        payload: { connected: false },
-      });
-
-      if (event.code !== 1000) {
-        scheduleReconnect();
-      }
-    };
-
-    ws.onerror = async (err) => {
-      console.error('WebSocket error:', err);
-      await setState({ lastError: 'Connection failed' });
-    };
-  } catch (err) {
-    console.error('Failed to create WebSocket:', err);
-    scheduleReconnect();
+    const { agentPort } = await chrome.storage.local.get('agentPort');
+    return resolvePort(agentPort);
+  } catch {
+    return resolvePort(undefined);
   }
 }
 
-async function scheduleReconnect() {
-  const state = await getState();
-  const attempts = state.reconnectAttempts + 1;
-  const delay = Math.min(RECONNECT_BASE * Math.pow(2, attempts - 1), RECONNECT_MAX);
+/** 127.0.0.1, not `localhost`: it says what it means and skips the hosts file. */
+async function socketUrl() {
+  return socketUrlFor(await getPort());
+}
 
-  await setState({ reconnectAttempts: attempts });
-  console.log(`🔄 Reconnecting in ${delay}ms (attempt ${attempts})...`);
+export async function connectWebSocket() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  clearTimeout(retryTimer);
+  retryTimer = null;
 
-  await chrome.alarms.create('reconnect', { delayInMinutes: delay / 60000 });
+  let url;
+  try {
+    url = await socketUrl();
+    ws = new WebSocket(url);
+  } catch (err) {
+    console.warn('[socket] could not open', url, err?.message);
+    scheduleRetry();
+    return;
+  }
+
+  ws.onopen = async () => {
+    attempt = 0;
+    stopKeepAlive();              // connected: the heartbeat keeps the worker up
+    await setState({ connected: true, reconnectAttempts: 0, lastError: null });
+
+    ws.send(JSON.stringify({
+      id: crypto.randomUUID(),
+      type: 'identify',
+      payload: { clientType: 'extension' },
+      timestamp: Date.now(),
+    }));
+
+    broadcastTabStatus();
+    startHeartbeat();
+    broadcastToSidePanel({ type: 'connection_status', payload: { connected: true } });
+  };
+
+  ws.onmessage = async (event) => {
+    try {
+      await handleServerMessage(JSON.parse(event.data));
+    } catch (err) {
+      console.warn('[socket] unparseable server message:', err?.message);
+    }
+  };
+
+  ws.onclose = async (event) => {
+    ws = null;
+    stopHeartbeat();
+    await setState({ connected: false });
+    broadcastToSidePanel({ type: 'connection_status', payload: { connected: false } });
+    // 1000 is a deliberate close from the other end; everything else is the
+    // agent not being there yet, which is the ordinary case at startup.
+    if (event.code !== 1000) scheduleRetry();
+  };
+
+  ws.onerror = async () => {
+    // `onclose` always follows, and that is where the retry is scheduled — doing
+    // it here too would double the ladder.
+    await setState({ lastError: 'Connection failed' });
+  };
+}
+
+/**
+ * Try again soon, and stay alive long enough to do it.
+ *
+ * The alarm is armed alongside the timer rather than instead of it: if Chrome
+ * kills the worker despite the keepalive, the timer dies with it and the alarm
+ * is the only thing left that can bring it back.
+ */
+function scheduleRetry() {
+  const delay = retryDelay(attempt);
+  attempt++;
+
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => connectWebSocket(), delay);
+
+  startKeepAlive();
+  chrome.alarms.create('reconnect', { delayInMinutes: ALARM_FALLBACK_MINUTES });
+  setState({ reconnectAttempts: attempt }).catch(() => {});
+}
+
+function startKeepAlive() {
+  if (keepAliveTimer) return;
+  const ping = () => chrome.runtime.getPlatformInfo().catch(() => {});
+  ping();                       // immediately, not one interval from now
+  keepAliveTimer = setInterval(() => {
+    // Any extension API call resets the worker's idle timer. This is the
+    // cheapest one that does not touch tabs, storage or the network.
+    ping();
+  }, KEEPALIVE_MS);
+}
+
+function stopKeepAlive() {
+  if (keepAliveTimer) {
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
+  }
+  chrome.alarms.clear('reconnect').catch(() => {});
 }
 
 function startHeartbeat() {
@@ -129,10 +216,21 @@ async function handleServerMessage(message) {
     case 'new_chat':
       await triggerNewChatInModel(payload);
       break;
+    case 'end_session':
+      // A batch task is over, so the tab it was holding can go. Closing it here
+      // rather than when a turn completes is the whole point of a session: the
+      // next turn has to find the thread still there.
+      await endSession(payload?.sessionId);
+      break;
+    case 'discover_models':
+    case 'switch_model':
+      // Straight to the model tab. Neither injects a prompt, so neither goes
+      // through the extension lock — reading the picker is not a turn.
+      await sendToModelTab({ type, payload });
+      break;
     case 'heartbeat_ack':
       break;
     default:
-      console.log('Unknown server message type:', type);
       broadcastToSidePanel(message);
   }
 }
