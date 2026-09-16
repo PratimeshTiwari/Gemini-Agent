@@ -6,13 +6,17 @@
 
 import { readdirSync, statSync, existsSync } from 'fs';
 import { resolve, relative, join } from 'path';
+import { displayPath } from '../../core/paths.js';
 
 export async function listDirectory(args, context) {
   const { path: dirPath = '.', recursive = false, maxDepth = 3 } = args;
   const { workspace } = context;
 
   const absPath = dirPath.startsWith('/') ? dirPath : resolve(workspace, dirPath);
-  const relPath = relative(workspace, absPath) || '.';
+  // `.` for the workspace root, which is what it means here; otherwise
+  // relative inside and absolute outside, so an error never names a path
+  // the caller could not have used.
+  const relPath = absPath === resolve(workspace) ? '.' : displayPath(workspace, absPath);
 
   if (!existsSync(absPath)) {
     throw new Error(`Directory not found: ${relPath}`);

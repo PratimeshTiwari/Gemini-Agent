@@ -17,6 +17,9 @@
 import { WebSocketServer as WS } from 'ws';
 import { randomUUID } from 'crypto';
 import { logTrace } from '../core/trace-log.js';
+import { prepareWorkspaceSwitch, leaveWhenIdle, RESTART_EXIT_CODE } from '../core/restart.js';
+import { canPickFolder, pickFolder } from '../core/folder-picker.js';
+import { planResume } from '../core/chat-thread.js';
 import { logError } from '../core/error-log.js';
 
 /**
@@ -188,6 +191,50 @@ export class WebSocketServer {
       },
       timestamp: Date.now(),
     });
+
+    /**
+     * Hand the panel the conversation it cannot read for itself.
+     *
+     * Reported as "I reopened the panel and the chat got cleared". It was
+     * never cleared — `sessions/history.jsonl` has every turn, written twice
+     * on every one. The panel is a browser page with no filesystem, so it
+     * starts from an empty DOM and nothing ever offered it the record. Exactly
+     * the shape the task list had.
+     *
+     * The **last** turns, not all of them: this is one message across a socket
+     * into a page, and someone reopening a panel wants to see where they were,
+     * not six weeks of history. The rest stays on disk for `/sessions`.
+     *
+     * Tool calls and results are dropped. They are a transcript of machinery,
+     * they are the bulk of the bytes, and a restored view of them would be a
+     * wall of JSON where a conversation should be.
+     */
+    this._sendHistory(ws);
+  }
+
+  /** The tail of this workspace's conversation, for a panel that just opened. */
+  _sendHistory(ws) {
+    const MAX_TURNS = 40;
+    let turns = [];
+    try {
+      turns = this.agentLoop?.sessionStore?.loadHistory?.() || [];
+    } catch {
+      return; // a panel with no history is the ordinary first-run case
+    }
+
+    const shown = turns
+      .filter((t) => (t.role === 'user' || t.role === 'assistant' || t.role === 'agent')
+        && typeof t.content === 'string' && t.content.trim())
+      .slice(-MAX_TURNS)
+      .map((t) => ({ role: t.role === 'agent' ? 'assistant' : t.role, content: t.content }));
+    if (shown.length === 0) return;
+
+    this._send(ws, {
+      id: randomUUID(),
+      type: 'history',
+      payload: { turns: shown, total: turns.length },
+      timestamp: Date.now(),
+    });
   }
 
   async _handleMessage(clientId, message) {
@@ -262,6 +309,220 @@ export class WebSocketServer {
         // `core/model-match.js` decides which one an effort rung wants, and the
         // names differ by subscription so they cannot be assumed.
         this.agentLoop.noteModelOptions(payload?.models, payload?.switchedTo);
+        break;
+
+      /**
+       * The side panel answering something the turn is blocked on.
+       *
+       * `ask_question` and a risky `run_command` both park the turn on an
+       * unresolved promise (`pendingQuestionResolve` / `pendingCommandResolve`)
+       * and send the prompt out through `sendToPanel`. The CLI draws those and
+       * answers them; the panel had no way to, and no inbound type existed for
+       * it either — so driving the agent from the panel hung on the first
+       * question or first command approval, permanently, with the panel's send
+       * button disabled behind `isWaitingForResponse`.
+       *
+       * The resolvers were already here and already careful (`cancelQuestion`
+       * resolves rather than rejecting, because leaving it pending is the hang).
+       * Only the way in was missing.
+       */
+      /**
+       * The side panel choosing a workspace.
+       *
+       * Same act as `/workspace <path>` in the CLI, and deliberately the same
+       * code: validation, the supervisor check and the handover file all live
+       * in `core/restart.js` so the two front-ends cannot drift into
+       * disagreeing about what a usable workspace is.
+       *
+       * It restarts rather than switching in place. Every collaborator keyed on
+       * the workspace — the session store, memory, config, the command
+       * allowlist — is rebuilt by a restart and was *not* rebuilt by the
+       * in-place switch this replaced. The panel will see the socket drop and
+       * come back, which is the honest signal that it really did change.
+       */
+      /**
+       * The native folder chooser, opened from the side panel.
+       *
+       * A Chrome extension cannot open one — `<input webkitdirectory>` hands
+       * back a *copy of the directory's contents*, never its path, which is the
+       * only thing wanted here. But the agent runs on the same machine as the
+       * browser, so the server can open the dialog the CLI already uses and
+       * hand back what was chosen.
+       *
+       * The dialog blocks until the person is done, which is fine here: nothing
+       * else is waiting on this message, and a picker that timed out mid-browse
+       * would be worse than one that waits.
+       */
+      case 'pick_workspace': {
+        if (!canPickFolder()) {
+          this.broadcast('extension', {
+            id: randomUUID(), type: 'error',
+            payload: {
+              op: 'pick_workspace', unavailable: true,
+              message: 'No folder chooser on this machine — type the path instead.',
+            },
+            timestamp: Date.now(),
+          });
+          break;
+        }
+        const chosen = await pickFolder('Choose a workspace for the agent');
+        // Cancelled. Saying nothing would read as a hung button.
+        if (!chosen) {
+          this.broadcast('extension', {
+            id: randomUUID(), type: 'status',
+            payload: { message: 'Workspace unchanged.' },
+            timestamp: Date.now(),
+          });
+          break;
+        }
+        await this._handleMessage(clientId, { type: 'set_workspace', payload: { path: chosen } });
+        break;
+      }
+
+      /**
+       * Past conversations, for the side panel's picker.
+       *
+       * The storage and the CLI flags landed first and the panel had no way to
+       * reach any of it — reported as "I reopened the sidebar and there is no
+       * option to continue". A list nobody can open is the same as no list.
+       */
+      /**
+       * A panel asking for the conversation, because it just opened.
+       *
+       * `_sendHistory` runs when the **socket** connects — and opening the side
+       * panel does not reconnect it: the service worker holds one socket for
+       * the life of the browser session, so a panel that opens afterwards is a
+       * fresh page arriving in the middle of an existing connection and is
+       * never told anything. Reported as "opening and closing the sidebar does
+       * not persist the chat", which it looked like from the outside.
+       *
+       * So the panel asks rather than waiting to be told. The connect-time send
+       * stays for the case where the panel is already open when the socket
+       * comes up.
+       */
+      case 'get_history': {
+        const client = this.clients.get(clientId);
+        if (client) this._sendHistory(client.ws);
+        break;
+      }
+
+      case 'list_sessions': {
+        const store = this.agentLoop?.sessionStore;
+        const live = this.agentLoop?.chatThread || null;
+        const sessions = (store?.listSessions?.() || []).slice(0, 30).map((s) => ({
+          ...s,
+          // Said per row, before the choice is made, because the two are
+          // different promises: one carries on, the other has to re-explain
+          // itself to a model that was never there.
+          resume: planResume(s.thread, live).action,
+        }));
+        this.broadcast('extension', {
+          id: randomUUID(), type: 'sessions',
+          payload: { sessions, thread: live },
+          timestamp: Date.now(),
+        });
+        break;
+      }
+
+      case 'resume_session': {
+        const store = this.agentLoop?.sessionStore;
+        const id = payload?.id;
+        const record = (store?.listSessions?.() || []).find((r) => r.id === id);
+
+        // File what is on screen now, or resuming destroys it — the mistake
+        // that made `--sessions` useless in the first place.
+        store?.rollover?.();
+        const turns = store?.resumeSession?.(id);
+        if (!turns) {
+          this.broadcast('extension', {
+            id: randomUUID(), type: 'error',
+            payload: { op: 'resume_session', message: `No session ${id}.` },
+            timestamp: Date.now(),
+          });
+          break;
+        }
+
+        this.agentLoop.conversationHistory = turns;
+        this.agentLoop.promptBuilder?.resetPromptState?.();
+        this.agentLoop.chatThread = record?.thread || null;
+
+        /**
+         * Reopen the conversation rather than describe it.
+         *
+         * A recap is a paraphrase; the thread *is* the memory. Gemini puts it
+         * in the URL, so the tab can simply be pointed back at it — and then
+         * the model has the real history, including everything a twelve-turn
+         * summary would have dropped.
+         *
+         * The recap survives as the fallback for a session that never reached a
+         * thread, or a browser that could not open one.
+         */
+        let message;
+        if (record?.thread?.id) {
+          this.agentLoop._toExtension('open_thread', { thread: record.thread });
+          this.agentLoop.promptBuilder.pendingRecap = null;
+          message = 'Resumed — pointing the tab back at that conversation.';
+        } else {
+          this.agentLoop.promptBuilder.pendingRecap = turns;
+          message = 'Resumed. That conversation never reached a browser thread, '
+            + 'so the next message carries a recap instead.';
+        }
+
+        this.broadcast('extension', {
+          id: randomUUID(), type: 'session_reset',
+          payload: { message },
+          timestamp: Date.now(),
+        });
+        for (const client of this.clients.values()) this._sendHistory(client.ws);
+        break;
+      }
+
+      /**
+       * The browser saying whether it reached that conversation.
+       *
+       * If it could not, the recap becomes the fallback — otherwise the model
+       * is handed a restored transcript it has no knowledge of and asked to
+       * carry on, which is the exact failure the thread id exists to prevent.
+       */
+      case 'thread_opened':
+        if (!payload?.ok) {
+          this.agentLoop.promptBuilder.pendingRecap = this.agentLoop.conversationHistory;
+          this.broadcast('extension', {
+            id: randomUUID(), type: 'status',
+            payload: { message: 'Could not reopen that conversation — sending a recap instead.' },
+            timestamp: Date.now(),
+          });
+        }
+        break;
+
+      case 'set_workspace': {
+        const outcome = prepareWorkspaceSwitch(payload?.path);
+        if (!outcome.ok) {
+          this.broadcast('extension', {
+            id: randomUUID(), type: 'error',
+            payload: { op: 'set_workspace', message: outcome.error },
+            timestamp: Date.now(),
+          });
+          break;
+        }
+        this.broadcast('extension', {
+          id: randomUUID(), type: 'status',
+          payload: { message: `⟳ Restarting in ${outcome.target}…` },
+          timestamp: Date.now(),
+        });
+        // Not out from under a running turn — the browser would keep generating
+        // into a socket nobody is holding and the reply would never be drawn.
+        leaveWhenIdle(RESTART_EXIT_CODE, { wsServer: this, agentLoop: this.agentLoop });
+        break;
+      }
+
+      case 'question_response':
+        if (payload?.cancelled) this.agentLoop.cancelQuestion();
+        else this.agentLoop.answerQuestion(payload?.answer);
+        break;
+
+      case 'command_approval_response':
+        this.agentLoop.answerCommandApproval(payload?.action, payload?.command);
         break;
 
       case 'diff_response':
@@ -495,6 +756,19 @@ export class WebSocketServer {
     if (!client) return;
 
     const result = await this.agentLoop.handleSlashCommand(command, args);
+
+    // Some commands do not answer, they *replace*. `/new` and `/clear` leave
+    // the old conversation on screen otherwise, which reads as though nothing
+    // happened — and the panel would then restore that dead transcript the
+    // next time it opened.
+    if (result?.reset) {
+      this.broadcast('extension', {
+        id: randomUUID(),
+        type: 'session_reset',
+        payload: { message: result.message || '' },
+        timestamp: Date.now(),
+      });
+    }
 
     this._send(client.ws, {
       id: messageId,

@@ -152,9 +152,64 @@ export class PromptBuilder {
 
     // The checklist it wrote, so it can tick the exact line rather than guess
     // at one. Every turn, because ticking is a per-turn act — see _loadTaskList.
+    //
+    /**
+     * A **finished** list is labelled as finished.
+     *
+     * `task.md` is one file reused for every task, so a completed checklist
+     * keeps arriving on every later prompt — including the first prompt of
+     * something entirely unrelated. Handed a list of ticked boxes with no
+     * other framing, the model has no way to tell "you already did this" from
+     * "this is the plan for what you are being asked now", and the natural
+     * mistakes are both bad: tick nothing because it all looks done, or edit
+     * the old file instead of writing a new plan.
+     *
+     * Reported from use — a finished round-2 list still sitting under an
+     * unrelated prompt. Saying so costs one attribute and removes the
+     * ambiguity, where dropping the block entirely would take the handover
+     * review's "re-read `<task_checklist>`" with it.
+     */
+    /**
+     * A resumed conversation the browser tab was never part of.
+     *
+     * The model's memory *is* the chat thread — `conversationHistory` is never
+     * replayed into a tab. So resuming a session into a different thread gives
+     * you a transcript the model has no knowledge of, and it answers
+     * confidently about work it never did.
+     *
+     * Set only when the threads differ (see `planResume`), and cleared after
+     * one turn: it is an introduction, not context to carry forever. Bounded,
+     * because the whole prompt strategy exists to avoid large repeated payloads
+     * typed into a browser.
+     */
+    if (this.pendingRecap?.length) {
+      const RECAP_TURNS = 12;
+      const RECAP_CHARS = 4000;
+      let recap = this.pendingRecap
+        .filter((t) => (t.role === 'user' || t.role === 'assistant' || t.role === 'agent')
+          && typeof t.content === 'string' && t.content.trim())
+        .slice(-RECAP_TURNS)
+        .map((t) => `[${t.role === 'agent' ? 'assistant' : t.role}] ${t.content.trim()}`)
+        .join('\n\n');
+      if (recap.length > RECAP_CHARS) recap = `…\n${recap.slice(-RECAP_CHARS)}`;
+      if (recap) {
+        parts.push('<resumed_conversation note="This happened in an earlier chat you were '
+          + 'not part of. Treat it as background, not as something you remember doing.">\n'
+          + `${recap}\n</resumed_conversation>`);
+      }
+      this.pendingRecap = null;
+    }
+
     const taskList = this._loadTaskList();
     if (taskList) {
-      parts.push(`<task_checklist path=".agent/artifacts/task.md">\n${taskList}\n</task_checklist>`);
+      const pending = /^\s*[-*]\s*\[ \]/m.test(taskList);
+      const state = pending
+        ? ''
+        : ' state="complete" note="This was finished. If the request below is a'
+          + ' new task, write a new list rather than reusing these items."';
+      parts.push(
+        `<task_checklist path=".agent/artifacts/task.md"${state}>\n${taskList}\n</task_checklist>`,
+      );
     }
 
     // Current user message. Nothing follows it: the last thing the model reads
@@ -466,9 +521,21 @@ ${modelTier === 'pro' ? `## 4. Communication
    * Optimized for 2.5 Flash — short attention, weak instruction-following.
    * Budget: ~400 tokens of reasoning instructions.
    */
-  /** The flash tier's reasoning protocol: there is deliberately almost none. */
+  /**
+   * The flash tier's reasoning protocol: there is deliberately almost none.
+   *
+   * The handover check is the exception, and it is two lines. Flash is the
+   * weakest model on the ladder, which makes it the *most* likely to report a
+   * thing as done without having looked — so excluding it, which was the first
+   * instinct, would have left the check off the rung that needs it most.
+   *
+   * Two lines rather than the pro tier's seven because this rung is 5.6k
+   * characters and its whole identity is being terse: the full review is +33%
+   * here against +11% on the tiers above, and a protocol that fights what the
+   * tier is for is one the model follows worse, not better.
+   */
   _getFlashInstructions() {
-    return prompt('reasoning-flash');
+    return `${prompt('reasoning-flash')}\n\n${prompt('handover-micro')}`;
   }
 
   /**
@@ -476,9 +543,14 @@ ${modelTier === 'pro' ? `## 4. Communication
    * Optimized for 2.5 Flash with thinking — decent reasoning, moderate context window.
    * Budget: ~1200 tokens of reasoning instructions.
    */
-  /** Flash-thinking: a three-phase protocol, still a short prompt. */
+  /**
+   * Flash-thinking: a three-phase protocol, still a short prompt.
+   *
+   * The four-point handover, not the two-point one: this rung already has a
+   * protocol and a context budget twice Flash's, so the check costs ~2% here.
+   */
   _getFlashThinkingInstructions() {
-    return prompt('reasoning-flash-thinking');
+    return `${prompt('reasoning-flash-thinking')}\n\n${prompt('handover-lite')}`;
   }
 
   /**
@@ -559,6 +631,26 @@ and what could go wrong with it — empty inputs, concurrent access, scale, erro
 
     const guardrails = `\n${prompt('pro-guardrails')}`;
 
+    /**
+     * The gate at the end, asked for explicitly: a list the agent must check
+     * before handing over, and a statement that it did.
+     *
+     * Placed after the guardrails so it is the last thing in the system
+     * prompt, because it is the last thing in the turn. Skipped on `brief`,
+     * where the ladder's own promise is "straight to work" — a seven-point
+     * review on a one-line fix is the kind of ceremony that gets ignored, and
+     * a checklist people learn to skip is worse than none.
+     *
+     * It leans on `<task_checklist>` riding every turn: without that the model
+     * would be asked to audit a list it cannot see, which is the write-only
+     * trap that made the original task.md useless.
+     */
+    // `brief` gets the four-point version, not nothing and not the seven-point
+    // one. Its promise is "straight to work", and a long review on a one-line
+    // fix is ceremony people learn to skip — but "did you run it" and "what did
+    // you not do" are worth asking at any size, and cost ~2% of this prompt.
+    const handover = `\n${prompt(isBrief ? 'handover-lite' : 'pro-handover-review')}`;
+
     const assumptions = isDeep ? `
 
 ## ASSUMPTION LEDGER
@@ -584,6 +676,8 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
       verify,
       guardrails,
       assumptions,
+      // Last, because it is about the end of the turn.
+      handover,
     ].filter(Boolean).join('\n');
   }
 

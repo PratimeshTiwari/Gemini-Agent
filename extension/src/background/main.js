@@ -1,10 +1,17 @@
-import { connectWebSocket } from './socket.js';
+import { connectWebSocket, isSocketOpen } from './socket.js';
 import { sendToServer } from './messaging.js';
 import { getState } from './state.js';
 import { broadcastTabStatus, reinjectModelTabs, restoreFocusFrom, forgetTab, endSession } from './content.js';
 
-// Open side panel on extension icon click
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+// The toolbar icon opens the popup declared in the manifest, so the
+// open-on-click behaviour this used to set is now ignored by Chrome — a popup
+// and a panel cannot both own the same click. The side panel is still reachable
+// from `⊟` inside the popup, which is the trade this makes: one click to a
+// panel that drops down where you are looking, one more if you want it docked.
+//
+// The three surfaces are one page. Chrome closes a popup whenever it loses
+// focus, which is fine for a question and wrong for watching a long turn, so
+// the popup is the doorway and the panel or the window is where you stay.
 
 // Listen for tab removals / updates to keep server informed of active tabs
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -33,6 +40,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'gemini_response':
       case 'gemini_response_stream':
         if (type === 'gemini_response' && sender.tab) {
+          // Which conversation answered. Gemini puts the thread id in the URL
+          // (`/app/<id>`), and that is the only way to tell later whether the
+          // model still *remembers* a session or has to be told what happened.
+          // Attached for every reply, not just a subagent's, because the main
+          // lane is the one whose sessions get resumed.
+          payload.tabUrl = sender.tab.url;
+
           // A turn is over when the reply is complete *or* when it gave up. The
           // close used to run only on `complete`, so a timed-out subagent left
           // its tab open — and `runHeadlessTask` runs up to ten turns.
@@ -61,6 +75,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true });
         break;
 
+      // The panel unblocking a turn that is parked on a question or a command
+      // approval. Pure relay — the server owns both resolvers.
+      case 'get_history':
+      case 'list_sessions':
+      case 'resume_session':
+      case 'pick_workspace':
+      case 'set_workspace':
+      case 'question_response':
+      case 'command_approval_response':
       case 'turn_trace':
       case 'github_pr_comment':
       case 'github_pr_viewing':
@@ -68,10 +91,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true });
         break;
 
-      case 'get_status':
+      case 'get_status': {
+        // The live socket overrides the stored flag. Stored state records the
+        // last transition; a panel opening between transitions — or after the
+        // service worker was recycled, when `getState` falls back to its
+        // `connected: false` default — would otherwise report Disconnected
+        // over a working bridge.
         const state = await getState();
-        sendResponse({ success: true, ...state });
+        sendResponse({ success: true, ...state, connected: isSocketOpen() });
         break;
+      }
 
       case 'connect':
         connectWebSocket();

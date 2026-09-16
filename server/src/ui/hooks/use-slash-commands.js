@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import * as paths from '../../core/paths.js';
+import { leave, leaveWhenIdle, prepareWorkspaceSwitch, RESTART_EXIT_CODE } from '../../core/restart.js';
 import { createSkill, listSkills, skillSearchPath } from '../../core/skills.js';
 import { describeDestructive } from '../destructive.js';
 import { readErrors, summarizeErrors, clearErrors, FLOWS } from '../../core/error-log.js';
@@ -11,7 +12,7 @@ import { SLASH_COMMANDS } from '../constants.js';
 import { AGENT_COMMANDS } from '../../core/slash-commands.js';
 import { oneLine } from '../format.js';
 import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
-import { canPickFolder, pickFolder } from '../folder-picker.js';
+import { canPickFolder, pickFolder } from '../../core/folder-picker.js';
 import { summariseTraces, formatMs } from '../../core/trace-log.js';
 import { channelHealth, formatRate, MIN_TURNS_FOR_RATE } from '../../core/channel-health.js';
 import { checkForUpdate, isDirty, pullUpdate, savePendingReload, readPendingReload, clearPendingReload } from '../../core/update.js';
@@ -33,55 +34,6 @@ import { checkForUpdate, isDirty, pullUpdate, savePendingReload, readPendingRelo
  * The paint delay stays: Ink needs a frame to show what it just said before
  * the screen goes.
  */
-async function leave(code, { wsServer, agentLoop, delay = 120 }) {
-  await new Promise((r) => setTimeout(r, delay));
-  try { await wsServer?.stop?.(); } catch { /* going anyway */ }
-  try { agentLoop?.taskManager?.cleanup?.(); } catch { /* going anyway */ }
-  process.exit(code);
-}
-
-/**
- * Leave, but not out from under a turn that is still running.
- *
- * Every restart path — `/restart`, `/workspace`, `/update` — called `leave`
- * the moment it was asked. Reported from use: switching workspace mid-turn
- * killed the process, the browser kept generating into a socket nobody was
- * holding, and the reply was simply never drawn. "It stopped and did not
- * output" is exactly right, and it is silent, because from the transcript's
- * point of view the turn just never finished.
- *
- * True concurrency is not available here and is not the fix: a restart is
- * *why* these paths exist. Every collaborator keyed on the workspace — the
- * session store, memory, config, the command allowlist — is rebuilt by
- * restarting and was not rebuilt by the in-place switch this replaced.
- *
- * So the turn is allowed to finish. The user is told that is what will happen,
- * and `esc` is the way to have it now: it sends `:stop`, which clears
- * `isProcessing`, which this notices on its next poll. No extra escape hatch
- * to build, and the one people already know.
- *
- * Polled rather than subscribed because `isProcessing` lives on the agent loop
- * and has no event — and a poll that is wrong is a second of waiting, where a
- * missed event is a restart that never happens.
- *
- * `ctx.exit` is a seam: `leave` ends in `process.exit`, which a test cannot
- * call. Everything except that last step is the part worth testing.
- */
-const IDLE_POLL_MS = 400;
-
-export function leaveWhenIdle(code, ctx, { announce } = {}) {
-  const { agentLoop, exit = leave } = ctx;
-  if (!agentLoop?.isProcessing) return exit(code, ctx);
-
-  announce?.();
-  const timer = setInterval(() => {
-    if (agentLoop.isProcessing) return;
-    clearInterval(timer);
-    exit(code, ctx);
-  }, IDLE_POLL_MS);
-  timer.unref?.();
-  return undefined;
-}
 
 /**
  * Run a "/" command.
@@ -90,6 +42,11 @@ export function leaveWhenIdle(code, ctx, { announce } = {}) {
  * AgentLoop.handleSlashCommand. Anything unrecognised reports itself rather
  * than being sent to the model as a prompt.
  */
+// Moved to core/restart.js so the side panel can ask for a workspace switch
+// too — the bridge cannot import a React hook. Re-exported because the CLI's
+// own restart paths already import it from here.
+export { leaveWhenIdle } from '../../core/restart.js';
+
 export async function handleSlashCommand(query, {
   agentLoop,
   wsServer,
@@ -192,7 +149,7 @@ export async function handleSlashCommand(query, {
       setIsProcessing(false);
       // Let the frame paint, then leave. Ink restores the terminal on exit,
       // which is why this is an ordinary exit rather than an exec in place.
-      leaveWhenIdle(75, { wsServer, agentLoop });
+      leaveWhenIdle(RESTART_EXIT_CODE, { wsServer, agentLoop });
       return;
     }
 
@@ -290,7 +247,7 @@ export async function handleSlashCommand(query, {
       say(lines.join('\n'));
 
       if (process.env.AGENT_CLI_SUPERVISED && !outcome.install) {
-        setTimeout(() => leaveWhenIdle(75, { wsServer, agentLoop }), 1200);
+        setTimeout(() => leaveWhenIdle(RESTART_EXIT_CODE, { wsServer, agentLoop }), 1200);
       }
       return;
     }
@@ -357,14 +314,17 @@ export async function handleSlashCommand(query, {
       return;
     }
 
+    // The substance moved to `core/slash-commands.js` so the side panel can
+    // reach it too — it used to be here, which is why `/new` from the panel
+    // answered "No such command". Only the view reset stays, because that is
+    // the part that genuinely differs between a terminal and a web page.
     if (command === 'new') {
-      agentLoop.conversationHistory = [];
-      agentLoop.promptBuilder.resetPromptState();
-      agentLoop.sessionStore.clear();
+      const result = await agentLoop.handleSlashCommand('new', []);
       setHistory([]);
       resetScreen();
-      wsServer.broadcast('extension', { type: 'new_chat', payload: {} });
-      setHistory([{ role: 'assistant', content: '✨ Starting a new chat in Gemini...', isLocal: true }]);
+      if (result?.message) {
+        setHistory([{ role: 'assistant', content: result.message, isLocal: true }]);
+      }
       setIsProcessing(false);
       return;
     }
@@ -744,31 +704,16 @@ export async function handleSlashCommand(query, {
      * version this replaced. See CLAUDE.md → P1.
      */
     async function switchWorkspace(raw) {
-      const target = resolveWorkspaceInput(raw);
-      const problem = validateWorkspace(target);
-      if (problem) {
-        setHistory(prev => [...prev, { role: 'assistant', content: `❌ ${problem}`, isLocal: true }]);
+      // Validation, the supervisor check and the handover file are all in
+      // core/restart.js now, because the side panel asks for the same thing
+      // and the bridge cannot reach a React hook. Only the wording is local.
+      const outcome = prepareWorkspaceSwitch(raw);
+      if (!outcome.ok) {
+        setHistory(prev => [...prev, { role: 'assistant', content: `❌ ${outcome.error}`, isLocal: true }]);
         setIsProcessing(false);
         return;
       }
-      if (!process.env.AGENT_CLI_SUPERVISED) {
-        setHistory(prev => [...prev, {
-          role: 'assistant',
-          isLocal: true,
-          content: 'This process has no supervisor to restart it.\n\n'
-            + `Quit with \`/exit\` and start again: \`agent-cli --workspace ${target}\``,
-        }]);
-        setIsProcessing(false);
-        return;
-      }
-      try {
-        const { writeFileSync } = await import('fs');
-        writeFileSync(paths.ensureParent(paths.nextWorkspacePath()), target, 'utf8');
-      } catch (err) {
-        setHistory(prev => [...prev, { role: 'assistant', content: `❌ Could not hand over: ${err.message}`, isLocal: true }]);
-        setIsProcessing(false);
-        return;
-      }
+      const { target } = outcome;
       const running = agentLoop.isProcessing;
       setHistory(prev => [...prev, {
         role: 'assistant', isLocal: true,
@@ -777,7 +722,7 @@ export async function handleSlashCommand(query, {
           : `⟳ Restarting in \`${target}\`…`,
       }]);
       setIsProcessing(false);
-      leaveWhenIdle(75, { wsServer, agentLoop });
+      leaveWhenIdle(RESTART_EXIT_CODE, { wsServer, agentLoop });
     }
 
     if (command === 'switch-workspace') {

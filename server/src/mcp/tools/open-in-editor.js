@@ -7,7 +7,8 @@
 
 import { exec } from 'child_process';
 import { existsSync } from 'fs';
-import { resolve, relative } from 'path';
+import { resolve } from 'path';
+import { displayPath } from '../../core/paths.js';
 import { isVSCodeFamily } from '../../core/host-editor.js';
 
 /**
@@ -60,7 +61,10 @@ export async function openInEditor(args, context) {
   const { workspace, editor = 'code' } = context;
 
   const absPath = filePath.startsWith('/') ? filePath : resolve(workspace, filePath);
-  const relPath = relative(workspace, absPath);
+  // Relative inside the workspace, absolute outside it. These tools accept
+  // absolute paths, and a bare `relative()` turns one into `../../../tmp/x`
+  // in the error the model then reads — a path it never used.
+  const relPath = displayPath(workspace, absPath);
 
   if (!existsSync(absPath)) {
     throw new Error(`File not found: ${relPath}`);

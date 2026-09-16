@@ -14,25 +14,51 @@
       <span id="connection-text">Disconnected</span>
     </div>
     <div class="status-right">
+      <!-- Which build is loaded. Three artifacts ship from one repo and only
+           one of them updates when you pull, so "which version am I running"
+           is the first question when something behaves unexpectedly. Filled in
+           from the manifest at load, so it cannot drift from the real one. -->
+      <button id="new-btn" class="icon-btn" title="New chat">+</button>
+      <button id="sessions-btn" class="icon-btn" title="Past conversations">↺</button>
+      <button id="workspace-btn" class="icon-btn" title="Change the workspace">⌂</button>
+      <span id="ext-version" class="ext-version" title="Extension version"></span>
+      <!-- Chrome's side panel is docked by design and no API floats it. A
+           popup window is a real floating window: movable anywhere, including
+           another monitor, and it is this same page. -->
+      <button id="dock-btn" class="icon-btn" title="Dock to the side panel">⊟</button>
+      <button id="popout-btn" class="icon-btn" title="Open in a floating window">⧉</button>
       <button id="mode-toggle" class="mode-btn" title="Toggle Plan/Auto Mode">
-        <span id="mode-icon">🔒</span>
+        <span id="mode-icon">○</span>
         <span id="mode-text">Plan</span>
       </button>
     </div>
   </header>
 
+  <!-- Past conversations. Hidden until asked for: it is a drawer, not a
+       permanent column, and the panel is narrow enough that a list would cost
+       the conversation half its width. -->
+  <section id="sessions-drawer" hidden>
+    <div class="drawer-head">
+      <span>Past conversations</span>
+      <button id="sessions-close" class="icon-btn" title="Close">×</button>
+    </div>
+    <div id="sessions-list"></div>
+  </section>
+
   <!-- Message Stream -->
   <main id="message-stream">
     <div id="welcome-message" class="welcome">
-      <div class="welcome-icon">🤖</div>
       <h2>Agent CLI</h2>
-      <p>Start the local server and connect to begin.</p>
-      <code>cd server && npm start</code>
+      <p>Start the agent in a terminal, then open a Gemini tab and sign in.
+         Inference happens in your own browser session — there is no API key.</p>
+      <code>agent</code>
       <div class="welcome-tips">
-        <span class="tip">/plan — require approval</span>
-        <span class="tip">/auto — auto-apply safe edits</span>
-        <span class="tip">/compact — free context</span>
-        <span class="tip">/clear — fresh start</span>
+        <span class="tip-key">/plan</span><span class="tip-what">approve every edit</span>
+        <span class="tip-key">/auto</span><span class="tip-what">apply safe edits</span>
+        <span class="tip-key">/effort</span><span class="tip-what">how hard it thinks</span>
+        <span class="tip-key">/context</span><span class="tip-what">what the prompt costs</span>
+        <span class="tip-key">/compact</span><span class="tip-what">free context</span>
+        <span class="tip-key">/clear</span><span class="tip-what">fresh start</span>
       </div>
     </div>
   </main>

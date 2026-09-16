@@ -20,5 +20,15 @@ build/
 # Editor settings — the companion is installed from the .vsix, not recommended by id.
 .vscode/
 
-# Local manual-test checklist, not part of the repo
+# RStudio drops this in whatever directory it is pointed at. It reached main as
+# an empty tracked file; the removal rode into an unrelated commit here because
+# of a `git add -A`, so it is named now to stop it coming back.
+.Rhistory
+.Rproj.user/
+
+# Local working notes, not part of the repo. Both are batons rather than
+# documentation: TEST.md is a checklist for one manual run, and HANDOFF.md is
+# what the next session needs to know and is meant to be deleted once it does.
+# The durable versions of what they hold live in CLAUDE.md and README.md.
 TEST.md
+HANDOFF.md

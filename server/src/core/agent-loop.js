@@ -58,7 +58,9 @@ function oneLineError(result) {
   return line.slice(0, 160);
 }
 import * as paths from './paths.js';
+import { threadFromUrl } from './chat-thread.js';
 import { resolveEffort, effortFromConfig } from './effort.js';
+import { normalizeQuestionSet } from './question.js';
 import { planModelSwitch } from './model-match.js';
 import { archiveTurns } from './session-recall.js';
 import { handleSlashCommand as runSlashCommand } from './slash-commands.js';
@@ -130,7 +132,7 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
 6. When done, output ONLY the final plan. Do not include any tool call blocks in the final turn.`;
 
 export class AgentLoop {
-  constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome, continueSession = false, agentSourceDir, taskManager }) {
+  constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome, continueSession = false, resumeSessionId = null, agentSourceDir, taskManager }) {
     this.workspace = workspace;
     this.mcpServer = mcpServer;
     this.promptBuilder = promptBuilder;
@@ -147,8 +149,16 @@ export class AgentLoop {
     this.memoryManager = new MemoryManager(workspace);
     this.contextManager = new ContextManager(workspace, this.memoryManager);
 
-    if (!continueSession) {
-      this.sessionStore.clear(); // Start fresh if --continue not passed
+    if (resumeSessionId) {
+      // Named explicitly, so it becomes the current conversation.
+      this.sessionStore.resumeSession(resumeSessionId);
+    } else if (!continueSession) {
+      // File the old one before starting fresh. It used to be wiped outright,
+      // which is why `--sessions` had nothing to list and `--resume` had
+      // nothing to find: every conversation was destroyed by the start of the
+      // next one.
+      this.sessionStore.rollover();
+      this.sessionStore.clear();
     }
 
     // State defaults
@@ -338,6 +348,12 @@ export class AgentLoop {
    */
   async handleGeminiResponse(messageId, payload) {
     const { content, requestId, isSubagent, complete } = payload;
+
+    // Before anything else, and before the stale-response guard below: which
+    // conversation answered is worth knowing even when the reply itself is no
+    // longer wanted. Subagent tabs are disposable, so only the main lane's
+    // thread is the session's.
+    if (!isSubagent) this._recordThread(payload.tabUrl);
 
     // Allow subagent responses through even when main agent isn't processing —
     // background GitHub tasks use _executeSubagent without setting isProcessing.
@@ -539,6 +555,7 @@ export class AgentLoop {
         payload: { content: cleanContent.trim() },
         timestamp: Date.now(),
       });
+      this._sendTaskList();
     }
 
     // Execute tool calls
@@ -687,6 +704,68 @@ export class AgentLoop {
    * @param {string|Array<{question: string, answer: string}>} answer - a bare
    *   answer, or one entry per question when the model asked a batch.
    */
+  /**
+   * Push the checklist to the side panel.
+   *
+   * The terminal reads `.agent/artifacts/task.md` off disk on a timer. The
+   * panel cannot — it is a browser page — so the one surface that *can* read
+   * the file has to hand it over. Without this the panel is the only place the
+   * agent's own plan is invisible, which is the half of the feature the user
+   * is actually meant to watch.
+   *
+   * Sent at turn boundaries rather than on a timer: ticking happens inside a
+   * turn, and the file is small, so the end of a turn is both when it has
+   * changed and when nothing else is competing for the socket.
+   *
+   * Silent when there is no list. An empty row is worse than no row — it reads
+   * as "the agent has no plan" when it means "the agent did not write one".
+   */
+  /**
+   * Remember which browser conversation answered.
+   *
+   * The model's memory is the chat thread, not `history.jsonl` — so this is
+   * what makes "can this session be resumed?" answerable at all. Recorded on
+   * every reply because a *new* chat has no id until its first exchange: the
+   * id appears partway through, and the last one seen is the one that holds
+   * the conversation.
+   */
+  _recordThread(url) {
+    const thread = threadFromUrl(url);
+    if (!thread?.id) return;
+    if (this.chatThread?.id === thread.id) return;
+    this.chatThread = thread;
+    this.sessionStore?.setThread?.(thread);
+  }
+
+  _sendTaskList() {
+    let body = '';
+    try {
+      const file = paths.artifactPath(this.workspace, 'task.md');
+      if (fs.existsSync(file)) body = fs.readFileSync(file, 'utf-8').trim();
+    } catch {
+      return; // an unreadable artifact must not disturb a finished turn
+    }
+    if (!body) return;
+
+    const items = body.split('\n')
+      .map((l) => l.match(/^\s*[-*]\s*\[([ xX])\]\s*(.*)$/))
+      .filter(Boolean)
+      .map((m) => ({ done: m[1].toLowerCase() === 'x', text: m[2].trim() }));
+    if (items.length === 0) return;
+
+    this.callbacks?.sendToPanel?.({
+      id: randomUUID(),
+      type: 'task_list',
+      payload: {
+        items,
+        done: items.filter((i) => i.done).length,
+        total: items.length,
+        path: paths.artifactPath(this.workspace, 'task.md'),
+      },
+      timestamp: Date.now(),
+    });
+  }
+
   answerQuestion(answer) {
     if (!this.pendingQuestionResolve) return;
 
@@ -921,13 +1000,32 @@ export class AgentLoop {
     target?.sendToPanel?.({ id: randomUUID(), type, payload, timestamp: Date.now() });
   }
 
+  /**
+   * Ask the browser for a fresh conversation.
+   *
+   * The old `/new` broadcast `new_chat` straight from the UI hook, which is
+   * why only the terminal could do it. Routed through the loop, both
+   * front-ends reach the same thing.
+   */
+  startNewChat() {
+    this.chatThread = null;
+    this._toExtension('new_chat');
+  }
+
   requestModelOptions() {
     this._toExtension('discover_models');
   }
 
-  /** Ask the browser to select one, by the label it reported. */
-  switchModelTo(label) {
-    if (label) this._toExtension('switch_model', { label });
+  /**
+   * Ask the browser to select one, by the label it reported.
+   *
+   * `sessionId` names a batch task's own tab. Without it this goes to the main
+   * lane — the tab the user is looking at — which is correct for `/effort` and
+   * wrong for anything running in the background: a task raising its own
+   * effort would change the model the person is talking to.
+   */
+  switchModelTo(label, sessionId = null) {
+    if (label) this._toExtension('switch_model', { label, ...(sessionId ? { sessionId } : {}) });
   }
 
   /**
@@ -1180,14 +1278,41 @@ export class AgentLoop {
       } else if (call.name === 'ask_question') {
         result = await new Promise((resolve) => {
           this.pendingQuestionResolve = resolve;
+          /**
+           * Normalised here, once, rather than by each front-end.
+           *
+           * These args are parsed out of model prose, so nothing in them is
+           * guaranteed: options arrive as strings, as `{label, description}`,
+           * as a single string instead of an array, or not at all. The
+           * terminal has cleaned that up on arrival since `question.js` was
+           * written — the side panel could not, because it cannot import
+           * server code, so it would have needed its own copy of the rules and
+           * they would have drifted.
+           *
+           * It matters more than tidiness: the loop is parked on
+           * `pendingQuestionResolve` until something is chosen, so a surface
+           * that renders a malformed payload as an unanswerable picker hangs
+           * the turn outright.
+           *
+           * `normalizeQuestionSet` is idempotent, so the terminal running it
+           * again on receipt costs nothing and needed no change.
+           */
+          const questions = normalizeQuestionSet({
+            question: call.args.question,
+            options: call.args.options,
+            header: call.args.header,
+            questions: call.args.questions,
+          });
           this.callbacks.sendToPanel({
             id: randomUUID(),
             type: 'ask_question',
+            // The single-question fields ride along too: the terminal reads
+            // `questions` and anything older reads the flat shape.
             payload: {
-              question: call.args.question,
-              options: call.args.options,
-              header: call.args.header,
-              questions: call.args.questions,
+              question: questions[0].question,
+              options: questions[0].options,
+              header: questions[0].header,
+              questions,
             },
             timestamp: Date.now(),
           });

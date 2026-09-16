@@ -4,6 +4,7 @@ import { PromptInput } from './PromptInput.jsx';
 import { RunningLine } from './RunningLine.jsx';
 import { FOCUS_INPUT } from '../constants.js';
 import { applyPaste, nextPasteId } from '../paste.js';
+import { hasClipboardImage } from '../clipboard-image.js';
 
 /** First `n` non-empty lines of an artifact, for the one-glance summary. */
 function head(text, n) {
@@ -66,6 +67,24 @@ export function InputBar({
   // misparsed as keystrokes — and a big one is folded to a marker rather than
   // rendered at full height into a frame that must stay short.
   usePaste((text) => {
+    // **An empty paste is how a pasted image arrives.**
+    //
+    // `Cmd+V` in a terminal on macOS is the *terminal's* paste, not ours: it
+    // sends the clipboard as text, and a screenshot has no text, so the
+    // terminal dutifully sends a bracketed paste with nothing between the
+    // markers and the app is never told a picture was involved. That is why
+    // pasting a screenshot looked broken — `ctrl+v` was bound and working, and
+    // it is not the key anybody presses.
+    //
+    // Ink emits that as `{paste: ''}` (verified against its own parser — there
+    // is no emptiness check on the slice), and nothing else produces one, so it
+    // is a signal rather than a guess. The clipboard probe costs ~60ms and runs
+    // only on this path, which is already the rare one.
+    if (text === '' && hasClipboardImage()) {
+      handleSubmit('/paste-image');
+      return;
+    }
+
     const { value, paste } = applyPaste(input, text, nextPasteId(pastes));
     setInput(value);
     setPaletteSuppressed(true);

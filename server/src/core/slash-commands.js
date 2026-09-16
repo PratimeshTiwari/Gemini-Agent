@@ -45,7 +45,7 @@ import { planModelSwitch } from './model-match.js';
  * so adding one and forgetting the other fails the build rather than the user.
  */
 export const AGENT_COMMANDS = new Set([
-  'plan', 'auto', 'memory', 'mode', 'config', 'name', 'clear', 'context',
+  'plan', 'auto', 'memory', 'mode', 'config', 'name', 'clear', 'context', 'new',
   'compact', 'undo', 'agent-dir', 'model', 'reasoning', 'effort', 'allowlist',
   'github', 'workspace',
 ]);
@@ -184,12 +184,44 @@ export async function handleSlashCommand(loop, command, args) {
       };
     }
 
+    /**
+     * Start a new conversation — from either front-end.
+     *
+     * It lived in the CLI's slash-command hook, so the side panel sending
+     * `/new` was told "No such command". The same shape as `/name` answering
+     * that while fully implemented, and `/workspace <path>` silently ignoring
+     * its argument: a command implemented in the UI layer is invisible to every
+     * other surface.
+     *
+     * The substance is here; each front-end still clears its own view, because
+     * that is the one part that genuinely differs.
+     *
+     * It **files** the old conversation rather than destroying it — `/new`
+     * means "start another", not "lose that one" — and takes the artifacts
+     * with it. Leaving `task.md` behind is what put a finished checklist under
+     * the first prompt of the next task.
+     */
+    case 'new': {
+      loop.sessionStore.rollover();
+      loop.sessionStore.clear();
+      loop.conversationHistory = [];
+      loop.promptBuilder.resetPromptState();
+      loop.contextChars = 0;
+      loop.chatThread = null;
+      // A fresh browser thread too, or the model keeps the old conversation's
+      // memory while everything else has moved on.
+      loop.startNewChat?.();
+      return { message: '✨ New chat. The previous one is kept — `--sessions` lists it.', reset: true };
+    }
+
     case 'clear':
       loop.conversationHistory = [];
       loop.sessionStore.clear();
       loop.promptBuilder.resetPromptState();
       loop.contextChars = 0;
-      return { message: '🧹 Conversation history cleared.' };
+      // `reset` so every front-end drops the transcript it is showing. Without
+      // it the panel kept displaying a conversation the agent had forgotten.
+      return { message: '🧹 Conversation history cleared.', reset: true };
 
     // `/context` reports what is in the window. Registering folders of .md
     // files here was a second way to give the model standing instructions;
@@ -255,19 +287,37 @@ export async function handleSlashCommand(loop, command, args) {
         // offering, because the names move and the list differs by plan. If the
         // browser has not been asked yet, it is asked now and the hint stands
         // for this one time.
+        /**
+         * Every one of these is a *request* to a page nobody here controls.
+         *
+         * So the follow-up is "check the picker", not a remedy for a failure
+         * that may not have happened. It used to lead with "if nothing
+         * happens, reload the extension" — advice for a stale bridge, which is
+         * a different problem, offered before there was any sign of one.
+         *
+         * Asking for the confirmation is worth a line because of what silence
+         * costs: an unnoticed failure leaves a prompt written for Pro being
+         * typed into a Flash tab, which CLAUDE.md names as the worst case —
+         * the long prompt going to the model that handles long prompts worst.
+         * The picker is the only place that is visible.
+         */
         const plan = planModelSwitch(chosen.id, loop.modelOptions || []);
+        const confirm = (name) =>
+          `\n\n_Check the Gemini tab's model picker now reads **${name}** before you send `
+          + 'anything — the switch is a request to the page, and the picker is the only '
+          + 'proof it landed._';
+
         let browserLine;
         if (plan.action === 'switch') {
           loop.switchModelTo(plan.model.label);
-          browserLine = `🔀 Switching the browser to **${plan.model.label}**.`;
+          browserLine = `🔀 Switching the browser to **${plan.model.label}**.${confirm(plan.model.label)}`;
         } else if (plan.action === 'none') {
+          // Nothing was asked for, so there is nothing to confirm.
           browserLine = `✓ The browser is already on **${plan.model.label}**.`;
         } else {
           loop._pendingEffortSwitch = chosen.id;
           loop.requestModelOptions?.();
-          browserLine = `🔀 Asking the browser to switch to the ${chosen.browser} tier…`
-            + `\n\n_If nothing happens: reload the extension at \`chrome://extensions\` and `
-            + 'hard-refresh the Gemini tab, then try again._';
+          browserLine = `🔀 Asking the browser to switch to **${chosen.browser}**.${confirm(chosen.browser)}`;
         }
 
         return {

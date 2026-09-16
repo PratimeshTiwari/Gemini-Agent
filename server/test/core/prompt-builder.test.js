@@ -1,8 +1,8 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { PromptBuilder, stripImageData } from '../../src/core/prompt-builder.js';
 import { effortFromConfig } from '../../src/core/effort.js';
 
@@ -534,5 +534,220 @@ describe('PromptBuilder — a dispatchable tool the prompt never mentions is unr
 
     const missing = registered.filter((name) => !prompt.includes(name));
     assert.deepEqual(missing, [], `dispatchable but never mentioned: ${missing.join(', ')}`);
+  });
+});
+
+describe('every rung asks for a list, checks it, and reviews before finishing', () => {
+  const pro = (effort) => build(new PromptBuilder(ws, ws), { modelConfig: { effort } });
+  const LADDER = ['flash', 'flash-thinking', 'brief', 'standard', 'deep'];
+
+  // The point of scaling rather than excluding: Flash is the *weakest* model on
+  // the ladder, so it is the most likely to report a thing as done without
+  // having looked. Leaving the check off that rung takes it off the one that
+  // needs it most.
+  test('no rung is left without a handover check', () => {
+    for (const effort of LADDER) {
+      assert.match(pro(effort), /BEFORE YOU FINISH|THE HANDOVER REVIEW/, effort);
+    }
+  });
+
+  test('every rung is told to keep a checklist, and to check it at the end', () => {
+    for (const effort of LADDER) {
+      const p = pro(effort);
+      assert.match(p, /proactively create/, `${effort}: never asked for a list`);
+      assert.match(p, /Checklist:|<task_checklist>/, `${effort}: never checks it`);
+    }
+  });
+
+  test('every rung must say what it did not do', () => {
+    // Silence here reads as "all of it is finished", which is how a partial job
+    // gets handed over as a complete one.
+    for (const effort of LADDER) {
+      assert.match(pro(effort), /Not done|not \*done\*|did \*not\* do/i, effort);
+    }
+  });
+
+  // Three sizes, because one size is either ceremony on a one-line fix or too
+  // thin for work where being wrong is expensive.
+  test('the depth scales with the rung', () => {
+    assert.match(pro('flash'), /BEFORE YOU FINISH/);
+    assert.doesNotMatch(pro('flash'), /THE HANDOVER REVIEW/, 'the full review on a 5.6k prompt is +33%');
+
+    for (const mid of ['flash-thinking', 'brief']) {
+      assert.match(pro(mid), /Read back:/, `${mid} should get the four-point version`);
+      assert.doesNotMatch(pro(mid), /THE HANDOVER REVIEW/, mid);
+    }
+
+    for (const deep of ['standard', 'deep']) {
+      assert.match(pro(deep), /THE HANDOVER REVIEW/, deep);
+    }
+  });
+
+  // The whole prompt strategy exists to avoid large repeated payloads typed
+  // into a browser tab, and Flash's identity is being terse.
+  test('the cost stays proportionate', () => {
+    const chars = Object.fromEntries(LADDER.map((e) => [e, pro(e).length]));
+    assert.ok(chars.flash < 7000, `flash grew to ${chars.flash}; it is the terse rung`);
+    assert.ok(chars.flash < chars['flash-thinking'], 'the ladder stopped being a ladder');
+    assert.ok(chars.brief < chars.standard);
+    assert.ok(chars.standard < chars.deep);
+  });
+});
+
+describe('the handover review — asked for, so pin where it appears', () => {
+  const pro = (effort, over = {}) =>
+    build(new PromptBuilder(ws, ws), { modelConfig: { effort }, ...over });
+
+  test('standard and deep get it', () => {
+    for (const effort of ['standard', 'deep']) {
+      assert.match(pro(effort), /THE HANDOVER REVIEW/, effort);
+    }
+  });
+
+  // `brief`'s promise on the ladder is "straight to work", so it gets the
+  // four-point version rather than the seven-point one — but not nothing.
+  // "Did you run it" and "what did you not do" are worth asking at any size.
+  test('brief gets the shorter one instead', () => {
+    assert.doesNotMatch(pro('brief'), /THE HANDOVER REVIEW/);
+    assert.match(pro('brief'), /BEFORE YOU FINISH/);
+  });
+
+  test('the flash tiers never see the pro prompt, so they get their own', () => {
+    assert.doesNotMatch(pro('flash'), /THE HANDOVER REVIEW/);
+    assert.doesNotMatch(pro('flash-thinking'), /THE HANDOVER REVIEW/);
+    assert.match(pro('flash'), /BEFORE YOU FINISH/);
+    assert.match(pro('flash-thinking'), /BEFORE YOU FINISH/);
+  });
+
+  // The whole prompt strategy exists to avoid large repeated payloads, and
+  // this is ~1.8k characters retyped into a browser tab.
+  test('it rides turn 0, not every turn', () => {
+    const pb = new PromptBuilder(ws, ws);
+    const first = build(pb, { modelConfig: { effort: 'deep' } });
+    const second = build(pb, { modelConfig: { effort: 'deep' } });
+    assert.match(first, /THE HANDOVER REVIEW/);
+    assert.doesNotMatch(second, /THE HANDOVER REVIEW/);
+  });
+
+  test('it names the checklist that is actually carried back', () => {
+    // It asks the model to audit `<task_checklist>`, which rides every turn.
+    // Auditing a list it cannot see is the write-only trap that made the
+    // original task.md useless.
+    assert.match(pro('deep'), /<task_checklist>/);
+  });
+
+  test('it demands evidence rather than reassurance', () => {
+    const p = pro('deep');
+    assert.match(p, /not a verdict|not checked/i);
+    assert.match(p, /Paste what it\s+printed|Paste what it printed/);
+  });
+});
+
+/**
+ * A finished checklist, arriving on an unrelated prompt.
+ *
+ * `task.md` is one file reused for every task, so a completed list keeps
+ * riding every later turn — including the first turn of something entirely
+ * different. Reported from use: a finished round-2 list still sitting under a
+ * new prompt. Handed ticked boxes with no framing, the model cannot tell "you
+ * already did this" from "this is the plan for what you are being asked now",
+ * and both natural mistakes are bad — tick nothing because it all looks done,
+ * or edit the old file instead of writing a new plan.
+ */
+describe('a completed checklist says that it is completed', () => {
+  const withTask = (md) => {
+    const dir = mkdtempSync(join(tmpdir(), 'tc-'));
+    const file = join(dir, '.agent', 'artifacts', 'task.md');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, md);
+    const pb = new PromptBuilder(dir, dir);
+    build(pb, { modelConfig: { effort: 'deep' } });          // turn 0
+    const p = build(pb, { modelConfig: { effort: 'deep' } }); // the next turn
+    rmSync(dir, { recursive: true, force: true });
+    return p;
+  };
+
+  test('all ticked is marked complete, and says what to do instead', () => {
+    const tag = withTask('- [x] A\n- [x] B\n').match(/<task_checklist[^>]*>/)[0];
+    assert.match(tag, /state="complete"/);
+    assert.match(tag, /write a new list/i, 'it should say what to do if this request is different');
+  });
+
+  test('anything still open is not marked, because there is work in it', () => {
+    const tag = withTask('- [x] A\n- [ ] B\n').match(/<task_checklist[^>]*>/)[0];
+    assert.doesNotMatch(tag, /state="complete"/);
+  });
+
+  // Dropping the block entirely would take the handover review's
+  // "re-read <task_checklist>" with it.
+  test('the list is still sent either way', () => {
+    assert.match(withTask('- [x] A\n'), /<task_checklist/);
+    assert.match(withTask('- [ ] A\n'), /<task_checklist/);
+  });
+});
+
+/**
+ * Resuming a conversation the browser tab was never part of.
+ *
+ * The model's memory *is* the chat thread — `conversationHistory` is never
+ * replayed into a tab. So restoring a transcript gives the model nothing, and
+ * it will answer confidently about work it never did. The recap is the only
+ * thing that makes "resume" honest when the tab has moved on.
+ */
+describe('the recap after a resume', () => {
+  const resumed = () => {
+    const ws2 = mkdtempSync(join(tmpdir(), 'recap-'));
+    const pb = new PromptBuilder(ws2, ws2);
+    pb.pendingRecap = [
+      { role: 'user', content: 'why is the poller re-reading comments' },
+      { role: 'agent', content: 'Because the watermark only moves when something was found.' },
+      { role: 'tool', content: '{"huge":"json"}' },
+    ];
+    return { pb, cleanup: () => rmSync(ws2, { recursive: true, force: true }) };
+  };
+
+  test('the next turn carries it, framed as background', () => {
+    const { pb, cleanup } = resumed();
+    const p = build(pb, { modelConfig: { effort: 'standard' } });
+    assert.match(p, /<resumed_conversation/);
+    assert.match(p, /not part of/i, 'the model should be told it was not there');
+    assert.match(p, /why is the poller re-reading comments/);
+    cleanup();
+  });
+
+  // An introduction, not context to carry forever — the prompt strategy exists
+  // to avoid large repeated payloads typed into a browser.
+  test('and only that turn', () => {
+    const { pb, cleanup } = resumed();
+    build(pb, { modelConfig: { effort: 'standard' } });
+    const second = build(pb, { modelConfig: { effort: 'standard' } });
+    assert.doesNotMatch(second, /<resumed_conversation/);
+    cleanup();
+  });
+
+  test('tool traffic is left out of it', () => {
+    const { pb, cleanup } = resumed();
+    assert.doesNotMatch(build(pb, { modelConfig: { effort: 'standard' } }), /huge/);
+    cleanup();
+  });
+
+  test('nothing pending, nothing added', () => {
+    const ws2 = mkdtempSync(join(tmpdir(), 'recap-'));
+    const pb = new PromptBuilder(ws2, ws2);
+    assert.doesNotMatch(build(pb, { modelConfig: { effort: 'standard' } }), /<resumed_conversation/);
+    rmSync(ws2, { recursive: true, force: true });
+  });
+
+  test('a very long conversation is cut, not sent whole', () => {
+    const ws2 = mkdtempSync(join(tmpdir(), 'recap-'));
+    const pb = new PromptBuilder(ws2, ws2);
+    pb.pendingRecap = Array.from({ length: 200 }, (_, i) => ({
+      role: 'user', content: `turn ${i} ${'x'.repeat(200)}`,
+    }));
+    const p = build(pb, { modelConfig: { effort: 'standard' } });
+    const block = p.match(/<resumed_conversation[\s\S]*?<\/resumed_conversation>/)[0];
+    assert.ok(block.length < 5000, `the recap was ${block.length} characters`);
+    assert.match(block, /turn 199/, 'it kept the oldest turns instead of the newest');
+    rmSync(ws2, { recursive: true, force: true });
   });
 });

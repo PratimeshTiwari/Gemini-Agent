@@ -14,7 +14,8 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -231,5 +232,95 @@ describe('/update reports before it acts', () => {
     const state = await checkForUpdate(process.cwd());
     assert.ok('available' in state);
     assert.ok(!('dirty' in state), 'the check leaked a tree concern into the version answer');
+  });
+});
+
+/**
+ * A merge of your own branch is not an update.
+ *
+ * Reported from use: "it says an update is available but I have not merged
+ * anything onto main". Both halves were true. Work lands on a branch and
+ * reaches `main` through a PR, so merging that PR puts a commit on `main`
+ * — the merge commit — that your branch does not have, while introducing no
+ * content at all, because everything in it came from your branch. Counting
+ * commits called that an update; pulling it would have produced a merge in the
+ * other direction for no new lines.
+ *
+ * These build a real repository with a real merge rather than stubbing git,
+ * because the thing under test is exactly what git's own ancestry does.
+ */
+describe('an update has to carry something you do not have', () => {
+  let origin, work, other;
+
+  const git = (dir, ...args) => execFileSync('git', args, {
+    cwd: dir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' },
+  });
+
+  const commit = (dir, name, body) => {
+    writeFileSync(join(dir, name), body);
+    git(dir, 'add', '-A');
+    git(dir, 'commit', '-m', name);
+  };
+
+  beforeEach(() => {
+    origin = mkdtempSync(join(tmpdir(), 'upd-origin-'));
+    work = mkdtempSync(join(tmpdir(), 'upd-work-'));
+    other = mkdtempSync(join(tmpdir(), 'upd-other-'));
+
+    git(origin, 'init', '--bare', '--initial-branch=main', '.');
+    git(work, 'clone', origin, '.');
+    commit(work, 'base.txt', 'base\n');
+    git(work, 'push', '-u', 'origin', 'main');
+
+    // The working branch, ahead of main — the normal state of this repo.
+    git(work, 'checkout', '-b', 'feature');
+    commit(work, 'feature.txt', 'work\n');
+    git(work, 'push', '-u', 'origin', 'feature');
+  });
+
+  afterEach(() => {
+    for (const d of [origin, work, other]) rmSync(d, { recursive: true, force: true });
+  });
+
+  test('merging your own branch into main is not an update', async () => {
+    // What "merge pull request" does: a merge commit on main, no new content.
+    git(other, 'clone', origin, '.');
+    git(other, 'merge', '--no-ff', '-m', 'Merge pull request #13', 'origin/feature');
+    git(other, 'push', 'origin', 'main');
+
+    const state = await checkForUpdate(work);
+    assert.equal(state.behind, 1, 'main really does have a commit this branch lacks');
+    assert.equal(state.available, false, 'a merge of your own work was offered as an update');
+    assert.equal(state.mergedBack, true);
+  });
+
+  test('a real commit on main is an update', async () => {
+    git(other, 'clone', origin, '.');
+    commit(other, 'hotfix.txt', 'someone else\n');
+    git(other, 'push', 'origin', 'main');
+
+    const state = await checkForUpdate(work);
+    assert.equal(state.available, true, 'genuine new work on main was not noticed');
+    assert.equal(state.mergedBack, false);
+  });
+
+  test('a merge followed by real work is an update again', async () => {
+    git(other, 'clone', origin, '.');
+    git(other, 'merge', '--no-ff', '-m', 'Merge pull request #13', 'origin/feature');
+    commit(other, 'after.txt', 'later\n');
+    git(other, 'push', 'origin', 'main');
+
+    const state = await checkForUpdate(work);
+    assert.equal(state.available, true, 'new work hid behind the merge commit');
+  });
+
+  test('nothing on main at all is not an update', async () => {
+    const state = await checkForUpdate(work);
+    assert.equal(state.behind, 0);
+    assert.equal(state.available, false);
+    assert.equal(state.mergedBack, false);
   });
 });

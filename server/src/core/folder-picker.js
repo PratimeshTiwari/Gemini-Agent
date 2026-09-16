@@ -10,6 +10,13 @@
  * does nothing on someone's Linux box is worse than no row: they will press it
  * twice and conclude the tool is broken. `canPickFolder()` says whether to draw
  * it at all, and the answer is a fact about this machine, not a guess.
+ *
+ * In `core/` rather than `ui/` because it has two callers that are not the
+ * terminal: the CLI's own pickers, and the bridge, which opens this dialog when
+ * the Chrome side panel asks for a workspace. An extension page cannot open a
+ * native chooser — `<input webkitdirectory>` returns a copy of the directory's
+ * contents and never its path — but the agent runs on the same machine as the
+ * browser, so its dialog is that machine's dialog.
  */
 
 import { execFile, execFileSync } from 'child_process';

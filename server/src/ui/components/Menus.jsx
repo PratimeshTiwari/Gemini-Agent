@@ -7,7 +7,7 @@ import { QuestionPrompt } from './QuestionPrompt.jsx';
 import { rowsFromPatch } from '../diff-preview.js';
 import { DiffRows } from './DiffRows.jsx';
 import { oneLine } from '../format.js';
-import { canPickFolder, pickFolder } from '../folder-picker.js';
+import { canPickFolder, pickFolder } from '../../core/folder-picker.js';
 import { readCommands, listCommandDays } from '../../core/command-log.js';
 import { EFFORT_LEVELS, resolveEffort } from '../../core/effort.js';
 import { describeSettings, filterSettings, settingsChanged, SETTING_GROUPS } from '../../core/settings.js';

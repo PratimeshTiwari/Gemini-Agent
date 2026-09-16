@@ -228,6 +228,36 @@ That directory used to be `github-pr-plans/`, and `/plans` still means something
 `.agent/artifacts/plans/`, a different format written by a different path. One word, two
 answers. `migrateGitHubReviews` renames it on startup and refuses to clobber.
 
+**The tab is for browsing; the stream is for noticing.** Decided 2026-09-16, after the
+screen was cut from 11 rows to 5 (the border and heading, a ranked status line, a one-line
+empty state, hints on one row, and `@who commented` in place of `requires_review` — which
+was a constant, because it is the only non-noise value the classifier can return and
+anything it calls noise never reaches a row).
+
+The open question was whether it should be a tab at all. Everything else in this app is a
+stream and nothing else is a page, and this is a stream of events. Resolved as a middle
+path rather than either extreme: the tab keeps the browsing — PRs, plans, comment bodies,
+all of which want a screen — and every new event *also* arrives in the transcript as one
+dim row (`githubNoticeRow`, `ui/hooks/use-github-tab.js`), where you are already reading.
+`^o` still opens the detail. Nothing interrupts and nothing is inserted into the prompt,
+which is the same contract a failed VS Code terminal command already has.
+
+Three constraints that shaped the row, none obvious:
+
+- It is a `system` message, because `groupTurns` and `TranscriptTurn` already draw those
+  dim and wrapped. A new role would mean teaching both, for one line.
+- It is a *notification*, not the record — the tab's `activity` is the record. `groupTurns`
+  keeps a system message only inside a turn, so an event arriving before the session's
+  first prompt is not drawn, and the alternative is inventing an orphan turn to hang it
+  from.
+- **The author is capped at 20 characters.** The row is drawn in the *live* frame while a
+  turn is in flight, and a GitHub username runs to 39 — which put the worst case at 78
+  columns: one row at 80, two at 72. A row that wraps is charged as one and drawn as two,
+  which is a bug this frame has had twice. The test pins it at 60 columns.
+
+Only `github_plan_generated` earns a row; `processing_started` and `processing_finished`
+bracket the same event and would draw three lines for one comment.
+
 The batch loop is `core/turn-runner.js`, not `agent-loop.js`: `runHeadlessTask` is a caller
 now. **Its flat re-serialisation is necessary, not an oversight** — every batch send opens a
 fresh browser tab that is closed when the turn ends, so turn 2 has never seen turn 1. Removing
@@ -427,12 +457,44 @@ silently offered nothing. The reader, the writer and the picker row all existed;
 not. `main.js` makes it now, after the workspace existence check, so a path that does not
 resolve is not offered back as somewhere you have been. Verified: 0 recents before, 2 after.
 
-**Found and deliberately left alone.** The side panel handles ten message types and the
-server sends at least three more it drops on the floor — `response_stream`,
-`github_processing_started`, `github_processing_finished`. That is an incomplete surface
-rather than dead code: deleting the sends would remove a panel feature, adding handlers is
-one. Worth knowing that every streamed chunk currently crosses the socket to the panel and
-is discarded.
+**The side panel's dropped messages — two of them were a hang, fixed 2026-09-16.** The
+count was worse than "at least three", and the ones that mattered were not the cosmetic
+ones. `ask_question` and `request_command_approval` both park the turn on
+`await new Promise(...)` with **no timeout**, send the prompt through `sendToPanel`, and
+wait. The panel rendered neither — and there was no inbound message type it could have
+answered with even if it had. So a turn driven from the panel stopped dead at the first
+question or first risky command, and because the panel disables its send button behind
+`isWaitingForResponse` until a reply arrives, it then accepted no further prompts at all.
+The reported symptom was "the sidebar doesn't send prompts".
+
+The resolvers already existed and were already careful — `cancelQuestion` resolves rather
+than rejecting, precisely because leaving the promise pending *is* the hang. Only the way
+in was missing: `question_response` and `command_approval_response` are now inbound cases
+on the bridge, relayed by the worker, with the panel drawing both.
+
+`response_stream` is handled too, so the panel no longer sits on "Thinking…" for a whole
+turn and then jumps to the finished answer.
+
+`github_plan_generated` is handled too, as one line. **The list of what else the panel
+"drops" was wrong, including the version of it written earlier the same day** — it came
+from grepping `type:` across the server, which counts things that are not panel messages
+at all. Checked properly: `github_notification`, `github_processing_started` and
+`github_processing_finished` are pushed to `pendingGitHubNotifications`, a **CLI-only
+buffer drained by a getter**, and never broadcast — so there is nothing reaching the panel
+to drop. `compaction_summary` is a `conversationHistory` entry, not a message. Of the whole
+apparent list, exactly one type was really arriving and being ignored.
+
+`inject_prompt`, `end_session` and `heartbeat_ack` are addressed to the worker and the
+content script, and the panel is right to ignore them.
+
+The method matters more than the correction: **a grep for `type:` finds message-shaped
+literals, not messages.** Follow the value to the `broadcast` call before believing a
+surface is missing something.
+
+**The lesson worth keeping:** a surface that ignores an unknown message type is not
+equally harmless for every type. Dropping a *notification* costs a missing line; dropping
+a *request* deadlocks whatever is waiting on the answer. When adding a message the agent
+loop blocks on, every front-end needs a way to reply — or a timeout.
 
 An old `.agent/config.json` can also carry `contextFolders` and `modelConfig.reasoner`,
 fossils of features deleted in Direction phases 2 and 7. Nothing in the source reads either.

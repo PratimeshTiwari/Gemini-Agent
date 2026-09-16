@@ -120,11 +120,38 @@
   }
   var mainTabs = /* @__PURE__ */ new Map();
   var subagentTabs = /* @__PURE__ */ new Set();
+  var OWNED_KEY = "agentOwnedTabs";
+  async function ownedTabIds() {
+    try {
+      const { [OWNED_KEY]: ids = [] } = await chrome.storage.session.get(OWNED_KEY);
+      return new Set(ids);
+    } catch {
+      return /* @__PURE__ */ new Set();
+    }
+  }
+  async function claimOwnedTab(tabId) {
+    if (tabId === void 0 || tabId === null) return;
+    try {
+      const ids = await ownedTabIds();
+      ids.add(tabId);
+      await chrome.storage.session.set({ [OWNED_KEY]: [...ids] });
+    } catch {
+    }
+  }
+  async function releaseOwnedTab(tabId) {
+    try {
+      const ids = await ownedTabIds();
+      if (!ids.delete(tabId)) return;
+      await chrome.storage.session.set({ [OWNED_KEY]: [...ids] });
+    } catch {
+    }
+  }
   var sessionTabs = /* @__PURE__ */ new Map();
   function claimSubagentTab(tabId, sessionId = null) {
     if (tabId === void 0 || tabId === null) return;
     subagentTabs.add(tabId);
     if (sessionId) sessionTabs.set(sessionId, tabId);
+    claimOwnedTab(tabId);
   }
   async function sessionTab(sessionId) {
     if (!sessionId || !sessionTabs.has(sessionId)) return null;
@@ -157,6 +184,7 @@
     for (const [model, id] of mainTabs) {
       if (id === tabId) mainTabs.delete(model);
     }
+    releaseOwnedTab(tabId);
   }
   async function pickMainTab(targetModel = "gemini") {
     const targetUrl = MODEL_URLS[targetModel];
@@ -169,9 +197,12 @@
       } catch {
       }
       mainTabs.delete(targetModel);
+      await releaseOwnedTab(remembered);
     }
+    const owned = await ownedTabIds();
+    if (owned.size === 0) return null;
     const tabs = await chrome.tabs.query({ url: targetUrl });
-    const usable = tabs.filter((t) => !subagentTabs.has(t.id));
+    const usable = tabs.filter((t) => owned.has(t.id) && !subagentTabs.has(t.id));
     if (usable.length === 0) return null;
     const chosen = usable[usable.length - 1];
     mainTabs.set(targetModel, chosen.id);
@@ -251,6 +282,7 @@
     });
     await new Promise((r) => setTimeout(r, 1500));
     mainTabs.set(targetModel, newTab.id);
+    await claimOwnedTab(newTab.id);
     broadcastTabStatus();
     return newTab;
   }
@@ -342,10 +374,38 @@
       sendToServer(errorMsg);
     }
   }
-  async function sendToModelTab(message, targetModel = "gemini") {
+  async function openThread(thread) {
+    const model = thread?.model || "gemini";
+    const id = thread?.id;
+    if (!id || !MODEL_URLS[model]) return false;
+    const url = model === "chatgpt" ? `https://chatgpt.com/c/${id}` : `https://gemini.google.com/app/${id}`;
+    try {
+      const existing = await pickMainTab(model);
+      const tab = existing ? await chrome.tabs.update(existing.id, { url, active: true }) : await chrome.tabs.create({ url, active: true });
+      mainTabs.set(model, tab.id);
+      await claimOwnedTab(tab.id);
+      await new Promise((resolve) => {
+        const done = setTimeout(finish, 8e3);
+        function finish() {
+          clearTimeout(done);
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }
+        function listener(tabId, info) {
+          if (tabId === tab.id && info.status === "complete") finish();
+        }
+        chrome.tabs.onUpdated.addListener(listener);
+      });
+      return true;
+    } catch (err) {
+      console.warn("[Agent CLI] Could not open that conversation:", err?.message);
+      return false;
+    }
+  }
+  async function sendToModelTab(message, targetModel = "gemini", sessionId = null) {
     const targetUrl = MODEL_URLS[targetModel];
     if (!targetUrl) return false;
-    const tab = await pickMainTab(targetModel);
+    const tab = sessionId ? await sessionTab(sessionId) : await pickMainTab(targetModel);
     if (!tab) return false;
     try {
       await chrome.tabs.sendMessage(tab.id, message);
@@ -373,6 +433,7 @@
   var ALARM_FALLBACK_MINUTES = 0.5;
   var HEARTBEAT_INTERVAL = 1e4;
   var ws = null;
+  var isSocketOpen = () => Boolean(ws) && ws.readyState === WebSocket.OPEN;
   var heartbeatTimer = null;
   var retryTimer = null;
   var keepAliveTimer = null;
@@ -504,12 +565,19 @@
       case "new_chat":
         await triggerNewChatInModel(payload);
         break;
+      // Resuming a past conversation: point the tab at it, so the model has the
+      // history itself rather than a paraphrase of it.
+      case "open_thread": {
+        const opened = await openThread(payload?.thread);
+        sendToServer({ type: "thread_opened", payload: { ok: opened, thread: payload?.thread } });
+        break;
+      }
       case "end_session":
         await endSession(payload?.sessionId);
         break;
       case "discover_models":
       case "switch_model":
-        await sendToModelTab({ type, payload });
+        await sendToModelTab({ type, payload }, payload?.targetModel || "gemini", payload?.sessionId || null);
         break;
       case "heartbeat_ack":
         break;
@@ -519,7 +587,6 @@
   }
 
   // src/background/main.js
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
   chrome.tabs.onRemoved.addListener((tabId) => {
     forgetTab(tabId);
     broadcastTabStatus();
@@ -539,6 +606,7 @@
         case "gemini_response":
         case "gemini_response_stream":
           if (type === "gemini_response" && sender.tab) {
+            payload.tabUrl = sender.tab.url;
             const finished = payload.complete || payload.timedOut;
             if (finished) {
               await restoreFocusFrom(sender.tab.id);
@@ -554,16 +622,26 @@
           sendToServer({ type, payload });
           sendResponse({ success: true });
           break;
+        // The panel unblocking a turn that is parked on a question or a command
+        // approval. Pure relay — the server owns both resolvers.
+        case "get_history":
+        case "list_sessions":
+        case "resume_session":
+        case "pick_workspace":
+        case "set_workspace":
+        case "question_response":
+        case "command_approval_response":
         case "turn_trace":
         case "github_pr_comment":
         case "github_pr_viewing":
           sendToServer({ type, payload });
           sendResponse({ success: true });
           break;
-        case "get_status":
+        case "get_status": {
           const state = await getState();
-          sendResponse({ success: true, ...state });
+          sendResponse({ success: true, ...state, connected: isSocketOpen() });
           break;
+        }
         case "connect":
           connectWebSocket();
           sendResponse({ success: true });

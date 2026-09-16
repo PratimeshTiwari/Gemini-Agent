@@ -13,7 +13,41 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
  * The async actions are here too, not in the key handler: fetching PRs is the
  * tab's behaviour, and a keypress should only have to say which one to run.
  */
-export function useGithubTab({ agentLoop, wsServer, activeTab }) {
+/**
+ * One transcript row for a GitHub event, or `null` if it does not earn one.
+ *
+ * Pure and exported so the wording is testable without rendering: the row is
+ * the only part of the GitHub feature most people will ever read.
+ *
+ * Only `github_plan_generated` earns a row. `processing_started` and
+ * `processing_finished` bracket the same event, so honouring all three would
+ * draw three lines for one thing.
+ *
+ * @param {{type: string, payload: object}} n
+ * @returns {{role: 'system', content: string, isLocal: true, timestamp: number} | null}
+ */
+export function githubNoticeRow(n) {
+  if (n?.type !== 'github_plan_generated') return null;
+  // Capped, because this row is drawn inside the *live* frame while a turn is
+  // in flight, and `TranscriptTurn` draws a system row with `wrap="wrap"`. A
+  // GitHub username runs to 39 characters, which put the worst case at 78
+  // columns — one row at 80, two at 72, and a row that wraps is charged as one
+  // and drawn as two. That is a bug this frame has had twice already.
+  const raw = n.payload?.comment?.author;
+  // The trailing `-` is stripped so a cut name does not read as a dangling word.
+  const author = raw && raw.length > 20 ? `${raw.slice(0, 19).replace(/[^A-Za-z0-9]+$/, '')}…` : raw;
+  const what = author
+    ? `@${author} commented`
+    : n.payload?.category === 'ci_failure' ? 'CI failed' : 'plan written';
+  return {
+    role: 'system',
+    content: `⌁ PR #${n.payload?.prNumber ?? '?'} · ${what} — ^o to look`,
+    isLocal: true,
+    timestamp: Date.now(),
+  };
+}
+
+export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
   const [activity, setActivity] = useState([]);
   const [hasNewEvent, setHasNewEvent] = useState(false);
   const [view, setView] = useState('activity'); // activity | avoid_words | pr_explorer
@@ -61,6 +95,33 @@ export function useGithubTab({ agentLoop, wsServer, activeTab }) {
       );
       if (events.length > 0) setActivity((prev) => [...prev, ...events].slice(-50));
       if (activeTab !== 'github') setHasNewEvent(true);
+
+      /**
+       * One dim row in the transcript per event, and the tab keeps the detail.
+       *
+       * Decided rather than drifted into: the tab is right for *browsing* — PRs,
+       * plans, the comment bodies — and wrong as the only place activity
+       * appears, because everything else in this app is a stream and nothing
+       * else is a page. So the event arrives where you are already reading and
+       * `^o` still opens the detail. Nothing interrupts and nothing is inserted
+       * into the prompt, the same contract as a failed terminal command.
+       *
+       * `system` rather than a new role, because `groupTurns` already knows it
+       * and `TranscriptTurn` already draws it dim and wrapped. A new role would
+       * mean teaching both, for one line.
+       *
+       * It is a *notification*, not the record — `activity` above is the record.
+       * That matters because `groupTurns` keeps a system message only inside a
+       * turn, so an event arriving before the session's first prompt is not
+       * drawn. The tab still has it, and the alternative is inventing an
+       * orphan turn to hang it from.
+       *
+       * Only `github_plan_generated` earns a row. `processing_started` and
+       * `processing_finished` bracket the same event, so all three would draw
+       * three lines for one thing.
+       */
+      const rows = events.map(githubNoticeRow).filter(Boolean);
+      if (rows.length > 0 && setHistory) setHistory((prev) => [...prev, ...rows]);
     }, 1000);
     return () => clearInterval(id);
   }, [wsServer, activeTab]);
