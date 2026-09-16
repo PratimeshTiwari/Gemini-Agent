@@ -13,7 +13,7 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { GitHubEventHandler } from '../../src/github/github-event-handler.js';
@@ -131,19 +131,57 @@ describe('what counts as noise, which is narrower than it looks', () => {
     assert.equal(tasks, 0);
   });
 
-  test('a thumbs-up DOES open a browser tab, and that is the design', async () => {
-    // The classifier stopped categorising by keyword when the AI took that
-    // over, so "noise" now means only: ignored author, empty body, or a
-    // configured avoid word. Everything else is `requires_review`.
-    //
-    // Characterised rather than fixed. It is a real cost — a reaction comment
-    // spends a full browser turn — but the alternative is keyword matching,
-    // which is what was deliberately removed. `avoidWords` is the lever.
-    let tasks = 0;
-    const h = handler({ onTask: () => { tasks += 1; } });
+  /**
+   * A thumbs-up costs a *triage* turn, not an analysis.
+   *
+   * This test used to assert the opposite and call it the design: "a reaction
+   * comment spends a full browser turn… `avoidWords` is the lever". The
+   * alternative considered at the time was keyword matching, which this
+   * project had deliberately removed once the model took the categorising
+   * over — so the choice looked like ceremony or regression.
+   *
+   * There is a third option, and it is the same one the project already chose
+   * everywhere else: **ask**. One short exchange, no tools, and the judgement a
+   * person makes reading the comment.
+   */
+  test('a reaction is triaged away instead of investigated', async () => {
+    const prompts = [];
+    const h = handler({
+      onTask: (p) => prompts.push(p),
+      analysis: { success: true, result: 'SKIP - a thumbs up, nothing requested' },
+    });
     h._enqueueComment({ pr: PR, comment: comment({ body: '👍' }) });
     await settle();
-    assert.equal(tasks, 1);
+
+    assert.equal(prompts.length, 1, 'it went on to a full analysis anyway');
+    assert.match(prompts[0], /REVIEW or the word SKIP/, 'that turn was not the triage');
+  });
+
+  test('a real question survives triage and is analysed', async () => {
+    const prompts = [];
+    const h = handler({
+      onTask: (p) => prompts.push(p),
+      analysis: { success: true, result: 'REVIEW - asks why the merge is not complete' },
+    });
+    h._enqueueComment({ pr: PR, comment: comment({ body: 'why is the merge not complete?' }) });
+    await settle();
+
+    assert.equal(prompts.length, 2, 'triage then analysis');
+    assert.match(prompts[1], /consolidated markdown plan/, 'the second turn should be the analysis');
+  });
+
+  // Silence is not consent. If the bridge is down, triage cannot run and
+  // neither can the analysis — proceeding leaves one failure to report instead
+  // of quietly dropping a reviewer's question.
+  test('an unanswerable triage reviews rather than skips', async () => {
+    const prompts = [];
+    const h = handler({
+      onTask: (p) => prompts.push(p),
+      analysis: { success: false, error: 'no tab' },
+    });
+    h._enqueueComment({ pr: PR, comment: comment() });
+    await settle();
+    assert.equal(prompts.length, 2, 'a failed triage silently dropped the comment');
   });
 
   test('an avoid word is the configured way to stop that', async () => {
@@ -237,5 +275,82 @@ describe('status', () => {
     const s = h.getStatus();
     assert.ok('username' in s);
     assert.ok('tokenExpiry' in s);
+  });
+});
+
+/**
+ * A review without an analysis is not a plan.
+ *
+ * It was written anyway, on the reasoning that the comment and its
+ * classification are worth keeping even when the browser turn fell over. What
+ * that produced was a file of generic instructions — "read the reviewer
+ * question", "formulate a response" — under a heading saying a plan had been
+ * generated, and a notification that reads as success.
+ *
+ * Reported plainly: *"plans without AI analysis is completely useless"*. Worse
+ * than useless, because it hid the failure: ten review files in this repo have
+ * no analysis section and nothing ever said so.
+ */
+describe('an unanalysed comment is not reported as a plan', () => {
+  const failing = (error = 'tab timed out') => {
+    const h = new GitHubEventHandler({
+      token: 't', workspace: ws, configOverrides: { repos: ['octo/repo'] },
+      agentLoop: { workspace: ws, runHeadlessTask: async () => ({ success: false, error }) },
+    });
+    h.poller.start = async () => {}; h.poller.stop = () => {}; h.poller.pollNow = async () => {};
+    return h;
+  };
+
+  test('the notification says the analysis did not run, and why', async () => {
+    const h = failing('no Gemini tab');
+    const notes = [];
+    h.on('notification', (n) => notes.push(n));
+    h._enqueueComment({ pr: PR, comment: comment() });
+    await settle();
+
+    assert.equal(notes.length, 1);
+    assert.match(notes[0].message, /analysis did not run/i);
+    assert.match(notes[0].message, /no Gemini tab/, 'it should name the reason');
+    assert.equal(notes[0].category, 'analysis_failed');
+  });
+
+  test('the file says what it is, rather than looking like a plan', async () => {
+    const h = failing();
+    const plans = [];
+    h.on('plan_generated', (e) => plans.push(e));
+    h._enqueueComment({ pr: PR, comment: comment() });
+    await settle();
+
+    // The record is still kept — that half of the original reasoning was right.
+    assert.equal(plans.length, 1);
+    assert.equal(plans[0].analysed, false);
+    const body = readFileSync(plans[0].filePath, 'utf-8');
+    assert.match(body, /Analysis did not run/i);
+    assert.match(body, /not a plan/i);
+    assert.match(body, /tab timed out/);
+  });
+
+  test('a successful analysis still reads as a plan', async () => {
+    const h = handler({ analysis: { success: true, result: '## Findings\nthe branch diverged' } });
+    const notes = [];
+    const plans = [];
+    h.on('notification', (n) => notes.push(n));
+    h.on('plan_generated', (e) => plans.push(e));
+    h._enqueueComment({ pr: PR, comment: comment() });
+    await settle();
+
+    assert.equal(plans[0].analysed, true);
+    assert.doesNotMatch(notes[0].message, /did not run/i);
+    assert.match(readFileSync(plans[0].filePath, 'utf-8'), /AI Context Analysis/);
+  });
+
+  // The count is what a person checks to see whether the agent is doing
+  // anything; counting templates makes it say yes while nothing is happening.
+  test('an unanalysed comment is not counted as a plan generated', async () => {
+    const h = failing();
+    h._enqueueComment({ pr: PR, comment: comment() });
+    await settle();
+    assert.equal(h.getStatus().totalPlansGenerated, 0);
+    assert.equal(h.getStatus().totalCommentsProcessed, 1, 'it was still processed');
   });
 });

@@ -22,7 +22,7 @@ import { CILogParser } from './ci-log-parser.js';
 import { ReviewWriter } from './review-writer.js';
 import { resolveGitHubConfig } from './github-config.js';
 import { WorkQueue } from './work-queue.js';
-import { analyseComment } from './review-task.js';
+import { analyseComment, triageComment } from './review-task.js';
 
 export class GitHubEventHandler extends EventEmitter {
   /**
@@ -214,26 +214,81 @@ export class GitHubEventHandler extends EventEmitter {
     const classification = this.classifier.classify(comment, this.config.ignoreAuthors, this.config.avoidWords || []);
     if (classification.category === 'noise') return;
 
+    const ask = this.agentLoop ? (prompt) => this.agentLoop.runHeadlessTask(prompt) : null;
+
+    /**
+     * Ask whether this is worth investigating, instead of guessing from words.
+     *
+     * The deterministic checks above stay first because they are free and
+     * certain — an ignored author and an empty body need no model, and
+     * `avoidWords` is an explicit instruction from the user. Everything else
+     * used to go straight to a full analysis: a browser turn with the whole
+     * tool set behind it, spent on "LGTM".
+     *
+     * Keyword matching is not the alternative; this project removed that on
+     * purpose when the model took the categorising over. One short exchange is
+     * the same judgement a person makes reading the comment, at a fraction of
+     * an analysis.
+     */
+    const triage = await triageComment({
+      pr, comment, ask, workspace: this.agentLoop?.workspace || this.workspace,
+    });
+    if (!triage.review) {
+      this.stats.totalCommentsProcessed++;
+      this.emit('notification', {
+        message: `· PR #${pr.number} by @${comment.author}: skipped — ${triage.reason}`,
+        category: 'skipped',
+        prNumber: pr.number,
+      });
+      return;
+    }
+
     // The prompt and the call live in review-task.js. It never throws: a
     // failed analysis must still leave a review on disk, or a flaky tab loses
     // the record of the comment entirely.
-    const aiAnalysis = await analyseComment({
+    const outcome = await analyseComment({
       pr,
       comment,
       workspace: this.agentLoop?.workspace || this.workspace,
-      ask: this.agentLoop ? (prompt) => this.agentLoop.runHeadlessTask(prompt) : null,
+      ask,
     });
 
-    const result = this.planGenerator.generateCommentPlan({ pr, comment, classification, aiAnalysis });
+    /**
+     * A review without an analysis is not a plan.
+     *
+     * It used to write one anyway — the reasoning being that the comment and
+     * its classification are worth keeping even when the browser turn fell
+     * over. But what that produced was a file of generic instructions ("read
+     * the reviewer question", "formulate a response") under a heading that
+     * says a plan was generated, and a notification that reads as success.
+     * Reported plainly: *"plans without AI analysis is completely useless"*.
+     *
+     * Worse than useless, because it hides the failure. Ten review files in
+     * this repo have no analysis section and nothing ever said so.
+     *
+     * The record is still kept — that was the right half of the original
+     * reasoning — but it is labelled for what it is, and the notification says
+     * the analysis did not run rather than implying a plan is waiting.
+     */
+    const aiAnalysis = outcome?.ok ? outcome.text : null;
+    const result = this.planGenerator.generateCommentPlan({
+      pr, comment, classification, aiAnalysis,
+      analysisError: outcome?.ok ? null : (outcome?.error || 'the analysis did not run'),
+    });
     if (result.skipped) return;
 
     this.stats.totalCommentsProcessed++;
-    this.stats.totalPlansGenerated++;
+    if (aiAnalysis) this.stats.totalPlansGenerated++;
 
-    this.emit('plan_generated', { type: 'comment', pr, comment, classification, filePath: result.filePath, isNew: result.isNew });
+    this.emit('plan_generated', {
+      type: 'comment', pr, comment, classification,
+      filePath: result.filePath, isNew: result.isNew, analysed: Boolean(aiAnalysis),
+    });
     this.emit('notification', {
-      message: `📝 ${classification.label} on PR #${pr.number} by @${comment.author} → ${result.filePath}`,
-      category: classification.category,
+      message: aiAnalysis
+        ? `📝 ${classification.label} on PR #${pr.number} by @${comment.author} → ${result.filePath}`
+        : `⚠️ PR #${pr.number} by @${comment.author}: analysis did not run — ${outcome?.error || 'unknown reason'}`,
+      category: aiAnalysis ? classification.category : 'analysis_failed',
       prNumber: pr.number,
     });
   }
