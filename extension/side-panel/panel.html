@@ -18,6 +18,7 @@
            one of them updates when you pull, so "which version am I running"
            is the first question when something behaves unexpectedly. Filled in
            from the manifest at load, so it cannot drift from the real one. -->
+      <button id="sessions-btn" class="icon-btn" title="Past conversations">☰</button>
       <button id="workspace-btn" class="icon-btn" title="Change the workspace">⌂</button>
       <span id="ext-version" class="ext-version" title="Extension version"></span>
       <!-- Chrome's side panel is docked by design and no API floats it. A
@@ -31,6 +32,17 @@
       </button>
     </div>
   </header>
+
+  <!-- Past conversations. Hidden until asked for: it is a drawer, not a
+       permanent column, and the panel is narrow enough that a list would cost
+       the conversation half its width. -->
+  <section id="sessions-drawer" hidden>
+    <div class="drawer-head">
+      <span>Past conversations</span>
+      <button id="sessions-close" class="icon-btn" title="Close">×</button>
+    </div>
+    <div id="sessions-list"></div>
+  </section>
 
   <!-- Message Stream -->
   <main id="message-stream">

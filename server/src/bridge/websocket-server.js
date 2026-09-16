@@ -19,6 +19,7 @@ import { randomUUID } from 'crypto';
 import { logTrace } from '../core/trace-log.js';
 import { prepareWorkspaceSwitch, leaveWhenIdle, RESTART_EXIT_CODE } from '../core/restart.js';
 import { canPickFolder, pickFolder } from '../core/folder-picker.js';
+import { planResume } from '../core/chat-thread.js';
 import { logError } from '../core/error-log.js';
 
 /**
@@ -375,6 +376,73 @@ export class WebSocketServer {
           break;
         }
         await this._handleMessage(clientId, { type: 'set_workspace', payload: { path: chosen } });
+        break;
+      }
+
+      /**
+       * Past conversations, for the side panel's picker.
+       *
+       * The storage and the CLI flags landed first and the panel had no way to
+       * reach any of it — reported as "I reopened the sidebar and there is no
+       * option to continue". A list nobody can open is the same as no list.
+       */
+      case 'list_sessions': {
+        const store = this.agentLoop?.sessionStore;
+        const live = this.agentLoop?.chatThread || null;
+        const sessions = (store?.listSessions?.() || []).slice(0, 30).map((s) => ({
+          ...s,
+          // Said per row, before the choice is made, because the two are
+          // different promises: one carries on, the other has to re-explain
+          // itself to a model that was never there.
+          resume: planResume(s.thread, live).action,
+        }));
+        this.broadcast('extension', {
+          id: randomUUID(), type: 'sessions',
+          payload: { sessions, thread: live },
+          timestamp: Date.now(),
+        });
+        break;
+      }
+
+      case 'resume_session': {
+        const store = this.agentLoop?.sessionStore;
+        const id = payload?.id;
+        const record = (store?.listSessions?.() || []).find((r) => r.id === id);
+
+        // File what is on screen now, or resuming destroys it — the mistake
+        // that made `--sessions` useless in the first place.
+        store?.rollover?.();
+        const turns = store?.resumeSession?.(id);
+        if (!turns) {
+          this.broadcast('extension', {
+            id: randomUUID(), type: 'error',
+            payload: { op: 'resume_session', message: `No session ${id}.` },
+            timestamp: Date.now(),
+          });
+          break;
+        }
+
+        this.agentLoop.conversationHistory = turns;
+        this.agentLoop.promptBuilder?.resetPromptState?.();
+        this.agentLoop.chatThread = record?.thread || null;
+
+        const plan = planResume(record?.thread, this.agentLoop.chatThread);
+        // Only when the model was not there. Handing a recap to a tab that
+        // already holds the conversation is noise it has to reconcile.
+        // The builder owns it, since it is the thing that decides what a
+        // prompt carries.
+        this.agentLoop.promptBuilder.pendingRecap = plan.action === 'continue' ? null : turns;
+
+        this.broadcast('extension', {
+          id: randomUUID(), type: 'session_reset',
+          payload: {
+            message: plan.action === 'continue'
+              ? 'Resumed. The browser tab still holds this conversation.'
+              : 'Resumed. The tab has moved on, so the next message carries a recap.',
+          },
+          timestamp: Date.now(),
+        });
+        for (const client of this.clients.values()) this._sendHistory(client.ws);
         break;
       }
 

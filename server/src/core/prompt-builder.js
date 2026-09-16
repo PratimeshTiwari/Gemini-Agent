@@ -169,6 +169,37 @@ export class PromptBuilder {
      * ambiguity, where dropping the block entirely would take the handover
      * review's "re-read `<task_checklist>`" with it.
      */
+    /**
+     * A resumed conversation the browser tab was never part of.
+     *
+     * The model's memory *is* the chat thread — `conversationHistory` is never
+     * replayed into a tab. So resuming a session into a different thread gives
+     * you a transcript the model has no knowledge of, and it answers
+     * confidently about work it never did.
+     *
+     * Set only when the threads differ (see `planResume`), and cleared after
+     * one turn: it is an introduction, not context to carry forever. Bounded,
+     * because the whole prompt strategy exists to avoid large repeated payloads
+     * typed into a browser.
+     */
+    if (this.pendingRecap?.length) {
+      const RECAP_TURNS = 12;
+      const RECAP_CHARS = 4000;
+      let recap = this.pendingRecap
+        .filter((t) => (t.role === 'user' || t.role === 'assistant' || t.role === 'agent')
+          && typeof t.content === 'string' && t.content.trim())
+        .slice(-RECAP_TURNS)
+        .map((t) => `[${t.role === 'agent' ? 'assistant' : t.role}] ${t.content.trim()}`)
+        .join('\n\n');
+      if (recap.length > RECAP_CHARS) recap = `…\n${recap.slice(-RECAP_CHARS)}`;
+      if (recap) {
+        parts.push('<resumed_conversation note="This happened in an earlier chat you were '
+          + 'not part of. Treat it as background, not as something you remember doing.">\n'
+          + `${recap}\n</resumed_conversation>`);
+      }
+      this.pendingRecap = null;
+    }
+
     const taskList = this._loadTaskList();
     if (taskList) {
       const pending = /^\s*[-*]\s*\[ \]/m.test(taskList);

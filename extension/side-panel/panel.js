@@ -77,6 +77,74 @@ function setupEventListeners() {
   setupPopout();
   setupWorkspace();
   setupSurfaces();
+  setupSessions();
+}
+
+/**
+ * The drawer of past conversations.
+ *
+ * The storage and the `--sessions` flag landed before any way to reach them
+ * from here, which is the same as not having them: reported as "I reopened the
+ * sidebar and there is no option to continue".
+ *
+ * Each row says whether resuming would **continue** or need a **recap**,
+ * because those are different promises. The agent's memory is the browser
+ * chat thread, not our transcript — if the tab has moved on, the model was
+ * never part of that conversation, and saying "resumed" without saying so
+ * produces confident answers about work it never did.
+ */
+function setupSessions() {
+  const btn = document.getElementById('sessions-btn');
+  const drawer = document.getElementById('sessions-drawer');
+  const close = document.getElementById('sessions-close');
+  if (!btn || !drawer) return;
+
+  const hide = () => { drawer.hidden = true; };
+  close?.addEventListener('click', hide);
+
+  btn.addEventListener('click', () => {
+    if (!drawer.hidden) { hide(); return; }
+    if (!isConnected) { appendStatus('Not connected — start the agent first.'); return; }
+    document.getElementById('sessions-list').textContent = 'Loading…';
+    drawer.hidden = false;
+    chrome.runtime.sendMessage({ type: 'list_sessions' });
+  });
+}
+
+/** Draw the list the server sent. */
+function renderSessions(payload) {
+  const list = document.getElementById('sessions-list');
+  if (!list) return;
+  const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+
+  if (sessions.length === 0) {
+    list.innerHTML = '<div class="drawer-empty">No past conversations yet.<br>'
+      + 'One is kept each time you run <code>/new</code> or restart the agent.</div>';
+    return;
+  }
+
+  list.innerHTML = sessions.map((s) => {
+    const when = s.updated
+      ? new Date(s.updated).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      : '';
+    // `continue` is the only one that needs no explaining; the others say what
+    // resuming will actually do.
+    const note = s.resume === 'continue'
+      ? '<span class="sess-continue">the tab still holds this</span>'
+      : '<span class="sess-recap">needs a recap</span>';
+    return `
+      <button class="sess" type="button" data-id="${escapeHtml(s.id)}">
+        <div class="sess-title">${escapeHtml(s.title || 'Untitled')}</div>
+        <div class="sess-meta">${s.turns} turns · ${escapeHtml(when)} · ${note}</div>
+      </button>`;
+  }).join('');
+
+  for (const row of list.querySelectorAll('.sess')) {
+    row.addEventListener('click', () => {
+      document.getElementById('sessions-drawer').hidden = true;
+      chrome.runtime.sendMessage({ type: 'resume_session', payload: { id: row.dataset.id } });
+    });
+  }
 }
 
 /**
@@ -1027,13 +1095,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
      */
     case 'session_reset':
       messageStream.innerHTML = '';
-      historyRestored = true;   // there is nothing to restore into any more
+      // A resume sends fresh history straight after, so the door stays open.
+      historyRestored = false;
       lastStatusText = '';
       removeThinking();
       isWaitingForResponse = false;
       sendBtn.disabled = false;
       reflectSendState();
       if (payload?.message) appendStatus(payload.message);
+      break;
+
+    case 'sessions':
+      renderSessions(payload);
       break;
 
     // State, not an event — see renderTaskList.

@@ -77,6 +77,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       // The panel unblocking a turn that is parked on a question or a command
       // approval. Pure relay — the server owns both resolvers.
+      case 'list_sessions':
+      case 'resume_session':
       case 'pick_workspace':
       case 'set_workspace':
       case 'question_response':

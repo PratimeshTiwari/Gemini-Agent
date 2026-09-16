@@ -685,3 +685,69 @@ describe('a completed checklist says that it is completed', () => {
     assert.match(withTask('- [ ] A\n'), /<task_checklist/);
   });
 });
+
+/**
+ * Resuming a conversation the browser tab was never part of.
+ *
+ * The model's memory *is* the chat thread — `conversationHistory` is never
+ * replayed into a tab. So restoring a transcript gives the model nothing, and
+ * it will answer confidently about work it never did. The recap is the only
+ * thing that makes "resume" honest when the tab has moved on.
+ */
+describe('the recap after a resume', () => {
+  const resumed = () => {
+    const ws2 = mkdtempSync(join(tmpdir(), 'recap-'));
+    const pb = new PromptBuilder(ws2, ws2);
+    pb.pendingRecap = [
+      { role: 'user', content: 'why is the poller re-reading comments' },
+      { role: 'agent', content: 'Because the watermark only moves when something was found.' },
+      { role: 'tool', content: '{"huge":"json"}' },
+    ];
+    return { pb, cleanup: () => rmSync(ws2, { recursive: true, force: true }) };
+  };
+
+  test('the next turn carries it, framed as background', () => {
+    const { pb, cleanup } = resumed();
+    const p = build(pb, { modelConfig: { effort: 'standard' } });
+    assert.match(p, /<resumed_conversation/);
+    assert.match(p, /not part of/i, 'the model should be told it was not there');
+    assert.match(p, /why is the poller re-reading comments/);
+    cleanup();
+  });
+
+  // An introduction, not context to carry forever — the prompt strategy exists
+  // to avoid large repeated payloads typed into a browser.
+  test('and only that turn', () => {
+    const { pb, cleanup } = resumed();
+    build(pb, { modelConfig: { effort: 'standard' } });
+    const second = build(pb, { modelConfig: { effort: 'standard' } });
+    assert.doesNotMatch(second, /<resumed_conversation/);
+    cleanup();
+  });
+
+  test('tool traffic is left out of it', () => {
+    const { pb, cleanup } = resumed();
+    assert.doesNotMatch(build(pb, { modelConfig: { effort: 'standard' } }), /huge/);
+    cleanup();
+  });
+
+  test('nothing pending, nothing added', () => {
+    const ws2 = mkdtempSync(join(tmpdir(), 'recap-'));
+    const pb = new PromptBuilder(ws2, ws2);
+    assert.doesNotMatch(build(pb, { modelConfig: { effort: 'standard' } }), /<resumed_conversation/);
+    rmSync(ws2, { recursive: true, force: true });
+  });
+
+  test('a very long conversation is cut, not sent whole', () => {
+    const ws2 = mkdtempSync(join(tmpdir(), 'recap-'));
+    const pb = new PromptBuilder(ws2, ws2);
+    pb.pendingRecap = Array.from({ length: 200 }, (_, i) => ({
+      role: 'user', content: `turn ${i} ${'x'.repeat(200)}`,
+    }));
+    const p = build(pb, { modelConfig: { effort: 'standard' } });
+    const block = p.match(/<resumed_conversation[\s\S]*?<\/resumed_conversation>/)[0];
+    assert.ok(block.length < 5000, `the recap was ${block.length} characters`);
+    assert.match(block, /turn 199/, 'it kept the oldest turns instead of the newest');
+    rmSync(ws2, { recursive: true, force: true });
+  });
+});

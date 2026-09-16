@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.14.0**
+## Current version: **1.15.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,22 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.15.0 — 2026-09-17
+
+- **Past conversations, from the panel** (`☰`). The storage and the
+  `--sessions` flag landed before there was any way to reach them from here,
+  which is the same as not having them. A drawer rather than a column: the
+  panel is narrow and a permanent list would cost the conversation half its
+  width.
+- **Each row says what resuming would actually do.** "The tab still holds this"
+  or "needs a recap" — different promises, and the reason the browser thread id
+  is recorded at all. The model's memory is the chat thread, not our
+  transcript.
+- **Resuming into a moved-on tab carries a recap.** Restoring a transcript
+  gives the model nothing, so it would answer confidently about work it never
+  did. One turn only, bounded, tool traffic left out, and framed as background
+  rather than as something it remembers doing.
 
 ### 1.14.0 — 2026-09-17
 
