@@ -30,6 +30,8 @@ export function InputBar({
   activeMenu,
   addPaste,
   artifacts,
+  filedSession,
+  history,
   diffRequest,
   setPaletteSuppressed,
   elapsed,
@@ -118,6 +120,30 @@ export function InputBar({
       */}
       {promptVisible && (
         <Box flexDirection="column" marginTop={compact ? 0 : 1}>
+          {/*
+            What happened to the last conversation.
+            
+            Starting without `--continue` files it and clears the screen, which
+            from the outside is indistinguishable from losing it. The storage,
+            the flags and the picker were all built and nothing ever said a
+            session had been put anywhere — asked directly: "didn't we plan on
+            displaying the session id for resume?"
+
+            One row, once, and only on the run that filed something. It is
+            dismissed by the first message, because after that the id is
+            history rather than an offer.
+          */}
+          {filedSession && !isProcessing && history.length === 0 && (
+            <Box marginBottom={1}>
+              <Text dimColor wrap="truncate">
+                {'  ↺ '}Previous conversation filed
+                {filedSession.turns ? ` (${filedSession.turns} turns)` : ''}
+                {' — '}
+                <Text color="cyan">--resume {filedSession.id}</Text>
+              </Text>
+            </Box>
+          )}
+
           {hasArtifacts && !isProcessing && (
             <Box flexDirection="column" marginBottom={1}>
               <Text color="cyan">

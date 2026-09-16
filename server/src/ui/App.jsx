@@ -838,6 +838,7 @@ export function App({ agentLoop, wsServer }) {
           wsServer={wsServer}
           github={github}
           maxRows={Math.max(6, terminalHeight - 8)}
+          width={terminalWidth}
         />
       ) : (
         <>
@@ -915,6 +916,8 @@ export function App({ agentLoop, wsServer }) {
           />
 
           <InputBar
+            filedSession={agentLoop.filedSession}
+            history={history}
             setPaletteSuppressed={setPaletteSuppressed}
             activeMenu={activeMenu}
             diffRequest={diffRequest}

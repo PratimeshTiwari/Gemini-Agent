@@ -1,5 +1,9 @@
 # The GitHub tab — what looks odd, and what to do
 
+> **Status, 2026-09-17:** fixes 1–3 and the grouped screen are **built**. What
+> remains is the scrollback (the list is windowed but does not scroll), the PR
+> explorer's shape (fix E), and the open question at the bottom.
+
 Written 2026-09-17, from three screenshots and a reading of
 `ui/components/GithubTab.jsx` (396 lines). **Nothing here is built.** It is a
 file to decide from, the way `GITHUB-UI-PLAN.md` was — that one was finished
@@ -29,7 +33,7 @@ Recent activity
 
 Six problems, each naming its line.
 
-### 1. Two rows say the same event — `:371` and `:355`
+### 1. ~~Two rows say the same event~~ — fixed — `:371` and `:355`
 
 `github_notification` and `github_plan_generated` are drawn as separate rows,
 and the handler emits **both** for one comment. So every comment produces a
@@ -50,18 +54,18 @@ Now `.agent/github-reviews/PR-15/comment-….md` — relative to the workspace,
 so it resolves and becomes a link, and still far shorter than absolute. The
 notification row's own copy of the path is problem 1's job to remove.
 
-### 3. Nothing says whether a row has an analysis in it
+### 3. ~~Nothing says whether a row has an analysis in it~~ — fixed
 
 Fixed in the behaviour — enter now re-runs an unanalysed comment rather than
 opening the placeholder — but the row still looks identical either way. The
 one thing you want to know before pressing enter is invisible.
 
-### 4. `Recent activity` is a heading over an unbounded list — `:318`
+### 4. ~~`Recent activity` is a heading over an unbounded list~~ — fixed — `:318`
 
 It has no count, no bound, and the list grows to 50 entries in a live frame.
 There is no "…and 30 more"; it simply gets taller than the screen.
 
-### 5. Three glyph vocabularies on one screen
+### 5. ~~Three glyph vocabularies on one screen~~ — fixed
 
 `📝` in the notification, `💬` for the body, `→` for the path, `❯` for the
 cursor, `·` as the separator. The rest of the product draws in `●`/`○`, `⌁`,
