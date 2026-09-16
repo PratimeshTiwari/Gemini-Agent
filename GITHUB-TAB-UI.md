@@ -291,7 +291,7 @@ already granted and simply not spent. The rest of the mess is four faults below.
 
 ## What the screenshots show
 
-### 7. Three rows of GitHub under nine rows of the agent's logo
+### 7. ~~Three rows of GitHub under nine rows of the agent's logo~~ — fixed
 
 The dashboard renders `@PratimeshTiwari · 2 PRs · polled 22s ago` and *"Nothing
 yet"*. Two rows. Above them sits the figlet banner, the byline and the workspace
@@ -317,7 +317,7 @@ needed:
 | `ESC[2J` on switch | a second deliberate clear; `3J` would delete the transcript's scrollback, and without `3J` Static still will not reprint |
 | alternate screen buffer (`?1049h`) | what vim/less do, and genuinely a separate screen — but it needs a second Ink instance sharing one raw-mode stdin, and it throws away native scroll inside the tab. Real cost, for something filling the budget already achieves. |
 
-### 8. The one screen everybody lands on is the only one with no key hints
+### 8. ~~The one screen everybody lands on is the only one with no key hints~~ — fixed
 
 `Activity` draws the status line, the groups, the trimmed-count and a notice —
 and **no `KeyHints` row at all**. Every other view has one (`:134`, `:159`,
@@ -331,7 +331,7 @@ a shortcut nobody uses"* — which is exactly what happened, because the only pl
 
 **That is the `shift+?` report.** It is not missing; it is unannounced.
 
-### 9. `⏎` means three different things
+### 9. ~~`⏎` means three different things~~ — fixed
 
 | view | what Enter does |
 | --- | --- |
@@ -342,7 +342,7 @@ a shortcut nobody uses"* — which is exactly what happened, because the only pl
 Three screens, one key, three verbs, and the hint row is the only thing that
 says which — on the two screens that have a hint row.
 
-### 10. The repo name on every row
+### 10. ~~The repo name on every row~~ — fixed
 
 `[Gemini-Agent] #16 …` / `[Gemini-Agent] #15 test`. This is the same fault already
 fixed one level down, where the PR number was repeated on every comment: **the
@@ -444,3 +444,51 @@ is the rule the main frame already follows.
 2. Fill the budget, pin the hints to the bottom — the banner leaves.
 3. Collapse the dashboard into the PR list; `⏎` means "go deeper" everywhere.
 4. Repo name once; the PR row gets its second line.
+
+
+---
+
+## Round 2 — shipped, 2026-09-17
+
+All four faults above, and the design below them, built as written with two
+deviations, both recorded because the reasoning is the point:
+
+1. **`⏎` on a comment is one verb, not `⏎ analyse` + `o open plan`.** The
+   mockups split them. The original request did not — *"clicking on an old
+   comment should start the agent analysis (if not done previously) or open the
+   analysis file"* — and that is better: splitting means knowing which state the
+   row is in before choosing a key, which is exactly what the row's own `⚠`
+   marker exists to save you.
+
+2. **The screen is `terminalHeight - 3`, not `- 2`.** The arithmetic says `- 2`:
+   this tab draws only itself and the status bar, which is one row plus a margin
+   `compact` drops, and `height` + `overflow="hidden"` makes its height
+   deterministic so the usual spare row for a wrapped line is not needed. `- 2`
+   is still wrong — measured, it costs one `ESC[2J` + `ESC[3J` on the way *back*
+   to the agent tab, because Ink's frame carries a trailing newline the row
+   count does not know about. The row given up is the one the banner's last line
+   would sit on, and it turns out not to cost even that: the frame is tall
+   enough that the banner scrolls clear anyway.
+
+**Measured, under a pty with the screen reconstructed by `pyte`** — the stream
+alone cannot show what the terminal ends up displaying, which is the whole
+question when the fix is "make the banner scroll off":
+
+| | |
+| --- | --- |
+| banner rows still visible on the GitHub screen | 9 → **0** |
+| rows of content at 40 rows | 3 → **35** |
+| `ESC[2J` / `ESC[3J` | 0 at 40x100, 30x100, 24x90, 24x72, 13x80, 13x72, 10x80, 9x72, 40x60 — on the PR list, the round trip, the drill-down and the way back out |
+
+`summarisePrs` is exported and has its own tests, each mutation-tested: keying
+the plans by comment id (so re-analysing replaces rather than double-counts, and
+a stale `analysed: false` cannot outlive the retry that fixed it), dropping
+events with no PR number, and keeping the newest timestamp rather than the last.
+
+## Still open
+
+- **Real scrollback inside the screen.** The list is windowed and says what it
+  trimmed; it does not scroll. Unchanged from round 1, and still argued against
+  as a *second* scroll model.
+- **Recording the analysis's own Gemini thread id.** `subagentUrl` is available
+  and needs threading through `turn-runner`.

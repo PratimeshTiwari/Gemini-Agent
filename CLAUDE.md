@@ -258,6 +258,39 @@ Three constraints that shaped the row, none obvious:
 Only `github_plan_generated` earns a row; `processing_started` and `processing_finished`
 bracket the same event and would draw three lines for one comment.
 
+**The tab is one list, three levels, and it fills the terminal.** Reworked
+2026-09-17 after three screenshots and "this github one is a mess". It had
+*two* lists — an activity feed you landed on, and a PR explorer behind an
+unadvertised `p` — which showed overlapping things, and `⏎` meant something
+different on each of the three screens (open the plan / open comments / send to
+the agent). The feed was also empty on a fresh session with open PRs sitting
+right there, because it only ever held events from *this* process.
+
+So the feed stopped being a view and became the evidence: `summarisePrs`
+(exported and tested) folds it into "what does the agent know about each PR",
+which is what the PR rows count and what the comment rows join against. What is
+left is a drill-down — **PRs → that PR's comments → the analysis in your
+editor** — where `⏎` means go deeper at every level and `esc` comes back. Level
+two lists *every* comment on the PR with the agent's work marked on it, rather
+than only the ones it happened to process.
+
+Two rules came out of making it a screen rather than a paragraph:
+
+- **The banner cannot be cleared, so the screen has to push it off.** It is a
+  `<Static>` item, committed to the terminal permanently, and remounting
+  `<Static>` to lose it reprints the entire transcript — that is where the
+  second banner came from. `height={rows}` with `overflow="hidden"` scrolls it
+  away instead, and the fixed height is also what lets the hint row be *pinned*
+  to the last line instead of trailing however much content there was.
+- **`terminalHeight - 2` is one row too tall, and the arithmetic does not say
+  so.** The tab draws only itself and the status bar (one row plus a margin
+  `compact` drops), so `- 2` looks exact — and measured, it costs one `ESC[2J`
+  + `ESC[3J` on the way *back* to the agent tab, because Ink's frame carries a
+  trailing newline the row count does not. `- 3` is zero clears at 40x100,
+  24x90, 24x72, 13x80, 13x72, 10x80, 9x72 and 40x60. `RESERVED_ROWS` is the
+  agent tab's furniture and does not apply here; budgeting this screen at
+  `- 8` was what left four rows of figlet on top of it.
+
 The batch loop is `core/turn-runner.js`, not `agent-loop.js`: `runHeadlessTask` is a caller
 now. **Its flat re-serialisation is necessary, not an oversight** — every batch send opens a
 fresh browser tab that is closed when the turn ends, so turn 2 has never seen turn 1. Removing
