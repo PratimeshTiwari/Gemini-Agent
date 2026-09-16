@@ -624,6 +624,7 @@
           break;
         // The panel unblocking a turn that is parked on a question or a command
         // approval. Pure relay — the server owns both resolvers.
+        case "get_history":
         case "list_sessions":
         case "resume_session":
         case "pick_workspace":

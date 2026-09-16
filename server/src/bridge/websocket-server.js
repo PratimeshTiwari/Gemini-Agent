@@ -386,6 +386,26 @@ export class WebSocketServer {
        * reach any of it — reported as "I reopened the sidebar and there is no
        * option to continue". A list nobody can open is the same as no list.
        */
+      /**
+       * A panel asking for the conversation, because it just opened.
+       *
+       * `_sendHistory` runs when the **socket** connects — and opening the side
+       * panel does not reconnect it: the service worker holds one socket for
+       * the life of the browser session, so a panel that opens afterwards is a
+       * fresh page arriving in the middle of an existing connection and is
+       * never told anything. Reported as "opening and closing the sidebar does
+       * not persist the chat", which it looked like from the outside.
+       *
+       * So the panel asks rather than waiting to be told. The connect-time send
+       * stays for the case where the panel is already open when the socket
+       * comes up.
+       */
+      case 'get_history': {
+        const client = this.clients.get(clientId);
+        if (client) this._sendHistory(client.ws);
+        break;
+      }
+
       case 'list_sessions': {
         const store = this.agentLoop?.sessionStore;
         const live = this.agentLoop?.chatThread || null;

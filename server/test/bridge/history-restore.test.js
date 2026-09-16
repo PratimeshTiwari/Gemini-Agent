@@ -110,3 +110,63 @@ describe('_sendHistory', () => {
     assert.deepEqual(sent, []);
   });
 });
+
+/**
+ * A panel that opens *after* the socket is already up.
+ *
+ * `_sendHistory` runs on connect, and opening the side panel does not
+ * reconnect anything — the service worker holds one socket for the whole
+ * browser session. So a panel opened afterwards is a fresh page arriving in
+ * the middle of an existing connection, and the connect-time send had already
+ * happened, to a page that no longer exists.
+ *
+ * Reported as "opening and closing the sidebar does not persist the chat",
+ * which is exactly how it looked: every other reopen showed the welcome screen
+ * while the conversation was plainly still running in the Gemini tab.
+ */
+describe('a panel can ask for the conversation', () => {
+  const bridge = (turns) => {
+    const store = new SessionStore(dir);
+    if (turns) store.saveHistory(turns);
+    const server = Object.create(WebSocketServer.prototype);
+    server.agentLoop = { sessionStore: store };
+    const sent = [];
+    const ws = {};
+    server.clients = new Map([['c1', { ws, type: 'extension' }]]);
+    server._send = (_ws, m) => sent.push(m);
+    return { server, sent };
+  };
+
+  test('get_history answers with the conversation', async () => {
+    const { server, sent } = bridge([
+      { role: 'user', content: 'walk me through the bridge' },
+      { role: 'assistant', content: 'It types into a tab.' },
+    ]);
+    await server._handleMessage('c1', { type: 'get_history' });
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].type, 'history');
+    assert.equal(sent[0].payload.turns.length, 2);
+  });
+
+  test('asking twice answers twice — the panel decides what to do with it', async () => {
+    // A reopened panel and a resumed session both need an answer; suppressing
+    // the second here would make the panel's own guard the only one, in the
+    // one place that cannot see why it was asked.
+    const { server, sent } = bridge([{ role: 'user', content: 'hi' }]);
+    await server._handleMessage('c1', { type: 'get_history' });
+    await server._handleMessage('c1', { type: 'get_history' });
+    assert.equal(sent.length, 2);
+  });
+
+  test('a first run answers with nothing rather than an empty shell', async () => {
+    const { server, sent } = bridge(null);
+    await server._handleMessage('c1', { type: 'get_history' });
+    assert.deepEqual(sent, []);
+  });
+
+  test('an unknown client is not a crash', async () => {
+    const { server, sent } = bridge([{ role: 'user', content: 'hi' }]);
+    await server._handleMessage('nobody', { type: 'get_history' });
+    assert.deepEqual(sent, []);
+  });
+});

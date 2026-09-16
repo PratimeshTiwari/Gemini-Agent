@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.16.0**
+## Current version: **1.17.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,17 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.17.0 — 2026-09-17
+
+- **Reopening the sidebar keeps the conversation.** The server sent history
+  when the **socket** connected — and opening the side panel does not reconnect
+  anything: the service worker holds one socket for the whole browser session.
+  A panel opened afterwards is a fresh page arriving mid-connection, and the
+  connect-time send had already happened, to a page that no longer existed. It
+  asks now (`get_history`) rather than waiting to be told, and the connect-time
+  send stays for the case where the panel is already open when the socket comes
+  up.
 
 ### 1.16.0 — 2026-09-17
 

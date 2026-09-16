@@ -23,6 +23,7 @@ let isConnected = false;
 let isWaitingForResponse = false;
 let currentWorkspace = '';
 let historyRestored = false;
+let historyRequested = false;
 
 // ── Initialization ──────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -362,6 +363,18 @@ async function checkConnectionStatus(initial = false) {
     const response = await chrome.runtime.sendMessage({ type: 'get_status' });
     const connected = response?.connected || false;
     updateConnectionUI(connected);
+
+    // Ask for the conversation, once, as soon as there is a bridge to ask.
+    //
+    // The server sends history when the *socket* connects, and opening this
+    // panel does not reconnect it — the service worker holds one socket for the
+    // whole browser session. So a panel opened afterwards is a fresh page
+    // arriving mid-connection, which is why reopening the sidebar looked like
+    // it had lost the chat.
+    if (connected && !historyRequested) {
+      historyRequested = true;
+      chrome.runtime.sendMessage({ type: 'get_history' }).catch(() => {});
+    }
 
     if (initial && !connected) {
       // Free and idempotent: connectWebSocket returns immediately if one is
@@ -1114,6 +1127,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       messageStream.innerHTML = '';
       // A resume sends fresh history straight after, so the door stays open.
       historyRestored = false;
+      historyRequested = true;
       lastStatusText = '';
       removeThinking();
       isWaitingForResponse = false;
