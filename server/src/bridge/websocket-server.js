@@ -190,6 +190,50 @@ export class WebSocketServer {
       },
       timestamp: Date.now(),
     });
+
+    /**
+     * Hand the panel the conversation it cannot read for itself.
+     *
+     * Reported as "I reopened the panel and the chat got cleared". It was
+     * never cleared — `sessions/history.jsonl` has every turn, written twice
+     * on every one. The panel is a browser page with no filesystem, so it
+     * starts from an empty DOM and nothing ever offered it the record. Exactly
+     * the shape the task list had.
+     *
+     * The **last** turns, not all of them: this is one message across a socket
+     * into a page, and someone reopening a panel wants to see where they were,
+     * not six weeks of history. The rest stays on disk for `/sessions`.
+     *
+     * Tool calls and results are dropped. They are a transcript of machinery,
+     * they are the bulk of the bytes, and a restored view of them would be a
+     * wall of JSON where a conversation should be.
+     */
+    this._sendHistory(ws);
+  }
+
+  /** The tail of this workspace's conversation, for a panel that just opened. */
+  _sendHistory(ws) {
+    const MAX_TURNS = 40;
+    let turns = [];
+    try {
+      turns = this.agentLoop?.sessionStore?.loadHistory?.() || [];
+    } catch {
+      return; // a panel with no history is the ordinary first-run case
+    }
+
+    const shown = turns
+      .filter((t) => (t.role === 'user' || t.role === 'assistant' || t.role === 'agent')
+        && typeof t.content === 'string' && t.content.trim())
+      .slice(-MAX_TURNS)
+      .map((t) => ({ role: t.role === 'agent' ? 'assistant' : t.role, content: t.content }));
+    if (shown.length === 0) return;
+
+    this._send(ws, {
+      id: randomUUID(),
+      type: 'history',
+      payload: { turns: shown, total: turns.length },
+      timestamp: Date.now(),
+    });
   }
 
   async _handleMessage(clientId, message) {

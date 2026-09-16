@@ -22,6 +22,7 @@ let currentMode = 'plan';
 let isConnected = false;
 let isWaitingForResponse = false;
 let currentWorkspace = '';
+let historyRestored = false;
 
 // ── Initialization ──────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -981,6 +982,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const { body, review } = splitReview(payload.content);
       if (body) appendMessage('agent', body);
       if (review) appendReview(review);
+      break;
+    }
+
+    /**
+     * The conversation so far, for a panel that has just opened.
+     *
+     * The transcript was never lost — the agent writes every turn to disk
+     * twice — but a browser page cannot read it, so reopening the panel looked
+     * like it had been cleared. Rendered once, on connect; anything already on
+     * screen wins, because a reconnect mid-session must not duplicate what the
+     * reader is looking at.
+     */
+    case 'history': {
+      if (historyRestored || messageStream.querySelector('.message-user')) break;
+      historyRestored = true;
+      if (welcomeMessage) welcomeMessage.remove();
+      const turns = Array.isArray(payload?.turns) ? payload.turns : [];
+      if (turns.length === 0) break;
+      if (payload.total > turns.length) {
+        appendStatus(`Showing the last ${turns.length} of ${payload.total} turns.`);
+      }
+      for (const turn of turns) {
+        const { body, review } = splitReview(turn.content);
+        if (turn.role === 'user') appendMessage('user', turn.content);
+        else if (body) appendMessage('agent', body);
+        if (turn.role !== 'user' && review) appendReview(review);
+      }
       break;
     }
 

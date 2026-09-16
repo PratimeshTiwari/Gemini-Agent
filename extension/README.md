@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.12.0**
+## Current version: **1.13.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,16 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.13.0 — 2026-09-17
+
+- **Reopening the panel no longer looks like losing the chat.** It never was
+  lost: `SessionStore` writes every turn to disk twice, on every turn. But the
+  panel is a browser page with no filesystem, so it started from an empty DOM
+  and nothing had ever offered it the record — the same shape as the task list.
+  The server hands over the last 40 conversational turns on connect, says how
+  many it held back, and leaves tool calls on disk: they are most of the bytes
+  and a restored view of them is a wall of JSON where a conversation should be.
 
 ### 1.12.0 — 2026-09-17
 
