@@ -374,7 +374,10 @@ function Activity({ agentLoop, github, maxRows, width = 80 }) {
    * a time, up to fifty. So rows are counted out and the remainder is stated
    * rather than drawn.
    */
-  const budget = Math.max(3, maxRows - 8);
+  // `- 10`, not `- 8`: the hint row below and its margin are two more rows of
+  // furniture, and a row you draw is a row you budget. Charging the list for
+  // them is the whole of not reintroducing the overflow.
+  const budget = Math.max(3, maxRows - 10);
   const rendered = [];
   let used = 0;
   let dropped = 0;
@@ -466,6 +469,24 @@ function Activity({ agentLoop, github, maxRows, width = 80 }) {
           <Text dimColor wrap="truncate">{'  '}{lastNotice.payload?.message}</Text>
         </Box>
       ) : null}
+
+      {/*
+        The screen you land on was the only one without a hint row.
+
+        Every other view here has one, so `p`, `r`, `a` and `?` were all
+        invisible from the one place everybody arrives — including `?` itself,
+        which exists precisely to list the bindings a four-item row cannot fit
+        and was advertised only inside the help it opens. A shortcut nobody can
+        discover is a shortcut nobody uses, and that is doubly true of the one
+        that discovers the others.
+
+        Four items, because seven wrapped at 78 columns, and a hint row that
+        wraps is charged one row and drawn as two — the frame-budget bug this
+        file has hit twice.
+      */}
+      <Box marginTop={1}>
+        <KeyHints hints={[['↑↓', 'move'], ['⏎', 'open'], ['p', 'PRs'], ['?', 'keys']]} />
+      </Box>
     </Box>
   );
 }

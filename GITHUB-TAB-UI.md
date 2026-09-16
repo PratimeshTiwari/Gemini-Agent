@@ -276,3 +276,171 @@ happened?" vs "what is open?"), and the second is the one people go looking for
 when the first is empty. Merging them means a mode switch inside one list;
 keeping them means two screens to learn. I lean towards keeping them and
 fixing E, but it is a product call rather than a layout one.
+
+---
+
+# Round 2 — "this github one is a mess"
+
+Three more screenshots, 2026-09-17. The agent screen, the GitHub dashboard, and
+the PR explorer. The question asked with them: *should we have a separate screen
+entirely for GitHub, or what?*
+
+**Short answer: yes — and "screen" should mean it fills the terminal, not that
+it becomes a second program.** That costs almost nothing, because the budget is
+already granted and simply not spent. The rest of the mess is four faults below.
+
+## What the screenshots show
+
+### 7. Three rows of GitHub under nine rows of the agent's logo
+
+The dashboard renders `@PratimeshTiwari · 2 PRs · polled 22s ago` and *"Nothing
+yet"*. Two rows. Above them sits the figlet banner, the byline and the workspace
+path — nine rows of a different screen.
+
+The banner is a `<Static>` item (`App.jsx:805`). Ink commits Static output to the
+terminal permanently and never repaints it, so **it cannot be removed on a tab
+switch** — and must not be attempted: remounting `<Static>` reprints the whole
+transcript, which is where the double banner came from (`App.jsx:812-818` records
+that bug).
+
+It does not need removing. It needs **pushing off**. `GithubTab` is already handed
+`maxRows = terminalHeight - 8` (`App.jsx:840`) and renders three rows into it. A
+screen that fills its budget scrolls the banner into scrollback by itself, on the
+first frame, with no clear and no remount.
+
+This is the whole of "a separate screen", and it is why the alternatives are not
+needed:
+
+| option | verdict |
+| --- | --- |
+| fill the granted budget | **this one.** No new machinery, no clear, no Static remount. |
+| `ESC[2J` on switch | a second deliberate clear; `3J` would delete the transcript's scrollback, and without `3J` Static still will not reprint |
+| alternate screen buffer (`?1049h`) | what vim/less do, and genuinely a separate screen — but it needs a second Ink instance sharing one raw-mode stdin, and it throws away native scroll inside the tab. Real cost, for something filling the budget already achieves. |
+
+### 8. The one screen everybody lands on is the only one with no key hints
+
+`Activity` draws the status line, the groups, the trimmed-count and a notice —
+and **no `KeyHints` row at all**. Every other view has one (`:134`, `:159`,
+`:198`, `:274`, `:300`).
+
+So from the dashboard, `p` (browse PRs), `r` (poll now), `a` (avoid words) and
+`?` (everything else) are all invisible. `?` is handled at
+`use-github-keys.js:128` and its comment says *"a shortcut nobody can discover is
+a shortcut nobody uses"* — which is exactly what happened, because the only place
+`?` is advertised is inside the help screen it opens.
+
+**That is the `shift+?` report.** It is not missing; it is unannounced.
+
+### 9. `⏎` means three different things
+
+| view | what Enter does |
+| --- | --- |
+| dashboard | run the analysis, or open the plan |
+| PR explorer | open this PR's comments |
+| comments | send the comment to the agent |
+
+Three screens, one key, three verbs, and the hint row is the only thing that
+says which — on the two screens that have a hint row.
+
+### 10. The repo name on every row
+
+`[Gemini-Agent] #16 …` / `[Gemini-Agent] #15 test`. This is the same fault already
+fixed one level down, where the PR number was repeated on every comment: **the
+container is written once, not on each row.** With a single repo it is pure noise
+in the 12 columns the title most needs.
+
+## The design: one list, three levels, one row of chrome at each end
+
+The recorded decision is *"the tab is for browsing; the stream is for noticing"*.
+The tab currently does both, and that is the mess — the dashboard is a feed, the
+explorer is a browser, they overlap, and you land on the feed.
+
+**So delete the activity feed as a view.** Every event already arrives in the
+transcript as one dim row, which is the noticing half. What the tab owes you is
+the browsing half, and browsing is a drill-down:
+
+```
+  PRs  ─⏎→  comments on one PR  ─⏎→  the analysis, in your editor
+       ←esc                     ←esc
+```
+
+One mental model, one meaning for Enter at each level ("go deeper"), one for
+escape ("come back"), and nothing to learn.
+
+### Level 1 — the PRs
+
+```
+@PratimeshTiwari · 2 PRs · polled 48s ago                         Gemini-Agent
+
+❯ #16  fix(github): a review without an analysis is not a plan…
+       3 comments · ⚠ 1 not analysed · 2h ago
+
+  #15  test
+       no comments
+
+
+  ↑↓ move · ⏎ comments · r refresh · ? keys · ^o agent
+```
+
+Repo once, on the right of the status line. Title gets the full width. The second
+line is why you would open it — which is the thing the current row cannot say at
+all.
+
+### Level 2 — one PR's comments
+
+```
+@PratimeshTiwari · #16 fix(github): a review without an analysis…
+
+❯ @PratimeshTiwari                                       ⚠ not analysed
+  ▌ can you check the retry path here? it looks like it swallows
+  ▌ the second failure
+    .agent/github-reviews/PR-16/comment-2451.md
+
+  @someone-else                                                 ✓
+  ▌ lgtm
+
+
+  ↑↓ move · ⏎ analyse · o open plan · esc back · ? keys
+```
+
+The comment stays on its bar (`blockLines`) — that decision holds, and it is the
+one thing on the screen a person wrote. `⏎` is one verb again: *analyse*. Opening
+the file moves to `o`, which is what it is everywhere else in this product.
+
+### The chrome rule
+
+**One row at the top, one row at the bottom, pinned.** The hint row is the last
+line of the budget, not a `<KeyHints>` floating after however much content there
+happened to be. That is the second reason to fill the budget: the hints stop
+moving, so your eye learns where they are.
+
+Every hint row ends with `?` — it is the escape hatch for the four bindings the
+row cannot fit, and it has to be on the row it is an escape hatch *from*.
+
+## Rows
+
+At 40 rows the tab gets 32. One status line, one blank, one hint line, one blank:
+**28 rows of content**, against three today. At 13 rows it gets 6: status, hints,
+and four rows of list — still a usable browser, and the spacing goes first, which
+is the rule the main frame already follows.
+
+## What I would not do
+
+- **No box.** Unchanged from round 1: the only box-drawn frame in this product is
+  the input field, where the border *means* the mode. A second one makes that
+  meaningless and costs four rows.
+- **No alternate screen buffer.** Argued above — real cost, and filling the
+  budget already gets the banner off the screen.
+- **No second scroll model.** Unchanged from round 1.
+- **Nothing for the agent screen's empty space.** *"This is a very shorted ui"* is
+  Ink drawing at the cursor and growing downward; the strip fills as you talk, and
+  the transcript belongs in scrollback rather than in a padded frame. Filling the
+  height is right for a browser and wrong for a stream — that is the difference
+  between the two tabs, not an inconsistency to iron out.
+
+## Order
+
+1. Hint row on the dashboard, with `?` on it — one line, fixes the reported bug.
+2. Fill the budget, pin the hints to the bottom — the banner leaves.
+3. Collapse the dashboard into the PR list; `⏎` means "go deeper" everywhere.
+4. Repo name once; the PR row gets its second line.
