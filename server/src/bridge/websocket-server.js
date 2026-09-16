@@ -18,6 +18,7 @@ import { WebSocketServer as WS } from 'ws';
 import { randomUUID } from 'crypto';
 import { logTrace } from '../core/trace-log.js';
 import { prepareWorkspaceSwitch, leaveWhenIdle, RESTART_EXIT_CODE } from '../core/restart.js';
+import { canPickFolder, pickFolder } from '../core/folder-picker.js';
 import { logError } from '../core/error-log.js';
 
 /**
@@ -294,6 +295,45 @@ export class WebSocketServer {
        * in-place switch this replaced. The panel will see the socket drop and
        * come back, which is the honest signal that it really did change.
        */
+      /**
+       * The native folder chooser, opened from the side panel.
+       *
+       * A Chrome extension cannot open one — `<input webkitdirectory>` hands
+       * back a *copy of the directory's contents*, never its path, which is the
+       * only thing wanted here. But the agent runs on the same machine as the
+       * browser, so the server can open the dialog the CLI already uses and
+       * hand back what was chosen.
+       *
+       * The dialog blocks until the person is done, which is fine here: nothing
+       * else is waiting on this message, and a picker that timed out mid-browse
+       * would be worse than one that waits.
+       */
+      case 'pick_workspace': {
+        if (!canPickFolder()) {
+          this.broadcast('extension', {
+            id: randomUUID(), type: 'error',
+            payload: {
+              op: 'pick_workspace', unavailable: true,
+              message: 'No folder chooser on this machine — type the path instead.',
+            },
+            timestamp: Date.now(),
+          });
+          break;
+        }
+        const chosen = await pickFolder('Choose a workspace for the agent');
+        // Cancelled. Saying nothing would read as a hung button.
+        if (!chosen) {
+          this.broadcast('extension', {
+            id: randomUUID(), type: 'status',
+            payload: { message: 'Workspace unchanged.' },
+            timestamp: Date.now(),
+          });
+          break;
+        }
+        await this._handleMessage(clientId, { type: 'set_workspace', payload: { path: chosen } });
+        break;
+      }
+
       case 'set_workspace': {
         const outcome = prepareWorkspaceSwitch(payload?.path);
         if (!outcome.ok) {

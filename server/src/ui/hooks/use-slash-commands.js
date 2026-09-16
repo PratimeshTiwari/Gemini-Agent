@@ -12,7 +12,7 @@ import { SLASH_COMMANDS } from '../constants.js';
 import { AGENT_COMMANDS } from '../../core/slash-commands.js';
 import { oneLine } from '../format.js';
 import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
-import { canPickFolder, pickFolder } from '../folder-picker.js';
+import { canPickFolder, pickFolder } from '../../core/folder-picker.js';
 import { summariseTraces, formatMs } from '../../core/trace-log.js';
 import { channelHealth, formatRate, MIN_TURNS_FOR_RATE } from '../../core/channel-health.js';
 import { checkForUpdate, isDirty, pullUpdate, savePendingReload, readPendingReload, clearPendingReload } from '../../core/update.js';

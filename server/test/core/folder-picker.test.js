@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canPickFolder, pickFolder } from '../../src/ui/folder-picker.js';
+import { canPickFolder, pickFolder } from '../../src/core/folder-picker.js';
 
 test('canPickFolder reports what this machine can actually do', async (t) => {
   await t.test('it names a mechanism or says no — never maybe', () => {

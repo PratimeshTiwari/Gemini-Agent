@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.4.0**
+## Current version: **1.5.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,23 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.5.0 — 2026-09-16
+
+- **The agent never types into a Gemini tab you opened.** It used to fall back
+  to the newest matching tab, which its own comment described as adopting "the
+  tab the user opened themselves". Combined with MV3 that was the *ordinary*
+  path, not a rare one: the lane map is module state, so every service-worker
+  recycle — and the reconnect cadence has a 30-second floor — made the
+  extension forget its own tab and take whichever was newest. Your personal
+  conversation would get the system prompt typed into it and be scraped back.
+  Ownership is explicit now and kept in `chrome.storage.session`, which lasts
+  exactly as long as a tab id does.
+- **Pick a workspace with the real macOS chooser** (`⌂`). An extension page
+  cannot open a native dialog — `<input webkitdirectory>` hands back a copy of
+  the directory's *contents*, never its path — but the agent is on the same
+  machine, so it opens the same dialog the CLI uses and the panel gets the
+  result. Typing a path is the fallback where no chooser exists.
 
 ### 1.4.0 — 2026-09-16
 

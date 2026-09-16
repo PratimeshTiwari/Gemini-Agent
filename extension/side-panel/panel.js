@@ -132,14 +132,28 @@ function setupWorkspace() {
       appendStatus('Not connected — start the agent first.');
       return;
     }
-    // eslint-disable-next-line no-alert
-    const next = window.prompt('Workspace path for the agent to work in:', currentWorkspace || '');
-    if (next === null) return;
-    const target = next.trim();
-    if (!target || target === currentWorkspace) return;
-
-    chrome.runtime.sendMessage({ type: 'set_workspace', payload: { path: target } });
+    // Ask the *agent* to open the chooser. An extension page cannot open a
+    // native dialog, and `<input webkitdirectory>` gives back a copy of the
+    // directory's contents rather than its path — the only thing needed here.
+    // The agent runs on this machine, so its dialog is this machine's dialog.
+    chrome.runtime.sendMessage({ type: 'pick_workspace' });
   });
+}
+
+/**
+ * Typing the path, for when there is no chooser to open.
+ *
+ * Reached only from the server saying so — a headless box, or a Linux session
+ * with no display. Offering a text box first would be worse for everyone with
+ * a desktop.
+ */
+function promptForWorkspace() {
+  // eslint-disable-next-line no-alert
+  const next = window.prompt('Workspace path for the agent to work in:', currentWorkspace || '');
+  if (next === null) return;
+  const target = next.trim();
+  if (!target || target === currentWorkspace) return;
+  chrome.runtime.sendMessage({ type: 'set_workspace', payload: { path: target } });
 }
 
 /**
@@ -739,7 +753,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       break;
 
+    // No native chooser on that machine, so fall back to typing the path.
     case 'error':
+      if (payload?.op === 'pick_workspace' && payload?.unavailable) {
+        appendStatus(payload.message);
+        promptForWorkspace();
+        break;
+      }
       removeThinking();
       isWaitingForResponse = false;
       sendBtn.disabled = false;
