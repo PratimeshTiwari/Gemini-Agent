@@ -132,6 +132,37 @@ export class SessionStore {
   }
 
   /** Clear both copies. */
+  /**
+   * Remember which browser conversation this session was held in.
+   *
+   * Kept beside the history rather than inside it: the turns are the human's
+   * record and this is a fact about the *model's* memory — whether a future
+   * resume can carry on, or has to explain what happened first.
+   *
+   * Best-effort, like everything else here. A session that cannot record its
+   * thread is a session that will be offered as "view", which is the safe
+   * answer anyway.
+   */
+  setThread(thread) {
+    if (!thread?.id) return;
+    this._writeBoth((file) => {
+      const meta = path.join(path.dirname(file), 'session-meta.json');
+      let existing = {};
+      try { existing = JSON.parse(fs.readFileSync(meta, 'utf-8')); } catch { /* first write */ }
+      fs.writeFileSync(meta, JSON.stringify({ ...existing, thread, updated: Date.now() }, null, 2));
+    });
+  }
+
+  /** The conversation this session was held in, or `null`. */
+  getThread() {
+    try {
+      const meta = path.join(path.dirname(this.localFile), 'session-meta.json');
+      return JSON.parse(fs.readFileSync(meta, 'utf-8')).thread || null;
+    } catch {
+      return null;
+    }
+  }
+
   clear() {
     for (const file of this._targets) {
       try {

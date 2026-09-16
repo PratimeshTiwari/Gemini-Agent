@@ -571,6 +571,7 @@
         case "gemini_response":
         case "gemini_response_stream":
           if (type === "gemini_response" && sender.tab) {
+            payload.tabUrl = sender.tab.url;
             const finished = payload.complete || payload.timedOut;
             if (finished) {
               await restoreFocusFrom(sender.tab.id);

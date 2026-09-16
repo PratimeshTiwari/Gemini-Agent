@@ -58,6 +58,7 @@ function oneLineError(result) {
   return line.slice(0, 160);
 }
 import * as paths from './paths.js';
+import { threadFromUrl } from './chat-thread.js';
 import { resolveEffort, effortFromConfig } from './effort.js';
 import { normalizeQuestionSet } from './question.js';
 import { planModelSwitch } from './model-match.js';
@@ -339,6 +340,12 @@ export class AgentLoop {
    */
   async handleGeminiResponse(messageId, payload) {
     const { content, requestId, isSubagent, complete } = payload;
+
+    // Before anything else, and before the stale-response guard below: which
+    // conversation answered is worth knowing even when the reply itself is no
+    // longer wanted. Subagent tabs are disposable, so only the main lane's
+    // thread is the session's.
+    if (!isSubagent) this._recordThread(payload.tabUrl);
 
     // Allow subagent responses through even when main agent isn't processing —
     // background GitHub tasks use _executeSubagent without setting isProcessing.
@@ -705,6 +712,23 @@ export class AgentLoop {
    * Silent when there is no list. An empty row is worse than no row — it reads
    * as "the agent has no plan" when it means "the agent did not write one".
    */
+  /**
+   * Remember which browser conversation answered.
+   *
+   * The model's memory is the chat thread, not `history.jsonl` — so this is
+   * what makes "can this session be resumed?" answerable at all. Recorded on
+   * every reply because a *new* chat has no id until its first exchange: the
+   * id appears partway through, and the last one seen is the one that holds
+   * the conversation.
+   */
+  _recordThread(url) {
+    const thread = threadFromUrl(url);
+    if (!thread?.id) return;
+    if (this.chatThread?.id === thread.id) return;
+    this.chatThread = thread;
+    this.sessionStore?.setThread?.(thread);
+  }
+
   _sendTaskList() {
     let body = '';
     try {

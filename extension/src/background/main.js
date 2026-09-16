@@ -40,6 +40,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'gemini_response':
       case 'gemini_response_stream':
         if (type === 'gemini_response' && sender.tab) {
+          // Which conversation answered. Gemini puts the thread id in the URL
+          // (`/app/<id>`), and that is the only way to tell later whether the
+          // model still *remembers* a session or has to be told what happened.
+          // Attached for every reply, not just a subagent's, because the main
+          // lane is the one whose sessions get resumed.
+          payload.tabUrl = sender.tab.url;
+
           // A turn is over when the reply is complete *or* when it gave up. The
           // close used to run only on `complete`, so a timed-out subagent left
           // its tab open — and `runHeadlessTask` runs up to ten turns.
