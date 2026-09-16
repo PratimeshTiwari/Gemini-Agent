@@ -255,19 +255,37 @@ export async function handleSlashCommand(loop, command, args) {
         // offering, because the names move and the list differs by plan. If the
         // browser has not been asked yet, it is asked now and the hint stands
         // for this one time.
+        /**
+         * Every one of these is a *request* to a page nobody here controls.
+         *
+         * So the follow-up is "check the picker", not a remedy for a failure
+         * that may not have happened. It used to lead with "if nothing
+         * happens, reload the extension" — advice for a stale bridge, which is
+         * a different problem, offered before there was any sign of one.
+         *
+         * Asking for the confirmation is worth a line because of what silence
+         * costs: an unnoticed failure leaves a prompt written for Pro being
+         * typed into a Flash tab, which CLAUDE.md names as the worst case —
+         * the long prompt going to the model that handles long prompts worst.
+         * The picker is the only place that is visible.
+         */
         const plan = planModelSwitch(chosen.id, loop.modelOptions || []);
+        const confirm = (name) =>
+          `\n\n_Check the Gemini tab's model picker now reads **${name}** before you send `
+          + 'anything — the switch is a request to the page, and the picker is the only '
+          + 'proof it landed._';
+
         let browserLine;
         if (plan.action === 'switch') {
           loop.switchModelTo(plan.model.label);
-          browserLine = `🔀 Switching the browser to **${plan.model.label}**.`;
+          browserLine = `🔀 Switching the browser to **${plan.model.label}**.${confirm(plan.model.label)}`;
         } else if (plan.action === 'none') {
+          // Nothing was asked for, so there is nothing to confirm.
           browserLine = `✓ The browser is already on **${plan.model.label}**.`;
         } else {
           loop._pendingEffortSwitch = chosen.id;
           loop.requestModelOptions?.();
-          browserLine = `🔀 Asking the browser to switch to the ${chosen.browser} tier…`
-            + `\n\n_If nothing happens: reload the extension at \`chrome://extensions\` and `
-            + 'hard-refresh the Gemini tab, then try again._';
+          browserLine = `🔀 Asking the browser to switch to **${chosen.browser}**.${confirm(chosen.browser)}`;
         }
 
         return {

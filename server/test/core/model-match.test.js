@@ -108,3 +108,69 @@ describe('planModelSwitch — the cheapest interaction is the one not performed'
     assert.match(plan.reason, /Canvas/);
   });
 });
+
+/**
+ * What `/effort` says after asking the browser to change model.
+ *
+ * Each of these is a *request* to a page nobody here controls, so the useful
+ * follow-up is "check the picker" — not a remedy for a failure that may not
+ * have happened. It used to lead with "if nothing happens, reload the
+ * extension", which is advice for a stale bridge: a different problem, offered
+ * before there was any sign of one.
+ *
+ * The confirmation earns its line because of what silence costs. An unnoticed
+ * failure leaves a prompt written for Pro being typed into a Flash tab —
+ * CLAUDE.md's worst case, the long prompt going to the model that handles long
+ * prompts worst — and the picker is the only place that is visible.
+ */
+describe('the message after an effort switch', () => {
+  const run = async (effort, modelOptions) => {
+    // Only what `/effort` reaches for. Growing this as it errors is how the
+    // stub stays honest about the command's real dependencies.
+    const loop = {
+      modelConfig: { effort: 'standard' },
+      modelOptions,
+      promptBuilder: { resetPromptState() {} },
+      switchModelTo() {},
+      requestModelOptions() {},
+      _saveConfig() {},
+    };
+    const { handleSlashCommand } = await import('../../src/core/slash-commands.js');
+    return (await handleSlashCommand(loop, 'effort', [effort])).message;
+  };
+
+  test('a known switch asks you to confirm the picker moved', async () => {
+    const msg = await run('brief', [{ label: 'Gemini Pro' }, { label: '3.8 Flash' }]);
+    assert.match(msg, /Switching the browser/);
+    assert.match(msg, /picker now reads/);
+    assert.match(msg, /Gemini Pro/);
+  });
+
+  test('so does an unknown one, while it goes looking', async () => {
+    const msg = await run('brief', []);
+    assert.match(msg, /Asking the browser/);
+    assert.match(msg, /picker now reads/);
+  });
+
+  // Nothing was asked for, so there is nothing to confirm. `none` needs the
+  // *selected* option to already be the one this effort wants — my first
+  // version of this test passed a list the effort could not match at all,
+  // which is `unavailable`, a different branch.
+  test('already on it asks for nothing', async () => {
+    const msg = await run('brief', [
+      { label: 'Gemini Pro', selected: true },
+      { label: '3.8 Flash' },
+    ]);
+    assert.match(msg, /already on/);
+    assert.doesNotMatch(msg, /picker now reads/);
+  });
+
+  test('it no longer leads with reload instructions', async () => {
+    for (const options of [[], [{ label: 'Gemini Pro' }]]) {
+      const msg = await run('brief', options);
+      assert.doesNotMatch(msg, /chrome:\/\/extensions/,
+        'a stale bridge is a different problem, and there is no sign of one yet');
+      assert.doesNotMatch(msg, /If nothing happens/);
+    }
+  });
+});
