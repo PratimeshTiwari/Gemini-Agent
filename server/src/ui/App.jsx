@@ -579,6 +579,9 @@ export function App({ agentLoop, wsServer }) {
         setHistory,
         setIsProcessing,
         setPendingImage,
+        // So `/github …` can answer on the GitHub screen instead of filling
+        // the agent's transcript with polling notices.
+        github,
       });
       return;
     }

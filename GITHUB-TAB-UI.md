@@ -37,14 +37,18 @@ notification row *and* a plan row, one above the other, saying the same thing
 in different words with different glyphs. In the screenshot they are adjacent
 and it reads as two events.
 
-### 2. An absolute path, truncated from the wrong end — `:371`
+### 2. ~~An absolute path, truncated from the wrong end~~ — fixed
 
-The notification row carries `→ /Users/pratimesh/Documents/Gemini-Agent/.agent/
-github-reviews/PR-15/comment-570444769…`, cut at the right, so the part that
-identifies it is the part removed. The plan row two lines below already shows
-`PR-15/comment-5704447693.md`, which is the useful half. The notification's
-message is built in `websocket-server.js` with the full path and never
-shortened.
+The notification row carried the full absolute path cut at the *right*, so the
+part that identifies it was the part removed. The plan row below it showed
+`PR-15/comment-5704447693.md` — short, and **not clickable**: VS Code resolves
+a terminal path against the shell's cwd, and those two segments resolve to
+nothing, which is why clicking it said "No matching results" while the keyboard
+worked.
+
+Now `.agent/github-reviews/PR-15/comment-….md` — relative to the workspace,
+so it resolves and becomes a link, and still far shorter than absolute. The
+notification row's own copy of the path is problem 1's job to remove.
 
 ### 3. Nothing says whether a row has an analysis in it
 
@@ -163,6 +167,100 @@ after    3 rows per event, bounded list, state shown, one path not two
 ```
 
 The saving is not rows — it is that every row means one thing.
+
+---
+
+## The bigger change: make it a screen, not a tab of the transcript
+
+Asked for directly, and the two small fixes above are already pointing at it.
+`/github refresh` was writing "Polling GitHub now…" into the **agent's**
+transcript — twice, in the screenshot, above a conversation that had nothing to
+do with it. That is fixed, but it is a symptom: the GitHub agent is a different
+program that happens to share a terminal, and it currently borrows the other
+one's surface whenever it has something to say.
+
+### What "its own screen" actually means here
+
+Not a window — there is one terminal. It means: **everything GitHub says
+appears on the GitHub screen, and nothing else does.** Three consequences,
+each of which is a thing to build:
+
+1. **No GitHub output in the agent transcript, ever.** Command results are
+   routed now. `github_notification` still reaches the transcript in one place
+   (`ui/hooks/use-github-tab.js` pushes a dim row per event, decided
+   2026-09-16) — that stays, because *one dim line* is a notification and a
+   polling log is not. The rule: the transcript may learn that something
+   happened; it may not carry the detail.
+2. **The screen keeps its own scrollback.** Today the activity list is state
+   held in a hook and capped at 50. A screen wants history you can scroll —
+   the last poll, the one before it, what each produced.
+3. **The screen has its own status line.** `@user · 2 PRs · polled 41s ago` is
+   already that; it should be pinned, not a row that scrolls with the feed.
+
+### Drawn
+
+```
+ ●  github          @PratimeshTiwari · 2 PRs · polled 41s ago        r  refresh
+
+ ┌ PR #15  test-pr ─────────────────────────────────── 2 comments · 1 analysed
+ │
+ │  @alice                                                       ⚠ not analysed
+ │    test#1 , why there is merge conflict
+ │    .agent/github-reviews/PR-15/comment-5704447693.md
+ │
+ │  @bob                                                                 ✓ plan
+ │    the watermark only moves when something was found — is that right?
+ │    .agent/github-reviews/PR-15/comment-5704447694.md
+ │
+ └ PR #14  fix/bridge-lock ──────────────────────────── 0 comments · CI failing
+
+ ⟳ Polling GitHub now…
+
+ ↑↓ move   ⏎ open or analyse   r refresh   ^o back to the agent
+```
+
+**Grouped by PR**, which is the thing people hold in their head. Today every
+comment is a flat row and the PR number is repeated on each one; a reviewer
+thread is a conversation about a PR, so the PR is the container.
+
+The left rule (`│`) is not a box — it is the same device the transcript
+already uses for a tool call, so it reads as "this belongs to the thing above"
+without adding a frame. This is the one place I would push back on the
+screenshots: a full border here would be the second box-drawn frame in the
+product and would make the input field's border stop meaning the mode.
+
+### The comment body, on a background
+
+Asked for: *"maybe the comment with a background similar to user message
+background"*. Agreed, and it is the right instinct — the comment is the one
+piece of text on the screen written by a **person**, exactly like the user's
+own message in the transcript, and that surface already has a treatment for
+"a human said this".
+
+`ui/format.js`'s `blockLines(text, width, indent)` is what draws the user's
+message bar. It wraps and pads each line so Ink's `backgroundColor` paints a
+solid bar rather than a ragged highlight — the reason it exists is that Ink
+colours *characters*, not lines. Reusing it here means the two "a person wrote
+this" surfaces are drawn by one function.
+
+Indented under its author, not full width: a PR comment is subordinate to the
+PR, where the user's own message is top-level.
+
+### Cost
+
+`blockLines` already exists, `KeyHints` already exists, and the status line is
+already drawn. The work is the grouping (flat list → PR → comments) and the
+scrollback, which is where the real effort is: the live-frame rule means the
+list has to be windowed rather than simply rendered, the way the transcript is.
+
+### What I would not do
+
+- **A box around the whole screen.** As above — it costs four rows of a
+  budgeted live frame and devalues the one border that means something.
+- **Colour per state.** `⚠` and `✓` carry it; colouring rows as well is the
+  thing the last pass removed from this file.
+- **A second scroll model.** Whatever windows this list should be the same
+  approach the transcript uses, or there are two ways to scroll in one product.
 
 ---
 

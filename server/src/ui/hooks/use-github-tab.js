@@ -134,6 +134,17 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
    * pressing enter on an unanalysed comment looks exactly like pressing enter
    * on nothing.
    */
+  /** Put a line on the GitHub screen, where GitHub output belongs. */
+  const notify = useCallback((message) => {
+    if (!message) return;
+    setActivity((prev) => [...prev, {
+      id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      type: 'github_notification',
+      payload: { message, category: 'command' },
+    }].slice(-50));
+    setHasNewEvent(true);
+  }, []);
+
   const notifyReanalysing = useCallback((prNumber, author) => {
     setActivity((prev) => [...prev, {
       id: `reanalysing-${prNumber}-${Date.now()}`,
@@ -219,6 +230,7 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
   return {
     // state the screen draws
     activity, view, error, setupToken, setSetupToken, setError,
+    notify,
     notifyReanalysing,
     authRejected, setAuthRejected,
     prList, selectedPrIdx, prComments, selectedPrCommentIdx,

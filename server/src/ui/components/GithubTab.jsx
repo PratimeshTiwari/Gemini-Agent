@@ -1,4 +1,5 @@
 import React from 'react';
+import { relative } from 'path';
 import { Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
@@ -158,6 +159,20 @@ function AvoidWords({ github, maxRows }) {
       <KeyHints hints={[['⏎', 'add'], ['esc', 'back to the dashboard']]} />
     </Box>
   );
+}
+
+/**
+ * A plan path a terminal can turn into a link.
+ *
+ * Relative to the workspace, because that is the cwd the terminal resolves
+ * against. Absolute when the file is somewhere else entirely, since a `../..`
+ * chain is neither clickable nor readable.
+ */
+function planPath(workspace, filePath) {
+  const file = String(filePath || '');
+  if (!file || !workspace) return file;
+  const rel = relative(workspace, file);
+  return !rel || rel.startsWith('..') ? file : rel;
 }
 
 /** Every binding on this tab, since the row only carries four. */
@@ -362,8 +377,18 @@ function Activity({ agentLoop, github, maxRows }) {
                       {'    💬 '}{isExpanded ? body : oneLine(body, 80)}
                     </Text>
                   ) : null}
+                  {/*
+                    Relative to the workspace, not the last two segments.
+                    VS Code turns a terminal path into a link by resolving it
+                    against the shell's cwd — which is the workspace — so
+                    `PR-15/comment-….md` resolved to nothing and clicking it
+                    said "No matching results". `.agent/github-reviews/PR-15/…`
+                    resolves, and is still far shorter than the absolute path.
+                    `truncate-start` keeps the identifying tail when it is too
+                    wide.
+                  */}
                   <Text dimColor wrap="truncate-start">
-                    {'    → '}{String(activity.payload.filePath || '').split('/').slice(-2).join('/')}
+                    {'    → '}{planPath(agentLoop?.workspace, activity.payload.filePath)}
                   </Text>
                 </Box>
               );
