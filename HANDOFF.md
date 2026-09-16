@@ -1,6 +1,6 @@
 # Handoff — for the next session
 
-Written 2026-09-16, end of the second session that day. **Delete this file once
+Written 2026-09-16, extended through the evening. **Delete this file once
 the work below is done** — it is a baton, not documentation. `CLAUDE.md` is the
 architecture and the reasoning; `README.md` has the release history; `AGENT.md`
 is what the agent is told about this project; `TEST.md` (untracked) is the
@@ -203,17 +203,17 @@ so the attach shows as a transcript line rather than an `[Image #1 53KB]`
 marker in the input box. Cosmetic, and it touches the submit path — which
 already consumes `pendingImage` without needing a marker at all.
 
-**3. The side panel — the hang is fixed, the cosmetics are not.** Reported as
-"the sidebar doesn't send prompts", and it was worse than the three dropped
-types recorded here before. `ask_question` and `request_command_approval` park
-the turn on a promise with no timeout; the panel drew neither and had no
-inbound type to answer with, so the first question killed the panel for the
-rest of the session. Both now work, verified end to end against the real
-server. **Never tried in a real browser** — see `TEST.md` §12.
+**3. The side panel — rebuilt, and none of it seen in a browser.** It went
+from "does not send prompts" to a real surface over one evening: the two
+blocking prompts it could not answer, the live-socket connection state, a
+markdown renderer, three surfaces (toolbar popup, docked panel, floating
+window), a workspace picker, and the design pass. Extension **1.5.0**.
 
-Still dropped, all cosmetic: `compaction_summary`, `github_notification`,
-`github_plan_generated`, `github_processing_started`/`_finished`. Worth doing
-at some point; nothing blocks on them.
+**The whole of it is unverified in Chrome.** `TEST.md` §12, §12a, §12b. The
+one that matters most is §12a: the agent used to adopt a Gemini tab the *user*
+opened, and because the lane map was module state, every service-worker
+recycle put it back in that position. Confirm a personal conversation is left
+alone after a recycle.
 
 **4. The PR agent should pick its own effort from the comment — the blocker is
 gone, the judgement is not built.** `switch_model` routed through
@@ -248,10 +248,56 @@ been exercised on that path — and the obvious next step if ChatGPT becomes a
 real background option. The tab-addressing half is done (item 4), so this is
 the remaining piece of the same problem.
 
-**8. `/skills` has never been examined.** Reachable and aligned; the *shape* was
-never looked at. `/skills dir` prints a four-entry search path, `skillFolders`
-is an escape hatch from config, creating one opens an editor. An open question,
-not a bug list. Lowest priority, and the only item with no evidence behind it.
+**8. `/skills` — examined 2026-09-16, and it works.** Traced end to end with a
+real probe: a workspace skill, a personal one under `~/.agent/skills`, and one
+in a registered folder all reach the catalogue and all open through the real
+`read_file` handler. The absolute-path case is handled deliberately
+(`relative.startsWith('..') ? full : relative`), so it is not the write-only
+trap it resembled.
+
+It did surface a real bug elsewhere — five tools reported `../../../tmp/x` for
+a path the model had given as `/tmp/x`, now `paths.displayPath`.
+
+**The shape question is still open and is genuinely a question**: `/skills dir`
+prints a four-entry search path, `skillFolders` is an escape hatch from config,
+creating one opens an editor. Whether that is the right set of moves is a
+product call, not a bug list.
+
+---
+
+## What the evening added, after the first handoff was written
+
+Ordered by what would hurt most if it were wrong, since none of it has run in
+a browser.
+
+- **The agent typed into tabs it did not own.** `pickMainTab` fell back to the
+  newest matching Gemini tab — its own comment called that adopting "the tab
+  the user opened themselves". With MV3 recycling the worker constantly, that
+  was the ordinary path, and the cost is somebody's private conversation
+  getting our system prompt typed into it and scraped back. Ownership is
+  persisted in `chrome.storage.session` now.
+- **The side panel could not answer a blocked turn**, so the first
+  `ask_question` or risky command hung it permanently.
+- **`/update` called a merge of your own branch an update.** Content, not
+  commit count: `git diff --quiet HEAD...origin/main`, three dots.
+- **Five tools named paths the model could not have used** in their errors —
+  the same expression that once wrote backups outside the backup directory.
+- **A handover review** in the pro prompt, asked for: seven checks and a
+  closing block, `brief` excluded on purpose.
+- **The GitHub tab decision** (fix 6) was taken — tab for browsing, one dim
+  transcript row for noticing.
+- **Effort switching** no longer reaches into the user's tab from a background
+  task.
+
+Two of my own mistakes worth knowing, because both are documented traps I
+walked into anyway:
+
+- A test did `await import('../../src/index.js')` — which **runs the bin**,
+  spawning the agent and hanging the suite. `CLAUDE.md` warns about exactly
+  this for `node --test src/`.
+- Two fixes shipped under version 1.3.0 **without a bump**, which made the
+  version badge say the opposite of what it exists for. If a screenshot shows
+  a version, confirm a bump happened before trusting it.
 
 ---
 
