@@ -132,7 +132,7 @@ You have access to a local MCP tool server. You MUST use tools to explore the co
 6. When done, output ONLY the final plan. Do not include any tool call blocks in the final turn.`;
 
 export class AgentLoop {
-  constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome, continueSession = false, agentSourceDir, taskManager }) {
+  constructor({ workspace, mcpServer, promptBuilder, diffEngine, riskClassifier, editor, configHome, continueSession = false, resumeSessionId = null, agentSourceDir, taskManager }) {
     this.workspace = workspace;
     this.mcpServer = mcpServer;
     this.promptBuilder = promptBuilder;
@@ -149,8 +149,16 @@ export class AgentLoop {
     this.memoryManager = new MemoryManager(workspace);
     this.contextManager = new ContextManager(workspace, this.memoryManager);
 
-    if (!continueSession) {
-      this.sessionStore.clear(); // Start fresh if --continue not passed
+    if (resumeSessionId) {
+      // Named explicitly, so it becomes the current conversation.
+      this.sessionStore.resumeSession(resumeSessionId);
+    } else if (!continueSession) {
+      // File the old one before starting fresh. It used to be wiped outright,
+      // which is why `--sessions` had nothing to list and `--resume` had
+      // nothing to find: every conversation was destroyed by the start of the
+      // next one.
+      this.sessionStore.rollover();
+      this.sessionStore.clear();
     }
 
     // State defaults

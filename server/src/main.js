@@ -172,6 +172,40 @@ async function main() {
   }
 
   /**
+   * `--sessions`: print the list and go.
+   *
+   * It has been in `--help` the whole time, parsed into `config`, and read by
+   * nothing — the agent simply started as though the flag were absent. An
+   * advertised flag that silently does nothing is worse than a missing one,
+   * because there is no failure to notice.
+   *
+   * Before the UI, deliberately: this is a question asked of a shell, and the
+   * answer belongs in the terminal's scrollback rather than inside an Ink app
+   * that clears it.
+   */
+  if (config.sessions) {
+    const { SessionStore } = await import('./storage/session-store.js');
+    const sessions = new SessionStore(config.workspace).listSessions();
+    if (sessions.length === 0) {
+      console.log('No past sessions here yet.\n');
+      console.log('One is filed each time the agent starts without `--continue`.');
+    } else {
+      console.log(`Past sessions in ${config.workspace}\n`);
+      for (const s of sessions) {
+        const when = s.updated ? new Date(s.updated).toISOString().slice(0, 16).replace('T', ' ') : '';
+        // The thread is what decides whether resuming can carry on or has to
+        // re-explain itself, so it is worth showing before the choice is made.
+        const memory = s.thread?.id ? 'thread kept' : 'no thread';
+        console.log(`  ${s.id}`);
+        console.log(`    ${s.title}`);
+        console.log(`    ${String(s.turns).padStart(3)} turns · ${when} · ${memory}\n`);
+      }
+      console.log('Resume one with:  agent --resume <id>');
+    }
+    process.exit(0);
+  }
+
+  /**
    * Record where we are, so `/set-workspace` can offer it next time.
    *
    * `listWorkspaceCandidates` has always had a `recent` category and
@@ -210,6 +244,7 @@ async function main() {
     editor: config.editor,
     configHome,
     continueSession: config.continue,
+    resumeSessionId: config.sessionId,
     agentSourceDir,
     taskManager,
   });

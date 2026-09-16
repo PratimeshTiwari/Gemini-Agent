@@ -131,7 +131,6 @@ export class SessionStore {
     }
   }
 
-  /** Clear both copies. */
   /**
    * Remember which browser conversation this session was held in.
    *
@@ -163,6 +162,142 @@ export class SessionStore {
     }
   }
 
+  /**
+   * Past conversations, newest first.
+   *
+   * There were none until now. `--sessions` and `--resume <id>` have been in
+   * `--help` the whole time, parsed into config, and **read by nothing** — an
+   * advertised feature that silently did nothing, which is worse than a
+   * missing one because it looks like it works.
+   *
+   * The reason there were none is that `history.jsonl` is a single rolling
+   * file: starting without `--continue` simply wiped it. So the fix is not a
+   * picker, it is making a conversation survive the start of the next one.
+   *
+   * @returns {Array<{id, started, updated, turns, title, thread}>}
+   */
+  listSessions() {
+    const file = fs.existsSync(this._indexFile(this.localFile))
+      ? this._indexFile(this.localFile)
+      : this._indexFile(this.homeFile);
+    try {
+      return fs.readFileSync(file, 'utf-8')
+        .split('\n')
+        .filter((l) => l.trim())
+        .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+        .filter(Boolean)
+        .reverse();
+    } catch {
+      return []; // no sessions yet is the ordinary first-run case
+    }
+  }
+
+  /** Where the index of past sessions lives, beside a history file. */
+  _indexFile(historyFile) {
+    return path.join(path.dirname(historyFile), 'index.jsonl');
+  }
+
+  /** Where one past conversation lives, beside a history file. */
+  _archivedFile(historyFile, id) {
+    return path.join(path.dirname(historyFile), 'sessions', `${id}.jsonl`);
+  }
+
+  /**
+   * Put the current conversation away, so the next one does not destroy it.
+   *
+   * Called before `clear()` wipes the live file. Everything else here is
+   * append-or-overwrite; this is the only operation that has to happen
+   * *before* a destructive one, which is why it is its own method rather than
+   * a flag on `clear`.
+   *
+   * The title is the first thing the user said, because that is what a person
+   * scanning a list is actually looking for — not a timestamp, and not a
+   * summary nobody asked a model to write.
+   *
+   * @returns {string|null} the id it was filed under, or null if there was
+   *   nothing worth keeping
+   */
+  rollover() {
+    const turns = this.loadHistory();
+    if (turns.length === 0) return null;
+
+    const firstUser = turns.find((t) => t.role === 'user' && typeof t.content === 'string');
+    const title = (firstUser?.content || 'Untitled')
+      .replace(/\s+/g, ' ').trim().slice(0, 72);
+
+    // Sortable, filename-safe, and readable — the id doubles as the date.
+    //
+    // To the millisecond, so the id is readable as a date without opening
+    // anything. It is **not** the sort key: two sessions filed in the same
+    // millisecond fall back to the random suffix, which a test caught by
+    // failing. The index is append-only and its order is the true one — which
+    // is also the only scheme that stays correct across processes.
+    const id = `${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 23)}-${
+      Math.random().toString(36).slice(2, 6)}`;
+
+    const record = {
+      id,
+      title,
+      turns: turns.length,
+      started: turns[0]?.timestamp ?? null,
+      updated: turns[turns.length - 1]?.timestamp ?? Date.now(),
+      thread: this.getThread(),
+    };
+
+    const body = turns.map((t) => JSON.stringify(t)).join('\n') + '\n';
+    try {
+      // Beside *both* history files, so the home copy keeps its purpose:
+      // surviving a wiped `.agent/` or a fresh checkout.
+      for (const file of this._targets) {
+        fs.mkdirSync(path.dirname(this._archivedFile(file, id)), { recursive: true });
+        fs.writeFileSync(this._archivedFile(file, id), body, 'utf-8');
+        fs.appendFileSync(this._indexFile(file), JSON.stringify(record) + '\n', 'utf-8');
+      }
+    } catch (err) {
+      logError(this.workspacePath, {
+        flow: 'storage', op: 'rollover',
+        message: `Could not file the previous session: ${err.message}`,
+      });
+      return null;
+    }
+    return id;
+  }
+
+  /**
+   * Make a past conversation the current one.
+   *
+   * Restores its thread too, so `planResume` can still tell whether the model
+   * remembers it — a resumed session with no thread would always be treated as
+   * needing a replay, which is safe but wrong.
+   *
+   * @returns {Array<Object>|null} the turns, or null if there is no such session
+   */
+  resumeSession(id) {
+    if (!id) return null;
+    const file = [this.localFile, this.homeFile]
+      .map((f) => this._archivedFile(f, id))
+      .find((f) => fs.existsSync(f));
+    if (!file) return null;
+
+    try {
+      const turns = fs.readFileSync(file, 'utf-8')
+        .split('\n')
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l));
+      this.saveHistory(turns);
+      const record = this.listSessions().find((r) => r.id === id);
+      if (record?.thread) this.setThread(record.thread);
+      return turns;
+    } catch (err) {
+      logError(this.workspacePath, {
+        flow: 'storage', op: 'resume',
+        message: `Could not resume ${id}: ${err.message}`,
+      });
+      return null;
+    }
+  }
+
+  /** Clear both copies. */
   clear() {
     for (const file of this._targets) {
       try {
