@@ -18,7 +18,7 @@ import { dirname, resolve } from 'path';
 
 const PANEL = resolve(dirname(fileURLToPath(import.meta.url)), '../../side-panel/panel.js');
 
-function lift(names, extra = {}) {
+function lift(names, extra = {}, prelude = '') {
   const src = readFileSync(PANEL, 'utf8');
   const take = (name) => {
     // The async form first: `indexOf('function x(')` also matches *inside*
@@ -41,7 +41,9 @@ function lift(names, extra = {}) {
     scrollToBottom() {},
     ...extra,
   };
-  const body = `${names.map(take).join('\n')}\nreturn { ${names.join(', ')} };`;
+  // Module-level `let`s the lifted functions close over are not functions,
+  // so they cannot be lifted — the caller declares them.
+  const body = `${prelude}\n${names.map(take).join('\n')}\nreturn { ${names.join(', ')} };`;
   return { api: new Function(...Object.keys(sandbox), body)(...Object.values(sandbox)), dom };
 }
 
@@ -125,5 +127,69 @@ describe('the one-line argument preview', () => {
 
   test('strings and numbers are unchanged', () => {
     assert.match(previewOf({ path: 'a.js', line: 12 }), /path: a\.js, line: 12/);
+  });
+});
+
+/**
+ * A panel that narrates its own connection state.
+ *
+ * The retry ladder fires repeatedly by design while the agent is not running,
+ * and every tick appended "🔴 Disconnected from agent server" to the
+ * transcript. A screenshot showed sixteen identical rows and no conversation
+ * left on screen. The dot in the status bar had been saying the same thing the
+ * whole time, quietly and in one row.
+ */
+describe('the connection is shown, not narrated', () => {
+  const build = () => {
+    const shown = [];
+    const { api, dom } = lift(['appendStatus', 'escapeHtml', 'renderMarkdownish'], {
+      scrollToBottom() {},
+    }, 'let lastStatusText = "";');
+    return { api, dom, shown };
+  };
+
+  test('the same status twice in a row is one row', () => {
+    const { api, dom } = build();
+    for (let i = 0; i < 16; i++) api.appendStatus('Disconnected from agent server');
+    assert.equal(dom.window.document.querySelectorAll('.message-status').length, 1,
+      'the panel filled with one repeated sentence');
+  });
+
+  test('a different status still gets its own row', () => {
+    const { api, dom } = build();
+    api.appendStatus('one');
+    api.appendStatus('two');
+    api.appendStatus('one');
+    assert.equal(dom.window.document.querySelectorAll('.message-status').length, 3);
+  });
+
+  test('connection_status writes no row at all', () => {
+    // Read the shipped switch rather than re-implementing it: the point is
+    // that the case no longer calls appendStatus.
+    const src = readFileSync(PANEL, 'utf8');
+    const start = src.indexOf("case 'connection_status':");
+    const body = src.slice(start, src.indexOf('break;', start));
+    assert.doesNotMatch(body, /appendStatus/,
+      'the transcript is narrating what the dot already says');
+    assert.match(body, /updateConnectionUI/);
+  });
+});
+
+describe('what a disconnected panel says when you try to use it', () => {
+  test('it names both causes, because the panel cannot tell them apart', () => {
+    const src = readFileSync(PANEL, 'utf8');
+    const start = src.indexOf('function explainDisconnected(');
+    const body = src.slice(start, src.indexOf('\n}', start));
+    assert.match(body, /`agent`/, 'it should say how to start the agent');
+    assert.match(body, /chrome:\/\/extensions/, 'it should say how to refresh a stale bridge');
+    assert.match(body, /hard-refresh/i);
+  });
+
+  test('sending while disconnected explains instead of silently failing', () => {
+    const src = readFileSync(PANEL, 'utf8');
+    const start = src.indexOf('function sendMessage(');
+    const body = src.slice(start, src.indexOf('\n}', start));
+    assert.match(body, /if \(!isConnected\)/);
+    assert.match(body, /explainDisconnected\(\)/);
   });
 });

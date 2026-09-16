@@ -113,8 +113,17 @@ const MODULE_BASE = {
   },
 };
 
-/** `acorn-walk`'s defaults plus the JSX and module ones. */
-const BASE = { ...walk.base, ...JSX_BASE, ...MODULE_BASE };
+/**
+ * `acorn-walk`'s defaults plus the JSX and module ones.
+ *
+ * Exported because it is the only correct way to walk *this* project's sources,
+ * and anything else that walks them needs the same two corrections — a test
+ * that scans for calls to undefined names hit the identical JSXElement throw
+ * within a minute of being written. One definition, so the next walker does not
+ * rediscover both traps.
+ */
+export const WALK_BASE = { ...walk.base, ...JSX_BASE, ...MODULE_BASE };
+const BASE = WALK_BASE;
 
 /**
  * Every definition in one source text.

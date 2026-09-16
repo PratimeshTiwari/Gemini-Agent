@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.7.0**
+## Current version: **1.8.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,19 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.8.0 — 2026-09-17
+
+- **The panel stopped narrating its own connection.** Every retry tick appended
+  "🔴 Disconnected from agent server" to the transcript, and the retry ladder
+  fires repeatedly by design while the agent is not running — a screenshot
+  showed sixteen identical rows and no conversation left on screen. The dot in
+  the status bar had been saying the same thing all along, in one row. It is
+  said **once, at the point of use**: try to send while disconnected and the
+  panel explains, naming both causes it cannot tell apart — no agent running, or
+  an agent running behind a stale bridge (hard-refresh the tab, or reload at
+  `chrome://extensions`). Identical consecutive statuses also collapse now, so
+  nothing can fill the panel with one repeated sentence again.
 
 ### 1.7.0 — 2026-09-17
 

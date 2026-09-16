@@ -280,9 +280,41 @@ function updateModeUI() {
 }
 
 // ── Send Message ────────────────────────────────────────────────────
+/**
+ * What to do when there is no agent to send to.
+ *
+ * Said only when someone actually tries to send something — the dot has been
+ * telling them the state all along, and the panel used to announce it
+ * repeatedly, unprompted, until the conversation was off the screen.
+ *
+ * Both causes are named because the panel genuinely cannot tell them apart: no
+ * agent running, or an agent running behind a stale bridge. The second is the
+ * one people do not guess, and it is the ordinary outcome of pulling an update
+ * — the content scripts and the bundle only change in the browser when it is
+ * reloaded.
+ */
+function explainDisconnected() {
+  appendStatus(
+    'Not connected to the agent.\n\n'
+    + '  Start it in a terminal:  `agent`\n\n'
+    + '  Already running? The bridge in this browser is stale — hard-refresh\n'
+    + '  the Gemini tab (⌘⇧R), or reload the extension at chrome://extensions.',
+  );
+}
+
 function sendMessage() {
   const content = commandInput.value.trim();
   if (!content || isWaitingForResponse) return;
+
+  // Asked at the point of use, not announced beforehand.
+  if (!isConnected) {
+    if (welcomeMessage) welcomeMessage.remove();
+    appendMessage('user', content);
+    explainDisconnected();
+    commandInput.value = '';
+    commandInput.style.height = 'auto';
+    return;
+  }
 
   // Clear welcome message
   if (welcomeMessage) {
@@ -481,8 +513,15 @@ function appendDiff(diffData) {
  * arrives on the same channel. Crammed into a pill with no `pre-wrap` it came
  * out as a wall of run-together prose with its markdown showing.
  */
+let lastStatusText = '';
+
 function appendStatus(text) {
   const body = String(text ?? '');
+
+  // Identical consecutive statuses collapse. Nothing should be able to fill
+  // this panel with one repeated sentence again, whatever starts doing it.
+  if (body && body === lastStatusText) return;
+  lastStatusText = body;
   const isBlock = body.includes('\n') || body.length > 120;
 
   const div = document.createElement('div');
@@ -730,13 +769,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const { type, payload } = message;
 
   switch (type) {
+    // The dot in the status bar *is* the connection indicator. Writing a line
+    // into the transcript as well meant the retry ladder — which fires
+    // repeatedly by design while the agent is not running — filled the panel
+    // with identical red rows and pushed the conversation off the top. A
+    // status nobody asked for, repeated, is not information.
     case 'connection_status':
       updateConnectionUI(payload.connected);
-      if (payload.connected) {
-        appendStatus('🟢 Connected to agent server');
-      } else {
-        appendStatus('🔴 Disconnected from agent server');
-      }
       break;
 
     case 'status':

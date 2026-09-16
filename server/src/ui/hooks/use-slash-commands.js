@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import * as paths from '../../core/paths.js';
-import { leaveWhenIdle, prepareWorkspaceSwitch, RESTART_EXIT_CODE } from '../../core/restart.js';
+import { leave, leaveWhenIdle, prepareWorkspaceSwitch, RESTART_EXIT_CODE } from '../../core/restart.js';
 import { createSkill, listSkills, skillSearchPath } from '../../core/skills.js';
 import { describeDestructive } from '../destructive.js';
 import { readErrors, summarizeErrors, clearErrors, FLOWS } from '../../core/error-log.js';
