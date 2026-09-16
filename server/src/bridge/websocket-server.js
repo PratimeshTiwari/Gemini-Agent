@@ -17,6 +17,7 @@
 import { WebSocketServer as WS } from 'ws';
 import { randomUUID } from 'crypto';
 import { logTrace } from '../core/trace-log.js';
+import { prepareWorkspaceSwitch, leaveWhenIdle, RESTART_EXIT_CODE } from '../core/restart.js';
 import { logError } from '../core/error-log.js';
 
 /**
@@ -279,6 +280,41 @@ export class WebSocketServer {
        * resolves rather than rejecting, because leaving it pending is the hang).
        * Only the way in was missing.
        */
+      /**
+       * The side panel choosing a workspace.
+       *
+       * Same act as `/workspace <path>` in the CLI, and deliberately the same
+       * code: validation, the supervisor check and the handover file all live
+       * in `core/restart.js` so the two front-ends cannot drift into
+       * disagreeing about what a usable workspace is.
+       *
+       * It restarts rather than switching in place. Every collaborator keyed on
+       * the workspace — the session store, memory, config, the command
+       * allowlist — is rebuilt by a restart and was *not* rebuilt by the
+       * in-place switch this replaced. The panel will see the socket drop and
+       * come back, which is the honest signal that it really did change.
+       */
+      case 'set_workspace': {
+        const outcome = prepareWorkspaceSwitch(payload?.path);
+        if (!outcome.ok) {
+          this.broadcast('extension', {
+            id: randomUUID(), type: 'error',
+            payload: { op: 'set_workspace', message: outcome.error },
+            timestamp: Date.now(),
+          });
+          break;
+        }
+        this.broadcast('extension', {
+          id: randomUUID(), type: 'status',
+          payload: { message: `⟳ Restarting in ${outcome.target}…` },
+          timestamp: Date.now(),
+        });
+        // Not out from under a running turn — the browser would keep generating
+        // into a socket nobody is holding and the reply would never be drawn.
+        leaveWhenIdle(RESTART_EXIT_CODE, { wsServer: this, agentLoop: this.agentLoop });
+        break;
+      }
+
       case 'question_response':
         if (payload?.cancelled) this.agentLoop.cancelQuestion();
         else this.agentLoop.answerQuestion(payload?.answer);

@@ -810,3 +810,10 @@ body {
   font-size: 12px;
   line-height: 1.5;
 }
+
+/* A toolbar popup has no size of its own: Chrome sizes it to the content, and
+   an empty transcript would collapse it to a sliver. */
+body.is-popup {
+  width: 420px;
+  height: 600px;
+}

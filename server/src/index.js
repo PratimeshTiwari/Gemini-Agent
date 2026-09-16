@@ -18,7 +18,11 @@ import { homedir } from 'os';
  * by exiting with RESTART_EXIT_CODE and this relaunches it. Any other status is
  * a real exit and passes straight through.
  */
-export const RESTART_EXIT_CODE = 75;
+// Defined in core/restart.js, which is where the paths that *ask* for a
+// restart live. Two copies of a protocol number is the drift this repo keeps
+// finding; the shim is the consumer, so it imports rather than declares.
+export { RESTART_EXIT_CODE } from './core/restart.js';
+import { RESTART_EXIT_CODE } from './core/restart.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const mainJs = resolve(__dirname, 'main.js');

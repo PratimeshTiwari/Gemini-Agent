@@ -20,6 +20,7 @@ const modeText = document.getElementById('mode-text');
 let currentMode = 'plan';
 let isConnected = false;
 let isWaitingForResponse = false;
+let currentWorkspace = '';
 
 // ── Initialization ──────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -68,6 +69,77 @@ function setupEventListeners() {
   modeToggle.addEventListener('click', toggleMode);
 
   setupPopout();
+  setupWorkspace();
+  setupSurfaces();
+}
+
+/**
+ * One page, three surfaces, and the buttons that move between them.
+ *
+ * The toolbar icon opens this as a **popup**, which Chrome closes the moment it
+ * loses focus — right for asking something, wrong for watching a turn that
+ * takes a minute. So the popup offers the two places you can stay: `⊟` docks it
+ * to the side panel, `⧉` floats it as its own window.
+ *
+ * Each button hides itself where it does not apply, so no surface offers to
+ * become what it already is.
+ */
+function setupSurfaces() {
+  const mode = new URLSearchParams(location.search);
+  const dock = document.getElementById('dock-btn');
+  if (!dock) return;
+
+  // The side panel is already the side panel; the floating window is a
+  // deliberate choice to leave the browser chrome behind.
+  if (!mode.get('popup')) { dock.remove(); return; }
+
+  document.body.classList.add('is-popup');
+
+  dock.addEventListener('click', async () => {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      // `sidePanel.open` needs a user gesture, which this click is.
+      await chrome.sidePanel.open({ windowId: tab.windowId });
+      window.close();
+    } catch (err) {
+      appendStatus(`Could not open the side panel: ${err.message}`);
+    }
+  });
+}
+
+/**
+ * Change the workspace from the panel.
+ *
+ * The same act as `/workspace <path>` in the CLI, and the same code behind it
+ * — `core/restart.js` owns validation, the supervisor check and the handover
+ * file, so the two front-ends cannot disagree about what a usable workspace is.
+ *
+ * `prompt()` rather than a file picker: a Chrome extension page cannot open a
+ * native folder chooser, and `<input type="file" webkitdirectory>` gives you a
+ * *copy* of the directory's contents, not its path — the one thing needed
+ * here. The CLI has a real picker for people who want one.
+ *
+ * It restarts the agent, so the socket will drop and come back. That is the
+ * honest signal that it worked, and it is why the reply is a status line
+ * rather than a silent change.
+ */
+function setupWorkspace() {
+  const btn = document.getElementById('workspace-btn');
+  if (!btn) return;
+
+  btn.addEventListener('click', () => {
+    if (!isConnected) {
+      appendStatus('Not connected — start the agent first.');
+      return;
+    }
+    // eslint-disable-next-line no-alert
+    const next = window.prompt('Workspace path for the agent to work in:', currentWorkspace || '');
+    if (next === null) return;
+    const target = next.trim();
+    if (!target || target === currentWorkspace) return;
+
+    chrome.runtime.sendMessage({ type: 'set_workspace', payload: { path: target } });
+  });
 }
 
 /**
@@ -583,7 +655,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (payload.status === 'connected') {
         updateConnectionUI(true);
         if (payload.workspace) {
-          appendStatus(`📂 Workspace: ${payload.workspace}`);
+          currentWorkspace = payload.workspace;
+          appendStatus(`Workspace: ${payload.workspace}`);
         }
         if (payload.mode) {
           currentMode = payload.mode;

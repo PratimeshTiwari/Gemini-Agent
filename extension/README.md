@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.3.0**
+## Current version: **1.4.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,30 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.4.0 — 2026-09-16
+
+Three surfaces, one page — and two faults the screenshots caught.
+
+- **The toolbar icon opens a popup.** Clicking the icon drops the panel down
+  where you are looking, which is what people expect of an extension button.
+  Chrome closes a popup when it loses focus, so the popup is a doorway: `⊟`
+  docks it to the side panel, `⧉` floats it as its own window. A popup and a
+  side panel cannot both own the same click, which is the trade.
+- **The floating window said Disconnected over a working bridge.** `get_status`
+  returned the *stored* flag, and `getState()` falls back to
+  `connected: false` when nothing is stored — the state after the service
+  worker is recycled. It reports the live socket now, and a panel that still
+  finds itself disconnected asks the worker to connect.
+- **Replies are rendered.** `**bold**` and `` `code` `` were shown as typed,
+  and a multi-line answer like `/effort` was crammed into a status *pill* with
+  no `pre-wrap` — a wall of run-together prose. Fenced blocks, inline code and
+  bold now render; anything long gets a block instead of a pill. Escaping
+  happens before formatting, so nothing the model writes can become markup.
+- **The workspace can be changed from the panel** (`⌂`). Same code as
+  `/workspace <path>` — validation, the supervisor check and the handover file
+  live in `core/restart.js` so the two front-ends cannot disagree. It restarts
+  the agent, so the socket drops and returns; that is the signal it worked.
 
 ### 1.3.0 — 2026-09-16
 

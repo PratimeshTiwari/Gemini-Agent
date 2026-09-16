@@ -3,8 +3,15 @@ import { sendToServer } from './messaging.js';
 import { getState } from './state.js';
 import { broadcastTabStatus, reinjectModelTabs, restoreFocusFrom, forgetTab, endSession } from './content.js';
 
-// Open side panel on extension icon click
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+// The toolbar icon opens the popup declared in the manifest, so the
+// open-on-click behaviour this used to set is now ignored by Chrome — a popup
+// and a panel cannot both own the same click. The side panel is still reachable
+// from `⊟` inside the popup, which is the trade this makes: one click to a
+// panel that drops down where you are looking, one more if you want it docked.
+//
+// The three surfaces are one page. Chrome closes a popup whenever it loses
+// focus, which is fine for a question and wrong for watching a long turn, so
+// the popup is the doorway and the panel or the window is where you stay.
 
 // Listen for tab removals / updates to keep server informed of active tabs
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -63,6 +70,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       // The panel unblocking a turn that is parked on a question or a command
       // approval. Pure relay — the server owns both resolvers.
+      case 'set_workspace':
       case 'question_response':
       case 'command_approval_response':
       case 'turn_trace':
