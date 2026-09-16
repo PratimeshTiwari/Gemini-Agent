@@ -226,7 +226,12 @@ async function handleServerMessage(message) {
     case 'switch_model':
       // Straight to the model tab. Neither injects a prompt, so neither goes
       // through the extension lock — reading the picker is not a turn.
-      await sendToModelTab({ type, payload });
+      //
+      // `sessionId` is carried through so a batch task changes effort in its
+      // own tab. Without it this was always the main lane, which means the
+      // user's tab: a background job raising its own effort would have changed
+      // the model the person was mid-conversation with.
+      await sendToModelTab({ type, payload }, payload?.targetModel || 'gemini', payload?.sessionId || null);
       break;
     case 'heartbeat_ack':
       break;

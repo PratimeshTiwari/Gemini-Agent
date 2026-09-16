@@ -499,11 +499,24 @@ export async function injectPromptIntoModel(payload) {
  * avoid surprises — opening a window to find out which model is selected would
  * be a worse cure than the disease.
  */
-export async function sendToModelTab(message, targetModel = 'gemini') {
+/**
+ * Send a non-prompt message to a model tab.
+ *
+ * With a `sessionId` this addresses **that batch session's own tab**, and
+ * fails rather than falling back. The fallback is the bug it exists to stop:
+ * `switch_model` is how effort is changed, so a background task raising its
+ * own effort would otherwise raise it in *the user's* Gemini tab — silently
+ * changing the model the person is talking to, from a task they are not
+ * watching. A background job that cannot reach its own tab should do nothing.
+ *
+ * Without one it is the main lane, which is right for everything the user
+ * themselves triggers (`/effort`, reading the picker).
+ */
+export async function sendToModelTab(message, targetModel = 'gemini', sessionId = null) {
   const targetUrl = MODEL_URLS[targetModel];
   if (!targetUrl) return false;
 
-  const tab = await pickMainTab(targetModel);
+  const tab = sessionId ? await sessionTab(sessionId) : await pickMainTab(targetModel);
   if (!tab) return false;
 
   try {

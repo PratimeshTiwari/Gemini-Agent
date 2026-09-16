@@ -150,6 +150,51 @@ test('the mode picker is read in the lane\'s tab', async () => {
   assert.equal(sent[0].id, 5);
 });
 
+/**
+ * Effort is changed with `switch_model`, and a batch task can want a different
+ * effort from the person at the keyboard. Routing that to the main lane would
+ * change the model *the user* is mid-conversation with, from a job they are
+ * not watching — so a session-addressed message goes to the session's tab, and
+ * when it cannot, it does nothing at all.
+ */
+test('a batch session switches effort in its own tab, not the user\'s', async () => {
+  const { sent } = stubChrome([{ id: 5, url: GEMINI }, { id: 9, url: GEMINI }]);
+  content.claimSubagentTab(9, 'task-1');
+  assert.equal(
+    await content.sendToModelTab({ type: 'switch_model' }, 'gemini', 'task-1'),
+    true,
+  );
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].id, 9, "it went to the user's tab");
+});
+
+test('with no session it is still the main lane, which is what /effort wants', async () => {
+  const { sent } = stubChrome([{ id: 5, url: GEMINI }, { id: 9, url: GEMINI }]);
+  content.claimSubagentTab(9, 'task-1');
+  assert.equal(await content.sendToModelTab({ type: 'switch_model' }, 'gemini'), true);
+  assert.equal(sent[0].id, 5);
+});
+
+// The fallback is the bug, not the safety net.
+test('a session whose tab is gone does nothing, rather than using the user\'s', async () => {
+  const { sent } = stubChrome([{ id: 5, url: GEMINI }]);
+  content.claimSubagentTab(999, 'task-gone');
+  assert.equal(
+    await content.sendToModelTab({ type: 'switch_model' }, 'gemini', 'task-gone'),
+    false,
+  );
+  assert.equal(sent.length, 0, "it fell back to the user's tab");
+});
+
+test('an unknown session does not reach the main lane either', async () => {
+  const { sent } = stubChrome([{ id: 5, url: GEMINI }]);
+  assert.equal(
+    await content.sendToModelTab({ type: 'switch_model' }, 'gemini', 'never-started'),
+    false,
+  );
+  assert.equal(sent.length, 0);
+});
+
 test('matchesModelUrl knows a site from a lookalike', () => {
   assert.equal(content.matchesModelUrl(GEMINI, 'gemini'), true);
   assert.equal(content.matchesModelUrl('https://chatgpt.com/c/1', 'chatgpt'), true);

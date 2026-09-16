@@ -925,9 +925,16 @@ export class AgentLoop {
     this._toExtension('discover_models');
   }
 
-  /** Ask the browser to select one, by the label it reported. */
-  switchModelTo(label) {
-    if (label) this._toExtension('switch_model', { label });
+  /**
+   * Ask the browser to select one, by the label it reported.
+   *
+   * `sessionId` names a batch task's own tab. Without it this goes to the main
+   * lane — the tab the user is looking at — which is correct for `/effort` and
+   * wrong for anything running in the background: a task raising its own
+   * effort would change the model the person is talking to.
+   */
+  switchModelTo(label, sessionId = null) {
+    if (label) this._toExtension('switch_model', { label, ...(sessionId ? { sessionId } : {}) });
   }
 
   /**

@@ -342,10 +342,10 @@
       sendToServer(errorMsg);
     }
   }
-  async function sendToModelTab(message, targetModel = "gemini") {
+  async function sendToModelTab(message, targetModel = "gemini", sessionId = null) {
     const targetUrl = MODEL_URLS[targetModel];
     if (!targetUrl) return false;
-    const tab = await pickMainTab(targetModel);
+    const tab = sessionId ? await sessionTab(sessionId) : await pickMainTab(targetModel);
     if (!tab) return false;
     try {
       await chrome.tabs.sendMessage(tab.id, message);
@@ -509,7 +509,7 @@
         break;
       case "discover_models":
       case "switch_model":
-        await sendToModelTab({ type, payload });
+        await sendToModelTab({ type, payload }, payload?.targetModel || "gemini", payload?.sessionId || null);
         break;
       case "heartbeat_ack":
         break;
