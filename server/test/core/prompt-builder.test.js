@@ -1,8 +1,8 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { PromptBuilder, stripImageData } from '../../src/core/prompt-builder.js';
 import { effortFromConfig } from '../../src/core/effort.js';
 
@@ -640,5 +640,48 @@ describe('the handover review — asked for, so pin where it appears', () => {
     const p = pro('deep');
     assert.match(p, /not a verdict|not checked/i);
     assert.match(p, /Paste what it\s+printed|Paste what it printed/);
+  });
+});
+
+/**
+ * A finished checklist, arriving on an unrelated prompt.
+ *
+ * `task.md` is one file reused for every task, so a completed list keeps
+ * riding every later turn — including the first turn of something entirely
+ * different. Reported from use: a finished round-2 list still sitting under a
+ * new prompt. Handed ticked boxes with no framing, the model cannot tell "you
+ * already did this" from "this is the plan for what you are being asked now",
+ * and both natural mistakes are bad — tick nothing because it all looks done,
+ * or edit the old file instead of writing a new plan.
+ */
+describe('a completed checklist says that it is completed', () => {
+  const withTask = (md) => {
+    const dir = mkdtempSync(join(tmpdir(), 'tc-'));
+    const file = join(dir, '.agent', 'artifacts', 'task.md');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, md);
+    const pb = new PromptBuilder(dir, dir);
+    build(pb, { modelConfig: { effort: 'deep' } });          // turn 0
+    const p = build(pb, { modelConfig: { effort: 'deep' } }); // the next turn
+    rmSync(dir, { recursive: true, force: true });
+    return p;
+  };
+
+  test('all ticked is marked complete, and says what to do instead', () => {
+    const tag = withTask('- [x] A\n- [x] B\n').match(/<task_checklist[^>]*>/)[0];
+    assert.match(tag, /state="complete"/);
+    assert.match(tag, /write a new list/i, 'it should say what to do if this request is different');
+  });
+
+  test('anything still open is not marked, because there is work in it', () => {
+    const tag = withTask('- [x] A\n- [ ] B\n').match(/<task_checklist[^>]*>/)[0];
+    assert.doesNotMatch(tag, /state="complete"/);
+  });
+
+  // Dropping the block entirely would take the handover review's
+  // "re-read <task_checklist>" with it.
+  test('the list is still sent either way', () => {
+    assert.match(withTask('- [x] A\n'), /<task_checklist/);
+    assert.match(withTask('- [ ] A\n'), /<task_checklist/);
   });
 });

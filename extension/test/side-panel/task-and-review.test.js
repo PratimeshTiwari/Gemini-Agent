@@ -41,7 +41,8 @@ function load() {
     inputArea: doc.getElementById('input-area'),
     scrollToBottom() {},
   };
-  const names = ['escapeHtml', 'renderMarkdownish', 'renderTaskList', 'splitReview', 'appendReview'];
+  const names = ['escapeHtml', 'renderMarkdownish', 'cleanTaskText', 'renderTaskList',
+    'splitReview', 'appendReview'];
   const api = new Function(...Object.keys(sandbox),
     `${names.map(take).join('\n')}\nreturn { ${names.join(', ')} };`)(...Object.values(sandbox));
   return { api, doc, window: dom.window };
@@ -73,28 +74,45 @@ describe('the checklist', () => {
 
   test('the items are hidden until it is opened', () => {
     panel.api.renderTaskList(list(FOUR));
-    const el = panel.doc.getElementById('task-list');
+    const el = panel.doc.querySelector('.task-list');
     assert.equal(el.classList.contains('open'), false);
     el.querySelector('.task-summary').dispatchEvent(new panel.window.Event('click'));
     assert.equal(el.classList.contains('open'), true);
     assert.equal(el.querySelector('.task-caret').textContent, '▾');
   });
 
-  // A checklist is current state, not an event. Appending each version would
-  // repeat the mistake the connection rows already made once.
-  test('a second push replaces the row rather than adding one', () => {
+  /**
+   * Pinning it above the input was the first version, and it was wrong in the
+   * way that matters: a finished list sat under the prompt box while you typed
+   * the next, unrelated request, so the most prominent thing on screen was a
+   * plan that no longer applied. A list belongs to the turn that produced it.
+   */
+  test('each turn gets its own list, so an old one cannot pose as current', () => {
     panel.api.renderTaskList(list(FOUR));
-    panel.api.renderTaskList(list(FOUR.map((i) => ({ ...i, done: true }))));
-    assert.equal(panel.doc.querySelectorAll('.task-list').length, 1);
-    assert.match(panel.doc.querySelector('.task-summary').textContent, /4\/4/);
+    panel.api.renderTaskList(list([{ done: false, text: 'Something else entirely' }]));
+    const rows = panel.doc.querySelectorAll('.task-list');
+    assert.equal(rows.length, 2, 'the second turn overwrote the first turn\'s record');
+    assert.match(rows[0].textContent, /Render it in the panel/);
+    assert.match(rows[1].textContent, /Something else entirely/);
   });
 
-  test('being open survives the next push', () => {
+  test('it lives in the transcript, so it scrolls away with its turn', () => {
     panel.api.renderTaskList(list(FOUR));
-    panel.doc.querySelector('.task-summary').dispatchEvent(new panel.window.Event('click'));
-    panel.api.renderTaskList(list(FOUR));
-    assert.equal(panel.doc.getElementById('task-list').classList.contains('open'), true,
-      'it closed itself under someone reading it');
+    assert.equal(panel.doc.querySelector('.task-list').parentElement.id, 'stream');
+    // Nothing was inserted between the transcript and the input box — the
+    // stream is still the input's immediate neighbour.
+    assert.equal(panel.doc.getElementById('input-area').previousElementSibling.id, 'stream',
+      'a list was pinned above the input again');
+  });
+
+  // The model writes its own bookkeeping into the line; that is for it.
+  test('the model\'s id comments are not shown to the reader', () => {
+    panel.api.renderTaskList(list([
+      { done: true, text: 'Phase A: Initialize round 2 test suite <!-- id: 10 -->' },
+    ]));
+    const text = panel.doc.querySelector('.task-text').textContent;
+    assert.equal(text, 'Phase A: Initialize round 2 test suite');
+    assert.doesNotMatch(text, /<!--|id: 10/);
   });
 
   test('all done says so instead of naming a next item', () => {
@@ -108,14 +126,10 @@ describe('the checklist', () => {
     panel.api.renderTaskList({ items: [], done: 0, total: 0 });
     panel.api.renderTaskList({});
     panel.api.renderTaskList(undefined);
-    assert.equal(panel.doc.getElementById('task-list'), null);
+    assert.equal(panel.doc.querySelector('.task-list'), null);
   });
 
-  test('it sits above the input, not in the transcript', () => {
-    panel.api.renderTaskList(list(FOUR));
-    assert.equal(panel.doc.getElementById('task-list').nextElementSibling.id, 'input-area');
-    assert.equal(panel.doc.getElementById('stream').children.length, 0, 'it would scroll away');
-  });
+
 
   test('item text is escaped', () => {
     panel.api.renderTaskList(list([{ done: false, text: '<img src=x onerror=alert(1)>' }]));

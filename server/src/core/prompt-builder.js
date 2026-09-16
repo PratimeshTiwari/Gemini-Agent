@@ -152,9 +152,33 @@ export class PromptBuilder {
 
     // The checklist it wrote, so it can tick the exact line rather than guess
     // at one. Every turn, because ticking is a per-turn act — see _loadTaskList.
+    //
+    /**
+     * A **finished** list is labelled as finished.
+     *
+     * `task.md` is one file reused for every task, so a completed checklist
+     * keeps arriving on every later prompt — including the first prompt of
+     * something entirely unrelated. Handed a list of ticked boxes with no
+     * other framing, the model has no way to tell "you already did this" from
+     * "this is the plan for what you are being asked now", and the natural
+     * mistakes are both bad: tick nothing because it all looks done, or edit
+     * the old file instead of writing a new plan.
+     *
+     * Reported from use — a finished round-2 list still sitting under an
+     * unrelated prompt. Saying so costs one attribute and removes the
+     * ambiguity, where dropping the block entirely would take the handover
+     * review's "re-read `<task_checklist>`" with it.
+     */
     const taskList = this._loadTaskList();
     if (taskList) {
-      parts.push(`<task_checklist path=".agent/artifacts/task.md">\n${taskList}\n</task_checklist>`);
+      const pending = /^\s*[-*]\s*\[ \]/m.test(taskList);
+      const state = pending
+        ? ''
+        : ' state="complete" note="This was finished. If the request below is a'
+          + ' new task, write a new list rather than reusing these items."';
+      parts.push(
+        `<task_checklist path=".agent/artifacts/task.md"${state}>\n${taskList}\n</task_checklist>`,
+      );
     }
 
     // Current user message. Nothing follows it: the last thing the model reads

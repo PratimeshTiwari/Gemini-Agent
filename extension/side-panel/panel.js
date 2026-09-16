@@ -588,25 +588,35 @@ function removeThinking() {
  * and should not push the conversation off the screen to show you a plan you
  * have already read.
  *
- * Replaced rather than appended. A checklist is a *current state*, not an
- * event, and a transcript of sixteen versions of the same list is the mistake
- * the connection rows already made once.
+ * **In the turn, not pinned above the input.** Pinning it was the first
+ * version and it was wrong in the way that matters: a finished list stayed
+ * under the prompt box while you typed the next, unrelated request, so the
+ * most prominent thing on screen was a plan that no longer applied. A list
+ * belongs to the turn that produced it, the same as the review block — then an
+ * old one scrolls away with the conversation it came from instead of
+ * impersonating the current one.
  */
+/**
+ * The item as a person should read it.
+ *
+ * The model writes its own bookkeeping into the line — `<!-- id: 10 -->` is
+ * the common one — which is for it and not for the reader. Escaped, those
+ * showed up verbatim in the panel and made a three-item plan look like markup.
+ */
+function cleanTaskText(text) {
+  return String(text ?? '').replace(/<!--[\s\S]*?-->/g, '').replace(/\s+/g, ' ').trim();
+}
+
 function renderTaskList(payload) {
   const items = Array.isArray(payload?.items) ? payload.items : [];
   if (items.length === 0) return;
-
-  const existing = document.getElementById('task-list');
-  const wasOpen = existing?.classList.contains('open');
-  existing?.remove();
 
   const done = Number(payload.done ?? items.filter((i) => i.done).length);
   const total = Number(payload.total ?? items.length);
   const next = items.find((i) => !i.done);
 
   const div = document.createElement('div');
-  div.className = `task-list${wasOpen ? ' open' : ''}`;
-  div.id = 'task-list';
+  div.className = 'task-list';
   div.innerHTML = `
     <button class="task-summary" type="button">
       <span class="task-caret">▸</span>
@@ -617,7 +627,7 @@ function renderTaskList(payload) {
       ${items.map((i) => `
         <div class="task-item${i.done ? ' done' : ''}">
           <span class="task-box">${i.done ? '[x]' : '[ ]'}</span>
-          <span class="task-text">${escapeHtml(i.text)}</span>
+          <span class="task-text">${escapeHtml(cleanTaskText(i.text))}</span>
         </div>`).join('')}
     </div>`;
 
@@ -625,11 +635,9 @@ function renderTaskList(payload) {
     div.classList.toggle('open');
     div.querySelector('.task-caret').textContent = div.classList.contains('open') ? '▾' : '▸';
   });
-  if (wasOpen) div.querySelector('.task-caret').textContent = '▾';
 
-  // Above the input, not in the transcript: it is state, and state does not
-  // scroll away.
-  inputArea.parentNode.insertBefore(div, inputArea);
+  messageStream.appendChild(div);
+  scrollToBottom();
 }
 
 /**

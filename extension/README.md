@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.10.0**
+## Current version: **1.11.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,22 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.11.0 — 2026-09-17
+
+- **The checklist belongs to its turn, not to the input box.** Pinning it above
+  the prompt was wrong in the way that matters: a finished list stayed under
+  the box while you typed the next, unrelated request, so the most prominent
+  thing on screen was a plan that no longer applied. It renders in the
+  transcript now, like the review, and scrolls away with the turn that made it.
+- **A finished checklist tells the model it is finished.** `task.md` is one
+  file reused for every task, so a completed list kept arriving on every later
+  prompt including the first of something unrelated. Given ticked boxes and no
+  framing, the model cannot tell "you already did this" from "this is the plan
+  for what you are being asked now" — and both natural mistakes are bad. The
+  block now carries `state="complete"` and says to write a new list if the
+  request is a different one.
+- The model's own bookkeeping (`<!-- id: 10 -->`) is stripped from item text.
 
 ### 1.10.0 — 2026-09-17
 
