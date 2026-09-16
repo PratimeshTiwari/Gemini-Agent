@@ -291,6 +291,30 @@ Two rules came out of making it a screen rather than a paragraph:
   agent tab's furniture and does not apply here; budgeting this screen at
   `- 8` was what left four rows of figlet on top of it.
 
+**Two things about that screen were argued against and are not oversights.**
+There is **no box** — the only box-drawn frame in this product is the input
+field, where the border *means* the mode, so a second one devalues it and costs
+four rows. And there is **no scrolling inside the screen**: the list is windowed
+against the budget and says what it trimmed (`… N more`), because a second
+scroll model in an app whose whole scroll story is "the terminal's, and we never
+take it" is a worse answer than a list that admits its own limit.
+
+**The one thing still missing there is the analysis's own Gemini thread id.**
+`subagentUrl` is available where the analysis runs and is not recorded on the
+`plan_generated` payload, so there is no way to reopen the conversation that
+produced a review. It needs threading through `core/turn-runner.js`.
+
+**The question that decided the shape, and the answer that was not the lean.**
+The working document asked whether the activity feed and the PR explorer should
+be one screen, and leaned towards keeping them separate — they answer different
+questions ("what happened?" vs "what is open?"), and merging means a mode switch
+inside one list. That was wrong, and the giveaway was inside the question: *"the
+second is the one people go looking for when the first is empty."* That is not
+two questions, it is one question with the wrong list in front of it — and the
+feed was empty on a fresh session **by construction**, because it only ever held
+events from this process. The lean came from reasoning about the two screens
+rather than opening them; one screenshot settled it.
+
 The batch loop is `core/turn-runner.js`, not `agent-loop.js`: `runHeadlessTask` is a caller
 now. **Its flat re-serialisation is necessary, not an oversight** — every batch send opens a
 fresh browser tab that is closed when the turn ends, so turn 2 has never seen turn 1. Removing
