@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.11.0**
+## Current version: **1.12.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,18 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.12.0 — 2026-09-17
+
+- **An orphaned window says so instead of blaming the agent.** Reloading the
+  extension orphans every page already open from it: the page keeps running,
+  `chrome.runtime.id` disappears, and every call throws. Nothing repairs it —
+  not polling, not reconnecting — because what is gone is the link, not the
+  socket. A **floating window** survives the reloads that close and reopen the
+  docked panel, so it is the surface most likely to be orphaned, and it had
+  been reporting "Disconnected" — sending the reader after a problem with the
+  agent when the window simply needed reopening. The content scripts have
+  detected this by the same test for a while; the panel had not.
 
 ### 1.11.0 — 2026-09-17
 

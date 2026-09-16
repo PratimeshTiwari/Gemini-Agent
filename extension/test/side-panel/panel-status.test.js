@@ -51,10 +51,15 @@ describe('the connection dot reads the worker, not its own memory', () => {
   const build = (reply) => {
     const seen = [];
     const shown = [];
-    const { api } = lift(['checkConnectionStatus'], {
-      chrome: { runtime: { sendMessage: async (m) => { seen.push(m.type); return reply(m); } } },
+    // `contextAlive` and `markOrphaned` come along because
+    // `checkConnectionStatus` consults them first — an orphaned page is a
+    // different fact from a bridge that is down.
+    const { api } = lift(['checkConnectionStatus', 'contextAlive', 'markOrphaned'], {
+      chrome: { runtime: { id: 'abc', sendMessage: async (m) => { seen.push(m.type); return reply(m); } } },
       updateConnectionUI: (c) => shown.push(c),
-    });
+      appendStatus() {},
+      connectionText: { textContent: '' },
+    }, 'let orphaned = false;');
     return { api, seen, shown };
   };
 
@@ -228,5 +233,83 @@ describe('block statuses are left-aligned and keep their shape', () => {
     api.appendStatus('Workspace unchanged.');
     assert.ok(dom.window.document.querySelector('.status-text'));
     assert.equal(dom.window.document.querySelector('.status-block'), null);
+  });
+});
+
+/**
+ * A panel page that outlived the extension it came from.
+ *
+ * Reloading the extension **orphans every page already open from it**: the page
+ * keeps running, `chrome.runtime.id` disappears, and every API call from then
+ * on throws. Nothing repairs it — not polling, not reconnecting — because what
+ * is gone is the link, not the socket.
+ *
+ * The content scripts have detected this by exactly this test for a while. The
+ * panel did not, and the cost was specific: a **floating window** survives the
+ * extension reloads that close and reopen the docked panel, so it is the
+ * surface most likely to be orphaned — and it reported "Disconnected", sending
+ * the reader to look for a problem with the agent when the window simply needed
+ * reopening. Reported twice from use.
+ */
+describe('an orphaned window says so, instead of blaming the agent', () => {
+  const build = (runtime) => {
+    const shown = [];
+    const statuses = [];
+    const text = { textContent: '' };
+    const { api } = lift(['checkConnectionStatus', 'contextAlive', 'markOrphaned'], {
+      chrome: { runtime },
+      updateConnectionUI: (c) => shown.push(c),
+      appendStatus: (t) => statuses.push(t),
+      connectionText: text,
+    }, 'let orphaned = false;');
+    return { api, shown, statuses, text };
+  };
+
+  test('no runtime id means orphaned, not disconnected', async () => {
+    const p = build({ /* id gone, as after a reload */ sendMessage: async () => ({ connected: true }) });
+    await p.api.checkConnectionStatus();
+    assert.equal(p.text.textContent, 'Extension reloaded');
+    assert.match(p.statuses.join(' '), /open a new one|reopening|new one from the toolbar/i);
+  });
+
+  test('the advice is to reopen the window, not to start the agent', async () => {
+    const p = build({ sendMessage: async () => ({ connected: true }) });
+    await p.api.checkConnectionStatus();
+    const said = p.statuses.join(' ');
+    assert.match(said, /toolbar|open a new/i);
+    assert.doesNotMatch(said, /`agent`/, 'starting the agent cannot fix a severed link');
+  });
+
+  // The synchronous throw is the other way this shows up.
+  test('a context-invalidated throw is read as orphaned too', async () => {
+    const p = build({
+      id: 'abc',
+      sendMessage: async () => { throw new Error('Extension context invalidated.'); },
+    });
+    await p.api.checkConnectionStatus();
+    assert.equal(p.text.textContent, 'Extension reloaded');
+  });
+
+  // The two are different facts: one is repaired by starting the agent, the
+  // other only by reopening the window.
+  test('an ordinary disconnect is still an ordinary disconnect', async () => {
+    const p = build({ id: 'abc', sendMessage: async () => ({ connected: false }) });
+    await p.api.checkConnectionStatus();
+    assert.deepEqual(p.shown, [false]);
+    assert.equal(p.text.textContent, '', 'a live page was declared orphaned');
+    assert.deepEqual(p.statuses, [], 'it told the user to reopen a window that is fine');
+  });
+
+  test('a worker that is merely unreachable is not orphaned', async () => {
+    const p = build({ id: 'abc', sendMessage: async () => { throw new Error('no receiving end'); } });
+    await p.api.checkConnectionStatus();
+    assert.deepEqual(p.shown, [false]);
+    assert.equal(p.text.textContent, '');
+  });
+
+  test('it is said once, however often the poll fires', async () => {
+    const p = build({ sendMessage: async () => ({ connected: true }) });
+    for (let i = 0; i < 10; i++) await p.api.checkConnectionStatus();
+    assert.equal(p.statuses.length, 1);
   });
 });

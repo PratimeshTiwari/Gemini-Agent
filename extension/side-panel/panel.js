@@ -232,7 +232,46 @@ const STATUS_POLL_MS = 4000;
  *   Repeating that would restart the retry ladder every few seconds and keep
  *   the backoff permanently at its first rung.
  */
+/**
+ * Is this page still attached to the extension it came from?
+ *
+ * Reloading the extension **orphans every page already open from it**. The page
+ * keeps running, and `chrome.runtime.id` disappears; every API call from then
+ * on throws `Extension context invalidated`. Nothing repairs it — no amount of
+ * polling, no reconnect — because the link, not the socket, is what is gone.
+ *
+ * The content scripts have detected this for a while, by exactly this test.
+ * The panel did not, and the cost was a specific, repeated confusion: a
+ * **floating window** survives extension reloads that close and reopen the
+ * docked panel, so it is the surface most likely to be orphaned — and it
+ * reported the state as "Disconnected", which sends the reader looking for a
+ * problem with the *agent* when the window simply needs reopening.
+ */
+function contextAlive() {
+  try {
+    return Boolean(chrome.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+let orphaned = false;
+
+/** Say what actually happened, and stop pretending polling will help. */
+function markOrphaned() {
+  if (orphaned) return;
+  orphaned = true;
+  updateConnectionUI(false);
+  if (connectionText) connectionText.textContent = 'Extension reloaded';
+  appendStatus('This window was opened before the extension reloaded, so it is no '
+    + 'longer connected to it — nothing here will update. Close it and open a new '
+    + 'one from the toolbar icon.');
+}
+
 async function checkConnectionStatus(initial = false) {
+  if (orphaned) return;
+  if (!contextAlive()) { markOrphaned(); return; }
+
   try {
     const response = await chrome.runtime.sendMessage({ type: 'get_status' });
     const connected = response?.connected || false;
@@ -243,8 +282,14 @@ async function checkConnectionStatus(initial = false) {
       // already open or opening.
       chrome.runtime.sendMessage({ type: 'connect' }).catch(() => {});
     }
-  } catch {
-    // The worker being unreachable *is* disconnected, as far as the dot goes.
+  } catch (err) {
+    // An orphaned page throws here too, and it is a different fact from a
+    // bridge that is merely down: one is repaired by starting the agent, the
+    // other only by reopening the window.
+    if (!contextAlive() || /context invalidated/i.test(err?.message || '')) {
+      markOrphaned();
+      return;
+    }
     updateConnectionUI(false);
   }
 }
@@ -322,6 +367,15 @@ function explainDisconnected() {
 function sendMessage() {
   const content = commandInput.value.trim();
   if (!content || isWaitingForResponse) return;
+
+  if (orphaned) {
+    if (welcomeMessage) welcomeMessage.remove();
+    appendMessage('user', content);
+    markOrphaned();
+    commandInput.value = '';
+    reflectSendState();
+    return;
+  }
 
   // Asked at the point of use, not announced beforehand.
   if (!isConnected) {
