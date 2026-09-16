@@ -160,14 +160,6 @@ function AvoidWords({ github, maxRows }) {
   );
 }
 
-/**
- * Who the agent is on GitHub, and whether it still can be.
- *
- * Drawn above every view that has a token, because the two facts that explain
- * an empty dashboard — the wrong account, and a token that has lapsed — were
- * both invisible from the PR explorer, which is where you go when the list
- * looks wrong.
- */
 /** Every binding on this tab, since the row only carries four. */
 function GithubHelp() {
   return (
@@ -193,6 +185,14 @@ function GithubHelp() {
   );
 }
 
+/**
+ * Who the agent is on GitHub, and whether it still can be.
+ *
+ * Drawn above every view that has a token, because the two facts that explain
+ * an empty dashboard — the wrong account, and a token that has lapsed — were
+ * both invisible from the PR explorer, which is where you go when the list
+ * looks wrong.
+ */
 function GithubStatus({ agentLoop, github }) {
   const status = agentLoop?.githubHandler?.getStatus?.() || {};
   const token = formatTokenExpiry(status.tokenExpiry, github?.authRejected);

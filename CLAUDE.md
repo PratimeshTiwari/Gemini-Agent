@@ -445,10 +445,21 @@ on the bridge, relayed by the worker, with the panel drawing both.
 `response_stream` is handled too, so the panel no longer sits on "Thinking…" for a whole
 turn and then jumps to the finished answer.
 
-Still dropped, all cosmetic and none blocking: `compaction_summary`,
-`github_notification`, `github_plan_generated`, `github_processing_started`,
-`github_processing_finished`. `inject_prompt`, `end_session` and `heartbeat_ack` are
-addressed to the worker and the content script, and the panel is right to ignore them.
+`github_plan_generated` is handled too, as one line. **The list of what else the panel
+"drops" was wrong, including the version of it written earlier the same day** — it came
+from grepping `type:` across the server, which counts things that are not panel messages
+at all. Checked properly: `github_notification`, `github_processing_started` and
+`github_processing_finished` are pushed to `pendingGitHubNotifications`, a **CLI-only
+buffer drained by a getter**, and never broadcast — so there is nothing reaching the panel
+to drop. `compaction_summary` is a `conversationHistory` entry, not a message. Of the whole
+apparent list, exactly one type was really arriving and being ignored.
+
+`inject_prompt`, `end_session` and `heartbeat_ack` are addressed to the worker and the
+content script, and the panel is right to ignore them.
+
+The method matters more than the correction: **a grep for `type:` finds message-shaped
+literals, not messages.** Follow the value to the `broadcast` call before believing a
+surface is missing something.
 
 **The lesson worth keeping:** a surface that ignores an unknown message type is not
 equally harmless for every type. Dropping a *notification* costs a missing line; dropping

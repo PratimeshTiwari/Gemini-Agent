@@ -533,6 +533,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       removeThinking();
       break;
 
+    // The one GitHub message that actually reaches here. `processing_started`,
+    // `processing_finished` and `notification` are pushed to a CLI-only buffer
+    // and never broadcast, so there is nothing for the panel to handle.
+    case 'github_plan_generated': {
+      const who = payload?.comment?.author ? `@${payload.comment.author} commented` : 'plan written';
+      appendStatus(`PR #${payload?.prNumber ?? '?'} · ${who}`);
+      break;
+    }
+
     case 'tool_call':
       appendToolCall(payload.name, payload.args);
       break;
