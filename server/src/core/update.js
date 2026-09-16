@@ -45,6 +45,28 @@ async function git(dir, args, { timeout = 5000 } = {}) {
 }
 
 /**
+ * Run git for its **exit code**, not its output.
+ *
+ * `git()` above collapses "failed" and "printed nothing" into the same `null`,
+ * which is right for reading values and useless for `diff --quiet`, where the
+ * exit code *is* the answer and empty output is the success case.
+ *
+ * @returns {Promise<boolean|null>} true if git exited 0, false if it exited
+ *   non-zero, `null` if it could not be run at all — a distinction callers
+ *   need, because "no differences" and "could not look" must not be the same.
+ */
+async function gitSucceeds(dir, args, { timeout = 5000 } = {}) {
+  try {
+    await run('git', args, { cwd: dir, timeout, windowsHide: true });
+    return true;
+  } catch (err) {
+    // A non-zero exit carries a numeric `code`; anything else (git missing,
+    // timeout, bad cwd) is a failure to ask the question at all.
+    return typeof err?.code === 'number' ? false : null;
+  }
+}
+
+/**
  * The branch that *is* the released agent.
  *
  * Not the current branch's upstream, which is what this compared against
@@ -84,11 +106,41 @@ export async function checkForUpdate(dir) {
 
   const counts = await git(dir, ['rev-list', '--left-right', '--count', `HEAD...${upstream}`]);
   const behind = Number(counts?.split(/\s+/)[1] ?? 0);
+  const commits = Number.isFinite(behind) ? behind : 0;
+
+  /**
+   * A commit is not an update unless it carries something you do not have.
+   *
+   * Counting commits says "1 update available" for a **merge commit of your
+   * own branch**. Work here lands on `v1-stable` and reaches `main` through a
+   * PR, so every merge puts a commit on `main` that your branch does not have
+   * — while introducing no content at all, because everything in it came from
+   * your branch in the first place. Reported from use: "it says an update is
+   * available but I have not merged anything onto main", and the notice was
+   * both literally right and useless. Pulling it would have produced a merge
+   * in the other direction for no new lines.
+   *
+   * The three-dot diff is the honest question. `HEAD...upstream` compares the
+   * merge base against the upstream tip — *what main has added since we last
+   * shared history* — where the two-dot form would also report your own newer
+   * commits as differences and never be empty on a branch that is ahead.
+   *
+   * Exit code only; nothing needs the patch. `null` means git could not
+   * answer, and an unanswerable diff falls back to the commit count rather
+   * than silently claiming there is nothing to do.
+   */
+  const noContent = commits > 0
+    ? (await gitSucceeds(dir, ['diff', '--quiet', `HEAD...${upstream}`])) === true
+    : false;
+
   return {
-    available: Number.isFinite(behind) && behind > 0,
-    behind: Number.isFinite(behind) ? behind : 0,
+    available: commits > 0 && !noContent,
+    behind: commits,
     branch,
     upstream,
+    // So a caller can say "already have it" rather than "up to date", which
+    // are different facts to someone who just merged their own PR.
+    mergedBack: commits > 0 && noContent,
   };
 }
 
