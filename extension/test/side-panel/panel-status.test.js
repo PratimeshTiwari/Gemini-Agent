@@ -193,3 +193,40 @@ describe('what a disconnected panel says when you try to use it', () => {
     assert.match(body, /explainDisconnected\(\)/);
   });
 });
+
+/**
+ * A status that is a block is prose, and prose is not centred.
+ *
+ * `.message-status` is `text-align: center`, which is right for the little
+ * pill it was built for ("history cleared") and wrong for everything that
+ * arrives on the same channel and is not one. `/effort` is a ladder built for
+ * a monospace terminal, with its own leading indentation, and centring it
+ * re-ragged every line and threw the indentation away.
+ */
+describe('block statuses are left-aligned and keep their shape', () => {
+  test('the stylesheet un-centres a block', () => {
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)),
+      '../../side-panel/panel.css'), 'utf8');
+    assert.match(css, /\.message-status\.status-block\s*\{[^}]*text-align:\s*left/,
+      'a block status is still inheriting the pill\'s centring');
+    // pre-wrap is what keeps the terminal's own indentation.
+    assert.match(css, /\.status-body\s*\{[^}]*white-space:\s*pre-wrap|\.message-content,\s*\n\.status-body\s*\{[^}]*white-space:\s*pre-wrap/s);
+  });
+
+  test('leading indentation survives into the block', () => {
+    const { api, dom } = lift(['appendStatus', 'escapeHtml', 'renderMarkdownish'],
+      { scrollToBottom() {} }, 'let lastStatusText = "";');
+    api.appendStatus('Effort\n\n  Flash\n      Terse prompt.\n  Deep\n      Everything.');
+    const text = dom.window.document.querySelector('.status-body').textContent;
+    assert.match(text, /^ {2}Flash$/m, 'the two-space indent was collapsed');
+    assert.match(text, /^ {6}Terse prompt\.$/m, 'the six-space indent was collapsed');
+  });
+
+  test('a one-line status is still a pill, not a block', () => {
+    const { api, dom } = lift(['appendStatus', 'escapeHtml', 'renderMarkdownish'],
+      { scrollToBottom() {} }, 'let lastStatusText = "";');
+    api.appendStatus('Workspace unchanged.');
+    assert.ok(dom.window.document.querySelector('.status-text'));
+    assert.equal(dom.window.document.querySelector('.status-block'), null);
+  });
+});

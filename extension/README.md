@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.8.0**
+## Current version: **1.9.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,17 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.9.0 — 2026-09-17
+
+- **Block statuses are left-aligned.** `.message-status` is centred, which is
+  right for the pill it was built for ("history cleared") and wrong for
+  everything else arriving on the same channel. `/effort` is a ladder written
+  for a monospace terminal, with its own leading indentation — centring it
+  re-ragged every line and threw that indentation away, so the ladder read as a
+  column of loose text. The pill stays centred; anything long enough to be a
+  block is prose and is set left, with `pre-wrap` keeping the terminal's own
+  alignment intact.
 
 ### 1.8.0 — 2026-09-17
 

@@ -344,6 +344,15 @@ body {
   padding: var(--spacing-xs);
 }
 
+/* ...but only the pill is centred.
+   A status that is really a block is prose — often a list built for a
+   monospace terminal, with its own leading indentation — and centring prose
+   re-ragged every line and threw that indentation away. `/effort` came out as
+   a column of text with the ladder's alignment destroyed. */
+.message-status.status-block {
+  text-align: left;
+}
+
 .message-status .status-text {
   display: inline-block;
   font-size: 11px;
