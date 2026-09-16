@@ -192,13 +192,16 @@ that survives until `/update done`. Test it the first time you merge to `main`
 and pull. It is also what makes the four-step setup ritual at the top of
 `TEST.md` unnecessary, which is the reason it exists.
 
-**2. Image pasting — built, verified, never wired.** `ui/clipboard-image.js`
-reads a PNG off the clipboard and produces the marker; it has **no importers**,
-so it is the write-only trap in its other direction: a writer with no caller.
-The blocker is the trigger, not the code. `ctrl+v` is bound, but macOS users
-press `Cmd+V` and the terminal consumes it. The plan was to hook an *empty*
-bracketed paste — the terminal reports a paste with no text, which is what a
-clipboard holding only an image looks like. Untested.
+**2. Image pasting — wired and verified 2026-09-16.** The empty-paste theory
+was right and is now checked rather than assumed: Ink's own parser turns
+`ESC[200~ ESC[201~` into `[{"paste":""}]`, and `InputBar` treats an empty paste
+plus a picture on the clipboard as an attach. Driven under a pty with a real
+PNG copied: the attach happens and the prompt carries it. See `TEST.md` §13.
+
+Left undone deliberately: `imageMarker` / `IMAGE_MARKER` still have no callers,
+so the attach shows as a transcript line rather than an `[Image #1 53KB]`
+marker in the input box. Cosmetic, and it touches the submit path — which
+already consumes `pendingImage` without needing a marker at all.
 
 **3. The side panel — the hang is fixed, the cosmetics are not.** Reported as
 "the sidebar doesn't send prompts", and it was worse than the three dropped
