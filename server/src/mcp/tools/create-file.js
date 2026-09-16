@@ -6,14 +6,18 @@
  */
 
 import { existsSync } from 'fs';
-import { resolve, relative } from 'path';
+import { resolve } from 'path';
+import { displayPath } from '../../core/paths.js';
 
 export async function createFile(args, context) {
   const { path: filePath, content } = args;
   const { workspace, diffEngine } = context;
 
   const absPath = filePath.startsWith('/') ? filePath : resolve(workspace, filePath);
-  const relPath = relative(workspace, absPath);
+  // Relative inside the workspace, absolute outside it. These tools accept
+  // absolute paths, and a bare `relative()` turns one into `../../../tmp/x`
+  // in the error the model then reads — a path it never used.
+  const relPath = displayPath(workspace, absPath);
 
   if (typeof content !== 'string') {
     throw new Error("'content' must be a string");

@@ -361,3 +361,28 @@ export const nextWorkspacePath = () => path.join(homeDir(), 'next-workspace');
  * you and not to whichever project you happened to update from.
  */
 export const pendingReloadPath = () => path.join(homeDir(), 'pending-reload.json');
+
+/**
+ * Name a file the way the caller would recognise it.
+ *
+ * Relative to the workspace when it is inside, absolute when it is not. Every
+ * file tool accepts absolute paths, so `relative(workspace, absPath)` on its
+ * own produces `../../../tmp/x` for anything outside — and that string then
+ * goes into the error the model reads. It is asked for `/tmp/x`, told
+ * `../../../tmp/x` does not exist, and now has a path it never used and cannot
+ * use. A model that tries to "correct" it is doing the reasonable thing with
+ * bad information.
+ *
+ * This is not hypothetical and not new: the same expression, used for the same
+ * reason, is what made `DiffEngine._createBackup` write backups *outside* the
+ * backup directory. That one corrupted state; this one only misleads, which is
+ * why it survived longer.
+ *
+ * The `skills` catalogue chooses paths by exactly this rule already, and it is
+ * the feature most likely to hand the model an absolute path in the first
+ * place — a personal skill under `~/.agent/skills` is outside every workspace.
+ */
+export function displayPath(workspace, absPath) {
+  const rel = path.relative(workspace, absPath);
+  return !rel || rel.startsWith('..') ? absPath : rel;
+}
