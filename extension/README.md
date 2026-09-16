@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.9.0**
+## Current version: **1.10.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,24 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.10.0 — 2026-09-17
+
+- **The checklist, above the input.** The terminal draws the agent's plan
+  because it reads `.agent/artifacts/task.md` off disk; a browser page cannot,
+  so the panel was the one surface where that plan was invisible. The server
+  pushes it at turn boundaries. One row collapsed — `2/4` and the next
+  unfinished item — with the full list a click away, and it is **replaced**
+  each turn rather than appended, because a checklist is current state and a
+  transcript of sixteen versions of it is the mistake the connection rows
+  already made once.
+- **The handover review folds.** Every pro-tier reply now ends with a fixed
+  `## Review` block; it is the most important four lines of a turn and the
+  least interesting to re-read, so it collapses to its first fact. Matched on
+  shape rather than wording, so rephrasing the prompt cannot silently stop it.
+- **The send button lights up when there is something to send.** Muted-until-
+  useful was half the idea — without the other half the button looked equally
+  dead whether the box was empty or full.
 
 ### 1.9.0 — 2026-09-17
 

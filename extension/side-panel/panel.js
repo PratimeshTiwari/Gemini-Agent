@@ -10,6 +10,7 @@ const messageStream = document.getElementById('message-stream');
 const welcomeMessage = document.getElementById('welcome-message');
 const commandInput = document.getElementById('command-input');
 const sendBtn = document.getElementById('send-btn');
+const inputArea = document.getElementById('input-area');
 const connectionDot = document.getElementById('connection-dot');
 const connectionText = document.getElementById('connection-text');
 const modeToggle = document.getElementById('mode-toggle');
@@ -60,10 +61,13 @@ function setupEventListeners() {
     }
   });
 
-  // Auto-resize textarea
+  // Auto-resize textarea, and light the send button once there is something
+  // to send. Muted-until-useful was half the idea; without this half the
+  // button looks equally dead whether the box is empty or full.
   commandInput.addEventListener('input', () => {
     commandInput.style.height = 'auto';
     commandInput.style.height = Math.min(commandInput.scrollHeight, 150) + 'px';
+    reflectSendState();
   });
 
   // Mode toggle
@@ -85,6 +89,19 @@ function setupEventListeners() {
  * Each button hides itself where it does not apply, so no surface offers to
  * become what it already is.
  */
+/**
+ * Does the send button look like it can do anything?
+ *
+ * Three states, not two: nothing typed (inert), something typed (live), and a
+ * turn in flight (disabled). The middle one was missing — the button was muted
+ * until hover whether the box was empty or not, so the only feedback that a
+ * message was ready to go was the text you had just typed.
+ */
+function reflectSendState() {
+  const ready = commandInput.value.trim().length > 0 && !isWaitingForResponse;
+  sendBtn.classList.toggle('ready', ready);
+}
+
 function setupSurfaces() {
   const mode = new URLSearchParams(location.search);
   const dock = document.getElementById('dock-btn');
@@ -341,11 +358,13 @@ function sendMessage() {
   // Clear input
   commandInput.value = '';
   commandInput.style.height = 'auto';
+  reflectSendState();
 
   // Show thinking indicator
   showThinking();
   isWaitingForResponse = true;
   sendBtn.disabled = true;
+  reflectSendState();
 }
 
 function handleSlashCommand(input) {
@@ -557,6 +576,101 @@ function showThinking() {
 function removeThinking() {
   const el = document.getElementById('thinking-indicator');
   if (el) el.remove();
+}
+
+/**
+ * The agent's own checklist, pinned as one row you can open.
+ *
+ * The terminal draws this above the prompt because it reads `task.md` off
+ * disk; the panel is a browser page and cannot, so the server pushes it at
+ * turn boundaries. Kept to a single row collapsed, because the value is
+ * "3 of 5, and which one is next" at a glance — the full list is a click away
+ * and should not push the conversation off the screen to show you a plan you
+ * have already read.
+ *
+ * Replaced rather than appended. A checklist is a *current state*, not an
+ * event, and a transcript of sixteen versions of the same list is the mistake
+ * the connection rows already made once.
+ */
+function renderTaskList(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  if (items.length === 0) return;
+
+  const existing = document.getElementById('task-list');
+  const wasOpen = existing?.classList.contains('open');
+  existing?.remove();
+
+  const done = Number(payload.done ?? items.filter((i) => i.done).length);
+  const total = Number(payload.total ?? items.length);
+  const next = items.find((i) => !i.done);
+
+  const div = document.createElement('div');
+  div.className = `task-list${wasOpen ? ' open' : ''}`;
+  div.id = 'task-list';
+  div.innerHTML = `
+    <button class="task-summary" type="button">
+      <span class="task-caret">▸</span>
+      <span class="task-count">${done}/${total}</span>
+      <span class="task-next">${escapeHtml(done === total ? 'all done' : (next?.text ?? ''))}</span>
+    </button>
+    <div class="task-items">
+      ${items.map((i) => `
+        <div class="task-item${i.done ? ' done' : ''}">
+          <span class="task-box">${i.done ? '[x]' : '[ ]'}</span>
+          <span class="task-text">${escapeHtml(i.text)}</span>
+        </div>`).join('')}
+    </div>`;
+
+  div.querySelector('.task-summary').addEventListener('click', () => {
+    div.classList.toggle('open');
+    div.querySelector('.task-caret').textContent = div.classList.contains('open') ? '▾' : '▸';
+  });
+  if (wasOpen) div.querySelector('.task-caret').textContent = '▾';
+
+  // Above the input, not in the transcript: it is state, and state does not
+  // scroll away.
+  inputArea.parentNode.insertBefore(div, inputArea);
+}
+
+/**
+ * The handover review, folded.
+ *
+ * Every pro-tier reply now ends with a fixed `## Review` block — checklist,
+ * what ran, callers checked, what is not done. It is the most important four
+ * lines of the turn and also the least interesting to re-read, so it is
+ * collapsed to its first fact with the rest a click away.
+ *
+ * Matched on the shape the prompt asks for rather than on wording, so
+ * rephrasing the prompt does not silently stop this working.
+ */
+function splitReview(content) {
+  const text = String(content ?? '');
+  const at = text.search(/(^|\n)#{1,3}\s*Review\s*(\n|$)/i);
+  if (at === -1) return { body: text, review: '' };
+  return { body: text.slice(0, at).trimEnd(), review: text.slice(at).trim() };
+}
+
+function appendReview(review) {
+  const div = document.createElement('div');
+  div.className = 'review-block';
+  const lines = review.split('\n').filter((l) => /^\s*[-*]\s/.test(l));
+  const first = lines[0]?.replace(/^\s*[-*]\s*/, '') ?? 'Review';
+
+  div.innerHTML = `
+    <button class="review-summary" type="button">
+      <span class="review-caret">▸</span>
+      <span class="review-label">Review</span>
+      <span class="review-first">${escapeHtml(first)}</span>
+    </button>
+    <div class="review-body">${renderMarkdownish(review)}</div>`;
+
+  div.querySelector('.review-summary').addEventListener('click', () => {
+    div.classList.toggle('open');
+    div.querySelector('.review-caret').textContent = div.classList.contains('open') ? '▾' : '▸';
+  });
+
+  messageStream.appendChild(div);
+  scrollToBottom();
 }
 
 // ── Blocking prompts ────────────────────────────────────────────────
@@ -796,12 +910,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       break;
 
-    case 'agent_response':
+    case 'agent_response': {
       removeThinking();
       clearStreamPartial();
       isWaitingForResponse = false;
       sendBtn.disabled = false;
-      appendMessage('agent', payload.content);
+      reflectSendState();
+      const { body, review } = splitReview(payload.content);
+      if (body) appendMessage('agent', body);
+      if (review) appendReview(review);
+      break;
+    }
+
+    // State, not an event — see renderTaskList.
+    case 'task_list':
+      renderTaskList(payload);
       break;
 
     // Streaming text. Every chunk used to cross the socket and land in the
@@ -861,6 +984,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       removeThinking();
       isWaitingForResponse = false;
       sendBtn.disabled = false;
+      reflectSendState();
       if (payload.message) {
         appendStatus(payload.message);
       }
@@ -876,6 +1000,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       removeThinking();
       isWaitingForResponse = false;
       sendBtn.disabled = false;
+      reflectSendState();
       appendError(payload.message);
       break;
   }

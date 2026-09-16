@@ -540,6 +540,7 @@ export class AgentLoop {
         payload: { content: cleanContent.trim() },
         timestamp: Date.now(),
       });
+      this._sendTaskList();
     }
 
     // Execute tool calls
@@ -688,6 +689,51 @@ export class AgentLoop {
    * @param {string|Array<{question: string, answer: string}>} answer - a bare
    *   answer, or one entry per question when the model asked a batch.
    */
+  /**
+   * Push the checklist to the side panel.
+   *
+   * The terminal reads `.agent/artifacts/task.md` off disk on a timer. The
+   * panel cannot — it is a browser page — so the one surface that *can* read
+   * the file has to hand it over. Without this the panel is the only place the
+   * agent's own plan is invisible, which is the half of the feature the user
+   * is actually meant to watch.
+   *
+   * Sent at turn boundaries rather than on a timer: ticking happens inside a
+   * turn, and the file is small, so the end of a turn is both when it has
+   * changed and when nothing else is competing for the socket.
+   *
+   * Silent when there is no list. An empty row is worse than no row — it reads
+   * as "the agent has no plan" when it means "the agent did not write one".
+   */
+  _sendTaskList() {
+    let body = '';
+    try {
+      const file = paths.artifactPath(this.workspace, 'task.md');
+      if (fs.existsSync(file)) body = fs.readFileSync(file, 'utf-8').trim();
+    } catch {
+      return; // an unreadable artifact must not disturb a finished turn
+    }
+    if (!body) return;
+
+    const items = body.split('\n')
+      .map((l) => l.match(/^\s*[-*]\s*\[([ xX])\]\s*(.*)$/))
+      .filter(Boolean)
+      .map((m) => ({ done: m[1].toLowerCase() === 'x', text: m[2].trim() }));
+    if (items.length === 0) return;
+
+    this.callbacks?.sendToPanel?.({
+      id: randomUUID(),
+      type: 'task_list',
+      payload: {
+        items,
+        done: items.filter((i) => i.done).length,
+        total: items.length,
+        path: paths.artifactPath(this.workspace, 'task.md'),
+      },
+      timestamp: Date.now(),
+    });
+  }
+
   answerQuestion(answer) {
     if (!this.pendingQuestionResolve) return;
 

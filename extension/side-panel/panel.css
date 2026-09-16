@@ -836,3 +836,95 @@ body.is-popup {
   letter-spacing: 0.04em;
   margin-bottom: 2px;
 }
+
+/* Something to send. The muted default says "nothing to do here"; this says
+   the opposite, without becoming the brightest thing on the panel again. */
+#send-btn.ready {
+  color: var(--text-accent);
+  border-color: var(--blue);
+}
+
+#send-btn.ready:hover {
+  background: var(--bg-hover);
+}
+
+/* ── The checklist, above the input ──────────────────────────────────
+   State rather than an event: one row, replaced each turn, and it does not
+   scroll away with the conversation. */
+.task-list {
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.task-summary,
+.review-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 6px var(--spacing-md);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-summary:hover,
+.review-summary:hover { background: var(--bg-hover); }
+
+.task-caret,
+.review-caret { color: var(--text-muted); }
+.task-count { color: var(--text-accent); }
+
+/* The next unfinished item, which is the one thing worth seeing collapsed. */
+.task-next,
+.review-first {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-items,
+.review-body { display: none; }
+.task-list.open .task-items,
+.review-block.open .review-body { display: block; }
+
+.task-items {
+  padding: 0 var(--spacing-md) var(--spacing-sm);
+  max-height: 40vh;      /* never let the plan eat the conversation */
+  overflow-y: auto;
+}
+
+.task-item {
+  display: flex;
+  gap: var(--spacing-sm);
+  padding: 2px 0;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.task-box { color: var(--text-muted); }
+.task-item.done .task-text { color: var(--text-muted); text-decoration: line-through; }
+.task-item.done .task-box { color: var(--green); }
+
+/* ── The handover review, folded ───────────────────────────────────── */
+.review-block {
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--green);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  margin: var(--spacing-sm) 0;
+}
+
+.review-label { color: var(--green); }
+
+.review-body {
+  padding: 0 var(--spacing-md) var(--spacing-sm);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
