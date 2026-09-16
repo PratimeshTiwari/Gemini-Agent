@@ -1000,6 +1000,18 @@ export class AgentLoop {
     target?.sendToPanel?.({ id: randomUUID(), type, payload, timestamp: Date.now() });
   }
 
+  /**
+   * Ask the browser for a fresh conversation.
+   *
+   * The old `/new` broadcast `new_chat` straight from the UI hook, which is
+   * why only the terminal could do it. Routed through the loop, both
+   * front-ends reach the same thing.
+   */
+  startNewChat() {
+    this.chatThread = null;
+    this._toExtension('new_chat');
+  }
+
   requestModelOptions() {
     this._toExtension('discover_models');
   }

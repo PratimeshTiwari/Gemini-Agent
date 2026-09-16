@@ -314,14 +314,17 @@ export async function handleSlashCommand(query, {
       return;
     }
 
+    // The substance moved to `core/slash-commands.js` so the side panel can
+    // reach it too — it used to be here, which is why `/new` from the panel
+    // answered "No such command". Only the view reset stays, because that is
+    // the part that genuinely differs between a terminal and a web page.
     if (command === 'new') {
-      agentLoop.conversationHistory = [];
-      agentLoop.promptBuilder.resetPromptState();
-      agentLoop.sessionStore.clear();
+      const result = await agentLoop.handleSlashCommand('new', []);
       setHistory([]);
       resetScreen();
-      wsServer.broadcast('extension', { type: 'new_chat', payload: {} });
-      setHistory([{ role: 'assistant', content: '✨ Starting a new chat in Gemini...', isLocal: true }]);
+      if (result?.message) {
+        setHistory([{ role: 'assistant', content: result.message, isLocal: true }]);
+      }
       setIsProcessing(false);
       return;
     }

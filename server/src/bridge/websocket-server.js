@@ -640,6 +640,19 @@ export class WebSocketServer {
 
     const result = await this.agentLoop.handleSlashCommand(command, args);
 
+    // Some commands do not answer, they *replace*. `/new` and `/clear` leave
+    // the old conversation on screen otherwise, which reads as though nothing
+    // happened — and the panel would then restore that dead transcript the
+    // next time it opened.
+    if (result?.reset) {
+      this.broadcast('extension', {
+        id: randomUUID(),
+        type: 'session_reset',
+        payload: { message: result.message || '' },
+        timestamp: Date.now(),
+      });
+    }
+
     this._send(client.ws, {
       id: messageId,
       type: 'command_result',

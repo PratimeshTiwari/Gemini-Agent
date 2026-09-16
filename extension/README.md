@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.13.0**
+## Current version: **1.14.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,19 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.14.0 — 2026-09-17
+
+- **`/new` works from the panel.** It lived in the CLI's slash-command hook, so
+  the panel sending it was told "No such command" — the same shape as `/name`
+  answering that while fully implemented. The substance moved to the shared
+  handler; each front-end still clears its own view, which is the only part
+  that genuinely differs. It **files** the old conversation rather than
+  destroying it, and takes the artifacts with it, so a finished checklist does
+  not survive into the next task.
+- **`/new` and `/clear` replace what the panel is showing.** They left the old
+  transcript on screen, which reads as though nothing happened — and the panel
+  would then restore that dead conversation the next time it opened.
 
 ### 1.13.0 — 2026-09-17
 

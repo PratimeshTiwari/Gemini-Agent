@@ -275,3 +275,78 @@ describe('artifacts travel with the session', () => {
     assert.doesNotThrow(() => store.rollover());
   });
 });
+
+/**
+ * `/new`, from either front-end.
+ *
+ * It lived in the CLI's slash-command hook, so the side panel sending `/new`
+ * was told "No such command" — the same shape as `/name` answering that while
+ * fully implemented, and `/workspace <path>` silently dropping its argument. A
+ * command implemented in the UI layer is invisible to every other surface.
+ */
+describe('/new', () => {
+  const loopFor = (store) => {
+    const sent = [];
+    return {
+      loop: {
+        sessionStore: store,
+        conversationHistory: [{ role: 'user', content: 'old' }],
+        promptBuilder: { resetPromptState() {} },
+        contextChars: 999,
+        chatThread: { model: 'gemini', id: 'old-thread' },
+        startNewChat() { sent.push('new_chat'); },
+      },
+      sent,
+    };
+  };
+
+  test('it is a command the shared handler knows', async () => {
+    const { AGENT_COMMANDS } = await import('../../src/core/slash-commands.js');
+    assert.equal(AGENT_COMMANDS.has('new'), true,
+      'the panel would be told there is no such command');
+  });
+
+  test('it files the old conversation rather than destroying it', async () => {
+    const { handleSlashCommand } = await import('../../src/core/slash-commands.js');
+    const store = conversation(new SessionStore(dir), 'the one before');
+    const { loop } = loopFor(store);
+
+    await handleSlashCommand(loop, 'new', []);
+    assert.deepEqual(store.loadHistory(), [], 'it should start clean');
+    assert.equal(store.listSessions()[0].title, 'the one before', '/new lost the conversation');
+  });
+
+  test('it takes the artifacts with it', async () => {
+    const { handleSlashCommand } = await import('../../src/core/slash-commands.js');
+    const store = conversation(new SessionStore(dir));
+    mkdirSync(join(dir, '.agent', 'artifacts'), { recursive: true });
+    writeFileSync(join(dir, '.agent', 'artifacts', 'task.md'), '- [x] done\n');
+
+    await handleSlashCommand(loopFor(store).loop, 'new', []);
+    assert.equal(existsSync(join(dir, '.agent', 'artifacts', 'task.md')), false,
+      'a finished checklist survived into the new conversation');
+  });
+
+  test('it starts a fresh browser thread, and forgets the old one', async () => {
+    const { handleSlashCommand } = await import('../../src/core/slash-commands.js');
+    const { loop, sent } = loopFor(conversation(new SessionStore(dir)));
+    await handleSlashCommand(loop, 'new', []);
+    assert.deepEqual(sent, ['new_chat'], 'the model kept the old conversation in mind');
+    assert.equal(loop.chatThread, null);
+    assert.deepEqual(loop.conversationHistory, []);
+  });
+
+  // Without this the panel keeps displaying a conversation the agent has
+  // forgotten, and restores that dead transcript next time it opens.
+  test('it tells the front-ends to replace what they are showing', async () => {
+    const { handleSlashCommand } = await import('../../src/core/slash-commands.js');
+    const result = await handleSlashCommand(loopFor(conversation(new SessionStore(dir))).loop, 'new', []);
+    assert.equal(result.reset, true);
+  });
+
+  test('/clear says the same, for the same reason', async () => {
+    const { handleSlashCommand } = await import('../../src/core/slash-commands.js');
+    const result = await handleSlashCommand(loopFor(conversation(new SessionStore(dir))).loop, 'clear', []);
+    assert.equal(result.reset, true);
+  });
+});

@@ -433,6 +433,12 @@ function handleSlashCommand(input) {
     updateModeUI();
   }
 
+  if (!isConnected) {
+    appendMessage('user', input);
+    explainDisconnected();
+    return;
+  }
+
   // Display the command
   appendStatus(`/${command} ${args.join(' ')}`.trim());
 
@@ -1011,6 +1017,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       break;
     }
+
+    /**
+     * The conversation was replaced, not added to.
+     *
+     * `/new` and `/clear` leave the old transcript on screen otherwise, which
+     * reads as though nothing happened — and the panel would then restore that
+     * dead conversation the next time it opened.
+     */
+    case 'session_reset':
+      messageStream.innerHTML = '';
+      historyRestored = true;   // there is nothing to restore into any more
+      lastStatusText = '';
+      removeThinking();
+      isWaitingForResponse = false;
+      sendBtn.disabled = false;
+      reflectSendState();
+      if (payload?.message) appendStatus(payload.message);
+      break;
 
     // State, not an event — see renderTaskList.
     case 'task_list':
