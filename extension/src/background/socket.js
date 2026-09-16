@@ -50,6 +50,20 @@ const ALARM_FALLBACK_MINUTES = 0.5; // the clamp floor; asking for less is ignor
 const HEARTBEAT_INTERVAL = 10000;
 
 export let ws = null;
+
+/**
+ * Is the socket open *right now*?
+ *
+ * The stored state is a record of the last transition, and a panel that opens
+ * between transitions reads whatever was written last — or, if the service
+ * worker has been recycled and `getState` falls back to its defaults,
+ * `connected: false` while the bridge is perfectly fine. That is what "the
+ * floating window says Disconnected while the docked one says Connected" was:
+ * two surfaces asking two different questions.
+ *
+ * The socket itself cannot be stale, so it is the one worth asking.
+ */
+export const isSocketOpen = () => Boolean(ws) && ws.readyState === WebSocket.OPEN;
 let heartbeatTimer = null;
 let retryTimer = null;
 let keepAliveTimer = null;

@@ -759,3 +759,54 @@ body {
   font-size: 11px;
   margin-right: var(--spacing-sm);
 }
+
+/* ── Rendered replies ────────────────────────────────────────────────
+   Escaped first, then formatted — see renderMarkdownish. */
+
+.message-content,
+.status-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.md-inline {
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+  padding: 1px 4px;
+  color: var(--cyan);
+  font-size: 12px;
+}
+
+.md-code {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--spacing-sm);
+  margin: var(--spacing-sm) 0;
+  overflow-x: auto;          /* the block scrolls, the panel never does */
+  white-space: pre;
+  font-size: 12px;
+}
+
+.md-code code { color: var(--text-primary); }
+
+/* The language, where a copy button would be if this had one. */
+.md-code[data-lang]::before {
+  content: attr(data-lang);
+  display: block;
+  color: var(--text-muted);
+  font-size: 10px;
+  margin-bottom: 4px;
+}
+
+/* A status that is really a block: no pill, no centring, just readable. */
+.message-status.status-block .status-body {
+  display: block;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}

@@ -1,4 +1,4 @@
-import { connectWebSocket } from './socket.js';
+import { connectWebSocket, isSocketOpen } from './socket.js';
 import { sendToServer } from './messaging.js';
 import { getState } from './state.js';
 import { broadcastTabStatus, reinjectModelTabs, restoreFocusFrom, forgetTab, endSession } from './content.js';
@@ -72,10 +72,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true });
         break;
 
-      case 'get_status':
+      case 'get_status': {
+        // The live socket overrides the stored flag. Stored state records the
+        // last transition; a panel opening between transitions — or after the
+        // service worker was recycled, when `getState` falls back to its
+        // `connected: false` default — would otherwise report Disconnected
+        // over a working bridge.
         const state = await getState();
-        sendResponse({ success: true, ...state });
+        sendResponse({ success: true, ...state, connected: isSocketOpen() });
         break;
+      }
 
       case 'connect':
         connectWebSocket();

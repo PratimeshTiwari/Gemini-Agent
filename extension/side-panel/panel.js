@@ -108,7 +108,15 @@ function setupPopout() {
 async function checkConnectionStatus() {
   try {
     const response = await chrome.runtime.sendMessage({ type: 'get_status' });
-    updateConnectionUI(response?.connected || false);
+    const connected = response?.connected || false;
+    updateConnectionUI(connected);
+
+    // A panel can open while the service worker is asleep and the socket has
+    // not been re-established. Asking is free and idempotent — connectWebSocket
+    // returns immediately if one is already open or opening — and without it a
+    // panel opened at the wrong moment sits on "Disconnected" until something
+    // else happens to wake the worker.
+    if (!connected) chrome.runtime.sendMessage({ type: 'connect' }).catch(() => {});
   } catch {
     updateConnectionUI(false);
   }
@@ -209,13 +217,48 @@ function handleSlashCommand(input) {
 }
 
 // ── Message Rendering ───────────────────────────────────────────────
+/**
+ * Markdown, to the small extent the panel needs it.
+ *
+ * The reply is model output, so **escaping comes first** and the formatting is
+ * applied to the already-escaped string — a `<` in the text can never become a
+ * tag, whatever the model wrote.
+ *
+ * Deliberately not a markdown library: the panel is a plain page with no build
+ * step, and the whole of what a reply actually uses is fenced blocks, inline
+ * code and bold. Lists and tables are left as their source, which reads fine
+ * in a monospace column; the alternative was shipping a parser to the browser
+ * for two constructs.
+ */
+function renderMarkdownish(text) {
+  const escaped = escapeHtml(String(text ?? ''));
+  const blocks = [];
+
+  // Fenced blocks are lifted out first so their contents are never treated as
+  // inline markup — a `**` inside a shell command is not bold.
+  const withoutFences = escaped.replace(/```([^\n`]*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+    blocks.push(`<pre class="md-code"${lang.trim() ? ` data-lang="${lang.trim()}"` : ''}>`
+      + `<code>${code.replace(/\n$/, '')}</code></pre>`);
+    return `\u0000${blocks.length - 1}\u0000`;
+  });
+
+  const inline = withoutFences
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`\n]+)`/g, '<code class="md-inline">$1</code>');
+
+  return inline.replace(/\u0000(\d+)\u0000/g, (_m, i) => blocks[Number(i)] ?? '');
+}
+
 function appendMessage(role, content) {
   const div = document.createElement('div');
   div.className = `message message-${role}`;
 
   const contentDiv = document.createElement('div');
   contentDiv.className = 'message-content';
-  contentDiv.textContent = content;
+  // The user's own message is shown exactly as typed; only the agent's reply
+  // is formatted, and that path escapes before it formats.
+  if (role === 'user') contentDiv.textContent = content;
+  else contentDiv.innerHTML = renderMarkdownish(content);
 
   div.appendChild(contentDiv);
   messageStream.appendChild(div);
@@ -292,10 +335,23 @@ function appendDiff(diffData) {
   scrollToBottom();
 }
 
+/**
+ * A status line, or — when it is not a line at all — a block.
+ *
+ * `status-text` is a small rounded pill, which is right for "🧹 history
+ * cleared" and wrong for the answer to `/effort`, a multi-line listing that
+ * arrives on the same channel. Crammed into a pill with no `pre-wrap` it came
+ * out as a wall of run-together prose with its markdown showing.
+ */
 function appendStatus(text) {
+  const body = String(text ?? '');
+  const isBlock = body.includes('\n') || body.length > 120;
+
   const div = document.createElement('div');
-  div.className = 'message message-status';
-  div.innerHTML = `<span class="status-text">${escapeHtml(text)}</span>`;
+  div.className = `message message-status${isBlock ? ' status-block' : ''}`;
+  div.innerHTML = isBlock
+    ? `<div class="status-body">${renderMarkdownish(body)}</div>`
+    : `<span class="status-text">${escapeHtml(body)}</span>`;
   messageStream.appendChild(div);
   scrollToBottom();
 }

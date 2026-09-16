@@ -373,6 +373,7 @@
   var ALARM_FALLBACK_MINUTES = 0.5;
   var HEARTBEAT_INTERVAL = 1e4;
   var ws = null;
+  var isSocketOpen = () => Boolean(ws) && ws.readyState === WebSocket.OPEN;
   var heartbeatTimer = null;
   var retryTimer = null;
   var keepAliveTimer = null;
@@ -564,10 +565,11 @@
           sendToServer({ type, payload });
           sendResponse({ success: true });
           break;
-        case "get_status":
+        case "get_status": {
           const state = await getState();
-          sendResponse({ success: true, ...state });
+          sendResponse({ success: true, ...state, connected: isSocketOpen() });
           break;
+        }
         case "connect":
           connectWebSocket();
           sendResponse({ success: true });
