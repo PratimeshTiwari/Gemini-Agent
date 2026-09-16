@@ -120,11 +120,38 @@
   }
   var mainTabs = /* @__PURE__ */ new Map();
   var subagentTabs = /* @__PURE__ */ new Set();
+  var OWNED_KEY = "agentOwnedTabs";
+  async function ownedTabIds() {
+    try {
+      const { [OWNED_KEY]: ids = [] } = await chrome.storage.session.get(OWNED_KEY);
+      return new Set(ids);
+    } catch {
+      return /* @__PURE__ */ new Set();
+    }
+  }
+  async function claimOwnedTab(tabId) {
+    if (tabId === void 0 || tabId === null) return;
+    try {
+      const ids = await ownedTabIds();
+      ids.add(tabId);
+      await chrome.storage.session.set({ [OWNED_KEY]: [...ids] });
+    } catch {
+    }
+  }
+  async function releaseOwnedTab(tabId) {
+    try {
+      const ids = await ownedTabIds();
+      if (!ids.delete(tabId)) return;
+      await chrome.storage.session.set({ [OWNED_KEY]: [...ids] });
+    } catch {
+    }
+  }
   var sessionTabs = /* @__PURE__ */ new Map();
   function claimSubagentTab(tabId, sessionId = null) {
     if (tabId === void 0 || tabId === null) return;
     subagentTabs.add(tabId);
     if (sessionId) sessionTabs.set(sessionId, tabId);
+    claimOwnedTab(tabId);
   }
   async function sessionTab(sessionId) {
     if (!sessionId || !sessionTabs.has(sessionId)) return null;
@@ -157,6 +184,7 @@
     for (const [model, id] of mainTabs) {
       if (id === tabId) mainTabs.delete(model);
     }
+    releaseOwnedTab(tabId);
   }
   async function pickMainTab(targetModel = "gemini") {
     const targetUrl = MODEL_URLS[targetModel];
@@ -169,9 +197,12 @@
       } catch {
       }
       mainTabs.delete(targetModel);
+      await releaseOwnedTab(remembered);
     }
+    const owned = await ownedTabIds();
+    if (owned.size === 0) return null;
     const tabs = await chrome.tabs.query({ url: targetUrl });
-    const usable = tabs.filter((t) => !subagentTabs.has(t.id));
+    const usable = tabs.filter((t) => owned.has(t.id) && !subagentTabs.has(t.id));
     if (usable.length === 0) return null;
     const chosen = usable[usable.length - 1];
     mainTabs.set(targetModel, chosen.id);
@@ -251,6 +282,7 @@
     });
     await new Promise((r) => setTimeout(r, 1500));
     mainTabs.set(targetModel, newTab.id);
+    await claimOwnedTab(newTab.id);
     broadcastTabStatus();
     return newTab;
   }

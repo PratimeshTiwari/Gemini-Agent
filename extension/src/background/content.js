@@ -152,6 +152,67 @@ const mainTabs = new Map();
 const subagentTabs = new Set();
 
 /**
+ * Tabs this extension opened, and therefore may type into.
+ *
+ * **The agent must never use a Gemini tab the person opened for themselves.**
+ * It types a system prompt and a task into whatever tab it picks, and scrapes
+ * the reply back out — into a personal conversation that would be somebody's
+ * own chat history, polluted with our prompts and read by us.
+ *
+ * `pickMainTab` used to fall back to `chrome.tabs.query({url})` and take the
+ * newest match, which its own doc described as "how a lane adopts the tab the
+ * user opened themselves". That is fine exactly once — when the only Gemini tab
+ * open *is* the one you opened for the agent — and wrong every other time.
+ *
+ * It is worse in combination with MV3. `mainTabs` is module state, so every
+ * time Chrome recycles the service worker the extension forgets which tab was
+ * its own; the next turn re-queried and re-adopted. Recycling is not an edge
+ * case here — the reconnect cadence was measured at a 30-second floor — so
+ * "forget, then adopt the user's tab" was the *ordinary* path, not a rare one.
+ *
+ * So ownership is explicit and it is persisted. `chrome.storage.session`
+ * survives a worker restart and is cleared when the browser closes, which is
+ * exactly the lifetime of a tab id.
+ */
+const OWNED_KEY = 'agentOwnedTabs';
+
+/** Tab ids this extension created, read through the worker's own restarts. */
+async function ownedTabIds() {
+  try {
+    const { [OWNED_KEY]: ids = [] } = await chrome.storage.session.get(OWNED_KEY);
+    return new Set(ids);
+  } catch {
+    // Storage unavailable: own nothing rather than claim everything. The cost
+    // is a fresh tab; the cost of the other default is somebody's chat history.
+    return new Set();
+  }
+}
+
+/** Record that we opened this tab, so a recycled worker still knows it is ours. */
+export async function claimOwnedTab(tabId) {
+  if (tabId === undefined || tabId === null) return;
+  try {
+    const ids = await ownedTabIds();
+    ids.add(tabId);
+    await chrome.storage.session.set({ [OWNED_KEY]: [...ids] });
+  } catch { /* the in-memory maps still work for this worker's lifetime */ }
+}
+
+/** Forget a tab we owned — it closed, or navigated away from the model. */
+async function releaseOwnedTab(tabId) {
+  try {
+    const ids = await ownedTabIds();
+    if (!ids.delete(tabId)) return;
+    await chrome.storage.session.set({ [OWNED_KEY]: [...ids] });
+  } catch { /* nothing to do */ }
+}
+
+/** Is this a tab we opened? */
+export async function isOwnedTab(tabId) {
+  return (await ownedTabIds()).has(tabId);
+}
+
+/**
  * Batch tasks that hold one tab across several turns.
  *
  * A subagent turn gets a fresh tab and that is usually right — one comment, one
@@ -179,6 +240,9 @@ export function claimSubagentTab(tabId, sessionId = null) {
   if (tabId === undefined || tabId === null) return;
   subagentTabs.add(tabId);
   if (sessionId) sessionTabs.set(sessionId, tabId);
+  // We opened it, so it is ours — and a recycled worker must not later mistake
+  // it for one of the user's own tabs, nor adopt it as the main lane's.
+  claimOwnedTab(tabId);
 }
 
 /**
@@ -233,15 +297,23 @@ export function forgetTab(tabId) {
   for (const [model, id] of mainTabs) {
     if (id === tabId) mainTabs.delete(model);
   }
+  releaseOwnedTab(tabId);
 }
 
 /**
  * The tab this model's main lane should use, or null.
  *
  * Prefers the one it used last — a conversation has a thread, and moving
- * between tabs mid-session would restate context the old tab already had. Falls
- * back to the newest matching tab that is not a subagent's, which is also how a
- * lane adopts the tab the user opened themselves.
+ * between tabs mid-session would restate context the old tab already had.
+ *
+ * **Only tabs this extension opened.** It used to fall back to the newest
+ * matching tab, which meant that with no remembered tab — the state after every
+ * service-worker recycle — the agent typed its system prompt into whichever
+ * Gemini tab was newest. If that was the person's own conversation, their chat
+ * history got our prompts and we scraped their thread.
+ *
+ * Returning `null` is the safe answer: `ensureModelTab` opens a fresh tab,
+ * which costs one tab and cannot cost somebody's private conversation.
  */
 export async function pickMainTab(targetModel = 'gemini') {
   const targetUrl = MODEL_URLS[targetModel];
@@ -258,10 +330,16 @@ export async function pickMainTab(targetModel = 'gemini') {
       /* closed while we were not looking */
     }
     mainTabs.delete(targetModel);
+    await releaseOwnedTab(remembered);
   }
 
+  // The worker may have been recycled since we opened it, so ownership is read
+  // from storage rather than from the map above.
+  const owned = await ownedTabIds();
+  if (owned.size === 0) return null;
+
   const tabs = await chrome.tabs.query({ url: targetUrl });
-  const usable = tabs.filter((t) => !subagentTabs.has(t.id));
+  const usable = tabs.filter((t) => owned.has(t.id) && !subagentTabs.has(t.id));
   if (usable.length === 0) return null;
 
   const chosen = usable[usable.length - 1];
@@ -370,6 +448,7 @@ export async function ensureModelTab(targetModel = 'gemini') {
   // Brief pause for the content script bridge to mount into the DOM
   await new Promise(r => setTimeout(r, 1500));
   mainTabs.set(targetModel, newTab.id);
+  await claimOwnedTab(newTab.id);
   broadcastTabStatus();
   return newTab;
 }
