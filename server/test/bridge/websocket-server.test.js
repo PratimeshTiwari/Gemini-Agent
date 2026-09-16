@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WebSocketServer as WS } from 'ws';
 import { WebSocket } from 'ws';
-import { isAllowedOrigin } from '../../src/bridge/websocket-server.js';
+import { isAllowedOrigin, WebSocketServer as WebSocketServerClass } from '../../src/bridge/websocket-server.js';
 
 test('isAllowedOrigin — who may open a socket', async (t) => {
   await t.test('the browser extension may', () => {
@@ -80,4 +80,72 @@ test('verifyClient refuses a page and admits the extension', async (t) => {
   });
 
   wss.close();
+});
+
+/**
+ * The side panel answering a turn that is parked.
+ *
+ * `ask_question` and a risky `run_command` both `await new Promise(...)` in the
+ * agent loop with no timeout, and send the prompt out through `sendToPanel`.
+ * The CLI drew those and answered them; the panel had no renderer and — more
+ * to the point — there was no inbound message type it could have answered
+ * with, so a turn driven from the panel stopped at the first question and
+ * never resumed. The panel's own send button stays disabled behind
+ * `isWaitingForResponse`, so the visible symptom is a panel that has stopped
+ * accepting prompts entirely.
+ *
+ * These pin the way back in. The resolvers themselves were already there.
+ */
+test('a parked turn can be answered from the side panel', async (t) => {
+  /** Enough of the server to run `_handleMessage`, with a recording loop. */
+  const bridge = () => {
+    const calls = [];
+    const server = Object.create(WebSocketServerClass.prototype);
+    server.clients = new Map([['c1', { type: 'extension', ws: {} }]]);
+    server.agentLoop = {
+      answerQuestion: (a) => calls.push(['answerQuestion', a]),
+      cancelQuestion: () => calls.push(['cancelQuestion']),
+      answerCommandApproval: (action, command) => calls.push(['answerCommandApproval', action, command]),
+    };
+    return { server, calls };
+  };
+
+  await t.test('an answer resolves the question', async () => {
+    const { server, calls } = bridge();
+    await server._handleMessage('c1', { type: 'question_response', payload: { answer: 'Postgres' } });
+    assert.deepEqual(calls, [['answerQuestion', 'Postgres']]);
+  });
+
+  await t.test('a batch answer is passed through as the array', async () => {
+    const { server, calls } = bridge();
+    const answer = [{ question: 'Which db?', answer: 'Postgres' }, { question: 'Port?', answer: '5432' }];
+    await server._handleMessage('c1', { type: 'question_response', payload: { answer } });
+    assert.deepEqual(calls[0][1], answer);
+  });
+
+  // Dismissing must still resolve. `cancelQuestion` answers the model with an
+  // instruction to assume and continue, because rejecting or doing nothing
+  // leaves the promise pending — which is the hang this whole test is about.
+  await t.test('dismissing cancels rather than answering', async () => {
+    const { server, calls } = bridge();
+    await server._handleMessage('c1', { type: 'question_response', payload: { cancelled: true } });
+    assert.deepEqual(calls, [['cancelQuestion']]);
+  });
+
+  await t.test('a command approval carries its action and the command', async () => {
+    const { server, calls } = bridge();
+    await server._handleMessage('c1', {
+      type: 'command_approval_response',
+      payload: { action: 'allow_always', command: 'npm test' },
+    });
+    // The command rides along because `allow_always` writes it into the
+    // persistent rules and the server keeps no copy of what was asked.
+    assert.deepEqual(calls, [['answerCommandApproval', 'allow_always', 'npm test']]);
+  });
+
+  await t.test('a malformed payload does not throw', async () => {
+    const { server } = bridge();
+    await server._handleMessage('c1', { type: 'question_response' });
+    await server._handleMessage('c1', { type: 'command_approval_response' });
+  });
 });

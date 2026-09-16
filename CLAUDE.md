@@ -427,12 +427,33 @@ silently offered nothing. The reader, the writer and the picker row all existed;
 not. `main.js` makes it now, after the workspace existence check, so a path that does not
 resolve is not offered back as somewhere you have been. Verified: 0 recents before, 2 after.
 
-**Found and deliberately left alone.** The side panel handles ten message types and the
-server sends at least three more it drops on the floor — `response_stream`,
-`github_processing_started`, `github_processing_finished`. That is an incomplete surface
-rather than dead code: deleting the sends would remove a panel feature, adding handlers is
-one. Worth knowing that every streamed chunk currently crosses the socket to the panel and
-is discarded.
+**The side panel's dropped messages — two of them were a hang, fixed 2026-09-16.** The
+count was worse than "at least three", and the ones that mattered were not the cosmetic
+ones. `ask_question` and `request_command_approval` both park the turn on
+`await new Promise(...)` with **no timeout**, send the prompt through `sendToPanel`, and
+wait. The panel rendered neither — and there was no inbound message type it could have
+answered with even if it had. So a turn driven from the panel stopped dead at the first
+question or first risky command, and because the panel disables its send button behind
+`isWaitingForResponse` until a reply arrives, it then accepted no further prompts at all.
+The reported symptom was "the sidebar doesn't send prompts".
+
+The resolvers already existed and were already careful — `cancelQuestion` resolves rather
+than rejecting, precisely because leaving the promise pending *is* the hang. Only the way
+in was missing: `question_response` and `command_approval_response` are now inbound cases
+on the bridge, relayed by the worker, with the panel drawing both.
+
+`response_stream` is handled too, so the panel no longer sits on "Thinking…" for a whole
+turn and then jumps to the finished answer.
+
+Still dropped, all cosmetic and none blocking: `compaction_summary`,
+`github_notification`, `github_plan_generated`, `github_processing_started`,
+`github_processing_finished`. `inject_prompt`, `end_session` and `heartbeat_ack` are
+addressed to the worker and the content script, and the panel is right to ignore them.
+
+**The lesson worth keeping:** a surface that ignores an unknown message type is not
+equally harmless for every type. Dropping a *notification* costs a missing line; dropping
+a *request* deadlocks whatever is waiting on the answer. When adding a message the agent
+loop blocks on, every front-end needs a way to reply — or a timeout.
 
 An old `.agent/config.json` can also carry `contextFolders` and `modelConfig.reasoner`,
 fossils of features deleted in Direction phases 2 and 7. Nothing in the source reads either.

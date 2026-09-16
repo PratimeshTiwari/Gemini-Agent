@@ -264,6 +264,30 @@ export class WebSocketServer {
         this.agentLoop.noteModelOptions(payload?.models, payload?.switchedTo);
         break;
 
+      /**
+       * The side panel answering something the turn is blocked on.
+       *
+       * `ask_question` and a risky `run_command` both park the turn on an
+       * unresolved promise (`pendingQuestionResolve` / `pendingCommandResolve`)
+       * and send the prompt out through `sendToPanel`. The CLI draws those and
+       * answers them; the panel had no way to, and no inbound type existed for
+       * it either — so driving the agent from the panel hung on the first
+       * question or first command approval, permanently, with the panel's send
+       * button disabled behind `isWaitingForResponse`.
+       *
+       * The resolvers were already here and already careful (`cancelQuestion`
+       * resolves rather than rejecting, because leaving it pending is the hang).
+       * Only the way in was missing.
+       */
+      case 'question_response':
+        if (payload?.cancelled) this.agentLoop.cancelQuestion();
+        else this.agentLoop.answerQuestion(payload?.answer);
+        break;
+
+      case 'command_approval_response':
+        this.agentLoop.answerCommandApproval(payload?.action, payload?.command);
+        break;
+
       case 'diff_response':
         // User accepted/rejected a diff
         this.agentLoop.handleDiffResponse(id, payload);

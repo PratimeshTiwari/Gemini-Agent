@@ -200,13 +200,17 @@ press `Cmd+V` and the terminal consumes it. The plan was to hook an *empty*
 bracketed paste — the terminal reports a paste with no text, which is what a
 clipboard holding only an image looks like. Untested.
 
-**3. The side panel drops three message types the server sends.**
-`response_stream`, `github_processing_started`, `github_processing_finished`
-reach `socket.js`'s `default:` branch and are discarded, so the panel never
-shows streaming text or GitHub activity and every streamed chunk crosses the
-socket to be thrown away. Recorded in `CLAUDE.md` as an *incomplete surface*
-rather than dead code, deliberately: deleting the sends removes a panel feature,
-adding handlers is one. The panel is a supported front-end.
+**3. The side panel — the hang is fixed, the cosmetics are not.** Reported as
+"the sidebar doesn't send prompts", and it was worse than the three dropped
+types recorded here before. `ask_question` and `request_command_approval` park
+the turn on a promise with no timeout; the panel drew neither and had no
+inbound type to answer with, so the first question killed the panel for the
+rest of the session. Both now work, verified end to end against the real
+server. **Never tried in a real browser** — see `TEST.md` §12.
+
+Still dropped, all cosmetic: `compaction_summary`, `github_notification`,
+`github_plan_generated`, `github_processing_started`/`_finished`. Worth doing
+at some point; nothing blocks on them.
 
 **4. The PR agent should pick its own effort from the comment.** Asked for
 explicitly and not yet designed. The constraint found while looking: `switch_model`

@@ -583,3 +583,144 @@ body {
   0%, 80%, 100% { transform: scale(0); }
   40% { transform: scale(1); }
 }
+
+/* ── Blocking prompts ────────────────────────────────────────────────
+   A question or a command approval parks the turn server-side on a promise
+   that nothing else resolves, so these two are the only way such a turn ends.
+   Bordered rather than bubbled: they are asking for something, not reporting. */
+
+.message-question,
+.message-approval {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--blue);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-md);
+  margin: var(--spacing-sm) 0;
+}
+
+.message-approval {
+  border-left-color: var(--orange);
+}
+
+.question-block + .question-block {
+  margin-top: var(--spacing-md);
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.question-text {
+  color: var(--text-primary);
+  margin-bottom: var(--spacing-sm);
+}
+
+.question-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: var(--spacing-sm);
+}
+
+.question-option,
+.approval-actions button,
+.question-actions button {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.question-option:hover:not(:disabled),
+.approval-actions button:hover:not(:disabled),
+.question-actions button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.question-option.selected,
+.approval-actions button.selected {
+  border-color: var(--blue);
+  color: var(--text-accent);
+}
+
+.question-freeform {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.question-actions,
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: var(--spacing-sm);
+}
+
+.question-submit {
+  border-color: var(--blue) !important;
+  color: var(--text-accent) !important;
+}
+
+/* Disabled rather than removed: the question stays readable as a record of
+   what was asked and what it was answered with. */
+.message-question button:disabled,
+.message-question input:disabled,
+.message-approval button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.question-closed {
+  margin-top: var(--spacing-sm);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.approval-head {
+  color: var(--text-primary);
+  margin-bottom: var(--spacing-sm);
+}
+
+.approval-risk {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.approval-risk.risk-critical { color: var(--red); }
+.approval-risk.risk-high     { color: var(--orange); }
+
+.approval-command {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-sm);
+  margin: 0;
+  color: var(--cyan);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.approval-cwd,
+.approval-reason {
+  color: var(--text-secondary);
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+/* The cursor-ish tail while text is still arriving. */
+.message-agent.streaming .message-content::after {
+  content: '▌';
+  color: var(--text-muted);
+}

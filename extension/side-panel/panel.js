@@ -267,6 +267,163 @@ function removeThinking() {
   if (el) el.remove();
 }
 
+// ── Blocking prompts ────────────────────────────────────────────────
+//
+// `ask_question` and a risky `run_command` park the turn on an unresolved
+// promise server-side and send the prompt here. Until these existed the panel
+// ignored both types, so the turn hung forever and the send button never came
+// back — the panel looked like it had stopped sending prompts, which is how
+// this was reported. Answering is therefore not a nicety: it is the only way
+// the turn ever ends.
+
+/** Options arrive as strings or as {label, description}; nothing is guaranteed. */
+function optionLabel(raw) {
+  if (typeof raw === 'string') return raw;
+  if (raw && typeof raw === 'object') return raw.label ?? raw.value ?? raw.option ?? raw.text ?? '';
+  return '';
+}
+
+function appendQuestion(payload) {
+  removeThinking();
+  const set = Array.isArray(payload?.questions) && payload.questions.length
+    ? payload.questions
+    : [payload || {}];
+
+  const div = document.createElement('div');
+  div.className = 'message message-question';
+  div.id = 'question-prompt';
+
+  div.innerHTML = set.map((q, i) => {
+    const text = (typeof q === 'string' ? q : q?.question) || 'The agent asked a question, but sent no text.';
+    const opts = (typeof q === 'object' && Array.isArray(q?.options) ? q.options : [])
+      .map(optionLabel).filter(Boolean);
+    return `
+      <div class="question-block" data-q="${i}" data-question="${escapeHtml(text)}">
+        <div class="question-text">${escapeHtml(text)}</div>
+        <div class="question-options">
+          ${opts.map((o) => `<button class="question-option" data-value="${escapeHtml(o)}">${escapeHtml(o)}</button>`).join('')}
+        </div>
+        <input class="question-freeform" type="text" placeholder="or type your own answer…" />
+      </div>`;
+  }).join('');
+
+  div.innerHTML += `
+    <div class="question-actions">
+      <button class="question-submit">Send answer</button>
+      <button class="question-dismiss">Dismiss</button>
+    </div>`;
+
+  // Picking an option fills the free-text box, so there is exactly one place
+  // the answer is read from and no way to submit two conflicting ones.
+  div.querySelectorAll('.question-option').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const block = btn.closest('.question-block');
+      block.querySelectorAll('.question-option').forEach((b) => b.classList.remove('selected'));
+      btn.classList.add('selected');
+      block.querySelector('.question-freeform').value = btn.dataset.value;
+    });
+  });
+
+  div.querySelector('.question-submit').addEventListener('click', () => {
+    const answers = [...div.querySelectorAll('.question-block')].map((block) => ({
+      question: block.dataset.question,
+      answer: block.querySelector('.question-freeform').value.trim(),
+    }));
+    if (answers.some((a) => !a.answer)) return;   // nothing to send yet
+    chrome.runtime.sendMessage({
+      type: 'question_response',
+      // One question answers as a bare string; several answer as the paired
+      // array `answerQuestion` echoes back, because the model asked them
+      // several tool results ago and pairing them itself is what it gets wrong.
+      payload: { answer: answers.length === 1 ? answers[0].answer : answers },
+    });
+    closeQuestion(div, 'answered');
+  });
+
+  div.querySelector('.question-dismiss').addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'question_response', payload: { cancelled: true } });
+    closeQuestion(div, 'dismissed');
+  });
+
+  messageStream.appendChild(div);
+  scrollToBottom();
+}
+
+/** Leave the question on screen as a record, but stop it being answerable twice. */
+function closeQuestion(div, how) {
+  div.removeAttribute('id');
+  div.querySelectorAll('button, input').forEach((el) => { el.disabled = true; });
+  const note = document.createElement('div');
+  note.className = 'question-closed';
+  note.textContent = how === 'dismissed' ? 'dismissed' : 'answered';
+  div.appendChild(note);
+  showThinking();
+}
+
+function appendCommandApproval(payload) {
+  removeThinking();
+  const { command = '', cwd = '', riskLevel = '', riskReason = '' } = payload || {};
+
+  const div = document.createElement('div');
+  div.className = 'message message-approval';
+  div.innerHTML = `
+    <div class="approval-head">Run this command? <span class="approval-risk risk-${escapeHtml(riskLevel)}">${escapeHtml(riskLevel)}</span></div>
+    <pre class="approval-command">${escapeHtml(command)}</pre>
+    ${cwd ? `<div class="approval-cwd">in ${escapeHtml(cwd)}</div>` : ''}
+    ${riskReason ? `<div class="approval-reason">${escapeHtml(riskReason)}</div>` : ''}
+    <div class="approval-actions">
+      <button data-action="allow_once">Allow once</button>
+      <button data-action="allow_always">Always allow</button>
+      <button data-action="reject_once">Reject</button>
+      <button data-action="reject_always">Never allow</button>
+    </div>`;
+
+  div.querySelectorAll('.approval-actions button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      chrome.runtime.sendMessage({
+        type: 'command_approval_response',
+        // The command rides along: `allow_always` / `reject_always` write it
+        // into the persistent rules, and the server does not keep a copy.
+        payload: { action: btn.dataset.action, command },
+      });
+      div.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+      btn.classList.add('selected');
+      showThinking();
+    });
+  });
+
+  messageStream.appendChild(div);
+  scrollToBottom();
+}
+
+/**
+ * Streamed reply text, replacing the thinking dots as soon as there is any.
+ *
+ * Without this the panel showed "Thinking..." for the whole turn and then the
+ * finished answer in one jump — every chunk crossed the socket to be dropped.
+ */
+function appendStreamChunk(payload) {
+  const text = payload?.content ?? payload?.chunk ?? payload?.text ?? '';
+  if (!text) return;
+  removeThinking();
+  let el = document.getElementById('stream-partial');
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'message message-agent streaming';
+    el.id = 'stream-partial';
+    el.innerHTML = '<div class="message-content"></div>';
+    messageStream.appendChild(el);
+  }
+  // The server sends the reply so far, not a delta.
+  el.querySelector('.message-content').textContent = text;
+  scrollToBottom();
+}
+
+function clearStreamPartial() {
+  const el = document.getElementById('stream-partial');
+  if (el) el.remove();
+}
+
 // ── Diff Actions ────────────────────────────────────────────────────
 // Exposed globally for onclick handlers
 window.respondToDiff = function(diffId, action) {
@@ -326,9 +483,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'agent_response':
       removeThinking();
+      clearStreamPartial();
       isWaitingForResponse = false;
       sendBtn.disabled = false;
       appendMessage('agent', payload.content);
+      break;
+
+    // Streaming text. Every chunk used to cross the socket and land in the
+    // `default:` branch below, which drops it — so the panel sat on "Thinking…"
+    // for the whole turn and then jumped to the finished answer.
+    case 'response_stream':
+      appendStreamChunk(payload);
+      break;
+
+    // The two that park the turn. Neither was handled, and neither can time
+    // out, so the first one to arrive ended the panel's usefulness for the
+    // rest of the session.
+    case 'ask_question':
+      appendQuestion(payload);
+      break;
+
+    case 'request_command_approval':
+      appendCommandApproval(payload);
+      break;
+
+    // Sent when the CLI answers an approval, so both surfaces agree.
+    case 'command_approval':
+      removeThinking();
       break;
 
     case 'tool_call':

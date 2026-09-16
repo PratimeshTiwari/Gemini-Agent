@@ -554,6 +554,10 @@
           sendToServer({ type, payload });
           sendResponse({ success: true });
           break;
+        // The panel unblocking a turn that is parked on a question or a command
+        // approval. Pure relay — the server owns both resolvers.
+        case "question_response":
+        case "command_approval_response":
         case "turn_trace":
         case "github_pr_comment":
         case "github_pr_viewing":
