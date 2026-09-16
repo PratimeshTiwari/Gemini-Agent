@@ -536,3 +536,49 @@ describe('PromptBuilder — a dispatchable tool the prompt never mentions is unr
     assert.deepEqual(missing, [], `dispatchable but never mentioned: ${missing.join(', ')}`);
   });
 });
+
+describe('the handover review — asked for, so pin where it appears', () => {
+  const pro = (effort, over = {}) =>
+    build(new PromptBuilder(ws, ws), { modelConfig: { effort }, ...over });
+
+  test('standard and deep get it', () => {
+    for (const effort of ['standard', 'deep']) {
+      assert.match(pro(effort), /THE HANDOVER REVIEW/, effort);
+    }
+  });
+
+  // `brief`'s promise on the ladder is "straight to work". A seven-point review
+  // on a one-line fix is ceremony, and a checklist people learn to skip is
+  // worse than not having one.
+  test('brief does not', () => {
+    assert.doesNotMatch(pro('brief'), /THE HANDOVER REVIEW/);
+  });
+
+  test('the flash tiers do not — they never see the pro prompt at all', () => {
+    assert.doesNotMatch(pro('flash'), /THE HANDOVER REVIEW/);
+    assert.doesNotMatch(pro('flash-thinking'), /THE HANDOVER REVIEW/);
+  });
+
+  // The whole prompt strategy exists to avoid large repeated payloads, and
+  // this is ~1.8k characters retyped into a browser tab.
+  test('it rides turn 0, not every turn', () => {
+    const pb = new PromptBuilder(ws, ws);
+    const first = build(pb, { modelConfig: { effort: 'deep' } });
+    const second = build(pb, { modelConfig: { effort: 'deep' } });
+    assert.match(first, /THE HANDOVER REVIEW/);
+    assert.doesNotMatch(second, /THE HANDOVER REVIEW/);
+  });
+
+  test('it names the checklist that is actually carried back', () => {
+    // It asks the model to audit `<task_checklist>`, which rides every turn.
+    // Auditing a list it cannot see is the write-only trap that made the
+    // original task.md useless.
+    assert.match(pro('deep'), /<task_checklist>/);
+  });
+
+  test('it demands evidence rather than reassurance', () => {
+    const p = pro('deep');
+    assert.match(p, /not a verdict|not checked/i);
+    assert.match(p, /Paste what it\s+printed|Paste what it printed/);
+  });
+});

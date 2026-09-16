@@ -559,6 +559,22 @@ and what could go wrong with it — empty inputs, concurrent access, scale, erro
 
     const guardrails = `\n${prompt('pro-guardrails')}`;
 
+    /**
+     * The gate at the end, asked for explicitly: a list the agent must check
+     * before handing over, and a statement that it did.
+     *
+     * Placed after the guardrails so it is the last thing in the system
+     * prompt, because it is the last thing in the turn. Skipped on `brief`,
+     * where the ladder's own promise is "straight to work" — a seven-point
+     * review on a one-line fix is the kind of ceremony that gets ignored, and
+     * a checklist people learn to skip is worse than none.
+     *
+     * It leans on `<task_checklist>` riding every turn: without that the model
+     * would be asked to audit a list it cannot see, which is the write-only
+     * trap that made the original task.md useless.
+     */
+    const handover = isBrief ? '' : `\n${prompt('pro-handover-review')}`;
+
     const assumptions = isDeep ? `
 
 ## ASSUMPTION LEDGER
@@ -584,6 +600,8 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
       verify,
       guardrails,
       assumptions,
+      // Last, because it is about the end of the turn.
+      handover,
     ].filter(Boolean).join('\n');
   }
 
