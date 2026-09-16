@@ -215,11 +215,18 @@ Still dropped, all cosmetic: `compaction_summary`, `github_notification`,
 `github_plan_generated`, `github_processing_started`/`_finished`. Worth doing
 at some point; nothing blocks on them.
 
-**4. The PR agent should pick its own effort from the comment.** Asked for
-explicitly and not yet designed. The constraint found while looking: `switch_model`
-routes through `sendToModelTab` → `pickMainTab`, which is *the user's* tab — so a
-batch task that changes effort changes the model the person is using. It needs
-the lane threaded through first, the same shape as handoff item 6.
+**4. The PR agent should pick its own effort from the comment — the blocker is
+gone, the judgement is not built.** `switch_model` routed through
+`sendToModelTab` → `pickMainTab`, which is *the user's* tab, so a background
+task raising its own effort would have changed the model the person was
+mid-conversation with. `sendToModelTab` now takes a `sessionId` and addresses
+that batch session's own tab, and **fails rather than falling back** — the
+fallback is the bug. `switchModelTo(label, sessionId)` carries it.
+
+What remains is deciding *which* effort a comment deserves, and calling
+`switchModelTo` with the task's session id before the turn: a one-line typo fix
+and a design review should not cost the same. The honest catch — `runHeadlessTask`
+still hard-codes Gemini (item 7), so the ladder being switched within is Gemini's.
 
 **5. ~~`GITHUB-UI-PLAN.md`~~ — done, and the file is gone.** All six fixes
 landed; fix 6 (tab-or-stream) was decided as the middle path — the tab keeps
@@ -238,7 +245,8 @@ and whether `multiple_drafts` has ever fired at all.
 `_executeSubagent('gemini', …)` is hard-coded in `runHeadlessTask`, so a batch
 task runs on Gemini whatever `modelConfig` says. Deliberate — nothing else has
 been exercised on that path — and the obvious next step if ChatGPT becomes a
-real background option.
+real background option. The tab-addressing half is done (item 4), so this is
+the remaining piece of the same problem.
 
 **8. `/skills` has never been examined.** Reachable and aligned; the *shape* was
 never looked at. `/skills dir` prints a four-entry search path, `skillFolders`
