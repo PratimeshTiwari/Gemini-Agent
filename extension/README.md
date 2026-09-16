@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.2.0**
+## Current version: **1.3.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,27 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.3.0 — 2026-09-16
+
+The panel looks like the rest of the product, and can leave the dock.
+
+- **A floating window.** `chrome.sidePanel` is docked by design and no API
+  floats it — Chrome's own Gemini panel sits in the same dock for the same
+  reason. `⧉` opens this same page as a popup window instead: a real OS window,
+  movable anywhere including another monitor. The button hides itself when it
+  *is* the floating window, so one cannot spawn another.
+- **The welcome screen stopped shouting.** A 48px cartoon face was the loudest
+  thing on a panel whose job is to be quiet, and centred text goes ragged on
+  every line in a monospace panel. Left-aligned now, with the slash commands as
+  an aligned two-column grid rather than a centred staircase of pills.
+- **The send button is muted until it can do something.** A solid blue tile was
+  the brightest element on screen and was lit even with an empty box — drawing
+  the eye to the one control that could not act. It now inherits the same
+  disabled state the waiting-for-a-reply lock already sets, so it doubles as a
+  turn indicator.
+- **Mode reads `●` / `○`**, the two glyphs the CLI's own status bar uses,
+  instead of 🔒 and ⚡. Filled acts on its own; hollow asks first.
 
 ### 1.2.0 — 2026-09-16
 

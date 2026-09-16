@@ -66,6 +66,42 @@ function setupEventListeners() {
 
   // Mode toggle
   modeToggle.addEventListener('click', toggleMode);
+
+  setupPopout();
+}
+
+/**
+ * Open this same page as a floating window.
+ *
+ * Chrome's side panel is docked and there is no API to float it — Chrome's own
+ * Gemini panel sits in the same dock for the same reason. A popup window is a
+ * real OS window: movable anywhere, including onto another monitor, and it is
+ * this exact page, so nothing about the messaging changes.
+ *
+ * The button hides itself when we *are* the floating window, because a popup
+ * that can spawn another popup is a way to end up with four of them.
+ */
+function setupPopout() {
+  const btn = document.getElementById('popout-btn');
+  if (!btn) return;
+
+  if (new URLSearchParams(location.search).get('window') === '1') {
+    btn.remove();
+    return;
+  }
+
+  btn.addEventListener('click', async () => {
+    try {
+      await chrome.windows.create({
+        url: chrome.runtime.getURL('side-panel/panel.html?window=1'),
+        type: 'popup',
+        width: 460,
+        height: 760,
+      });
+    } catch (err) {
+      appendStatus(`Could not open a floating window: ${err.message}`);
+    }
+  });
 }
 
 // ── Connection ──────────────────────────────────────────────────────
@@ -101,12 +137,14 @@ function toggleMode() {
 }
 
 function updateModeUI() {
+  // `●` / `○`, the same two glyphs the CLI's status bar uses for connected and
+  // not. Filled means it acts on its own; hollow means it asks first.
   if (currentMode === 'auto') {
-    modeIcon.textContent = '⚡';
+    modeIcon.textContent = '●';
     modeText.textContent = 'Auto';
     modeToggle.classList.add('auto-mode');
   } else {
-    modeIcon.textContent = '🔒';
+    modeIcon.textContent = '○';
     modeText.textContent = 'Plan';
     modeToggle.classList.remove('auto-mode');
   }

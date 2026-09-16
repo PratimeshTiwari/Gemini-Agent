@@ -19,8 +19,12 @@
            is the first question when something behaves unexpectedly. Filled in
            from the manifest at load, so it cannot drift from the real one. -->
       <span id="ext-version" class="ext-version" title="Extension version"></span>
+      <!-- Chrome's side panel is docked by design and no API floats it. A
+           popup window is a real floating window: movable anywhere, including
+           another monitor, and it is this same page. -->
+      <button id="popout-btn" class="icon-btn" title="Open in a floating window">⧉</button>
       <button id="mode-toggle" class="mode-btn" title="Toggle Plan/Auto Mode">
-        <span id="mode-icon">🔒</span>
+        <span id="mode-icon">○</span>
         <span id="mode-text">Plan</span>
       </button>
     </div>
@@ -29,18 +33,17 @@
   <!-- Message Stream -->
   <main id="message-stream">
     <div id="welcome-message" class="welcome">
-      <div class="welcome-icon">🤖</div>
       <h2>Agent CLI</h2>
       <p>Start the agent in a terminal, then open a Gemini tab and sign in.
          Inference happens in your own browser session — there is no API key.</p>
       <code>agent</code>
       <div class="welcome-tips">
-        <span class="tip">/plan — approve every edit</span>
-        <span class="tip">/auto — apply safe edits</span>
-        <span class="tip">/effort — how hard it thinks</span>
-        <span class="tip">/context — what the prompt costs</span>
-        <span class="tip">/compact — free context</span>
-        <span class="tip">/clear — fresh start</span>
+        <span class="tip-key">/plan</span><span class="tip-what">approve every edit</span>
+        <span class="tip-key">/auto</span><span class="tip-what">apply safe edits</span>
+        <span class="tip-key">/effort</span><span class="tip-what">how hard it thinks</span>
+        <span class="tip-key">/context</span><span class="tip-what">what the prompt costs</span>
+        <span class="tip-key">/compact</span><span class="tip-what">free context</span>
+        <span class="tip-key">/clear</span><span class="tip-what">fresh start</span>
       </div>
     </div>
   </main>

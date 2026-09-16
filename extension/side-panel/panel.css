@@ -171,37 +171,38 @@ body {
 }
 
 /* Welcome */
+/* The welcome screen.
+   Left-aligned, because centred monospace goes ragged on every line and this
+   panel is monospace throughout. No 48px emoji: the rest of the product draws
+   state with `●` and `○` and dim text, and a cartoon face at four times the
+   body size was the loudest thing on a screen whose job is to be quiet. */
 .welcome {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: var(--spacing-xl);
-  min-height: 300px;
-}
-
-.welcome-icon {
-  font-size: 48px;
-  margin-bottom: var(--spacing-md);
+  align-items: flex-start;
+  padding: var(--spacing-lg);
 }
 
 .welcome h2 {
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
-  margin-bottom: var(--spacing-sm);
-  font-family: var(--font-sans);
+  margin-bottom: var(--spacing-xs);
+  font-family: var(--font-mono, monospace);
 }
 
 .welcome p {
   color: var(--text-secondary);
   font-size: 12px;
+  line-height: 1.5;
   margin-bottom: var(--spacing-md);
+  max-width: 46ch;
 }
 
 .welcome code {
+  display: inline-block;
   background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
   padding: var(--spacing-xs) var(--spacing-sm);
   border-radius: var(--radius-sm);
   color: var(--cyan);
@@ -209,20 +210,19 @@ body {
   margin-bottom: var(--spacing-lg);
 }
 
+/* One per line and aligned, not a centred staircase of pills. The command
+   column is fixed so the descriptions line up, which is the whole reason to
+   list them rather than write them into a sentence. */
 .welcome-tips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--spacing-xs);
-  justify-content: center;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 3px var(--spacing-sm);
+  font-size: 11px;
+  width: 100%;
 }
 
-.tip {
-  font-size: 10px;
-  color: var(--text-muted);
-  background: var(--bg-secondary);
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-}
+.tip-key { color: var(--text-secondary); }
+.tip-what { color: var(--text-muted); }
 
 /* Message Bubbles */
 .message {
@@ -522,28 +522,55 @@ body {
   color: var(--text-muted);
 }
 
+/* Muted, and only coloured once there is something to send.
+   A solid blue tile is the brightest thing on the panel and it is lit even
+   when the box is empty — drawing the eye to the one control that cannot do
+   anything yet. `#send-btn:enabled` is driven by the same disabled state the
+   waiting-for-a-reply lock already sets, so it doubles as the turn indicator. */
 #send-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  background: var(--blue);
-  border: none;
+  width: 30px;
+  height: 30px;
+  background: transparent;
+  border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  color: white;
+  color: var(--text-muted);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
   flex-shrink: 0;
 }
 
-#send-btn:hover {
-  background: #4393e6;
-  transform: scale(1.05);
+#send-btn:not(:disabled):hover {
+  background: var(--bg-hover);
+  color: var(--text-accent);
+  border-color: var(--blue);
 }
 
-#send-btn:active {
-  transform: scale(0.95);
+#send-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* A quiet square that matches the mode button beside it. */
+.icon-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 7px;
+  margin-right: var(--spacing-xs);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 #send-btn:disabled {
