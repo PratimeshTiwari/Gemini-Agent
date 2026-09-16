@@ -1,7 +1,7 @@
 import { getState, setState } from './state.js';
 import { retryDelay, resolvePort, socketUrlFor } from './policy.js';
 import { broadcastToSidePanel, sendToServer } from './messaging.js';
-import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab, endSession } from './content.js';
+import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab, endSession, openThread } from './content.js';
 
 /**
  * The socket to the local agent, and the retry policy around it.
@@ -230,6 +230,14 @@ async function handleServerMessage(message) {
     case 'new_chat':
       await triggerNewChatInModel(payload);
       break;
+
+    // Resuming a past conversation: point the tab at it, so the model has the
+    // history itself rather than a paraphrase of it.
+    case 'open_thread': {
+      const opened = await openThread(payload?.thread);
+      sendToServer({ type: 'thread_opened', payload: { ok: opened, thread: payload?.thread } });
+      break;
+    }
     case 'end_session':
       // A batch task is over, so the tab it was holding can go. Closing it here
       // rather than when a turn completes is the whole point of a session: the

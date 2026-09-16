@@ -591,6 +591,62 @@ export async function injectPromptIntoModel(payload) {
  * Without one it is the main lane, which is right for everything the user
  * themselves triggers (`/effort`, reading the picker).
  */
+/**
+ * Point a tab at a specific past conversation.
+ *
+ * The far better half of "resume": the model's memory *is* the chat thread, so
+ * instead of paraphrasing an old conversation back to it, open the tab on that
+ * conversation. Gemini puts the thread in the URL (`/app/<id>`), so it is
+ * reachable — and then the model genuinely has the history rather than a
+ * summary of it.
+ *
+ * The lane's own tab is navigated where possible rather than piling up a tab
+ * per resume. A tab we do not own is never touched: that is somebody's own
+ * conversation, and taking it over would be the bug the ownership rules exist
+ * to prevent.
+ *
+ * @param {{model: string, id: string}} thread
+ * @returns {Promise<boolean>} whether a tab is now on that conversation
+ */
+export async function openThread(thread) {
+  const model = thread?.model || 'gemini';
+  const id = thread?.id;
+  if (!id || !MODEL_URLS[model]) return false;
+
+  const url = model === 'chatgpt'
+    ? `https://chatgpt.com/c/${id}`
+    : `https://gemini.google.com/app/${id}`;
+
+  try {
+    const existing = await pickMainTab(model);
+    const tab = existing
+      ? await chrome.tabs.update(existing.id, { url, active: true })
+      : await chrome.tabs.create({ url, active: true });
+
+    mainTabs.set(model, tab.id);
+    await claimOwnedTab(tab.id);
+
+    // The content script has to be in the page before anything is typed into
+    // it, and a navigation replaces the one that was there.
+    await new Promise((resolve) => {
+      const done = setTimeout(finish, 8000);
+      function finish() {
+        clearTimeout(done);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+      function listener(tabId, info) {
+        if (tabId === tab.id && info.status === 'complete') finish();
+      }
+      chrome.tabs.onUpdated.addListener(listener);
+    });
+    return true;
+  } catch (err) {
+    console.warn('[Agent CLI] Could not open that conversation:', err?.message);
+    return false;
+  }
+}
+
 export async function sendToModelTab(message, targetModel = 'gemini', sessionId = null) {
   const targetUrl = MODEL_URLS[targetModel];
   if (!targetUrl) return false;

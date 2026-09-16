@@ -426,25 +426,54 @@ export class WebSocketServer {
         this.agentLoop.promptBuilder?.resetPromptState?.();
         this.agentLoop.chatThread = record?.thread || null;
 
-        const plan = planResume(record?.thread, this.agentLoop.chatThread);
-        // Only when the model was not there. Handing a recap to a tab that
-        // already holds the conversation is noise it has to reconcile.
-        // The builder owns it, since it is the thing that decides what a
-        // prompt carries.
-        this.agentLoop.promptBuilder.pendingRecap = plan.action === 'continue' ? null : turns;
+        /**
+         * Reopen the conversation rather than describe it.
+         *
+         * A recap is a paraphrase; the thread *is* the memory. Gemini puts it
+         * in the URL, so the tab can simply be pointed back at it — and then
+         * the model has the real history, including everything a twelve-turn
+         * summary would have dropped.
+         *
+         * The recap survives as the fallback for a session that never reached a
+         * thread, or a browser that could not open one.
+         */
+        let message;
+        if (record?.thread?.id) {
+          this.agentLoop._toExtension('open_thread', { thread: record.thread });
+          this.agentLoop.promptBuilder.pendingRecap = null;
+          message = 'Resumed — pointing the tab back at that conversation.';
+        } else {
+          this.agentLoop.promptBuilder.pendingRecap = turns;
+          message = 'Resumed. That conversation never reached a browser thread, '
+            + 'so the next message carries a recap instead.';
+        }
 
         this.broadcast('extension', {
           id: randomUUID(), type: 'session_reset',
-          payload: {
-            message: plan.action === 'continue'
-              ? 'Resumed. The browser tab still holds this conversation.'
-              : 'Resumed. The tab has moved on, so the next message carries a recap.',
-          },
+          payload: { message },
           timestamp: Date.now(),
         });
         for (const client of this.clients.values()) this._sendHistory(client.ws);
         break;
       }
+
+      /**
+       * The browser saying whether it reached that conversation.
+       *
+       * If it could not, the recap becomes the fallback — otherwise the model
+       * is handed a restored transcript it has no knowledge of and asked to
+       * carry on, which is the exact failure the thread id exists to prevent.
+       */
+      case 'thread_opened':
+        if (!payload?.ok) {
+          this.agentLoop.promptBuilder.pendingRecap = this.agentLoop.conversationHistory;
+          this.broadcast('extension', {
+            id: randomUUID(), type: 'status',
+            payload: { message: 'Could not reopen that conversation — sending a recap instead.' },
+            timestamp: Date.now(),
+          });
+        }
+        break;
 
       case 'set_workspace': {
         const outcome = prepareWorkspaceSwitch(payload?.path);

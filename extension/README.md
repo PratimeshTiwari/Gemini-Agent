@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.15.0**
+## Current version: **1.16.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,22 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.16.0 — 2026-09-17
+
+- **Resuming reopens the conversation instead of describing it.** The owner's
+  point, and it is the better design: a recap is a paraphrase, the chat thread
+  *is* the memory. Gemini puts it in the URL, so the tab is pointed back at
+  `/app/<id>` and the model has the real history — including everything a
+  twelve-turn summary would have dropped. The recap survives only as the
+  fallback for a session that never reached a thread, or a browser that could
+  not open one, and the extension reports which happened.
+- **A tab you opened is never navigated away.** `openThread` moves the lane's
+  own tab or opens a new one; taking over someone's own conversation is the bug
+  the ownership rules exist to prevent.
+- **`+` and `↺` in the header** — a new chat, and past conversations. Neither
+  is destructive: `+` files the conversation it replaces and `↺` is where it
+  went, which is what makes a one-click button reasonable.
 
 ### 1.15.0 — 2026-09-17
 

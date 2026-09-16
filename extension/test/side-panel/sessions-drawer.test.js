@@ -105,3 +105,38 @@ describe('the drawer', () => {
     assert.equal(row.dataset.id, '" onmouseover="X');
   });
 });
+
+/**
+ * The two controls, and what they promise.
+ *
+ * `+` and `↺` rather than words: the header is narrow and both shapes are
+ * already what people reach for. Neither is destructive — `+` **files** the
+ * conversation it replaces, and `↺` is where it went — which is what makes a
+ * one-click button reasonable at all.
+ */
+describe('the header controls', () => {
+  const markup = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), '../../side-panel/panel.html'), 'utf8');
+
+  test('a new-chat button and a history button both exist', () => {
+    assert.match(markup, /id="new-btn"[^>]*>\+</);
+    assert.match(markup, /id="sessions-btn"/);
+  });
+
+  test('new chat asks for /new rather than clearing anything locally', () => {
+    // Clearing the panel without telling the agent would leave the two
+    // disagreeing about what conversation is open.
+    const src = readFileSync(PANEL, 'utf8');
+    const fn = src.slice(src.indexOf('function setupNewChat('));
+    assert.match(fn, /command: 'new'/);
+    assert.doesNotMatch(fn.slice(0, fn.indexOf('\n}')), /innerHTML\s*=\s*''/);
+  });
+
+  test('neither does anything while disconnected', () => {
+    const src = readFileSync(PANEL, 'utf8');
+    for (const name of ['setupNewChat', 'setupSessions']) {
+      const fn = src.slice(src.indexOf(`function ${name}(`));
+      assert.match(fn.slice(0, fn.indexOf('\n}\n')), /isConnected/, name);
+    }
+  });
+});

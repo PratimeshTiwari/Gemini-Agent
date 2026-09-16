@@ -78,6 +78,23 @@ function setupEventListeners() {
   setupWorkspace();
   setupSurfaces();
   setupSessions();
+  setupNewChat();
+}
+
+/**
+ * Start another conversation, without typing a command to do it.
+ *
+ * `/new` works from here now, but a button is what people reach for — and the
+ * thing it does is not destructive, which is worth the affordance: the old
+ * conversation is filed, not lost, and `↺` has it.
+ */
+function setupNewChat() {
+  const btn = document.getElementById('new-btn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    if (!isConnected) { appendStatus('Not connected — start the agent first.'); return; }
+    chrome.runtime.sendMessage({ type: 'slash_command', payload: { command: 'new', args: [] } });
+  });
 }
 
 /**

@@ -29,6 +29,7 @@ function stubChrome(tabs, owned = []) {
   const open = new Map(tabs.map((t) => [t.id, t]));
   const sent = [];
   const created = [];
+  const onUpdatedListeners = new Set();
   const session = { agentOwnedTabs: [...owned] };
   globalThis.chrome = {
     storage: {
@@ -54,10 +55,33 @@ function stubChrome(tabs, owned = []) {
         created.push(tab);
         return tab;
       },
-      update: async () => {},
+      // Applies the change and hands the tab back, as Chrome does. A no-op
+      // here silently broke anything that navigates a tab and then reads the
+      // result — which `openThread` does.
+      update: async (id, props) => {
+        const tab = { ...(open.get(id) || { id }), ...props };
+        open.set(id, tab);
+        return tab;
+      },
       remove: async (id) => { open.delete(id); },
       sendMessage: async (id, message) => { sent.push({ id, message }); return { success: true }; },
-      onUpdated: { addListener: () => {}, removeListener: () => {} },
+      /**
+       * Fires `complete` on the next tick, as a real navigation does.
+       *
+       * A no-op here is not neutral: anything that waits for a tab to finish
+       * loading then waits out its own timeout instead — eight seconds per
+       * call, which made this file slower than the rest of the suite combined
+       * while still passing.
+       */
+      onUpdated: {
+        addListener: (fn) => {
+          onUpdatedListeners.add(fn);
+          setTimeout(() => {
+            for (const id of open.keys()) fn(id, { status: 'complete' }, open.get(id));
+          }, 0);
+        },
+        removeListener: (fn) => onUpdatedListeners.delete(fn),
+      },
     },
     scripting: { executeScript: async () => {} },
     runtime: { sendMessage: async () => {} },
@@ -280,4 +304,51 @@ test('unreadable storage owns nothing rather than everything', async () => {
   stubChrome([{ id: 42, url: GEMINI }], []);
   globalThis.chrome.storage.session.get = async () => { throw new Error('nope'); };
   assert.equal(await content.pickMainTab('gemini'), null);
+});
+
+/**
+ * Pointing a tab back at a past conversation.
+ *
+ * The far better half of "resume": the model's memory *is* the chat thread, so
+ * rather than paraphrasing an old conversation back to it, open the tab on
+ * that conversation. Gemini puts the thread in the URL, so it is reachable —
+ * and then the model has the real history rather than a twelve-turn summary of
+ * it.
+ */
+test('openThread navigates the lane\'s own tab', async () => {
+  const { open } = stubChrome([{ id: 5, url: GEMINI }], [5]);
+  const ok = await content.openThread({ model: 'gemini', id: 'bfaf9b2dad21f688' });
+  assert.equal(ok, true);
+  assert.match(open.get(5).url, /\/app\/bfaf9b2dad21f688$/, 'it did not go to that conversation');
+});
+
+test('with no tab of its own it opens one', async () => {
+  const { created } = stubChrome([], []);
+  await content.openThread({ model: 'gemini', id: 'abc123' });
+  assert.equal(created.length, 1);
+  assert.match(created[0].url, /gemini\.google\.com\/app\/abc123$/);
+});
+
+// Taking over a tab we do not own is the bug the ownership rules exist to
+// prevent — it is somebody's own conversation.
+test('a tab the user opened is never navigated away', async () => {
+  const { open, created } = stubChrome([{ id: 42, url: GEMINI }], []);
+  await content.openThread({ model: 'gemini', id: 'abc123' });
+  assert.equal(open.get(42).url, GEMINI, "it navigated the user's tab");
+  assert.equal(created.length, 1, 'it should have opened its own');
+});
+
+test('the tab it lands on becomes its own', async () => {
+  const { created } = stubChrome([], []);
+  await content.openThread({ model: 'gemini', id: 'abc123' });
+  assert.equal(await content.isOwnedTab(created[0].id), true);
+  assert.equal((await content.pickMainTab('gemini')).id, created[0].id);
+});
+
+test('a thread with no id does nothing', async () => {
+  const { created } = stubChrome([], []);
+  assert.equal(await content.openThread({ model: 'gemini' }), false);
+  assert.equal(await content.openThread(null), false);
+  assert.equal(await content.openThread({ model: 'nosuch', id: 'x' }), false);
+  assert.equal(created.length, 0);
 });
