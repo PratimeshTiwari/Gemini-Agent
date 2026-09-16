@@ -25,7 +25,8 @@ let currentWorkspace = '';
 // ── Initialization ──────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   showVersion();
-  checkConnectionStatus();
+  checkConnectionStatus(true);
+  watchConnection();
   setupEventListeners();
 });
 
@@ -191,21 +192,55 @@ function setupPopout() {
 }
 
 // ── Connection ──────────────────────────────────────────────────────
-async function checkConnectionStatus() {
+/** How often the dot re-reads the truth. */
+const STATUS_POLL_MS = 4000;
+
+/**
+ * Keep the connection dot honest.
+ *
+ * `connection_status` is broadcast only when the socket *transitions*, so a
+ * panel opened while the socket is already up receives nothing and has exactly
+ * one sample to go on: this call, at load. One sample is the bug — a floating
+ * window opened at the wrong moment showed "Disconnected" over a working
+ * bridge and had no way to ever find out otherwise, while the docked panel two
+ * inches away showed "Connected" from its own luckier sample.
+ *
+ * The moment is easy to lose: MV3 recycles the service worker constantly, and
+ * a worker woken *by this very message* has `ws === null` until it reconnects.
+ *
+ * So it is polled. A status indicator that samples once is wrong by
+ * construction, and the read is a boolean from a worker that is awake anyway.
+ *
+ * @param {boolean} initial - only the first check asks the worker to connect.
+ *   Repeating that would restart the retry ladder every few seconds and keep
+ *   the backoff permanently at its first rung.
+ */
+async function checkConnectionStatus(initial = false) {
   try {
     const response = await chrome.runtime.sendMessage({ type: 'get_status' });
     const connected = response?.connected || false;
     updateConnectionUI(connected);
 
-    // A panel can open while the service worker is asleep and the socket has
-    // not been re-established. Asking is free and idempotent — connectWebSocket
-    // returns immediately if one is already open or opening — and without it a
-    // panel opened at the wrong moment sits on "Disconnected" until something
-    // else happens to wake the worker.
-    if (!connected) chrome.runtime.sendMessage({ type: 'connect' }).catch(() => {});
+    if (initial && !connected) {
+      // Free and idempotent: connectWebSocket returns immediately if one is
+      // already open or opening.
+      chrome.runtime.sendMessage({ type: 'connect' }).catch(() => {});
+    }
   } catch {
+    // The worker being unreachable *is* disconnected, as far as the dot goes.
     updateConnectionUI(false);
   }
+}
+
+function watchConnection() {
+  setInterval(() => checkConnectionStatus(), STATUS_POLL_MS);
+  // A floating window can sit behind the browser for a long time, where Chrome
+  // throttles timers hard. Coming back to it should not mean waiting for the
+  // next tick to learn the truth.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkConnectionStatus();
+  });
+  window.addEventListener('focus', () => checkConnectionStatus());
 }
 
 function updateConnectionUI(connected) {
@@ -355,9 +390,26 @@ function appendToolCall(name, args) {
   const div = document.createElement('div');
   div.className = 'message-tool';
 
-  const argsPreview = typeof args === 'object'
-    ? Object.entries(args).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.substring(0, 40) : v}`).join(', ')
-    : String(args).substring(0, 60);
+  // A one-line summary of the arguments.
+  //
+  // The old version interpolated non-strings straight into a template, so an
+  // array of objects — `ask_question`'s `questions`, every time — rendered as
+  // `[object Object],[object Object]`, which tells the reader nothing at all
+  // and looks like a bug in the agent rather than in this line.
+  const preview = (value) => {
+    if (typeof value === 'string') return value.length > 40 ? `${value.slice(0, 39)}…` : value;
+    if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? '' : 's'}`;
+    if (value && typeof value === 'object') {
+      // The field people actually recognise, if it has one.
+      const named = value.name ?? value.path ?? value.question ?? value.label;
+      return typeof named === 'string' ? preview(named) : '{…}';
+    }
+    return String(value);
+  };
+
+  const argsPreview = args && typeof args === 'object'
+    ? Object.entries(args).map(([k, v]) => `${k}: ${preview(v)}`).join(', ')
+    : preview(args);
 
   div.innerHTML = `
     <div class="tool-header" onclick="this.nextElementSibling.classList.toggle('expanded')">

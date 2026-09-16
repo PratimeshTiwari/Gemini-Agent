@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.6.0**
+## Current version: **1.7.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,23 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.7.0 — 2026-09-17
+
+- **The connection dot polls instead of guessing once.** `connection_status` is
+  broadcast only when the socket *transitions*, so a panel opened while it was
+  already up received nothing and had a single sample to go on — `get_status` at
+  load. One sample is wrong by construction here: MV3 recycles the service
+  worker constantly, and a worker woken *by that very message* has no socket
+  yet. The visible result was a floating window reading "Disconnected" over a
+  working bridge while the docked panel two inches away read "Connected". It
+  re-reads every four seconds, and on focus, since a floating window can sit
+  behind the browser where Chrome throttles timers. Only the first check asks
+  the worker to connect — repeating that would restart the retry ladder every
+  few seconds and pin the backoff at its first rung.
+- **Tool arguments read as something.** `questions: [object Object],[object
+  Object]` was an array interpolated into a template. Arrays are counted, objects
+  fall back to the field a reader recognises, long strings are cut.
 
 ### 1.6.0 — 2026-09-17
 
