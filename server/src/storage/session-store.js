@@ -246,6 +246,15 @@ export class SessionStore {
 
     const body = turns.map((t) => JSON.stringify(t)).join('\n') + '\n';
     try {
+      // The artifacts belong to the conversation, not to the workspace.
+      //
+      // Reported from use: open the agent fresh, type nothing, and the status
+      // row already reads "task.md · walkthrough.md" — a finished plan from a
+      // conversation that had just been filed away. Worse than untidy, because
+      // `task.md` is also fed back to the model every turn, so a completed
+      // checklist from unrelated work arrived with the first prompt of the next
+      // task.
+      this._archiveArtifacts(id);
       // Beside *both* history files, so the home copy keeps its purpose:
       // surviving a wiped `.agent/` or a fresh checkout.
       for (const file of this._targets) {
@@ -261,6 +270,64 @@ export class SessionStore {
       return null;
     }
     return id;
+  }
+
+  /** The documents a conversation wrote for the user to read. */
+  static get ARTIFACTS() {
+    return ['task.md', 'plan.md', 'implementation_plan.md', 'walkthrough.md'];
+  }
+
+  _artifactDir() {
+    return path.join(path.dirname(path.dirname(this.localFile)), 'artifacts');
+  }
+
+  _sessionArtifactDir(id) {
+    return path.join(path.dirname(this.localFile), 'sessions', `${id}-artifacts`);
+  }
+
+  /**
+   * Move this conversation's artifacts in with it.
+   *
+   * Moved, not copied: leaving them behind is the bug. Only the local copy —
+   * they are working documents for the person in this checkout, where the home
+   * copy exists to survive losing it.
+   */
+  _archiveArtifacts(id) {
+    const from = this._artifactDir();
+    const to = this._sessionArtifactDir(id);
+    for (const name of SessionStore.ARTIFACTS) {
+      const src = path.join(from, name);
+      if (!fs.existsSync(src)) continue;
+      try {
+        fs.mkdirSync(to, { recursive: true });
+        fs.renameSync(src, path.join(to, name));
+      } catch (err) {
+        logError(this.workspacePath, {
+          flow: 'storage', op: 'archive_artifacts',
+          message: `Could not file ${name}: ${err.message}`,
+        });
+      }
+    }
+  }
+
+  /** Put a resumed conversation's artifacts back where the agent looks. */
+  _restoreArtifacts(id) {
+    const from = this._sessionArtifactDir(id);
+    if (!fs.existsSync(from)) return;
+    const to = this._artifactDir();
+    for (const name of SessionStore.ARTIFACTS) {
+      const src = path.join(from, name);
+      if (!fs.existsSync(src)) continue;
+      try {
+        fs.mkdirSync(to, { recursive: true });
+        fs.copyFileSync(src, path.join(to, name));
+      } catch (err) {
+        logError(this.workspacePath, {
+          flow: 'storage', op: 'restore_artifacts',
+          message: `Could not restore ${name}: ${err.message}`,
+        });
+      }
+    }
   }
 
   /**
@@ -287,6 +354,9 @@ export class SessionStore {
       this.saveHistory(turns);
       const record = this.listSessions().find((r) => r.id === id);
       if (record?.thread) this.setThread(record.thread);
+      // Its plan and its walkthrough come back with it, or the conversation is
+      // restored without the documents it was about.
+      this._restoreArtifacts(id);
       return turns;
     } catch (err) {
       logError(this.workspacePath, {

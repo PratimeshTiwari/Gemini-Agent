@@ -12,7 +12,7 @@
  */
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../src/storage/session-store.js';
@@ -209,5 +209,69 @@ describe('starting the agent', () => {
   test('a first ever run files nothing', () => {
     start({});
     assert.deepEqual(new SessionStore(dir).listSessions(), []);
+  });
+});
+
+/**
+ * The artifacts belong to the conversation, not to the workspace.
+ *
+ * Reported from use: open the agent fresh, type nothing, and the status row
+ * already reads "task.md · walkthrough.md" — a finished plan from a
+ * conversation that had just been filed away. Worse than untidy, because
+ * `task.md` is fed back to the model on every turn, so a completed checklist
+ * from unrelated work arrived with the first prompt of the next task.
+ */
+describe('artifacts travel with the session', () => {
+  const writeArtifacts = () => {
+    mkdirSync(join(dir, '.agent', 'artifacts'), { recursive: true });
+    writeFileSync(join(dir, '.agent', 'artifacts', 'task.md'), '- [x] Phase A\n');
+    writeFileSync(join(dir, '.agent', 'artifacts', 'walkthrough.md'), 'what happened\n');
+  };
+  const artifact = (name) => join(dir, '.agent', 'artifacts', name);
+
+  test('filing a conversation takes its plan with it', () => {
+    const store = conversation(new SessionStore(dir));
+    writeArtifacts();
+    store.rollover();
+
+    assert.equal(existsSync(artifact('task.md')), false, 'a finished checklist was left behind');
+    assert.equal(existsSync(artifact('walkthrough.md')), false);
+  });
+
+  test('resuming brings them back', () => {
+    const store = conversation(new SessionStore(dir));
+    writeArtifacts();
+    const id = store.rollover();
+    store.clear();
+
+    store.resumeSession(id);
+    assert.equal(existsSync(artifact('task.md')), true,
+      'the conversation came back without the documents it was about');
+    assert.match(readFileSync(artifact('task.md'), 'utf-8'), /Phase A/);
+  });
+
+  test('--continue leaves them exactly where they are', () => {
+    conversation(new SessionStore(dir));
+    writeArtifacts();
+    new AgentLoop({
+      workspace: dir, mcpServer: {}, promptBuilder: {}, diffEngine: {}, riskClassifier: {},
+      continueSession: true,
+    });
+    assert.equal(existsSync(artifact('task.md')), true, 'it filed away a task still in progress');
+  });
+
+  test('a fresh start leaves none behind', () => {
+    conversation(new SessionStore(dir));
+    writeArtifacts();
+    new AgentLoop({
+      workspace: dir, mcpServer: {}, promptBuilder: {}, diffEngine: {}, riskClassifier: {},
+    });
+    assert.equal(existsSync(artifact('task.md')), false,
+      'the next conversation starts holding the last one\'s checklist');
+  });
+
+  test('no artifacts to file is not an error', () => {
+    const store = conversation(new SessionStore(dir));
+    assert.doesNotThrow(() => store.rollover());
   });
 });
