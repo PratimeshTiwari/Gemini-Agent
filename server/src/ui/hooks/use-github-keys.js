@@ -76,10 +76,34 @@ export function handleGithubKey(char, key, { github, agentLoop, handleSubmit, se
     if (plans.length > 0) github.setSelectedPlanId(plans[Math.min(plans.length - 1, idx + 1)].id);
     return true;
   }
+  /**
+   * Enter opens the plan — or runs the analysis, when there is not one.
+   *
+   * It used to always open the file, and a comment whose analysis never ran
+   * has a file anyway: a placeholder saying so. Opening that was the whole
+   * interaction, with no way to ask for the thing you actually wanted.
+   * Reported as "this useless file got opened only".
+   *
+   * So the row's own state decides. An unanalysed one re-queues the comment —
+   * `force`, because the queue remembers what it has already seen and would
+   * otherwise treat this as a duplicate and do nothing at all.
+   */
   if (key.return) {
     const item = plans[idx];
-    if (item?.payload?.filePath) {
-      const file = item.payload.filePath;
+    const payload = item?.payload;
+    if (!payload) return true;
+
+    if (payload.analysed === false && payload.pr && payload.comment) {
+      agentLoop.githubHandler?._enqueueComment?.({
+        pr: payload.pr, comment: payload.comment, force: true,
+      });
+      github.setError?.('');
+      github.notifyReanalysing?.(payload.prNumber, payload.comment.author);
+      return true;
+    }
+
+    if (payload.filePath) {
+      const file = payload.filePath;
       try {
         exec(`"${agentLoop.editor || 'code'}" "${file}" || open "${file}" || xdg-open "${file}"`);
       } catch (e) {

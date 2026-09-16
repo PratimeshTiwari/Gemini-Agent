@@ -431,7 +431,9 @@ export async function handleSlashCommand(loop, command, args) {
               message: `Refresh error: ${err.message}`, detail: err.stack,
             });
           });
-          return { message: '🔄 Forcing immediate GitHub poll...' };
+          // `⟳`, not 🔄. The GitHub tab draws in monochrome text and the
+          // one emoji on the screen reads as a different product's output.
+          return { message: '⟳ Polling GitHub now…' };
         }
 
         case 'ci-watch': {

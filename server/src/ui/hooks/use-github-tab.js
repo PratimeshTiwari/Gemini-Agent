@@ -126,6 +126,22 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
     return () => clearInterval(id);
   }, [wsServer, activeTab]);
 
+  /**
+   * Say that an analysis was asked for.
+   *
+   * The work happens in the background and its result arrives as a new
+   * activity row, which can be twenty seconds later. Without a line here,
+   * pressing enter on an unanalysed comment looks exactly like pressing enter
+   * on nothing.
+   */
+  const notifyReanalysing = useCallback((prNumber, author) => {
+    setActivity((prev) => [...prev, {
+      id: `reanalysing-${prNumber}-${Date.now()}`,
+      type: 'github_notification',
+      payload: { message: `⟳ Analysing PR #${prNumber} by @${author}…`, category: 'reanalysing' },
+    }].slice(-50));
+  }, []);
+
   /** Plans currently drawn in the activity list, newest first. What ↑/↓ moves over. */
   const visiblePlans = useMemo(
     () => activity.slice().reverse().filter((a) => a.type === 'github_plan_generated').slice(0, 10),
@@ -203,6 +219,7 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
   return {
     // state the screen draws
     activity, view, error, setupToken, setSetupToken, setError,
+    notifyReanalysing,
     authRejected, setAuthRejected,
     prList, selectedPrIdx, prComments, selectedPrCommentIdx,
     explorerMode, loadingPrs, loadingPrComments,

@@ -354,3 +354,60 @@ describe('an unanalysed comment is not reported as a plan', () => {
     assert.equal(h.getStatus().totalCommentsProcessed, 1, 'it was still processed');
   });
 });
+
+/**
+ * Asking for an analysis that never ran.
+ *
+ * Enter on a row used to always open the file, and a comment whose analysis
+ * failed has a file anyway — a placeholder saying so. Opening that was the
+ * whole interaction, with no way to ask for the thing you actually wanted.
+ * Reported as "this useless file got opened only".
+ *
+ * The row carries what the key needs to decide: whether there is an analysis
+ * in it, and enough of the PR to run one.
+ */
+describe('a row knows whether it was analysed', () => {
+  test('a failed analysis marks the row, and carries the PR', async () => {
+    const h = handler({ analysis: { success: false, error: 'no tab' } });
+    const plans = [];
+    h.on('plan_generated', (e) => plans.push(e));
+    h._enqueueComment({ pr: PR, comment: comment() });
+    await settle();
+
+    assert.equal(plans[0].analysed, false);
+    assert.equal(plans[0].pr.number, PR.number, 'no PR, nothing to re-run with');
+    assert.ok(plans[0].comment.id);
+  });
+
+  test('a successful one is marked too', async () => {
+    const h = handler({ analysis: { success: true, result: 'REVIEW - go\n## Findings\nx' } });
+    const plans = [];
+    h.on('plan_generated', (e) => plans.push(e));
+    h._enqueueComment({ pr: PR, comment: comment() });
+    await settle();
+    assert.equal(plans[0].analysed, true);
+  });
+
+  /**
+   * The queue remembers what it has seen, so a re-run has to say `force` —
+   * without it the second attempt is treated as a duplicate and does nothing
+   * at all, which would look exactly like the key not working.
+   */
+  test('re-queueing without force does nothing, with force it runs again', async () => {
+    const h = handler({ analysis: { success: false, error: 'no tab' } });
+    let runs = 0;
+    h.on('processing_started', () => { runs += 1; });
+
+    h._enqueueComment({ pr: PR, comment: comment() });
+    await settle();
+    assert.equal(runs, 1);
+
+    h._enqueueComment({ pr: PR, comment: comment() });
+    await settle();
+    assert.equal(runs, 1, 'a duplicate should still be ignored');
+
+    h._enqueueComment({ pr: PR, comment: comment(), force: true });
+    await settle();
+    assert.equal(runs, 2, 'asking again explicitly must re-run it');
+  });
+});
