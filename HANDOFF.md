@@ -221,9 +221,13 @@ routes through `sendToModelTab` → `pickMainTab`, which is *the user's* tab —
 batch task that changes effort changes the model the person is using. It needs
 the lane threaded through first, the same shape as handoff item 6.
 
-**5. `GITHUB-UI-PLAN.md` fix 6 is waiting on a decision.** The file is tracked
-and has the mockups; fixes 1–5 are drawn and costed, and fix 6 (tab-or-stream)
-is a product call that was put to the owner and not answered.
+**5. ~~`GITHUB-UI-PLAN.md`~~ — done, and the file is gone.** All six fixes
+landed; fix 6 (tab-or-stream) was decided as the middle path — the tab keeps
+the browsing, and each event also arrives in the transcript as one dim row.
+The reasoning is in `CLAUDE.md` under the GitHub agent, which is where
+decisions live; a plan file with no work left in it is the thing this repo
+keeps deleting. **Never seen in a real browser or a real repo** — the row has
+unit tests and has never been drawn by an actual PR comment.
 
 **6. `/logs rates` needs a week of use, not work.** All zeros today —
 `errors.jsonl` has a handful of lines and `traces.jsonl` does not exist. Two

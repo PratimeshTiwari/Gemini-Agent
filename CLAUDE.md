@@ -228,6 +228,36 @@ That directory used to be `github-pr-plans/`, and `/plans` still means something
 `.agent/artifacts/plans/`, a different format written by a different path. One word, two
 answers. `migrateGitHubReviews` renames it on startup and refuses to clobber.
 
+**The tab is for browsing; the stream is for noticing.** Decided 2026-09-16, after the
+screen was cut from 11 rows to 5 (the border and heading, a ranked status line, a one-line
+empty state, hints on one row, and `@who commented` in place of `requires_review` — which
+was a constant, because it is the only non-noise value the classifier can return and
+anything it calls noise never reaches a row).
+
+The open question was whether it should be a tab at all. Everything else in this app is a
+stream and nothing else is a page, and this is a stream of events. Resolved as a middle
+path rather than either extreme: the tab keeps the browsing — PRs, plans, comment bodies,
+all of which want a screen — and every new event *also* arrives in the transcript as one
+dim row (`githubNoticeRow`, `ui/hooks/use-github-tab.js`), where you are already reading.
+`^o` still opens the detail. Nothing interrupts and nothing is inserted into the prompt,
+which is the same contract a failed VS Code terminal command already has.
+
+Three constraints that shaped the row, none obvious:
+
+- It is a `system` message, because `groupTurns` and `TranscriptTurn` already draw those
+  dim and wrapped. A new role would mean teaching both, for one line.
+- It is a *notification*, not the record — the tab's `activity` is the record. `groupTurns`
+  keeps a system message only inside a turn, so an event arriving before the session's
+  first prompt is not drawn, and the alternative is inventing an orphan turn to hang it
+  from.
+- **The author is capped at 20 characters.** The row is drawn in the *live* frame while a
+  turn is in flight, and a GitHub username runs to 39 — which put the worst case at 78
+  columns: one row at 80, two at 72. A row that wraps is charged as one and drawn as two,
+  which is a bug this frame has had twice. The test pins it at 60 columns.
+
+Only `github_plan_generated` earns a row; `processing_started` and `processing_finished`
+bracket the same event and would draw three lines for one comment.
+
 The batch loop is `core/turn-runner.js`, not `agent-loop.js`: `runHeadlessTask` is a caller
 now. **Its flat re-serialisation is necessary, not an oversight** — every batch send opens a
 fresh browser tab that is closed when the turn ends, so turn 2 has never seen turn 1. Removing

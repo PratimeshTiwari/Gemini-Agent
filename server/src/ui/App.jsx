@@ -182,7 +182,7 @@ export function App({ agentLoop, wsServer }) {
   const [activeTab, setActiveTab] = useState('agent'); // 'agent' | 'github'
   // The whole GitHub screen — state, polling and actions — lives in its own
   // hook. See hooks/use-github-tab.js for why.
-  const github = useGithubTab({ agentLoop, wsServer, activeTab });
+  const github = useGithubTab({ agentLoop, wsServer, activeTab, setHistory });
 
   const { stdout } = useStdout();
 
