@@ -23,9 +23,30 @@ let isWaitingForResponse = false;
 
 // ── Initialization ──────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  showVersion();
   checkConnectionStatus();
   setupEventListeners();
 });
+
+/**
+ * Stamp the loaded build into the status bar.
+ *
+ * Read from the manifest rather than written here, so it is the version Chrome
+ * actually loaded and not a number someone forgot to change. This exists
+ * because three artifacts ship from one repo — the bundled service worker, the
+ * unbundled content scripts, and the .vsix — and a pull updates none of them in
+ * the browser until it is reloaded. "Which one is running" is the first
+ * question whenever the answer is "it behaves like the old one".
+ */
+function showVersion() {
+  const el = document.getElementById('ext-version');
+  if (!el) return;
+  try {
+    el.textContent = `v${chrome.runtime.getManifest().version}`;
+  } catch {
+    el.remove();
+  }
+}
 
 function setupEventListeners() {
   // Send message

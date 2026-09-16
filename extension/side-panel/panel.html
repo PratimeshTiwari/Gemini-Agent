@@ -14,6 +14,11 @@
       <span id="connection-text">Disconnected</span>
     </div>
     <div class="status-right">
+      <!-- Which build is loaded. Three artifacts ship from one repo and only
+           one of them updates when you pull, so "which version am I running"
+           is the first question when something behaves unexpectedly. Filled in
+           from the manifest at load, so it cannot drift from the real one. -->
+      <span id="ext-version" class="ext-version" title="Extension version"></span>
       <button id="mode-toggle" class="mode-btn" title="Toggle Plan/Auto Mode">
         <span id="mode-icon">🔒</span>
         <span id="mode-text">Plan</span>
@@ -26,11 +31,14 @@
     <div id="welcome-message" class="welcome">
       <div class="welcome-icon">🤖</div>
       <h2>Agent CLI</h2>
-      <p>Start the local server and connect to begin.</p>
-      <code>cd server && npm start</code>
+      <p>Start the agent in a terminal, then open a Gemini tab and sign in.
+         Inference happens in your own browser session — there is no API key.</p>
+      <code>agent</code>
       <div class="welcome-tips">
-        <span class="tip">/plan — require approval</span>
-        <span class="tip">/auto — auto-apply safe edits</span>
+        <span class="tip">/plan — approve every edit</span>
+        <span class="tip">/auto — apply safe edits</span>
+        <span class="tip">/effort — how hard it thinks</span>
+        <span class="tip">/context — what the prompt costs</span>
         <span class="tip">/compact — free context</span>
         <span class="tip">/clear — fresh start</span>
       </div>

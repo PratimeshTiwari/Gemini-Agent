@@ -724,3 +724,11 @@ body {
   content: '▌';
   color: var(--text-muted);
 }
+
+/* The loaded build, in the status bar. Quiet — it is a fact you go looking
+   for, not one that should compete with the connection dot. */
+.ext-version {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-right: var(--spacing-sm);
+}
