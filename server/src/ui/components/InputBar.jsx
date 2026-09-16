@@ -30,6 +30,8 @@ export function InputBar({
   activeMenu,
   addPaste,
   artifacts,
+  filedSession,
+  history,
   diffRequest,
   setPaletteSuppressed,
   elapsed,
@@ -118,6 +120,38 @@ export function InputBar({
       */}
       {promptVisible && (
         <Box flexDirection="column" marginTop={compact ? 0 : 1}>
+          {/*
+            What happened to the last conversation.
+            
+            Starting without `--continue` files it and clears the screen, which
+            from the outside is indistinguishable from losing it. The storage,
+            the flags and the picker were all built and nothing ever said a
+            session had been put anywhere — asked directly: "didn't we plan on
+            displaying the session id for resume?"
+
+            One row, once, and only on the run that filed something. It is
+            dismissed by the first message, because after that the id is
+            history rather than an offer.
+          */}
+          {filedSession && !isProcessing && history.length === 0 && (
+            <Box marginBottom={1}>
+              {/*
+                The id leads, and the prose trails it, because `wrap="truncate"`
+                eats the tail: with the sentence first, an 80-column terminal cut
+                the id mid-suffix and left a `--resume` that resumes nothing —
+                which is worse than showing no row at all. The id is 28
+                characters and fixed-width, so putting it first puts the only
+                part that must survive where truncation cannot reach it.
+              */}
+              <Text dimColor wrap="truncate">
+                {'  ↺ '}
+                <Text color="cyan">--resume {filedSession.id}</Text>
+                {'  · previous conversation'}
+                {filedSession.turns ? `, ${filedSession.turns} turns` : ''}
+              </Text>
+            </Box>
+          )}
+
           {hasArtifacts && !isProcessing && (
             <Box flexDirection="column" marginBottom={1}>
               <Text color="cyan">

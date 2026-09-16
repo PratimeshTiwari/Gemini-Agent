@@ -59,7 +59,7 @@ describe('the connection dot reads the worker, not its own memory', () => {
       updateConnectionUI: (c) => shown.push(c),
       appendStatus() {},
       connectionText: { textContent: '' },
-    }, 'let orphaned = false;');
+    }, 'let orphaned = false; let historyRequested = false;');
     return { api, seen, shown };
   };
 
@@ -261,7 +261,7 @@ describe('an orphaned window says so, instead of blaming the agent', () => {
       updateConnectionUI: (c) => shown.push(c),
       appendStatus: (t) => statuses.push(t),
       connectionText: text,
-    }, 'let orphaned = false;');
+    }, 'let orphaned = false; let historyRequested = false;');
     return { api, shown, statuses, text };
   };
 

@@ -701,6 +701,12 @@ export class WebSocketServer {
         isNew: data.isNew,
         category: data.classification?.category || data.type,
         comment: data.comment,
+        // Whether there is an analysis in that file, and enough of the PR to
+        // run one if there is not. Without these, pressing enter could only
+        // ever open the file — including when the file is a placeholder saying
+        // no analysis ran.
+        analysed: data.analysed !== false,
+        pr: data.pr,
       };
       
       const msg = {

@@ -258,6 +258,63 @@ Three constraints that shaped the row, none obvious:
 Only `github_plan_generated` earns a row; `processing_started` and `processing_finished`
 bracket the same event and would draw three lines for one comment.
 
+**The tab is one list, three levels, and it fills the terminal.** Reworked
+2026-09-17 after three screenshots and "this github one is a mess". It had
+*two* lists — an activity feed you landed on, and a PR explorer behind an
+unadvertised `p` — which showed overlapping things, and `⏎` meant something
+different on each of the three screens (open the plan / open comments / send to
+the agent). The feed was also empty on a fresh session with open PRs sitting
+right there, because it only ever held events from *this* process.
+
+So the feed stopped being a view and became the evidence: `summarisePrs`
+(exported and tested) folds it into "what does the agent know about each PR",
+which is what the PR rows count and what the comment rows join against. What is
+left is a drill-down — **PRs → that PR's comments → the analysis in your
+editor** — where `⏎` means go deeper at every level and `esc` comes back. Level
+two lists *every* comment on the PR with the agent's work marked on it, rather
+than only the ones it happened to process.
+
+Two rules came out of making it a screen rather than a paragraph:
+
+- **The banner cannot be cleared, so the screen has to push it off.** It is a
+  `<Static>` item, committed to the terminal permanently, and remounting
+  `<Static>` to lose it reprints the entire transcript — that is where the
+  second banner came from. `height={rows}` with `overflow="hidden"` scrolls it
+  away instead, and the fixed height is also what lets the hint row be *pinned*
+  to the last line instead of trailing however much content there was.
+- **`terminalHeight - 2` is one row too tall, and the arithmetic does not say
+  so.** The tab draws only itself and the status bar (one row plus a margin
+  `compact` drops), so `- 2` looks exact — and measured, it costs one `ESC[2J`
+  + `ESC[3J` on the way *back* to the agent tab, because Ink's frame carries a
+  trailing newline the row count does not. `- 3` is zero clears at 40x100,
+  24x90, 24x72, 13x80, 13x72, 10x80, 9x72 and 40x60. `RESERVED_ROWS` is the
+  agent tab's furniture and does not apply here; budgeting this screen at
+  `- 8` was what left four rows of figlet on top of it.
+
+**Two things about that screen were argued against and are not oversights.**
+There is **no box** — the only box-drawn frame in this product is the input
+field, where the border *means* the mode, so a second one devalues it and costs
+four rows. And there is **no scrolling inside the screen**: the list is windowed
+against the budget and says what it trimmed (`… N more`), because a second
+scroll model in an app whose whole scroll story is "the terminal's, and we never
+take it" is a worse answer than a list that admits its own limit.
+
+**The one thing still missing there is the analysis's own Gemini thread id.**
+`subagentUrl` is available where the analysis runs and is not recorded on the
+`plan_generated` payload, so there is no way to reopen the conversation that
+produced a review. It needs threading through `core/turn-runner.js`.
+
+**The question that decided the shape, and the answer that was not the lean.**
+The working document asked whether the activity feed and the PR explorer should
+be one screen, and leaned towards keeping them separate — they answer different
+questions ("what happened?" vs "what is open?"), and merging means a mode switch
+inside one list. That was wrong, and the giveaway was inside the question: *"the
+second is the one people go looking for when the first is empty."* That is not
+two questions, it is one question with the wrong list in front of it — and the
+feed was empty on a fresh session **by construction**, because it only ever held
+events from this process. The lean came from reasoning about the two screens
+rather than opening them; one screenshot settled it.
+
 The batch loop is `core/turn-runner.js`, not `agent-loop.js`: `runHeadlessTask` is a caller
 now. **Its flat re-serialisation is necessary, not an oversight** — every batch send opens a
 fresh browser tab that is closed when the turn ends, so turn 2 has never seen turn 1. Removing
@@ -976,6 +1033,37 @@ have a key.
   and 1 `ESC[2J` at 13x80 and 10x80 where there had been none. `wrap="truncate"` on anything
   in the live frame is load-bearing, not tidiness. The arithmetic test caught the first of
   these; only the pty run caught the second.
+- **Nothing the user waits for goes in front of the first frame.** Startup was
+  2.46s to the prompt box with GitHub enabled, and almost none of it was work:
+  `main.js` awaited the 1.5s extension-greeting timeout and then
+  `githubHandler.start()` — which authenticates against api.github.com and runs
+  a full initial poll, fanning out per PR — before it created the Ink UI.
+  Neither answer is something the first frame draws. Moving both behind
+  `cli.start()` took the same measurement to **0.53s**, with no behaviour change:
+  the start tab still opens, the poller still polls. For scale, every module
+  import in the process is 517ms together, 426ms of it ink+react, and `tsx`
+  itself is 120ms — so the two waits were larger than the entire program.
+  `test/core/startup-order.test.js` pins the ordering, because the regression is
+  invisible in review: one more `await` before `cli.start()` reads as ordinary
+  sequencing and costs a second every launch, with no failure to notice.
+
+  **Starting GitHub after the WebSocket server also fixed a silence.**
+  `poller.start()` emits `auth_rejected`, and its only listener is wired in the
+  `WebSocketServer` constructor — which used to run *after* that call. So the
+  401 message ("GitHub rejected the stored token… clear it with
+  `/github remove-token`") was emitted into an EventEmitter with nobody
+  attached, and an expired token produced no GitHub activity and no reason why.
+  The later `pollNow()` 401 at `github-poller.js:147` always worked; only the
+  startup one was unreachable.
+
+- **A row in the live frame is truncated from the right, so put the part that
+  must survive on the left.** The filed-session row read `↺ Previous
+  conversation filed (2 turns) — --resume <28-char id>`, which is ~80
+  characters: at 80 columns `wrap="truncate"` ate the end of the id and offered
+  a `--resume` that resumes nothing. Leading with the id and trailing the prose
+  costs nothing and degrades correctly — at 60 columns the sentence is cut and
+  the command is still intact.
+
 - **No mouse tracking, ever.** Terminal mouse reporting and native scroll are mutually
   exclusive: a terminal that is tracking hands the app the wheel and suppresses drag-select. The
   app therefore enables nothing, and `cli-ui.jsx` writes the disable sequences once on startup

@@ -579,6 +579,9 @@ export function App({ agentLoop, wsServer }) {
         setHistory,
         setIsProcessing,
         setPendingImage,
+        // So `/github …` can answer on the GitHub screen instead of filling
+        // the agent's transcript with polling notices.
+        github,
       });
       return;
     }
@@ -830,11 +833,38 @@ export function App({ agentLoop, wsServer }) {
       </Static>
 
       {activeTab === 'github' ? (
+        /*
+          The GitHub screen gets everything the status bar does not.
+
+          `RESERVED_ROWS` is the *agent* tab's furniture — the thinking line,
+          the prompt box, the palette, the notices. None of it is drawn here:
+          on this tab the frame is the screen and the status bar, and nothing
+          else. Budgeting it at `terminalHeight - 8` left four rows at the top
+          still showing the tail of the figlet banner, which is scrollback and
+          can never be repainted away — the screen has to be tall enough to
+          push it off instead.
+
+          `GithubTab` sets `height` with `overflow="hidden"`, so its height is
+          exactly what this says and cannot grow — the usual reason to keep a
+          spare row, a line that wraps and is charged one but drawn as two,
+          cannot happen inside a box that clips. The status bar below is one
+          row plus a margin that `compact` drops.
+
+          So the arithmetic looks like it should be `- 2`, and `- 2` is wrong:
+          measured, it costs exactly one `ESC[2J` + `ESC[3J` on the way *back*
+          to the agent tab, because Ink's frame carries a trailing newline that
+          the row count does not. `- 3` is zero clears at every size tested
+          (40x100, 24x90, 24x72, 13x80, 13x72, 10x80, 9x72, 40x60), and the row
+          it gives up is the one the banner's last line sits on — a visible
+          cost, where a clear-and-repaint is an invisible one that eats the
+          scrollback.
+        */
         <GithubTab
           agentLoop={agentLoop}
           wsServer={wsServer}
           github={github}
-          maxRows={Math.max(6, terminalHeight - 8)}
+          maxRows={Math.max(6, terminalHeight - (compact ? 2 : 3))}
+          width={terminalWidth}
         />
       ) : (
         <>
@@ -912,6 +942,8 @@ export function App({ agentLoop, wsServer }) {
           />
 
           <InputBar
+            filedSession={agentLoop.filedSession}
+            history={history}
             setPaletteSuppressed={setPaletteSuppressed}
             activeMenu={activeMenu}
             diffRequest={diffRequest}

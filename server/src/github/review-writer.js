@@ -46,7 +46,7 @@ export class ReviewWriter {
    * @param {string} [options.aiAnalysis] - Optional AI context analysis
    * @returns {{ filePath: string, isNew: boolean, skipped?: boolean }}
    */
-  generateCommentPlan({ pr, comment, classification, aiAnalysis = null }) {
+  generateCommentPlan({ pr, comment, classification, aiAnalysis = null, analysisError = null }) {
     const prDir = join(this.outputDir, `PR-${pr.number}`);
     if (!existsSync(prDir)) {
       mkdirSync(prDir, { recursive: true });
@@ -61,7 +61,7 @@ export class ReviewWriter {
     }
 
     let content = this._buildPRHeader(pr);
-    content += this._buildCommentSection(comment, classification, aiAnalysis);
+    content += this._buildCommentSection(comment, classification, aiAnalysis, analysisError);
 
     writeFileSync(filePath, content, 'utf-8');
 
@@ -148,7 +148,7 @@ export class ReviewWriter {
     ].join('\n');
   }
 
-  _buildCommentSection(comment, classification, aiAnalysis) {
+  _buildCommentSection(comment, classification, aiAnalysis, analysisError = null) {
     const timestamp = new Date(comment.created_at).toLocaleString();
     const categoryEmoji = this._getCategoryEmoji(classification.category);
 
@@ -191,6 +191,20 @@ export class ReviewWriter {
       lines.push('### 🧠 AI Context Analysis');
       lines.push('');
       lines.push(aiAnalysis);
+      lines.push('');
+    } else if (analysisError) {
+      // Say what this file is. Without this it reads as a plan, and the
+      // generic action items below read as its content — which is how a failed
+      // analysis got filed away as a finished piece of work.
+      lines.push('### ⚠️ Analysis did not run');
+      lines.push('');
+      lines.push(`**${analysisError}**`);
+      lines.push('');
+      lines.push('This file is a record of the comment, not a plan — nothing has');
+      lines.push('been investigated. The usual causes are the browser bridge not');
+      lines.push('being connected, or no Gemini tab being signed in.');
+      lines.push('');
+      lines.push('Check `/logs github`, then re-run with `r` on the GitHub tab.');
       lines.push('');
     } else {
       // Fallback to static analysis

@@ -55,6 +55,7 @@ export async function handleSlashCommand(query, {
   setHistory,
   setIsProcessing,
   setPendingImage,
+  github,
   confirmed = false,
 }) {
     const parts = query.slice(1).split(/\s+/);
@@ -822,7 +823,24 @@ export async function handleSlashCommand(query, {
           setHistory(newHistory);
           resetScreen();
         } else if (result && result.message) {
-          setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: result.message, isLocal: true }]);
+          /**
+           * A GitHub command answers on the GitHub screen.
+           *
+           * `/github refresh` was writing "Polling GitHub now…" into the
+           * *agent's* transcript — twice in the screenshot, above a
+           * conversation that had nothing to do with it. The two surfaces
+           * exist because the events are different kinds of thing; sending one
+           * surface's output to the other is the same mistake in reverse.
+           *
+           * It still goes somewhere visible: the GitHub tab's activity feed,
+           * which is where the result of a GitHub command belongs and where
+           * the poll it triggered will report back.
+           */
+          if (command === 'github' && github?.notify) {
+            github.notify(result.message);
+          } else {
+            setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: result.message, isLocal: true }]);
+          }
         }
       } catch (err) {
         setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {

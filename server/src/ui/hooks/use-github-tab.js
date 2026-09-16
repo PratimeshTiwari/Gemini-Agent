@@ -1,3 +1,4 @@
+import { exec } from 'child_process';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 /**
@@ -12,6 +13,27 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
  *
  * The async actions are here too, not in the key handler: fetching PRs is the
  * tab's behaviour, and a keypress should only have to say which one to run.
+ *
+ * ## One list, three levels
+ *
+ * There used to be two lists. An *activity* feed — comments the agent had
+ * processed, grouped by PR — which is where you landed; and a *PR explorer*
+ * behind an unadvertised `p`. They showed overlapping things, `⏎` meant
+ * something different in each, and the feed was empty on a fresh session even
+ * with open PRs sitting right there.
+ *
+ * The recorded decision is that the tab is for **browsing** and the transcript
+ * is for **noticing** — every event already arrives there as one dim row. So
+ * the feed is not a view any more. It is the *evidence*: `prSummary` folds it
+ * into "what does the agent know about each PR", which is what the PR rows
+ * show and what the comment rows join against.
+ *
+ * What is left is a drill-down, which is a shape nobody has to learn:
+ *
+ * ```
+ *   PRs  ─⏎→  comments on one PR  ─⏎→  the analysis, in your editor
+ *        ←esc                     ←esc
+ * ```
  */
 /**
  * One transcript row for a GitHub event, or `null` if it does not earn one.
@@ -47,10 +69,62 @@ export function githubNoticeRow(n) {
   };
 }
 
+/**
+ * What the agent knows about each PR, folded out of the events it has seen.
+ *
+ * Exported and pure because it is the one piece of real logic on this tab —
+ * everything else is a fetch or a keypress — and because the counts it
+ * produces are what both list levels are drawn from.
+ *
+ * Keyed by comment id with **the latest event winning**, not counted as it
+ * goes: re-analysing a comment emits a second `plan_generated` for the same
+ * comment, so a running total would say "3 comments" for a PR with one, and
+ * would keep the stale `analysed: false` alongside the fresh `true`.
+ *
+ * @param {Array<{type: string, payload: object, timestamp?: number}>} activity
+ * @returns {Map<number, {comments: number, notAnalysed: number, lastAt: number,
+ *   title: string, pr: object, plans: Map<number, object>}>}
+ */
+export function summarisePrs(activity) {
+  const byPr = new Map();
+
+  for (const item of activity || []) {
+    if (item?.type !== 'github_plan_generated') continue;
+    const payload = item.payload || {};
+    const number = payload.prNumber;
+    if (number == null) continue;
+
+    if (!byPr.has(number)) {
+      byPr.set(number, {
+        comments: 0, notAnalysed: 0, lastAt: 0,
+        title: payload.prTitle, pr: payload.pr, plans: new Map(),
+      });
+    }
+    const summary = byPr.get(number);
+    summary.lastAt = Math.max(summary.lastAt, item.timestamp || 0);
+    if (payload.prTitle) summary.title = payload.prTitle;
+    if (payload.pr) summary.pr = payload.pr;
+
+    const commentId = payload.comment?.id;
+    // A CI-failure plan has no comment. It still counts as something the agent
+    // wrote about this PR, so it gets a synthetic key rather than being lost.
+    summary.plans.set(commentId == null ? `${item.type}:${item.id}` : commentId, item);
+  }
+
+  for (const summary of byPr.values()) {
+    summary.comments = summary.plans.size;
+    summary.notAnalysed = [...summary.plans.values()]
+      .filter((p) => p.payload?.analysed === false).length;
+  }
+  return byPr;
+}
+
 export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
   const [activity, setActivity] = useState([]);
   const [hasNewEvent, setHasNewEvent] = useState(false);
-  const [view, setView] = useState('activity'); // activity | avoid_words | pr_explorer
+  // prs | comments | avoid_words | help. `prs` is the landing screen, because
+  // "which of my PRs needs me" is the question the tab exists to answer.
+  const [view, setView] = useState('prs');
   const [error, setError] = useState('');
   // A rejected token is terminal: the poller has stopped, so the tab shows the
   // setup screen again rather than a dashboard that will never fill in.
@@ -61,11 +135,9 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
   const [selectedPrIdx, setSelectedPrIdx] = useState(0);
   const [prComments, setPrComments] = useState([]);
   const [selectedPrCommentIdx, setSelectedPrCommentIdx] = useState(0);
-  const [explorerMode, setExplorerMode] = useState('prs'); // prs | comments
   const [loadingPrs, setLoadingPrs] = useState(false);
   const [loadingPrComments, setLoadingPrComments] = useState(false);
 
-  const [selectedPlanId, setSelectedPlanId] = useState(null);
   const [expandedComments, setExpandedComments] = useState(new Set());
   const [avoidWords, setAvoidWords] = useState(agentLoop.githubHandler?.config?.avoidWords || []);
   const [newAvoidWord, setNewAvoidWord] = useState('');
@@ -86,7 +158,7 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
         setError(last.payload?.message || 'GitHub request failed.');
         if (problems.some((n) => n.type === 'github_auth_rejected')) {
           setAuthRejected(true);
-          setView('activity');
+          setView('prs');
         }
       }
 
@@ -126,54 +198,162 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
     return () => clearInterval(id);
   }, [wsServer, activeTab]);
 
-  /** Plans currently drawn in the activity list, newest first. What ↑/↓ moves over. */
-  const visiblePlans = useMemo(
-    () => activity.slice().reverse().filter((a) => a.type === 'github_plan_generated').slice(0, 10),
-    [activity],
-  );
+  /** Put a line on the GitHub screen, where GitHub output belongs. */
+  const notify = useCallback((message) => {
+    if (!message) return;
+    setActivity((prev) => [...prev, {
+      id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      type: 'github_notification',
+      payload: { message, category: 'command' },
+    }].slice(-50));
+    setHasNewEvent(true);
+  }, []);
 
-  const openPrExplorer = useCallback(() => {
-    setView('pr_explorer');
-    setExplorerMode('prs');
+  /**
+   * Say that an analysis was asked for.
+   *
+   * The work happens in the background and its result arrives as a new
+   * activity row, which can be twenty seconds later. Without a line here,
+   * pressing enter on an unanalysed comment looks exactly like pressing enter
+   * on nothing.
+   */
+  const notifyReanalysing = useCallback((prNumber, author) => {
+    setActivity((prev) => [...prev, {
+      id: `reanalysing-${prNumber}-${Date.now()}`,
+      type: 'github_notification',
+      payload: { message: `⟳ Analysing PR #${prNumber} by @${author}…`, category: 'reanalysing' },
+    }].slice(-50));
+  }, []);
+
+  const prSummary = useMemo(() => summarisePrs(activity), [activity]);
+
+  /**
+   * The PRs to draw: what GitHub returned, plus any the agent has events for.
+   *
+   * The union matters on the path that used to leave the screen blank. The
+   * fetch is a network call and can be slow, refused or simply not have
+   * happened yet — and on a fresh session that is exactly when the events are
+   * the only thing there is. A list that says "no open PRs" while the
+   * transcript is showing comments from one is worse than a slightly stale row.
+   *
+   * Ordered by most recent activity, then by number. "Which PR needs me" is
+   * answered by what happened last, not by what GitHub sorts by.
+   */
+  const prs = useMemo(() => {
+    const byNumber = new Map();
+    for (const pr of prList) if (pr?.number != null) byNumber.set(pr.number, pr);
+    for (const [number, summary] of prSummary) {
+      if (!byNumber.has(number)) {
+        byNumber.set(number, summary.pr || { number, title: summary.title });
+      }
+    }
+    return [...byNumber.values()].sort((a, b) => {
+      const at = prSummary.get(a.number)?.lastAt || 0;
+      const bt = prSummary.get(b.number)?.lastAt || 0;
+      return at === bt ? b.number - a.number : bt - at;
+    });
+  }, [prList, prSummary]);
+
+  const selectedPr = prs[Math.min(selectedPrIdx, Math.max(0, prs.length - 1))] || null;
+
+  /**
+   * The selected PR's comments, each joined to the agent's analysis of it.
+   *
+   * `analysed` is true only when there is a plan *and* it has an analysis in
+   * it. Everything else — no plan at all, or a plan that is the placeholder
+   * saying the analysis did not run — is one state, because `⏎` does the same
+   * thing for both: go and get the analysis.
+   */
+  const commentRows = useMemo(() => {
+    const plans = selectedPr ? (prSummary.get(selectedPr.number)?.plans || new Map()) : new Map();
+    return prComments.map((comment) => {
+      const plan = plans.get(comment.id) || null;
+      return {
+        comment,
+        plan,
+        analysed: Boolean(plan && plan.payload?.analysed !== false),
+        filePath: plan?.payload?.filePath || null,
+      };
+    });
+  }, [selectedPr, prComments, prSummary]);
+
+  const refreshPrs = useCallback(() => {
     if (!agentLoop?.githubHandler?.fetchAllOpenPRs) return;
     setLoadingPrs(true);
     agentLoop.githubHandler.fetchAllOpenPRs()
-      .then((prs) => {
-        setPrList(prs || []);
-        setSelectedPrIdx(0);
-      })
-      .catch((err) => {
-        setPrList([]);
-        setError(String(err?.message || err));
-      })
+      .then((fetched) => setPrList(fetched || []))
+      .catch((err) => setError(String(err?.message || err)))
       .finally(() => setLoadingPrs(false));
   }, [agentLoop]);
 
+  /**
+   * Fetch the PRs when the tab is opened, not when a hidden key is pressed.
+   *
+   * The list used to arrive only via `p`, which nothing advertised — so the
+   * screen most people saw was the one with no PRs on it. Refetching on every
+   * open is a request per `^o`, which is the same order as the poller already
+   * makes on its own interval.
+   */
+  useEffect(() => {
+    if (activeTab === 'github' && !authRejected && agentLoop?.githubHandler) refreshPrs();
+  }, [activeTab, authRejected, refreshPrs, agentLoop]);
+
   const openComments = useCallback(() => {
-    const pr = prList[selectedPrIdx];
-    if (!pr || !agentLoop?.githubHandler?.poller) return;
+    if (!selectedPr || !agentLoop?.githubHandler?.poller) return;
     setLoadingPrComments(true);
     setPrComments([]);
-    setExplorerMode('comments');
+    setView('comments');
     setSelectedPrCommentIdx(0);
-    agentLoop.githubHandler.poller.fetchAllComments(pr)
+    agentLoop.githubHandler.poller.fetchAllComments(selectedPr)
       .then((comments) => setPrComments(comments || []))
       .catch((err) => {
         setPrComments([]);
         setError(String(err?.message || err));
       })
       .finally(() => setLoadingPrComments(false));
-  }, [agentLoop, prList, selectedPrIdx]);
+  }, [agentLoop, selectedPr]);
 
-  /** Hand the highlighted comment to the agent and go back to watching activity. */
-  const dispatchComment = useCallback(() => {
-    const pr = prList[selectedPrIdx];
-    const comment = prComments[selectedPrCommentIdx];
-    setView('activity');
-    if (agentLoop?.githubHandler?.forceAnalyzeComment && pr && comment) {
-      agentLoop.githubHandler.forceAnalyzeComment(pr, comment).catch(() => {});
+  /**
+   * Level three: the analysis. Open it, or go and make it first.
+   *
+   * One key for both, because that is what was asked for — "clicking an old
+   * comment should start the agent analysis (if not done previously) or open
+   * the analysis file". Splitting it into two keys would mean knowing which
+   * state the row is in before choosing a key, which is the thing the row's
+   * own marker is there to save you.
+   *
+   * `force` is load-bearing on the analyse path: the queue remembers what it
+   * has already seen, so without it a second attempt is treated as a duplicate
+   * and does nothing at all — indistinguishable from the key not working.
+   */
+  const openOrAnalyse = useCallback(() => {
+    const row = commentRows[selectedPrCommentIdx];
+    if (!row || !selectedPr) return;
+
+    if (row.analysed && row.filePath) {
+      const file = row.filePath;
+      try {
+        exec(`"${agentLoop.editor || 'code'}" "${file}" || open "${file}" || xdg-open "${file}"`);
+      } catch {
+        /* no editor on this machine; the path is in the row either way */
+      }
+      return;
     }
-  }, [agentLoop, prList, selectedPrIdx, prComments, selectedPrCommentIdx]);
+
+    // `forceAnalyzeComment` rather than a bare force-enqueue: it also deletes
+    // the stale plan file — which on this path is usually the placeholder
+    // saying the analysis did not run — and refuses when this exact comment is
+    // already being analysed, so leaning on the key does not queue it twice.
+    const handler = agentLoop.githubHandler;
+    const pr = row.plan?.payload?.pr || selectedPr;
+    if (handler?.forceAnalyzeComment) {
+      handler.forceAnalyzeComment(pr, row.comment).catch(() => {});
+    } else {
+      handler?._enqueueComment?.({ pr, comment: row.comment, force: true });
+    }
+    setError('');
+    notifyReanalysing(selectedPr.number, row.comment.author);
+  }, [agentLoop, commentRows, selectedPrCommentIdx, selectedPr, notifyReanalysing]);
 
   const addAvoidWord = useCallback((word) => {
     const trimmed = word.trim();
@@ -189,7 +369,7 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
     }
   }, [agentLoop, avoidWords]);
 
-  const togglePlanExpanded = useCallback((id) => {
+  const toggleCommentExpanded = useCallback((id) => {
     setExpandedComments((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -200,18 +380,29 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
 
   const clearNewEvent = useCallback(() => setHasNewEvent(false), []);
 
+  /** The newest one-line notice, which is where GitHub command output goes. */
+  const lastNotice = useMemo(() => {
+    for (let i = activity.length - 1; i >= 0; i--) {
+      if (activity[i]?.type === 'github_notification') return activity[i].payload?.message || null;
+    }
+    return null;
+  }, [activity]);
+
   return {
     // state the screen draws
     activity, view, error, setupToken, setSetupToken, setError,
+    notify,
+    notifyReanalysing,
     authRejected, setAuthRejected,
-    prList, selectedPrIdx, prComments, selectedPrCommentIdx,
-    explorerMode, loadingPrs, loadingPrComments,
-    selectedPlanId, expandedComments, avoidWords, newAvoidWord, setNewAvoidWord,
-    hasNewEvent, visiblePlans,
+    prs, prSummary, selectedPr, selectedPrIdx,
+    commentRows, selectedPrCommentIdx,
+    loadingPrs, loadingPrComments,
+    expandedComments, avoidWords, newAvoidWord, setNewAvoidWord,
+    hasNewEvent, lastNotice,
 
     // what the keys drive
-    setView, setExplorerMode, setSelectedPrIdx, setSelectedPrCommentIdx, setSelectedPlanId,
-    openPrExplorer, openComments, dispatchComment, addAvoidWord, togglePlanExpanded,
+    setView, setSelectedPrIdx, setSelectedPrCommentIdx,
+    refreshPrs, openComments, openOrAnalyse, addAvoidWord, toggleCommentExpanded,
     clearNewEvent,
 
     /**
@@ -220,7 +411,7 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
      * Four fit on a line at 78 columns; seven wrapped and stranded a separator.
      * The other three did not stop existing, so `?` has to say where they went.
      */
-    showHelp: () => setView((v) => (v === 'help' ? 'activity' : 'help')),
+    showHelp: () => setView((v) => (v === 'help' ? 'prs' : 'help')),
 
     /** True while a text field on the tab owns the letters — see use-github-keys. */
     get isTyping() {

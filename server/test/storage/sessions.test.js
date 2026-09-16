@@ -350,3 +350,57 @@ describe('/new', () => {
     assert.equal(result.reset, true);
   });
 });
+
+/**
+ * Saying where the last conversation went.
+ *
+ * Starting without `--continue` files it and clears the screen, which from the
+ * outside is indistinguishable from losing it. The storage, the flags and the
+ * picker were all built and nothing ever said a session had been put anywhere.
+ */
+describe('a filed conversation is named', () => {
+  const start = (opts) => new AgentLoop({
+    workspace: dir, mcpServer: {}, promptBuilder: {}, diffEngine: {}, riskClassifier: {}, ...opts,
+  });
+
+  test('the loop remembers what it filed, with enough to show', () => {
+    conversation(new SessionStore(dir), 'the conversation before this one');
+    const loop = start({});
+    assert.ok(loop.filedSession?.id, 'nothing was recorded to tell the user about');
+    assert.equal(loop.filedSession.title, 'the conversation before this one');
+    assert.equal(loop.filedSession.turns, 2);
+  });
+
+  test('a first run has nothing to say, and says nothing', () => {
+    assert.equal(start({}).filedSession, undefined);
+  });
+
+  test('--continue files nothing, so there is nothing to offer', () => {
+    conversation(new SessionStore(dir));
+    assert.equal(start({ continueSession: true }).filedSession, undefined);
+  });
+
+  // The id is the thing `--resume` takes, so it has to be the thing shown.
+  test('/new names the session it just filed', async () => {
+    const { handleSlashCommand } = await import('../../src/core/slash-commands.js');
+    const store = conversation(new SessionStore(dir));
+    const loop = {
+      sessionStore: store, conversationHistory: [],
+      promptBuilder: { resetPromptState() {} }, startNewChat() {},
+    };
+    const { message } = await handleSlashCommand(loop, 'new', []);
+    const id = store.listSessions()[0].id;
+    assert.match(message, new RegExp(id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(message, /--resume/);
+  });
+
+  test('and says nothing about an id when there was nothing to file', async () => {
+    const { handleSlashCommand } = await import('../../src/core/slash-commands.js');
+    const loop = {
+      sessionStore: new SessionStore(dir), conversationHistory: [],
+      promptBuilder: { resetPromptState() {} }, startNewChat() {},
+    };
+    const { message } = await handleSlashCommand(loop, 'new', []);
+    assert.doesNotMatch(message, /--resume/);
+  });
+});

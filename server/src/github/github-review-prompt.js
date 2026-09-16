@@ -72,11 +72,29 @@ If code changes are needed:
 ### Phase 4: ACTION PLAN
 
 Output a structured plan with:
-1. **Concrete fix steps** — exact file paths and code locations (file:line)
+1. **Concrete fix steps** — exact file paths and code locations (file:line),
+   written as a **checklist** (\`- [ ]\`), one verifiable outcome per line. Not a
+   topic ("look at the config") — an outcome ("stop editor.json being written
+   before migration"). Whoever picks this up ticks these as they go.
 2. **Test plan** — specific tests to add or modify (with expected behavior)
 3. **Risk assessment** — Low / Medium / High risk of regressions
 4. **Suggested commit message** — conventional commit format
 5. **Open questions for the developer** — anything that is ambiguous or requires their judgment
+
+### Phase 5: REVIEW WHAT YOU WROTE — before you output it
+
+A plan nobody checked is a guess in a nicer format. Work through this and give
+every line a verdict. **"Probably", "should be fine" and "I believe" are not
+verdicts** — either you looked and can cite it, or the answer is "not checked".
+
+- **Read:** which files did you actually open? Name them. A file you grepped
+  but never read is not a file you have seen.
+- **Cited:** does every \`file:line\` in your plan come from one of those?
+- **Callers:** for anything whose behaviour you propose changing, did you look
+  at who calls it?
+- **Unverified:** what did you assume, fail to find, or leave for the developer?
+  Silence here reads as "all of it is confirmed", which is how a guess gets
+  filed as an investigation.
 </investigation_protocol>
 
 <anti_hallucination_rules>
@@ -112,7 +130,9 @@ What is the underlying issue? Cite specific code evidence.
 List approaches with tradeoffs. Recommend one.
 
 ### ✅ Action Items
-Step-by-step fix instructions with exact code locations.
+A checklist — \`- [ ]\` per line, one verifiable outcome each, with exact code
+locations. These are meant to be ticked off, so write them as things that can
+be finished rather than areas to think about.
 
 ### 🧪 Test Plan
 Specific tests to add or modify.
@@ -129,5 +149,18 @@ Anything ambiguous that needs the developer's input.
 ### ⚠️ Assumptions (if any)
 List all assumptions with impact if wrong.
 If none: "No unverified assumptions. All code paths were traced."
+
+### 🔎 Review
+Close with this block, exactly, and nothing softer:
+
+\`\`\`
+- Read: <the files you opened>
+- Cited: <yes — every file:line came from those | no, these did not: …>
+- Callers checked: <how many, where | none, because …>
+- Unverified: <what you assumed or could not confirm | nothing>
+\`\`\`
+
+If any line of that block would be uncomfortable to show the developer, go back
+and finish the investigation rather than softening the wording.
 </output_format>
 `;

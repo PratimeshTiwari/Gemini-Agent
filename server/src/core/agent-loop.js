@@ -157,8 +157,17 @@ export class AgentLoop {
       // which is why `--sessions` had nothing to list and `--resume` had
       // nothing to find: every conversation was destroyed by the start of the
       // next one.
-      this.sessionStore.rollover();
+      //
+      // The id is kept so the UI can say it *once*, on the run where it is
+      // useful. A conversation that is filed silently is one nobody knows to
+      // ask for — the storage, the flags and the picker were all built and
+      // nothing ever mentioned that a session had been put somewhere.
+      const filedId = this.sessionStore.rollover();
       this.sessionStore.clear();
+      if (filedId) {
+        const record = this.sessionStore.listSessions().find((r) => r.id === filedId);
+        this.filedSession = record || { id: filedId };
+      }
     }
 
     // State defaults

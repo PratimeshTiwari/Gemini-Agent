@@ -202,7 +202,7 @@ export async function handleSlashCommand(loop, command, args) {
      * the first prompt of the next task.
      */
     case 'new': {
-      loop.sessionStore.rollover();
+      const filed = loop.sessionStore.rollover();
       loop.sessionStore.clear();
       loop.conversationHistory = [];
       loop.promptBuilder.resetPromptState();
@@ -211,7 +211,14 @@ export async function handleSlashCommand(loop, command, args) {
       // A fresh browser thread too, or the model keeps the old conversation's
       // memory while everything else has moved on.
       loop.startNewChat?.();
-      return { message: '✨ New chat. The previous one is kept — `--sessions` lists it.', reset: true };
+      // Name it. "The previous one is kept" is only useful if you can say
+      // which one, and the id is the thing `--resume` takes.
+      return {
+        message: filed
+          ? `✨ New chat. The previous one is filed as \`${filed}\` — \`agent --resume ${filed}\` brings it back.`
+          : '✨ New chat.',
+        reset: true,
+      };
     }
 
     case 'clear':
@@ -431,7 +438,9 @@ export async function handleSlashCommand(loop, command, args) {
               message: `Refresh error: ${err.message}`, detail: err.stack,
             });
           });
-          return { message: '🔄 Forcing immediate GitHub poll...' };
+          // `⟳`, not 🔄. The GitHub tab draws in monochrome text and the
+          // one emoji on the screen reads as a different product's output.
+          return { message: '⟳ Polling GitHub now…' };
         }
 
         case 'ci-watch': {
