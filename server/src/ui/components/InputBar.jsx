@@ -135,11 +135,19 @@ export function InputBar({
           */}
           {filedSession && !isProcessing && history.length === 0 && (
             <Box marginBottom={1}>
+              {/*
+                The id leads, and the prose trails it, because `wrap="truncate"`
+                eats the tail: with the sentence first, an 80-column terminal cut
+                the id mid-suffix and left a `--resume` that resumes nothing —
+                which is worse than showing no row at all. The id is 28
+                characters and fixed-width, so putting it first puts the only
+                part that must survive where truncation cannot reach it.
+              */}
               <Text dimColor wrap="truncate">
-                {'  ↺ '}Previous conversation filed
-                {filedSession.turns ? ` (${filedSession.turns} turns)` : ''}
-                {' — '}
+                {'  ↺ '}
                 <Text color="cyan">--resume {filedSession.id}</Text>
+                {'  · previous conversation'}
+                {filedSession.turns ? `, ${filedSession.turns} turns` : ''}
               </Text>
             </Box>
           )}

@@ -30,6 +30,7 @@ import { DiffEngine } from './core/diff-engine.js';
 import { RiskClassifier } from './core/risk-classifier.js';
 import { FileWatcher } from './watcher/file-watcher.js';
 import { TaskManager } from './core/task-manager.js';
+import { logError } from './core/error-log.js';
 
 /** How long to wait for an already-running extension to greet us, at startup. */
 const EXTENSION_GREETING_MS = 1500;
@@ -275,12 +276,7 @@ async function main() {
     // Connect to agent loop for /github slash commands
     agentLoop.githubHandler = githubHandler;
 
-    // Start watching
-    try {
-      await githubHandler.start();
-    } catch (err) {
-      console.error(`  [GitHub] ❌ Failed to start: ${err.message}`);
-    }
+    // Watching starts after the UI does, at the bottom of main().
   } else if (config.github && !githubToken) {
     console.log('  ℹ️  Set GITHUB_TOKEN env var to enable PR comment watching');
   }
@@ -320,6 +316,11 @@ async function main() {
     }
   }
 
+  // Start CLI UI
+  const { CliUI } = await import('./ui/cli-ui.jsx');
+  const cli = new CliUI(agentLoop, wsServer);
+  cli.start();
+
   /**
    * Give the extension a moment to announce itself, and open a tab only if it
    * does not.
@@ -330,31 +331,42 @@ async function main() {
    * Five runs in a day was five tabs, and the information needed to avoid it was
    * already here: the bridge knows whether an extension has identified.
    *
-   * The wait stays short because it is on the path to first paint. It is long
-   * enough for a live worker to finish its handshake and not nearly long enough
-   * for a worker Chrome has suspended — which is fine, because opening the tab
-   * is what wakes that one up. That is the case the tab exists for.
+   * **It runs after first paint, and must stay there.** It used to be awaited
+   * before the UI was created, which put its full 1.5s on the path to the first
+   * frame: measured under a pty with no extension listening, the prompt box
+   * appeared at 2.07s, of which this was 1.5s — the single largest cost in
+   * startup, larger than every import in the process put together. Nothing the
+   * UI draws depends on the answer, so nothing about the UI should wait for it.
+   * The wait is still a wait; it is just no longer the user's.
+   *
+   * The wait stays short because a suspended worker will not make it in any
+   * case — and that is fine, because opening the tab is what wakes that one up.
+   * That is the case the tab exists for.
    */
   const hasExt = () => wsServer.clients
     && Array.from(wsServer.clients.values()).some((c) => c.type === 'extension');
 
-  if (!hasExt()) {
-    await new Promise((resolve) => {
-      const timeout = setTimeout(resolve, EXTENSION_GREETING_MS);
-      const interval = setInterval(() => {
-        if (hasExt()) {
-          clearInterval(interval);
-          clearTimeout(timeout);
-          resolve();
-        }
-      }, 50);
-    });
-  }
+  const greetExtension = async () => {
+    if (!hasExt()) {
+      await new Promise((resolve) => {
+        const timeout = setTimeout(resolve, EXTENSION_GREETING_MS);
+        const interval = setInterval(() => {
+          if (hasExt()) {
+            clearInterval(interval);
+            clearTimeout(timeout);
+            resolve();
+          }
+        }, 50);
+      });
+    }
 
-  if (!hasExt()) {
+    if (hasExt()) return;
+
+    // Never console.error here: the Ink UI owns the terminal by now, and a
+    // write into its frame is destroyed by the next repaint anyway.
+    const startUrl = 'https://gemini.google.com/app';
     try {
       const { exec } = await import('child_process');
-      const startUrl = 'https://gemini.google.com/app';
 
       if (process.platform === 'darwin') {
         exec(`open "${startUrl}"`);
@@ -364,14 +376,53 @@ async function main() {
         exec(`xdg-open "${startUrl}"`);
       }
     } catch (err) {
-      console.error('Failed to open browser automatically:', err);
+      logError(config.workspace, {
+        flow: 'bridge',
+        op: 'open_start_tab',
+        message: `Could not open ${startUrl}: ${err.message}`,
+      });
     }
-  }
+  };
 
-  // Start CLI UI
-  const { CliUI } = await import('./ui/cli-ui.jsx');
-  const cli = new CliUI(agentLoop, wsServer);
-  cli.start();
+  // Floating on purpose, and caught: an unhandled rejection here would take
+  // down a process that has already painted a working UI.
+  greetExtension().catch((err) => {
+    logError(config.workspace, {
+      flow: 'bridge',
+      op: 'greet_extension',
+      message: `Extension greeting failed: ${err.message}`,
+    });
+  });
+
+  /**
+   * Start watching GitHub, after the UI and without blocking it.
+   *
+   * `poller.start()` authenticates against api.github.com and then runs a full
+   * initial poll, fanning out per PR for comments, reviews and CI runs. It is
+   * all network, and none of it is something the first frame depends on — the
+   * GitHub screen is event-driven and fills in whenever the answers arrive.
+   * Awaited before the UI, the auth call alone measured 0.54s against a warm
+   * connection, with the first poll behind it; on a slow link, or an account
+   * with many open PRs, that is seconds of blank terminal.
+   *
+   * **Moving it here also fixes a silence.** `start()` emits `status` and
+   * `auth_rejected`, and the only listener for either is wired in the
+   * WebSocketServer constructor — which used to run *after* this call. So the
+   * 401 message in `github-poller.js` ("GitHub rejected the stored token…
+   * clear it with `/github remove-token`") was emitted into an EventEmitter
+   * with nobody attached, and a user with an expired token got no GitHub
+   * activity and no reason why. Starting after the server means the listeners
+   * exist before the events fire.
+   */
+  if (githubHandler) {
+    githubHandler.start().catch((err) => {
+      logError(config.workspace, {
+        flow: 'github',
+        op: 'start',
+        message: `GitHub watching failed to start: ${err.message}`,
+      });
+    });
+  }
 
   // Graceful shutdown
   const shutdown = async () => {

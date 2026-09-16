@@ -976,6 +976,37 @@ have a key.
   and 1 `ESC[2J` at 13x80 and 10x80 where there had been none. `wrap="truncate"` on anything
   in the live frame is load-bearing, not tidiness. The arithmetic test caught the first of
   these; only the pty run caught the second.
+- **Nothing the user waits for goes in front of the first frame.** Startup was
+  2.46s to the prompt box with GitHub enabled, and almost none of it was work:
+  `main.js` awaited the 1.5s extension-greeting timeout and then
+  `githubHandler.start()` — which authenticates against api.github.com and runs
+  a full initial poll, fanning out per PR — before it created the Ink UI.
+  Neither answer is something the first frame draws. Moving both behind
+  `cli.start()` took the same measurement to **0.53s**, with no behaviour change:
+  the start tab still opens, the poller still polls. For scale, every module
+  import in the process is 517ms together, 426ms of it ink+react, and `tsx`
+  itself is 120ms — so the two waits were larger than the entire program.
+  `test/core/startup-order.test.js` pins the ordering, because the regression is
+  invisible in review: one more `await` before `cli.start()` reads as ordinary
+  sequencing and costs a second every launch, with no failure to notice.
+
+  **Starting GitHub after the WebSocket server also fixed a silence.**
+  `poller.start()` emits `auth_rejected`, and its only listener is wired in the
+  `WebSocketServer` constructor — which used to run *after* that call. So the
+  401 message ("GitHub rejected the stored token… clear it with
+  `/github remove-token`") was emitted into an EventEmitter with nobody
+  attached, and an expired token produced no GitHub activity and no reason why.
+  The later `pollNow()` 401 at `github-poller.js:147` always worked; only the
+  startup one was unreachable.
+
+- **A row in the live frame is truncated from the right, so put the part that
+  must survive on the left.** The filed-session row read `↺ Previous
+  conversation filed (2 turns) — --resume <28-char id>`, which is ~80
+  characters: at 80 columns `wrap="truncate"` ate the end of the id and offered
+  a `--resume` that resumes nothing. Leading with the id and trailing the prose
+  costs nothing and degrades correctly — at 60 columns the sentence is cut and
+  the command is still intact.
+
 - **No mouse tracking, ever.** Terminal mouse reporting and native scroll are mutually
   exclusive: a terminal that is tracking hands the app the wheel and suppresses drag-select. The
   app therefore enables nothing, and `cli-ui.jsx` writes the disable sequences once on startup
