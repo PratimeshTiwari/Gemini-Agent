@@ -537,6 +537,63 @@ describe('PromptBuilder — a dispatchable tool the prompt never mentions is unr
   });
 });
 
+describe('every rung asks for a list, checks it, and reviews before finishing', () => {
+  const pro = (effort) => build(new PromptBuilder(ws, ws), { modelConfig: { effort } });
+  const LADDER = ['flash', 'flash-thinking', 'brief', 'standard', 'deep'];
+
+  // The point of scaling rather than excluding: Flash is the *weakest* model on
+  // the ladder, so it is the most likely to report a thing as done without
+  // having looked. Leaving the check off that rung takes it off the one that
+  // needs it most.
+  test('no rung is left without a handover check', () => {
+    for (const effort of LADDER) {
+      assert.match(pro(effort), /BEFORE YOU FINISH|THE HANDOVER REVIEW/, effort);
+    }
+  });
+
+  test('every rung is told to keep a checklist, and to check it at the end', () => {
+    for (const effort of LADDER) {
+      const p = pro(effort);
+      assert.match(p, /proactively create/, `${effort}: never asked for a list`);
+      assert.match(p, /Checklist:|<task_checklist>/, `${effort}: never checks it`);
+    }
+  });
+
+  test('every rung must say what it did not do', () => {
+    // Silence here reads as "all of it is finished", which is how a partial job
+    // gets handed over as a complete one.
+    for (const effort of LADDER) {
+      assert.match(pro(effort), /Not done|not \*done\*|did \*not\* do/i, effort);
+    }
+  });
+
+  // Three sizes, because one size is either ceremony on a one-line fix or too
+  // thin for work where being wrong is expensive.
+  test('the depth scales with the rung', () => {
+    assert.match(pro('flash'), /BEFORE YOU FINISH/);
+    assert.doesNotMatch(pro('flash'), /THE HANDOVER REVIEW/, 'the full review on a 5.6k prompt is +33%');
+
+    for (const mid of ['flash-thinking', 'brief']) {
+      assert.match(pro(mid), /Read back:/, `${mid} should get the four-point version`);
+      assert.doesNotMatch(pro(mid), /THE HANDOVER REVIEW/, mid);
+    }
+
+    for (const deep of ['standard', 'deep']) {
+      assert.match(pro(deep), /THE HANDOVER REVIEW/, deep);
+    }
+  });
+
+  // The whole prompt strategy exists to avoid large repeated payloads typed
+  // into a browser tab, and Flash's identity is being terse.
+  test('the cost stays proportionate', () => {
+    const chars = Object.fromEntries(LADDER.map((e) => [e, pro(e).length]));
+    assert.ok(chars.flash < 7000, `flash grew to ${chars.flash}; it is the terse rung`);
+    assert.ok(chars.flash < chars['flash-thinking'], 'the ladder stopped being a ladder');
+    assert.ok(chars.brief < chars.standard);
+    assert.ok(chars.standard < chars.deep);
+  });
+});
+
 describe('the handover review — asked for, so pin where it appears', () => {
   const pro = (effort, over = {}) =>
     build(new PromptBuilder(ws, ws), { modelConfig: { effort }, ...over });
@@ -547,16 +604,19 @@ describe('the handover review — asked for, so pin where it appears', () => {
     }
   });
 
-  // `brief`'s promise on the ladder is "straight to work". A seven-point review
-  // on a one-line fix is ceremony, and a checklist people learn to skip is
-  // worse than not having one.
-  test('brief does not', () => {
+  // `brief`'s promise on the ladder is "straight to work", so it gets the
+  // four-point version rather than the seven-point one — but not nothing.
+  // "Did you run it" and "what did you not do" are worth asking at any size.
+  test('brief gets the shorter one instead', () => {
     assert.doesNotMatch(pro('brief'), /THE HANDOVER REVIEW/);
+    assert.match(pro('brief'), /BEFORE YOU FINISH/);
   });
 
-  test('the flash tiers do not — they never see the pro prompt at all', () => {
+  test('the flash tiers never see the pro prompt, so they get their own', () => {
     assert.doesNotMatch(pro('flash'), /THE HANDOVER REVIEW/);
     assert.doesNotMatch(pro('flash-thinking'), /THE HANDOVER REVIEW/);
+    assert.match(pro('flash'), /BEFORE YOU FINISH/);
+    assert.match(pro('flash-thinking'), /BEFORE YOU FINISH/);
   });
 
   // The whole prompt strategy exists to avoid large repeated payloads, and

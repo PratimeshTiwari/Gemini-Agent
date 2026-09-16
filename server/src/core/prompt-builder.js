@@ -466,9 +466,21 @@ ${modelTier === 'pro' ? `## 4. Communication
    * Optimized for 2.5 Flash — short attention, weak instruction-following.
    * Budget: ~400 tokens of reasoning instructions.
    */
-  /** The flash tier's reasoning protocol: there is deliberately almost none. */
+  /**
+   * The flash tier's reasoning protocol: there is deliberately almost none.
+   *
+   * The handover check is the exception, and it is two lines. Flash is the
+   * weakest model on the ladder, which makes it the *most* likely to report a
+   * thing as done without having looked — so excluding it, which was the first
+   * instinct, would have left the check off the rung that needs it most.
+   *
+   * Two lines rather than the pro tier's seven because this rung is 5.6k
+   * characters and its whole identity is being terse: the full review is +33%
+   * here against +11% on the tiers above, and a protocol that fights what the
+   * tier is for is one the model follows worse, not better.
+   */
   _getFlashInstructions() {
-    return prompt('reasoning-flash');
+    return `${prompt('reasoning-flash')}\n\n${prompt('handover-micro')}`;
   }
 
   /**
@@ -476,9 +488,14 @@ ${modelTier === 'pro' ? `## 4. Communication
    * Optimized for 2.5 Flash with thinking — decent reasoning, moderate context window.
    * Budget: ~1200 tokens of reasoning instructions.
    */
-  /** Flash-thinking: a three-phase protocol, still a short prompt. */
+  /**
+   * Flash-thinking: a three-phase protocol, still a short prompt.
+   *
+   * The four-point handover, not the two-point one: this rung already has a
+   * protocol and a context budget twice Flash's, so the check costs ~2% here.
+   */
   _getFlashThinkingInstructions() {
-    return prompt('reasoning-flash-thinking');
+    return `${prompt('reasoning-flash-thinking')}\n\n${prompt('handover-lite')}`;
   }
 
   /**
@@ -573,7 +590,11 @@ and what could go wrong with it — empty inputs, concurrent access, scale, erro
      * would be asked to audit a list it cannot see, which is the write-only
      * trap that made the original task.md useless.
      */
-    const handover = isBrief ? '' : `\n${prompt('pro-handover-review')}`;
+    // `brief` gets the four-point version, not nothing and not the seven-point
+    // one. Its promise is "straight to work", and a long review on a one-line
+    // fix is ceremony people learn to skip — but "did you run it" and "what did
+    // you not do" are worth asking at any size, and cost ~2% of this prompt.
+    const handover = `\n${prompt(isBrief ? 'handover-lite' : 'pro-handover-review')}`;
 
     const assumptions = isDeep ? `
 
