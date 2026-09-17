@@ -316,6 +316,43 @@ export function App({ agentLoop, wsServer }) {
   const staticTurns = turns.slice(0, staticCount);
   const liveTurns = turns.slice(staticCount);
 
+  /**
+   * A committed turn that grew has to be reprinted, once.
+   *
+   * A turn is committed when `isProcessing` goes false, and `agent_response`
+   * clears that even when the reply carried tool calls — so a turn is written
+   * to the scrollback while the loop is still working on it. The tool result,
+   * the diff approval and the closing reply then land in a group `<Static>`
+   * has already printed, and Ink never repaints Static. Reported as "file
+   * created, diff showed, then nothing in the CLI".
+   *
+   * **Keeping the turn live instead was measured and is far worse.** Making
+   * `isProcessing` follow the loop restored the reply and took one run from
+   * 15KB and 0 full clears to **6.8MB and 1,228** — the flicker bug entire.
+   * Three attempts to bound the longer-lived turn made it worse still (45,
+   * then 89 clears).
+   *
+   * So the turn still commits early, and the rare case where it grows
+   * afterwards is paid for with the mechanism this file already has for
+   * exactly that: remount `<Static>` and print the transcript again. One
+   * clear, once, at the end of the turn — the same cost `ctrl+e` pays — and
+   * the live frame is never stretched at all.
+   */
+  // `steps`, not `messages` — `groupTurns` returns `{id, userMsg, steps, …}`.
+  // The first version of this counted a field that does not exist, so the
+  // shape never changed, the epoch never bumped, and the fix did nothing
+  // while measuring a clean 0 clears.
+  const committedShape = staticTurns.reduce((n, t) => n + 1 + (t.steps?.length || 0), 0);
+  const lastShapeRef = useRef(committedShape);
+  const lastCountRef = useRef(staticCount);
+  useEffect(() => {
+    const grewInPlace = staticCount === lastCountRef.current
+      && committedShape > lastShapeRef.current;
+    lastCountRef.current = staticCount;
+    lastShapeRef.current = committedShape;
+    if (grewInPlace) setStaticEpoch((n) => n + 1);
+  }, [committedShape, staticCount]);
+
   // Rows the live frame may spend on the in-flight turn. Everything below it —
   // the spinner, the input box, the mode chip and the status bar — is fixed
   // furniture, and going over the viewport is what triggers Ink's full-clear

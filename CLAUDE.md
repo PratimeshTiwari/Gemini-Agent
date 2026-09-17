@@ -376,22 +376,34 @@ now rides on the rows (`__loopIndex`), and the optimistic echo (`__echo`) is cla
 loop's own copy rather than drawn twice — once per echo, because asking the same question twice
 must produce two rows.
 
-**The reply after a diff approval is still invisible, and the obvious fix is worse than the
-bug.** `App.jsx` keeps only the last turn live *while `isProcessing`*; everything else is
+**The reply after a diff approval — fixed by reprinting, not by staying live.** `App.jsx` keeps only the last turn live *while `isProcessing`*; everything else is
 committed to `<Static>`, which Ink never repaints. `agent_response` cleared `isProcessing` even
 when the turn still had tool calls to run, so the turn was written to scrollback mid-flight and
 the tool result, the approval and the closing reply were appended to a group that could no
 longer be drawn. Reproduced in the harness: file written, diff shown, final reply never drawn.
 
-Setting `isProcessing` from `agentLoop.isProcessing` does restore the reply — 4 runs out of 4 —
-and it takes the transcript from 11KB to 232–397KB, with full clears going from 0 to non-zero
-in every run. **Three attempts to bound the now-longer-lived turn all made it worse**: drawing
-only the last reply cost 45 clears, sharing one budget between the action rows and the reply
-cost 89. And the clear count itself is **not measurable with this harness** — identical code
-produced 1 and 89 on two runs, so the three comparisons above are noise, not signal. The fix is
-held back for that reason: the reply is worth restoring, but not by reintroducing the
-full-screen repaint this whole directory exists to prevent. **Make the harness deterministic
-before touching this again.**
+The obvious fix — make `isProcessing` follow `agentLoop.isProcessing`, so the turn stays live
+until the loop is done — restores the reply and is **catastrophic**: one run went from 15KB and
+**0** full clears to **6.8MB and 1,228**, which is the flicker bug entire. Three attempts to
+bound the longer-lived turn made it worse still (45, then 89 clears). Do not retry it.
+
+What works is the mechanism this file already had for exactly this: the turn still commits
+early, and when a *committed* turn grows, `<Static>` is remounted and the transcript reprinted.
+Measured across three runs: **18.2–18.5KB, 0 clears, reply present** — against a 15.1KB, 0-clear
+baseline where the reply never appeared. A remount reprints without clearing, so it is cheaper
+than the one clear `ctrl+e` pays.
+
+Two traps, both of which produced confident wrong numbers first:
+
+- **The harness was measuring nothing repeatable.** `drive2.py` waited a fixed number of
+  seconds between steps, so pressing enter to approve could land *before* the prompt existed —
+  a different code path. Identical code measured 1 clear and 89. `drive3.py` waits on observed
+  output (`{"wait": "Approve"}`) and is reproducible to within 300 bytes across runs. **Any
+  frame-budget number taken with a wall-clock driver is noise.**
+- **The first cut of the reprint counted `t.messages`, which `groupTurns` does not return** (it
+  is `steps`). The shape never changed, the epoch never bumped, and it measured a clean 0
+  clears *while doing nothing at all* — a fix that looks perfect because it is inert. Only the
+  reply still being missing caught it.
 
 ### Prompt economics
 
