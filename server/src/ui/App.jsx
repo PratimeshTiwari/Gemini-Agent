@@ -626,7 +626,10 @@ export function App({ agentLoop, wsServer }) {
     // no timestamp, and that fallback is re-evaluated on every render — so an
     // unstamped user message gave the turn a start time that crept forward
     // while its end time stayed put, and "Worked for" counted backwards.
-    setHistory(prev => [...prev, { role: 'user', content: query, timestamp: Date.now() }]);
+    // `__echo` marks this as the optimistic copy of a prompt the loop is about
+    // to record too. `mergeLoopHistory` claims it when the loop's own copy
+    // arrives, instead of drawing the prompt twice.
+    setHistory(prev => [...prev, { role: 'user', content: query, timestamp: Date.now(), __echo: true }]);
 
     const callbacks = buildAgentCallbacks({
       agentLoop,

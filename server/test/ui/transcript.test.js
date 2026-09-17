@@ -171,15 +171,18 @@ describe('mergeLoopHistory — the transcript is append-only', () => {
   const user = (c) => ({ role: 'user', content: c });
   const agent = (c) => ({ role: 'agent', content: c });
   const local = (c) => ({ role: 'assistant', content: c, isLocal: true });
+  /** What `handleSubmit` puts on screen the instant you press enter. */
+  const echo = (c) => ({ role: 'user', content: c, __echo: true });
+  const text = (rows) => rows.map((m) => m.content);
 
   it('a new agent message is appended', () => {
-    const shown = [user('hi')];
-    const loop = [user('hi'), agent('hello')];
-    assert.deepEqual(mergeLoopHistory(shown, loop), [user('hi'), agent('hello')]);
+    const shown = [echo('hi')];
+    assert.deepEqual(text(mergeLoopHistory(shown, [user('hi'), agent('hello')])),
+      ['hi', 'hello']);
   });
 
   it('nothing new returns the same array, so React can skip the render', () => {
-    const shown = [user('hi'), agent('hello')];
+    let shown = mergeLoopHistory([echo('hi')], [user('hi'), agent('hello')]);
     assert.equal(mergeLoopHistory(shown, [user('hi'), agent('hello')]), shown);
   });
 
@@ -187,44 +190,80 @@ describe('mergeLoopHistory — the transcript is append-only', () => {
    * The reported bug. `/new` leaves a local marker on screen that the loop does
    * not have; replacing the array dropped it, the array got shorter, and
    * <Static> — which counts what it has printed by index — skipped the turn.
-   * The reply had been received and stored; it simply never reached the screen.
    */
   it('a local marker does not cost a turn', () => {
-    let shown = [local('✨ Starting a new chat in Gemini...')];
-    shown = [...shown, user('hi')];                       // handleSubmit appends
+    let shown = [local('✨ Starting a new chat in Gemini...'), echo('hi')];
     shown = mergeLoopHistory(shown, [user('hi'), agent('ANSWER ONE')]);
-
-    assert.deepEqual(shown.map((m) => m.content),
+    assert.deepEqual(text(shown),
       ['✨ Starting a new chat in Gemini...', 'hi', 'ANSWER ONE']);
 
-    shown = [...shown, user('hi again')];
+    shown = [...shown, echo('hi again')];
     shown = mergeLoopHistory(shown,
       [user('hi'), agent('ANSWER ONE'), user('hi again'), agent('ANSWER TWO')]);
-
-    assert.deepEqual(shown.map((m) => m.content),
+    assert.deepEqual(text(shown),
       ['✨ Starting a new chat in Gemini...', 'hi', 'ANSWER ONE', 'hi again', 'ANSWER TWO']);
   });
 
   it('several local messages still cost nothing', () => {
-    let shown = [local('a'), local('b'), local('c'), user('q')];
+    let shown = [local('a'), local('b'), local('c'), echo('q')];
     shown = mergeLoopHistory(shown, [user('q'), agent('r')]);
-    assert.deepEqual(shown.map((m) => m.content), ['a', 'b', 'c', 'q', 'r']);
+    assert.deepEqual(text(shown), ['a', 'b', 'c', 'q', 'r']);
   });
 
   it('a slash command in the middle does not shift the count', () => {
-    // `/help` echoes what you typed and answers locally; neither reaches the
-    // model, so both are local and neither may be counted as loop history.
-    let shown = [user('q1'), agent('r1')];
-    shown = [...shown, { ...user('/help'), isLocal: true }, local('…help…')];
-    shown = [...shown, user('q2')];
+    let shown = mergeLoopHistory([echo('q1')], [user('q1'), agent('r1')]);
+    shown = [...shown, { ...user('/help'), isLocal: true }, local('…help…'), echo('q2')];
     shown = mergeLoopHistory(shown, [user('q1'), agent('r1'), user('q2'), agent('r2')]);
-    assert.deepEqual(shown.map((m) => m.content), ['q1', 'r1', '/help', '…help…', 'q2', 'r2']);
+    assert.deepEqual(text(shown), ['q1', 'r1', '/help', '…help…', 'q2', 'r2']);
   });
 
   it('history shorter than the screen is left alone for the repaint to handle', () => {
-    // /clear, /new, /undo and /compact all repaint; merging must not fight them.
     const shown = [user('q1'), agent('r1')];
     assert.equal(mergeLoopHistory(shown, []), shown);
+  });
+
+  /**
+   * The bug this was rewritten for, reproduced under the pty harness.
+   *
+   * `file-watcher.js` appends a system turn whenever anything on disk moves,
+   * so leaving the agent open while editing in another window fills the loop's
+   * history *before the session's first prompt*. The old code counted the
+   * screen's non-local rows and used that as a slice index into the loop —
+   * screen 1, loop 16 — so it appended eleven system events and a second copy
+   * of the user's own prompt, and every later merge was misaligned.
+   *
+   * Observed: transcript empty after a turn that had plainly worked.
+   */
+  it('system turns the screen never asked for do not misalign it', () => {
+    const noise = Array.from({ length: 12 },
+      (_, i) => ({ role: 'system', content: `[System Event] File ${i}.js was modified` }));
+
+    let shown = [echo('make a js file')];
+    shown = mergeLoopHistory(shown, [...noise, user('make a js file'), agent('FIRST REPLY')]);
+
+    assert.equal(text(shown).filter((c) => c === 'make a js file').length, 1,
+      'the prompt is drawn once, not echoed and then appended again');
+    assert.ok(text(shown).includes('FIRST REPLY'));
+
+    // The turn continues: tool call, approval, more watcher noise, final reply.
+    shown = mergeLoopHistory(shown, [
+      ...noise, user('make a js file'), agent('FIRST REPLY'),
+      { role: 'system', content: '[System Event] File probe.js was added' },
+      agent('THE FINAL REPLY AFTER APPROVAL'),
+    ]);
+
+    assert.ok(text(shown).includes('THE FINAL REPLY AFTER APPROVAL'),
+      'the reply after the approval must reach the screen');
+  });
+
+  it('the same prompt asked twice is drawn twice', () => {
+    // Reconciling an echo by content must happen once per echo, or asking the
+    // same question again silently loses a turn.
+    let shown = mergeLoopHistory([echo('again')], [user('again'), agent('r1')]);
+    shown = [...shown, echo('again')];
+    shown = mergeLoopHistory(shown, [user('again'), agent('r1'), user('again'), agent('r2')]);
+
+    assert.deepEqual(text(shown), ['again', 'r1', 'again', 'r2']);
   });
 });
 

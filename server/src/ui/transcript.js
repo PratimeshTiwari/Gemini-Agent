@@ -177,12 +177,59 @@ export function parseTurnActions(turn) {
  *                  can skip the render
  */
 export function mergeLoopHistory(shownHistory, loopHistory) {
-  // How much of the loop's history is already on screen. Counted by excluding
-  // the local messages rather than by tracking an index, because a counter has
-  // to be reset in every place history is cleared and missing one brings this
-  // straight back.
-  const alreadyShown = shownHistory.reduce((n, m) => (m.isLocal ? n : n + 1), 0);
+  /**
+   * How far into the loop's history the screen has already been drawn.
+   *
+   * **This was a count, and a count is not an index.** It excluded `isLocal`
+   * messages and used the remainder to `slice()` the loop's history, which is
+   * only correct if what is on screen mirrors the loop one-for-one, in order.
+   * Two things break that, and both are ordinary:
+   *
+   *  - `watcher/file-watcher.js` appends `[System Event] File X changed` turns
+   *    whenever anything on disk moves, so the loop gains turns the screen
+   *    never asked for — including *before the session's first prompt*.
+   *  - the prompt is echoed to the screen optimistically, so it is on screen
+   *    before the loop has it at all.
+   *
+   * Measured under the pty harness with a file watcher that had been busy:
+   * screen held 1 message, the loop held 16 — `[system ×12, user, agent,
+   * system, system]`. Slicing from index 1 appended eleven system events and
+   * a second copy of the user's own prompt, and the alignment was wrong from
+   * there on. The reported symptom was an empty transcript after a turn that
+   * had plainly worked.
+   *
+   * So the position is recorded on the rows themselves. A pointer cannot drift
+   * from what it points at, and it needs no resetting when history is cleared
+   * because it is cleared along with the rows.
+   */
+  let consumed = 0;
+  for (const m of shownHistory) {
+    if (Number.isInteger(m.__loopIndex)) consumed = Math.max(consumed, m.__loopIndex + 1);
+  }
 
-  if (loopHistory.length <= alreadyShown) return shownHistory;
-  return [...shownHistory, ...loopHistory.slice(alreadyShown)];
+  if (loopHistory.length <= consumed) return shownHistory;
+
+  // The optimistic echo and the loop's own copy of the prompt are the same
+  // message. Reconciled by claiming the echo rather than appending beside it,
+  // and only ever once — asking the same question twice is a thing people do,
+  // and it must produce two rows, not one.
+  const out = shownHistory.map((m) => ({ ...m }));
+  const appended = [];
+
+  for (let i = consumed; i < loopHistory.length; i += 1) {
+    const turn = loopHistory[i];
+    if (turn.role === 'user') {
+      const echo = out.find((m) => m.__echo === true
+        && !Number.isInteger(m.__loopIndex)
+        && m.content === turn.content);
+      if (echo) {
+        echo.__loopIndex = i;
+        continue;
+      }
+    }
+    appended.push({ ...turn, __loopIndex: i });
+  }
+
+  if (appended.length === 0 && out.every((m, i) => m === shownHistory[i])) return shownHistory;
+  return [...out, ...appended];
 }

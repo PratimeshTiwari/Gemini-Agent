@@ -364,6 +364,35 @@ real multiplier is **round trips**: every tool call is another full
 inject → think → scrape cycle, so tail latency is paid once per round, not
 once per turn.
 
+**`mergeLoopHistory` uses a recorded position, not a count.** It counted the screen's
+non-local rows and used that number to `slice()` the loop's history — valid only if the screen
+mirrors the loop one-for-one, in order. Two ordinary things break that: `file-watcher.js`
+appends `[System Event]` turns the screen never asked for, *including before the session's
+first prompt*, and the prompt is echoed to the screen optimistically, so it is there before the
+loop has it. Measured under the harness with a busy watcher: screen 1 row, loop 16 —
+`[system ×12, user, agent, system, system]`. Slicing from index 1 appended eleven system events
+and a second copy of the user's own prompt, and every later merge was misaligned. The position
+now rides on the rows (`__loopIndex`), and the optimistic echo (`__echo`) is claimed by the
+loop's own copy rather than drawn twice — once per echo, because asking the same question twice
+must produce two rows.
+
+**The reply after a diff approval is still invisible, and the obvious fix is worse than the
+bug.** `App.jsx` keeps only the last turn live *while `isProcessing`*; everything else is
+committed to `<Static>`, which Ink never repaints. `agent_response` cleared `isProcessing` even
+when the turn still had tool calls to run, so the turn was written to scrollback mid-flight and
+the tool result, the approval and the closing reply were appended to a group that could no
+longer be drawn. Reproduced in the harness: file written, diff shown, final reply never drawn.
+
+Setting `isProcessing` from `agentLoop.isProcessing` does restore the reply — 4 runs out of 4 —
+and it takes the transcript from 11KB to 232–397KB, with full clears going from 0 to non-zero
+in every run. **Three attempts to bound the now-longer-lived turn all made it worse**: drawing
+only the last reply cost 45 clears, sharing one budget between the action rows and the reply
+cost 89. And the clear count itself is **not measurable with this harness** — identical code
+produced 1 and 89 on two runs, so the three comparisons above are noise, not signal. The fix is
+held back for that reason: the reply is worth restoring, but not by reintroducing the
+full-screen repaint this whole directory exists to prevent. **Make the harness deterministic
+before touching this again.**
+
 ### Prompt economics
 
 `PromptBuilder` sends the **full system prompt + tool definitions only on turn 0 and every
