@@ -571,6 +571,15 @@ walking at `$HOME`; `paths.test.js` covers it.
 | `<ws>/.agent/sessions/history.jsonl` | conversation history, local copy |
 | `~/.agent/workspaces/<name>-<hash>/history.jsonl` | the durable copy of the same history |
 
+**A session with no user turn is not filed.** `watcher/file-watcher.js` appends
+`[System Event] File X was modified` turns whenever anything on disk changes, so leaving
+the agent open while editing in another window manufactures history containing no prompt.
+Filing those put **6 of 19** rows into a real `/history` picker, every one reading
+`Untitled` with a turn count and nothing to tell them apart — a third of the list was
+watcher noise, in a picker whose only job is choosing. Dropped rather than titled better,
+because a better title is still a row offering to restore a transcript of file
+notifications.
+
 **Session history is written to both copies on every turn** (`storage/session-store.js`). The
 workspace copy sits next to the code; the home copy survives a clean checkout or a wiped
 `.agent/`. On startup the two are reconciled — more turns wins, the other is rebuilt from it.

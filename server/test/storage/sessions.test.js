@@ -404,3 +404,50 @@ describe('a filed conversation is named', () => {
     assert.doesNotMatch(message, /--resume/);
   });
 });
+
+/**
+ * A conversation the user never spoke in is not one.
+ *
+ * `file-watcher.js` appends `[System Event] File X was modified` turns
+ * whenever anything on disk changes, so leaving the agent open while editing
+ * in another window manufactures history containing no prompt at all. Filing
+ * those put 6 of 19 rows into a real `/history` picker, each reading
+ * `Untitled` with a turn count and nothing to tell them apart — a third of
+ * the list was watcher noise, in a picker whose only job is choosing.
+ */
+describe('sessions that are only file-watcher noise', () => {
+  const watcherOnly = () => [
+    { role: 'system', content: '[System Event] File a.js was modified', timestamp: 1 },
+    { role: 'system', content: '[System Event] File b.js was modified', timestamp: 2 },
+  ];
+
+  test('are not filed at all', () => {
+    const store = new SessionStore(dir);
+    store.saveHistory(watcherOnly());
+
+    assert.equal(store.rollover(), null, 'nothing was said, so there is nothing to come back to');
+    assert.deepEqual(store.listSessions(), []);
+  });
+
+  test('a real prompt among them is still filed, and titles the session', () => {
+    // The negative control: the guard must key on "did the user speak", not
+    // on "are there system turns".
+    const store = new SessionStore(dir);
+    store.saveHistory([
+      ...watcherOnly(),
+      { role: 'user', content: 'why is the bridge dropping prompts?', timestamp: 3 },
+      { role: 'agent', content: 'because…', timestamp: 4 },
+    ]);
+
+    const id = store.rollover();
+    assert.ok(id, 'this one is a conversation');
+    const [filed] = store.listSessions();
+    assert.equal(filed.title, 'why is the bridge dropping prompts?');
+  });
+
+  test('a user turn whose content is not a string does not count', () => {
+    const store = new SessionStore(dir);
+    store.saveHistory([{ role: 'user', content: { parts: ['an image'] }, timestamp: 1 }]);
+    assert.equal(store.rollover(), null);
+  });
+});

@@ -222,7 +222,26 @@ export class SessionStore {
     if (turns.length === 0) return null;
 
     const firstUser = turns.find((t) => t.role === 'user' && typeof t.content === 'string');
-    const title = (firstUser?.content || 'Untitled')
+
+    /**
+     * A conversation the user never spoke in is not one.
+     *
+     * `file-watcher.js` appends `[System Event] File X was modified` turns
+     * whenever anything on disk changes, so leaving the agent open in an
+     * editor session manufactures history with no prompt in it. Filing those
+     * put **6 of 19** rows into this user's `/history` picker, every one of
+     * them reading `Untitled` with a turn count and nothing to tell them
+     * apart — a third of the list was file-watcher noise you cannot choose
+     * between, in a picker whose whole job is choosing.
+     *
+     * Dropped rather than titled better, because a better title would still
+     * be a row offering to restore a transcript of file notifications. The
+     * turns are not lost in any sense that matters: they are notifications
+     * about edits the user watched themselves make.
+     */
+    if (!firstUser) return null;
+
+    const title = (firstUser.content || 'Untitled')
       .replace(/\s+/g, ' ').trim().slice(0, 72);
 
     // Sortable, filename-safe, and readable — the id doubles as the date.
