@@ -81,6 +81,28 @@ const EXTENSION_RESPONSE_TIMEOUT = 7 * 60 * 1000;
 // Regex to extract tool calls from Gemini's response (handles json code blocks)
 const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n```/gi;
 
+
+/**
+ * Is this path one of the agent's own artifacts under `.agent/artifacts/`?
+ *
+ * Resolved and prefix-checked rather than matched by name, because the model
+ * supplies the path: `task.md`, `./task.md`, an absolute path and
+ * `../../../etc/task.md` are all the same string test and very different
+ * files. `path.relative` answering with a leading `..` is the one reliable
+ * way to ask "is this inside that directory".
+ */
+export function isAgentArtifact(workspace, candidate) {
+  if (typeof candidate !== 'string' || !candidate) return false;
+  try {
+    const dir = paths.artifactsDir(workspace);
+    const abs = path.isAbsolute(candidate) ? candidate : path.resolve(workspace, candidate);
+    const rel = path.relative(dir, abs);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  } catch {
+    return false; // unresolvable means "not an artifact", which means "ask"
+  }
+}
+
 /**
  * What a headless background turn is told it can call.
  *
@@ -1336,9 +1358,28 @@ export class AgentLoop {
       if (this.mode === 'plan') {
         if (call.name === 'edit_file' || call.name === 'create_file' || call.name === 'run_command') {
           needsApproval = true;
-          // Exception: Creating/Editing Markdown files (like plans) is harmless and shouldn't block
-          if ((call.name === 'create_file' || call.name === 'edit_file') && call.args.path && call.args.path.endsWith('.md')) {
-            needsApproval = false;
+          /**
+           * The agent's own artifacts are exempt. Nothing else is.
+           *
+           * This read `path.endsWith('.md')`, and the comment beside it said
+           * "Creating/Editing Markdown files (like plans) is harmless". The
+           * intent was `task.md` and `plan.md` — the files the system prompt
+           * *tells* the model to keep up to date, which it cannot do if every
+           * tick needs a keystroke. But the test was the extension, not the
+           * location, so in plan mode the agent could silently write **any**
+           * markdown anywhere: `README.md`, `CLAUDE.md`, and `AGENT.md` —
+           * the one file this project promises "can always be trusted to say
+           * what the human wrote" — plus anything outside the workspace via
+           * an absolute path.
+           *
+           * Reported from use: `create_file test-agent-cli.md` in plan mode
+           * came back `"status":"applied"`, with the status bar reading
+           * "plan — every edit needs approval" at the time. A mode that
+           * claims every edit needs approval and quietly exempts a file type
+           * is worse than one that never claimed it.
+           */
+          if (call.name === 'create_file' || call.name === 'edit_file') {
+            if (isAgentArtifact(this.workspace, call.args.path)) needsApproval = false;
           }
           // Exception: Safe, read-only commands should not block
           if (call.name === 'run_command' && risk.level === 'safe') {

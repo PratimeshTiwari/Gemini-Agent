@@ -429,6 +429,27 @@ Writes never go straight to disk. `edit_file` / `create_file` produce a `DiffEng
 Commands pass through `core/risk-classifier.js`, which decides whether `App.jsx` must prompt;
 persistent allow/block rules live in `commandRules`  (`/allowlist`).
 
+**Plan mode exempts the agent's own artifacts, and nothing else.** The check was
+`path.endsWith('.md')`, beside a comment reading "Creating/Editing Markdown files (like plans)
+is harmless". The intent was real — `task.md` and `plan.md` are files the system prompt *tells*
+the model to keep current, and it cannot do that if every tick needs a keystroke. But the test
+was the **extension**, not the **location**, so in plan mode the agent could silently write any
+markdown anywhere: `README.md`, `CLAUDE.md`, and `AGENT.md` — the one file this project promises
+"can always be trusted to say what the human wrote" — plus anything outside the workspace,
+because these tools accept absolute paths.
+
+Reported from use: `create_file test-agent-cli.md` in plan mode returned `"status":"applied"`.
+Meanwhile `prompt-builder.js:362` tells the model *"All file modifications and command
+executions require user approval before being applied"* and the status row reads *"plan — every
+edit needs approval"*. **The model was told the truth and the enforcement was not doing it** —
+which is the worst arrangement of the three, because nothing on screen or in the prompt gives
+you any reason to doubt it.
+
+`isAgentArtifact` resolves the path and prefix-checks it against `paths.artifactsDir`, because
+the model supplies that string: `task.md`, `./task.md`, an absolute path and
+`.agent/artifacts/../../../task.md` are one string test and four different files. It fails
+closed — anything unresolvable, or outside, needs approval.
+
 ### Subagents
 
 `AgentLoop.topology` is `single` | `duo` | `swarm`. `ask_reviewer` / `ask_reasoner` /
