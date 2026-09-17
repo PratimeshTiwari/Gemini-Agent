@@ -3,7 +3,7 @@ import { Box, Text } from 'ink';
 import { DiffRows } from './DiffRows.jsx';
 import { rowsFromPatch } from '../diff-preview.js';
 import { Dots } from './RunningLine.jsx';
-import { renderMarkdown, oneLine, summarizeResult, clampForDisplay, formatCommandResult, blockLines } from '../format.js';
+import { renderMarkdown, oneLine, summarizeResult, clampForDisplay, formatCommandResult, blockLines, liveMessageText } from '../format.js';
 import { parseTurnActions } from '../transcript.js';
 
 /**
@@ -123,7 +123,11 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
         <Box key={idx} flexDirection="row" marginTop={actions.length > 0 ? 1 : 0} width="100%">
           {!fm.msg.isLocal && <Text color="green">● </Text>}
           <Box flexGrow={1} flexShrink={1}>
-            <Text wrap="wrap">{renderMarkdown(fm.content)}</Text>
+            <Text wrap="wrap">
+              {isLive
+                ? liveMessageText(renderMarkdown(fm.content), liveBudget)
+                : renderMarkdown(fm.content)}
+            </Text>
           </Box>
         </Box>
       ))}

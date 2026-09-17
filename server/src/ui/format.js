@@ -440,3 +440,31 @@ export function blockLines(text, width, indent = 0) {
   }
   return out;
 }
+
+/**
+ * The agent's reply, bounded while the turn is still in the live frame.
+ *
+ * **This row was unbounded, and it is the one rule this directory has.** A
+ * live turn lives in Ink's repainted frame, and a frame taller than the
+ * viewport makes Ink write `ESC[2J ESC[3J` and repaint on *every* render —
+ * which destroys the terminal's scrollback and the user's selection. `shown`
+ * above carefully caps the action rows at `liveBudget`; the reply underneath
+ * then rendered in full regardless.
+ *
+ * Reported as "it gave me much more output but I received only a portion of
+ * it", with a screenshot of a reply cut mid-sentence and blank space below.
+ * The text was never lost — `history.jsonl` had all 5,090 characters and
+ * `renderMarkdown` returns all of them — but at ~85 rendered rows in a
+ * ~30-row terminal, the frame blew past the viewport and what survived the
+ * repaint was its top.
+ *
+ * Clamped only while live. The committed copy goes to `<Static>`, is written
+ * once and never repainted, and is the one the user actually reads — so it
+ * stays whole, and the rest of the reply appears there a moment later.
+ */
+export function liveMessageText(text, budget) {
+  const max = Math.max(3, (Number(budget) || 12) - 2);
+  const lines = String(text ?? '').split('\n');
+  if (lines.length <= max) return text;
+  return `${lines.slice(0, max).join('\n')}\n… +${lines.length - max} more lines`;
+}

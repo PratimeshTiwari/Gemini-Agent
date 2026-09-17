@@ -1228,6 +1228,20 @@ have a key.
   14). Whenever there *is* room the subtraction already yields more than three, so the floor
   only ever bound in the case where binding it was wrong.
 
+  **The agent's reply was the unbudgeted row, and it was the biggest one.**
+  `TranscriptTurn` capped the *action* rows at `liveBudget` and then rendered
+  the reply underneath in full, live or not. Reported as "it gave me much more
+  output but I received only a portion of it", with a screenshot of an answer
+  cut mid-sentence and blank space below. **Nothing was lost** —
+  `history.jsonl` held all 5,090 characters and `renderMarkdown` returns all of
+  them, both checked before touching anything — but at ~85 rendered rows in a
+  ~30-row terminal the frame blew past the viewport, and what survived the
+  repaint was its top. `liveMessageText` clamps it while live and says
+  `… +N more lines`; the committed copy in `<Static>` is untouched, so the rest
+  appears a moment later. It lives in `format.js` rather than beside its only
+  caller because a test importing a `.jsx` file cannot run under the repo's
+  plain `node --test`.
+
   **A row you draw is a row you budget, and a row that wraps is two.** `/update`'s reload
   notice was ~105 characters, which wraps at 80 columns: charged as one row, drawn as two,
   and 1 `ESC[2J` at 13x80 and 10x80 where there had been none. `wrap="truncate"` on anything
