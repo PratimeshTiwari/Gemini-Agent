@@ -244,6 +244,41 @@ it needs to. Narrowing it to the response container is a real cost saving and a 
 a wrong selector observes nothing and every turn breaks — so it wants measuring against the
 live page, not a guess.
 
+**Self-healing: what is repaired, and the two things deliberately not.**
+
+Every failure below used to end the turn, and the prompt with it.
+
+- **A failing send repairs the tab.** `sendWithRepairs` is a ladder — send,
+  re-inject the content script, reload the tab — cheapest repair first, because
+  the commonest cause by far is a script orphaned by an extension reload. It
+  **stops before opening a fresh tab, on purpose**: a reload returns to the same
+  `/app/<id>` and Gemini still holds the thread, while a new tab is a new
+  conversation, and an incremental prompt sent into one gets a confident answer
+  to a question the model never saw. Losing a turn beats answering a different
+  one. That is the same reasoning `session_lost` already encodes for batch tabs.
+- **A prompt that never reached the composer is sent again, once.** The content
+  script always knew the difference and discarded it. `sawGenerating` is the
+  discriminator: generation started and we failed to read it means the model
+  **has** an answer, so a resend asks twice into a thread that already holds the
+  first reply; generation never started and nothing scraped means the submit did
+  not happen, so a resend is the first attempt landing. Only the second retries.
+  It resends `_lastMainPrompt` **verbatim**, because `buildPrompt` has side
+  effects — rebuilding after a failed turn 0 marks the system prompt as seen and
+  hands the model a bare question with no tools.
+- **A tab about to hold a turn is opted out of discarding, and reloaded if it
+  was already discarded** (`prepareTabForTurn`). A discarded tab is
+  indistinguishable from a hang: it keeps its title in the strip while the page
+  and script are gone.
+
+Not done, and why: **`timedOut` with partial text is not retried** — the model
+answered, and a second ask corrupts the thread for a reply we already partly
+have. And **a disconnected extension mid-turn does not re-dispatch the in-flight
+prompt**; `pendingInjects` covers prompts that were never delivered, but one
+that *was* delivered may have been answered into a tab we can no longer see, and
+re-sending it blind is the double-answer bug again. Doing that safely needs the
+worker to ask the tab whether it is still watching that `requestId` — the
+`tick_completion` handshake is the piece that would make it answerable.
+
 ### Prompt economics
 
 `PromptBuilder` sends the **full system prompt + tool definitions only on turn 0 and every

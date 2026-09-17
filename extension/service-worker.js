@@ -280,6 +280,44 @@
     } catch {
     }
   }
+  async function sendWithRepairs(tabId, message, targetModel) {
+    const scriptPath = MODEL_SCRIPTS[targetModel];
+    const attempt2 = async () => {
+      const response = await chrome.tabs.sendMessage(tabId, message);
+      if (response && response.success === false) {
+        throw new Error(response.error || "Content script reported failure");
+      }
+      return true;
+    };
+    const repairs = [
+      { stage: "send", before: null },
+      {
+        stage: "reinject",
+        before: scriptPath ? async () => {
+          await chrome.scripting.executeScript({ target: { tabId }, files: [scriptPath] });
+          await waitForBridge(tabId, 3e3);
+        } : null
+      },
+      {
+        stage: "reload",
+        before: async () => {
+          await chrome.tabs.reload(tabId);
+          await waitForBridge(tabId, 15e3);
+        }
+      }
+    ];
+    for (const { stage, before } of repairs) {
+      if (stage !== "send" && !before) continue;
+      try {
+        if (before) await before();
+        return await attempt2();
+      } catch (err) {
+        console.warn(`[Service Worker] ${stage} attempt failed for ${targetModel} tab ${tabId}:`, err.message);
+        lastTabFailure = { stage, message: err.message };
+      }
+    }
+    return false;
+  }
   async function trySendToTab(tab, message, targetModel) {
     await prepareTabForTurn(tab.id);
     let originalActiveTabId = null;
@@ -294,28 +332,7 @@
     } catch (e) {
       console.warn("Failed to execute Tab Wakeup:", e);
     }
-    let success = false;
-    try {
-      const response = await chrome.tabs.sendMessage(tab.id, message);
-      if (response && response.success === false) throw new Error(response.error || "Content script reported failure");
-      success = true;
-    } catch (firstErr) {
-      console.warn(`[Service Worker] First attempt failed for ${targetModel} tab ${tab.id}:`, firstErr.message);
-      lastTabFailure = { stage: "send", message: firstErr.message };
-      const scriptPath = MODEL_SCRIPTS[targetModel];
-      if (scriptPath) {
-        try {
-          await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [scriptPath] });
-          await waitForBridge(tab.id, 3e3);
-          const response = await chrome.tabs.sendMessage(tab.id, message);
-          if (response && response.success === false) throw new Error(response.error || "Content script reported failure");
-          success = true;
-        } catch (secondErr) {
-          console.warn(`[Service Worker] Second attempt failed for ${targetModel} tab ${tab.id}:`, secondErr.message);
-          lastTabFailure = { stage: "reinject", message: secondErr.message };
-        }
-      }
-    }
+    const success = await sendWithRepairs(tab.id, message, targetModel);
     if (success) {
       startCompletionTicks(tab.id);
       await restoreFocusFrom(tab.id);

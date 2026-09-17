@@ -319,6 +319,7 @@ export class AgentLoop {
       this.currentObjective = remembered;
       // One tool-amnesia retry per user turn; see handleGeminiResponse.
       this._deniedToolsOnce = false;
+      this._resentUnsubmittedOnce = false;
       // Auto-heal budget, per user turn.
       this._failedRounds = 0;
       this._roundsThisTurn = 0;
@@ -399,6 +400,49 @@ export class AgentLoop {
 
     if (!complete) {
       if (payload.timedOut) {
+        /**
+         * The one timeout it is *safe* to retry: the prompt was never sent.
+         *
+         * The content script can tell the difference, and the difference is
+         * the whole question. If it saw Gemini generating, the model has an
+         * answer we failed to read — resending would ask it twice and the
+         * second answer would arrive into a conversation that already
+         * contains the first. If it never saw generation start and scraped
+         * nothing, the submit itself did not happen: the model has no idea
+         * this turn exists, so sending it is not a repeat, it is the first
+         * attempt actually landing.
+         *
+         * Once, and only for the user's own turn. If the submit fails twice
+         * the composer or the send button has changed, and the diagnosis
+         * `describeScrapeFailure` writes is more use than a third try.
+         */
+        if (payload.neverSubmitted && !this._resentUnsubmittedOnce && this._lastMainPrompt) {
+          this._resentUnsubmittedOnce = true;
+          logError(this.workspace, {
+            flow: 'agent', op: 'resend_unsubmitted',
+            message: 'The prompt never reached the composer; sending it again',
+            detail: String(payload.content || '').slice(0, 300),
+          });
+          this.callbacks.sendToPanel({
+            id: randomUUID(),
+            type: 'status',
+            payload: { message: '↻ The prompt never reached the tab — sending it again...' },
+            timestamp: Date.now(),
+          });
+          // Straight back onto the lane, not through `_sendToGemini`: the
+          // characters were counted when it was first built, and the tab
+          // never received them, so counting them twice would overstate the
+          // browser thread by a whole prompt.
+          this._releaseExtension();
+          this.pendingGeminiResponse = true;
+          this._enqueueExtensionRequest({
+            prompt: this._lastMainPrompt,
+            expectResponse: true,
+            targetModel: this.modelConfig.main || 'gemini',
+          });
+          return;
+        }
+
         logError(this.workspace, {
           flow: 'agent', op: 'response_timeout',
           message: 'The browser tab stopped streaming before the reply finished',
@@ -686,6 +730,7 @@ export class AgentLoop {
     this.isProcessing = true;
     this.currentObjective = `Fix the failure in background task ${hit.taskId}`;
     this._deniedToolsOnce = false;
+    this._resentUnsubmittedOnce = false;
     this._failedRounds = 0;
 
     this._notify(`🔧 Task ${hit.taskId} failed — investigating…`);
@@ -1164,6 +1209,17 @@ export class AgentLoop {
     // Create a promise that will be resolved when we get the Gemini response
     this.pendingGeminiResponse = true;
     this.contextChars += prompt.length;
+
+    /**
+     * Kept verbatim, because a resend cannot be a rebuild.
+     *
+     * `buildPrompt` has side effects — it marks the system prompt as seen and
+     * resets the refresh counter. If turn 0 never reached the tab, rebuilding
+     * would produce the *short* turn, and the model would be handed a bare
+     * question with no tools and no framing. The bytes that were meant to go
+     * are the bytes to send again.
+     */
+    this._lastMainPrompt = prompt;
 
     this._enqueueExtensionRequest({
       prompt,

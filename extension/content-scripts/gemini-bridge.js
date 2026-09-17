@@ -699,7 +699,22 @@ function startResponseObserver() {
       stopResponseObserver();
       safeSend({
         type: 'gemini_response',
-        payload: { content: diagnosis, complete: false, timedOut: true },
+        payload: {
+          content: diagnosis,
+          complete: false,
+          timedOut: true,
+          /**
+           * Did the model ever see this turn?
+           *
+           * `sawGenerating` is the honest answer, and it decides whether the
+           * agent may retry. Generation started and we failed to read it ->
+           * the model HAS an answer, and resending would ask it twice into a
+           * thread that already holds the first reply. Generation never
+           * started and nothing was scraped -> the submit did not happen, so
+           * sending again is the first attempt landing, not a repeat.
+           */
+          neverSubmitted: !isGenerating && !sawGenerating,
+        },
       });
       return;
     }

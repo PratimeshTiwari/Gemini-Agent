@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.19.0**
+## Current version: **1.20.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,29 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.20.0 — 2026-09-17
+
+- **A failing send now repairs the tab instead of giving up on it.** A failed
+  send reaches the server as `tab_unreachable`, and the server's only answer is
+  to abort the turn — yet nearly everything that breaks a send is transient and
+  local to the tab: an orphaned content script, a discarded tab, a page that
+  navigated, an interstitial. The ladder is send → re-inject → reload, cheapest
+  repair first. **It stops there deliberately.** A reload returns to the same
+  `/app/<id>` and Gemini still has the thread; a fresh tab is a fresh
+  conversation, and an incremental prompt sent into one gets a confident answer
+  to a question the model never saw.
+
+- **A prompt that never reached the composer is sent again, once.** The content
+  script already knew the difference and threw it away. If it saw Gemini
+  generating, the model has an answer we failed to read, and resending would
+  ask the same question twice into a thread that already holds the first reply.
+  If generation never started and nothing was scraped, the submit did not
+  happen — the model has no idea the turn exists, so sending it is the first
+  attempt landing rather than a repeat. Only the second case retries, it
+  retries once, and it resends the **verbatim** bytes: rebuilding the prompt
+  would mark the system prompt as already seen and hand the model a bare
+  question with no tools.
 
 ### 1.19.0 — 2026-09-17
 

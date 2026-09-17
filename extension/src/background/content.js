@@ -520,6 +520,78 @@ async function prepareTabForTurn(tabId) {
   }
 }
 
+/**
+ * Send, and repair the tab between attempts rather than giving up on it.
+ *
+ * A failed send reaches the server as `tab_unreachable`, and the server's only
+ * answer is `abortExtensionWork()` — the turn dies and the prompt is gone. But
+ * almost everything that breaks a send here is transient and local to the tab:
+ * the content script was orphaned by an extension reload, the tab was
+ * discarded, the page navigated, Gemini put up an interstitial. Those are
+ * repairable, and repairing is strictly better than reporting.
+ *
+ * The ladder, in order of how much it disturbs:
+ *
+ *  1. **Send.** Most of the time this is the whole story.
+ *  2. **Re-inject the content script.** Fixes the orphaned-script case, which
+ *     is the single most common one — reloading the extension severs every
+ *     content script's link to it while the page keeps running.
+ *  3. **Reload the tab.** Fixes a page that is wedged, navigated, or showing
+ *     something that is not the chat.
+ *
+ * **It deliberately stops there and does not open a fresh tab.** A reload
+ * returns to the same URL and Gemini keeps the thread, because the
+ * conversation lives in `/app/<id>` on Google's side. A *new* tab is a new
+ * conversation, and sending an incremental prompt into one gets a confident
+ * answer to a question the model never saw — the same trap `session_lost`
+ * exists to refuse. Losing the turn is better than answering the wrong one.
+ */
+export async function sendWithRepairs(tabId, message, targetModel) {
+  const scriptPath = MODEL_SCRIPTS[targetModel];
+
+  const attempt = async () => {
+    const response = await chrome.tabs.sendMessage(tabId, message);
+    if (response && response.success === false) {
+      throw new Error(response.error || 'Content script reported failure');
+    }
+    return true;
+  };
+
+  const repairs = [
+    { stage: 'send', before: null },
+    {
+      stage: 'reinject',
+      before: scriptPath
+        ? async () => {
+          await chrome.scripting.executeScript({ target: { tabId }, files: [scriptPath] });
+          // The freshly injected copy, not the orphan: wait for it to answer.
+          await waitForBridge(tabId, 3000);
+        }
+        : null,
+    },
+    {
+      stage: 'reload',
+      before: async () => {
+        await chrome.tabs.reload(tabId);
+        await waitForBridge(tabId, 15000);
+      },
+    },
+  ];
+
+  for (const { stage, before } of repairs) {
+    if (stage !== 'send' && !before) continue;
+    try {
+      if (before) await before();
+      return await attempt();
+    } catch (err) {
+      console.warn(`[Service Worker] ${stage} attempt failed for ${targetModel} tab ${tabId}:`, err.message);
+      lastTabFailure = { stage, message: err.message };
+    }
+  }
+
+  return false;
+}
+
 async function trySendToTab(tab, message, targetModel) {
   await prepareTabForTurn(tab.id);
 
@@ -548,30 +620,7 @@ async function trySendToTab(tab, message, targetModel) {
     console.warn('Failed to execute Tab Wakeup:', e);
   }
 
-  let success = false;
-  try {
-    const response = await chrome.tabs.sendMessage(tab.id, message);
-    if (response && response.success === false) throw new Error(response.error || 'Content script reported failure');
-    success = true;
-  } catch (firstErr) {
-    console.warn(`[Service Worker] First attempt failed for ${targetModel} tab ${tab.id}:`, firstErr.message);
-    lastTabFailure = { stage: 'send', message: firstErr.message };
-    
-    const scriptPath = MODEL_SCRIPTS[targetModel];
-    if (scriptPath) {
-      try {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [scriptPath] });
-        // The freshly injected copy, not the orphan: wait for it to answer.
-        await waitForBridge(tab.id, 3000);
-        const response = await chrome.tabs.sendMessage(tab.id, message);
-        if (response && response.success === false) throw new Error(response.error || 'Content script reported failure');
-        success = true;
-      } catch (secondErr) {
-        console.warn(`[Service Worker] Second attempt failed for ${targetModel} tab ${tab.id}:`, secondErr.message);
-        lastTabFailure = { stage: 'reinject', message: secondErr.message };
-      }
-    }
-  }
+  const success = await sendWithRepairs(tab.id, message, targetModel);
 
   if (success) {
     // The turn is live in that tab now, so take over its clock.
