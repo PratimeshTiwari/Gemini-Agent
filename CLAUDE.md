@@ -279,6 +279,55 @@ re-sending it blind is the double-answer bug again. Doing that safely needs the
 worker to ask the tab whether it is still watching that `requestId` — the
 `tick_completion` handshake is the piece that would make it answerable.
 
+**Tool amnesia: the cause is a thread the model never saw, not a bad detector.**
+
+Reported from use with two screenshots. The prompt in both was the *short*
+turn — a bracketed context line and a list of tool **names** — sent into a
+brand-new Gemini conversation. The model has names and no definitions, so it
+says the tools "are not actually connected to my current execution
+environment", and the turn is spent.
+
+`hasSeenSystemPrompt` is the **prompt builder's belief**; the model's memory is
+the **thread**, which is the entire premise of `chat-thread.js`. Nothing
+connected the two. So when the tab moved to a different conversation — the user
+opening a new chat, `ensureModelTab` opening one because the old tab was gone,
+a reload landing on `/app` with no id — the builder carried on sending short
+turns forever. `_recordThread` notices the change already; it now also calls
+`resetPromptState()`, but **only when there was a previous thread**: the first
+id of a session is turn 0's own conversation, which already carried the prompt.
+
+**The detector was wrong in both directions, and one of them destroyed
+answers.** `looksLikeCapabilityDenial` gates a repair that discards the reply
+and re-asks. It asked for an inability phrase and then, loosely, for any of
+`execute|run|access|read|…` within 60 characters of any of
+`local|file|directory|command|…` — a window wide enough to span two clauses, so
+*"I read the file and I can't see any problem with the parser — the local
+variable is fine"* was classified as a refusal and thrown away. Meanwhile both
+denials seen in use that day slipped through, because both were **passive**:
+the model did not say it could not, it said the tools were not connected.
+
+The cure for the false positives is the *subject*, not a narrower window. A
+denial is about the agent's tooling or the box it runs in; an ordinary answer
+saying "can't" is about code. `local scope` and `local variable` are no longer
+objects, `local disk` and `file system` are, and `mcp/tools/` is excluded by
+path because in this repo that directory is a thing an answer mentions by name.
+A second pattern covers *"I can't read files in that directory"*, which names
+no environment: there the negation must attach within four words to a verb the
+tools perform, so `can't see`, `can't reproduce`, `can't find` and `can't make`
+— the four ways an ordinary answer says it — do not qualify.
+`test/core/denial-corpus.test.js` holds both lists; the old pattern fails it in
+both directions.
+
+**And moving the clock exposed a latent race.** A turn ended on a *single*
+observation of "no Stop button and one second since the text changed". That was
+only safe while the check was throttled to roughly once a minute, where a
+transient is almost never sampled. At a reliable 2s cadence the transients get
+caught, and a reply came back truncated mid-token. Gemini pauses longer than a
+second between sections and the Stop button is briefly absent while the
+composer re-renders — either alone looks exactly like finished. The condition
+must now hold across consecutive checks. **A fix that makes something reliable
+will find every place that was quietly relying on it being unreliable.**
+
 ### Prompt economics
 
 `PromptBuilder` sends the **full system prompt + tool definitions only on turn 0 and every

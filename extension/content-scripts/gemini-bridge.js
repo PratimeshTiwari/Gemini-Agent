@@ -138,6 +138,14 @@ const traceMark = (stage) => {
   turnTrace.last = now;
 };
 let lastActivityTime = 0;
+/**
+ * How long the reply must stop growing before it counts as settled, and how
+ * many consecutive checks must agree. See `quietStreak` for what went wrong
+ * with one check and one second.
+ */
+const RESPONSE_SETTLE_MS = 1500;
+const RESPONSE_SETTLE_CHECKS = 2;
+
 let activityCheckTimer = null;
 /** The in-flight turn's completion check, or null between turns. */
 let completionCheck = null;
@@ -577,6 +585,22 @@ function startResponseObserver() {
 
   let lastStreamedText = '';
   let streamingUpdateTimer = null;
+  /**
+   * Consecutive checks that saw no Stop button.
+   *
+   * One sample was enough to end the turn, and that was only safe while the
+   * check was being throttled to roughly once a minute in a hidden tab — a
+   * transient gap was almost never *sampled*. Now the service worker drives
+   * this on a reliable 2s cadence, so those gaps get caught, and a reply was
+   * truncated mid-token ("output a single `") while Gemini was still writing.
+   *
+   * Gemini pauses longer than a second between sections, and the Stop button
+   * is absent for a moment while the composer re-renders. Either alone looks
+   * exactly like "finished". Requiring the condition to hold across two
+   * consecutive checks costs a couple of seconds at the end of a turn and
+   * makes both transients unrepresentable.
+   */
+  let quietStreak = 0;
 
   responseObserver = new MutationObserver((mutations) => {
     // Only process if a NEW response element has appeared
@@ -666,10 +690,18 @@ function startResponseObserver() {
     }
     if (isGenerating) sawGenerating = true;
 
-    // If Gemini has stopped generating (no stop button) AND we have some text, it's done!
-    // We add a tiny 1-second silence buffer to ensure the DOM is fully settled.
-    if (!isGenerating && lastResponseText && silenceDuration >= 1000) {
-      console.log('[Gemini Bridge] Generation finished (Stop button disappeared + 1s settled)');
+    // Finished means: no Stop button, the text has stopped growing, and both
+    // were still true on the next check. `silenceDuration` is time since the
+    // observer last saw the response change, so it is already "the text
+    // stopped growing" — it was just far too short on its own.
+    quietStreak = nextQuietStreak(quietStreak, {
+      isGenerating,
+      hasText: Boolean(lastResponseText),
+      silenceMs: silenceDuration,
+    });
+
+    if (quietStreak >= RESPONSE_SETTLE_CHECKS) {
+      console.log(`[Gemini Bridge] Generation finished (quiet for ${quietStreak} checks)`);
       clearInterval(streamingUpdateTimer);
       onResponseComplete(lastResponseText);
       return;
@@ -730,6 +762,22 @@ function startResponseObserver() {
 
   completionCheck = runCompletionCheck;
   activityCheckTimer = setInterval(runCompletionCheck, 2000);
+}
+
+/**
+ * How many consecutive checks have now seen a finished reply.
+ *
+ * Pulled out as a function because it is the whole of the fix and the
+ * regression is invisible in review: setting `RESPONSE_SETTLE_CHECKS` back to
+ * 1 reads like a harmless tightening and silently restores truncated replies.
+ *
+ * @param {number} streak  the count so far
+ * @param {{isGenerating: boolean, hasText: boolean, silenceMs: number}} now
+ * @returns {number} the new count; 0 means "still going"
+ */
+function nextQuietStreak(streak, now) {
+  const settled = !now.isGenerating && now.hasText && now.silenceMs >= RESPONSE_SETTLE_MS;
+  return settled ? streak + 1 : 0;
 }
 
 /**

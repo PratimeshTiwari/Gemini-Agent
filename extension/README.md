@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.21.0**
+## Current version: **1.22.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,19 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.22.0 — 2026-09-17
+
+- **A reply is no longer cut off mid-sentence.** The turn ended on a single
+  observation — no Stop button, and one second since the observer last saw the
+  text change — and that was only ever safe because the check was being
+  throttled. In a hidden tab it ran roughly once a minute, so a transient gap
+  was almost never *sampled*. Moving the clock into the service worker (1.19.0)
+  made the cadence reliable at 2s and the transients started getting caught: a
+  reply arrived truncated mid-token while Gemini was still writing. Gemini
+  pauses longer than a second between sections, and the Stop button is briefly
+  absent while the composer re-renders; either alone looks exactly like
+  "finished". The condition now has to hold across consecutive checks.
 
 ### 1.21.0 — 2026-09-17
 

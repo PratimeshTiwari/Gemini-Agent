@@ -787,8 +787,32 @@ export class AgentLoop {
     const thread = threadFromUrl(url);
     if (!thread?.id) return;
     if (this.chatThread?.id === thread.id) return;
+
+    const previous = this.chatThread;
     this.chatThread = thread;
     this.sessionStore?.setThread?.(thread);
+
+    /**
+     * A different conversation is a model that never saw the system prompt.
+     *
+     * `hasSeenSystemPrompt` is the *builder's* belief, and the model's memory
+     * is the thread — the whole premise of `chat-thread.js`. Nothing connected
+     * the two, so when the tab moved to another conversation (the user opening
+     * a new chat, `ensureModelTab` opening one because the old tab was gone, a
+     * reload landing on `/app` with no id) the builder carried on sending the
+     * short turn: a bracketed context line and a list of tool *names*.
+     *
+     * The model then has names with no definitions and says so — "the tools
+     * listed in your prompt are not actually connected to my execution
+     * environment" — which costs a turn, and only recovers if
+     * `looksLikeCapabilityDenial` happens to match that day's phrasing.
+     * Prevention first; the detector is the backstop.
+     *
+     * Only when there *was* a previous thread. The first id of a session is
+     * turn 0's own conversation, which already carried the full prompt, and
+     * resetting there would send it twice.
+     */
+    if (previous?.id) this.promptBuilder?.resetPromptState?.();
   }
 
   _sendTaskList() {
