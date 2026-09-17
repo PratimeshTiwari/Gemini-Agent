@@ -81,6 +81,22 @@ export function App({ agentLoop, wsServer }) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [status, setStatus] = useState('');
   const [diffRequest, setDiffRequest] = useState(null);
+  /**
+   * Prompts typed while a turn was running.
+   *
+   * `AgentLoop.handleUserMessage` returns early when it is busy, having only
+   * pushed a transient status line that the thinking-message cycle paints
+   * over — so the message was **discarded**. By then `handleSubmit` had
+   * already echoed it into the transcript and cleared the input box, which is
+   * the worst combination available: it looks sent, the text is gone, and
+   * nothing will ever answer it. Reported after typing four prompts and
+   * getting one reply.
+   *
+   * Held here rather than in the loop because this is where the transcript
+   * and the "queued" marker live, and because the loop's contract — one turn
+   * at a time — is the thing that makes the rest of it tractable.
+   */
+  const [queued, setQueued] = useState([]);
   const [tasks, setTasks] = useState([]);
 
   // Extension Connection Polling
@@ -593,6 +609,9 @@ export function App({ agentLoop, wsServer }) {
       setActiveMenu(null);
       setIsProcessing(false);
       setStatus('');
+      // Stopping means stopping. A queue that outlives the stop would start
+      // the next prompt the moment the user thought they had halted it.
+      setQueued([]);
       // `:stop` never reaches the model, so its echo is local — counting it as
       // loop history would shift the merge by one and cost a turn on screen.
       setHistory(prev => [
@@ -645,6 +664,13 @@ export function App({ agentLoop, wsServer }) {
       return;
     }
 
+    // Busy? Queue it rather than letting the loop drop it on the floor.
+    // Read from the loop, not from React's copy, which this function sets.
+    if (agentLoop.isProcessing) {
+      setQueued((q) => [...q, query]);
+      return;
+    }
+
     setIsProcessing(true);
     setStatus('Thinking...');
     setActiveToolCalls([]);
@@ -686,6 +712,21 @@ export function App({ agentLoop, wsServer }) {
 
     await agentLoop.handleUserMessage(messageContent, callbacks);
   };
+
+  /**
+   * Send the next queued prompt once the loop is genuinely idle.
+   *
+   * Gated on `agentLoop.isProcessing` rather than React's `isProcessing`: the
+   * two disagree during a diff approval, and draining then would inject a
+   * prompt into a turn that is parked on a decision.
+   */
+  useEffect(() => {
+    if (queued.length === 0) return;
+    if (isProcessing || agentLoop.isProcessing || diffRequest || activeMenu) return;
+    const [next, ...rest] = queued;
+    setQueued(rest);
+    handleSubmit(next);
+  }, [queued, isProcessing, diffRequest, activeMenu]);
 
   const handleDiffResponse = (action) => {
     if (!diffRequest) return;
@@ -1009,6 +1050,7 @@ export function App({ agentLoop, wsServer }) {
           />
 
           <InputBar
+            queued={queued}
             filedSession={agentLoop.filedSession}
             history={history}
             setPaletteSuppressed={setPaletteSuppressed}

@@ -4,6 +4,7 @@ import { PromptInput } from './PromptInput.jsx';
 import { RunningLine } from './RunningLine.jsx';
 import { FOCUS_INPUT } from '../constants.js';
 import { applyPaste, nextPasteId } from '../paste.js';
+import { oneLine } from '../format.js';
 import { hasClipboardImage } from '../clipboard-image.js';
 
 /** First `n` non-empty lines of an artifact, for the one-glance summary. */
@@ -27,6 +28,7 @@ function head(text, n) {
  * the prompt is visible, so there is no state in which typing goes nowhere.
  */
 export function InputBar({
+  queued = [],
   activeMenu,
   addPaste,
   artifacts,
@@ -150,6 +152,32 @@ export function InputBar({
                 <Text color="cyan">/history</Text>
                 {' to reopen it'}
               </Text>
+            </Box>
+          )}
+
+          {/*
+            Prompts waiting their turn.
+            
+            They used to be discarded: the loop returns early when busy, and
+            the only trace was a status line the thinking cycle painted over —
+            while the transcript had already echoed the message and the input
+            box had already been cleared. It looked sent. Reported after
+            typing four prompts and getting one reply.
+            
+            Bounded, because this is the live frame: three rows and a count.
+            `wrap="truncate"` for the same reason — a queued prompt can be a
+            paragraph, and a row that wraps is charged as one and drawn as two.
+          */}
+          {queued.length > 0 && (
+            <Box flexDirection="column" marginBottom={1}>
+              {queued.slice(0, 3).map((q, i) => (
+                <Text key={i} dimColor wrap="truncate">
+                  {'  ⏸ queued  '}{oneLine(q, 64)}
+                </Text>
+              ))}
+              {queued.length > 3 && (
+                <Text dimColor>{'  ⏸ '}… {queued.length - 3} more queued</Text>
+              )}
             </Box>
           )}
 
