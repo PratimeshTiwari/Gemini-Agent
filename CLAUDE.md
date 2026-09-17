@@ -1287,6 +1287,16 @@ have a key.
   caller because a test importing a `.jsx` file cannot run under the repo's
   plain `node --test`.
 
+  **Its first version counted `\n`, which was the same bug again, and it
+  shipped looking fixed.** It was reported a second time — extension updated,
+  agent restarted, still truncated, still no marker. A 1,450-character reply
+  is **18 source lines and 26 rendered rows at 100 columns**, so an 18-line
+  clamp against a 14-row budget let the text straight through while the frame
+  still overflowed by twelve rows. The rule immediately below had already
+  said it. The budget is spent in *wrapped* rows now, at the width the
+  terminal actually is. **A clamp measured in the wrong unit reads as a fix
+  and behaves as nothing.**
+
   **A row you draw is a row you budget, and a row that wraps is two.** `/update`'s reload
   notice was ~105 characters, which wraps at 80 columns: charged as one row, drawn as two,
   and 1 `ESC[2J` at 13x80 and 10x80 where there had been none. `wrap="truncate"` on anything
