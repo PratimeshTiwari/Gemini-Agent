@@ -139,6 +139,8 @@ const traceMark = (stage) => {
 };
 let lastActivityTime = 0;
 let activityCheckTimer = null;
+/** The in-flight turn's completion check, or null between turns. */
+let completionCheck = null;
 let currentRequestData = null;
 let sawGenerating = false;
 
@@ -620,7 +622,25 @@ function startResponseObserver() {
   // Activity checker: runs every 2s to dynamically detect completion
   // We add an initial delay of 3 seconds before checking for the stop button,
   // because the stop button takes a moment to appear after clicking send.
-  activityCheckTimer = setInterval(() => {
+/**
+ * The completion check, callable by whoever still has a working clock.
+ *
+ * Measured in a genuinely hidden tab (example.com, 30s window, Chrome 152):
+ * a page `setInterval(100ms)` delivered **0.98/s**, and by 90s hidden it was
+ * down to **0.03/s** — roughly one tick per half-minute. Over the same window
+ * a `MutationObserver` delivered **9.97/s** and `getBoundingClientRect()`
+ * returned a real box 296 times out of 296.
+ *
+ * So the evidence is fine and the predicate is fine. The *clock* is the only
+ * thing Chrome throttles, and it is the whole reason this bridge activates
+ * the model tab and holds your focus for the length of a turn.
+ *
+ * The service worker is not a tab and is not throttled, so it drives this at
+ * full rate over `tick_completion`. The local interval stays as a backstop
+ * for the case the worker has been evicted mid-turn — throttled to uselessness
+ * while hidden, correct when the tab is in front, and free either way.
+ */
+  const runCompletionCheck = () => {
     const now = Date.now();
     const totalElapsed = now - responseStartTime;
     const silenceDuration = now - lastActivityTime;
@@ -706,7 +726,10 @@ function startResponseObserver() {
       clearInterval(streamingUpdateTimer);
       onResponseComplete(lastResponseText);
     }
-  }, 2000);
+  };
+
+  completionCheck = runCompletionCheck;
+  activityCheckTimer = setInterval(runCompletionCheck, 2000);
 }
 
 /**
@@ -747,6 +770,7 @@ function stopResponseObserver() {
   }
   clearInterval(activityCheckTimer);
   activityCheckTimer = null;
+  completionCheck = null;
 }
 
 /**
@@ -1188,6 +1212,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
      * the DOM — which is the real precondition for an inject, and the reason
      * the old waits were seconds long rather than milliseconds.
      */
+    /**
+     * The service worker driving the completion check on its own clock.
+     *
+     * `watching` tells it whether a turn is still in flight, so it can stop
+     * ticking the moment there is nothing to check rather than on a timer of
+     * its own. Message delivery is an event, not a timer, so this arrives at
+     * full rate in a hidden tab — which a `setInterval` in this page does not.
+     */
+    case 'tick_completion':
+      if (completionCheck) completionCheck();
+      sendResponse({ watching: !!completionCheck });
+      break;
+
     case 'ping':
       sendResponse({
         ready: bridgeAlive(),

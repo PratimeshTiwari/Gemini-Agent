@@ -1,7 +1,7 @@
 import { connectWebSocket, isSocketOpen, ensureWatchdogAlarm } from './socket.js';
 import { sendToServer } from './messaging.js';
 import { getState } from './state.js';
-import { broadcastTabStatus, reinjectModelTabs, restoreFocusFrom, forgetTab, endSession } from './content.js';
+import { broadcastTabStatus, reinjectModelTabs, restoreFocusFrom, forgetTab, endSession, stopCompletionTicks } from './content.js';
 
 // The toolbar icon opens the popup declared in the manifest, so the
 // open-on-click behaviour this used to set is now ignored by Chrome — a popup
@@ -53,6 +53,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const finished = payload.complete || payload.timedOut;
 
           if (finished) {
+            // Nothing left to check in that tab.
+            stopCompletionTicks(sender.tab.id);
             // Before the close, not after: once the tab is gone Chrome has
             // already picked a new active tab, and the "do we still hold focus"
             // check can no longer tell whether the user had moved on.

@@ -176,6 +176,7 @@
     }
   }
   function forgetTab(tabId) {
+    stopCompletionTicks(tabId);
     subagentTabs.delete(tabId);
     focusTakenFrom.delete(tabId);
     for (const [session, id] of sessionTabs) {
@@ -238,7 +239,49 @@
     }
     return sawAlive;
   }
+  var COMPLETION_TICK_MS = 2e3;
+  var completionTickers = /* @__PURE__ */ new Map();
+  function startCompletionTicks(tabId, everyMs = COMPLETION_TICK_MS) {
+    stopCompletionTicks(tabId);
+    const timer = setInterval(async () => {
+      try {
+        const res = await chrome.tabs.sendMessage(tabId, { type: "tick_completion" });
+        if (res && res.watching === false) stopCompletionTicks(tabId);
+      } catch {
+        stopCompletionTicks(tabId);
+      }
+    }, everyMs);
+    timer.unref?.();
+    completionTickers.set(tabId, timer);
+  }
+  function stopCompletionTicks(tabId) {
+    const timer = completionTickers.get(tabId);
+    if (timer === void 0) return;
+    clearInterval(timer);
+    completionTickers.delete(tabId);
+  }
+  async function prepareTabForTurn(tabId) {
+    let info = null;
+    try {
+      info = await chrome.tabs.get(tabId);
+    } catch {
+      return;
+    }
+    try {
+      if (info.autoDiscardable !== false) {
+        await chrome.tabs.update(tabId, { autoDiscardable: false });
+      }
+    } catch {
+    }
+    if (!info.discarded) return;
+    try {
+      await chrome.tabs.reload(tabId);
+      await waitForBridge(tabId, 1e4);
+    } catch {
+    }
+  }
   async function trySendToTab(tab, message, targetModel) {
+    await prepareTabForTurn(tab.id);
     let originalActiveTabId = null;
     try {
       const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -272,6 +315,10 @@
           lastTabFailure = { stage: "reinject", message: secondErr.message };
         }
       }
+    }
+    if (success) {
+      startCompletionTicks(tab.id);
+      await restoreFocusFrom(tab.id);
     }
     return success;
   }
@@ -644,6 +691,7 @@
             payload.tabUrl = sender.tab.url;
             const finished = payload.complete || payload.timedOut;
             if (finished) {
+              stopCompletionTicks(sender.tab.id);
               await restoreFocusFrom(sender.tab.id);
             }
             if (finished && payload.isSubagent) {

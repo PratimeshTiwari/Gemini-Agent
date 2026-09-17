@@ -195,6 +195,55 @@ for the case it was written for. It reports the state *before* attempting the co
 `connectWebSocket` resolves long before a socket is open, and answering "connected" there
 would slow the nudge down at the moment it is working.
 
+**The clock was the only throttled thing, and that is measurable.**
+
+The bridge activated the model tab and held your focus for the length of a turn, because
+completion was detected by a 2s `setInterval` in the content script and Chrome throttles
+page timers in a hidden tab. Before redesigning around that, it was measured — on
+example.com, in a genuinely hidden tab, Chrome 152, over 334 seconds:
+
+| mechanism | delivered | expected |
+| --- | --- | --- |
+| page `setInterval(100ms)` | 63 | 3340 — **1.9%** |
+| **Worker** `setInterval(100ms)` | 3344 | 3340 — 100% |
+| **`MutationObserver`** | 9.97–10/s every bucket | 10/s |
+| **`getBoundingClientRect()`** | 3213 real boxes | **0** empty |
+
+Three things that were assumed to be broken in a hidden tab are not. The MutationObserver
+that supplies the evidence runs at full rate. Layout works, so the Stop-button visibility
+check — `getBoundingClientRect` plus `getComputedStyle` — is sound. A Worker's timers are
+not throttled at all. **Only the page's own timer is**, and it collapses to roughly one
+tick per minute within 60 seconds of the tab being hidden, staying there across the
+five-minute intensive-throttling boundary rather than degrading further at it.
+
+So a 2s completion check becomes a ~60s one, per round, and a multi-round turn stalls until
+you look at the browser. That is the whole of "it hangs while I am out of Chrome".
+
+The fix keeps the evidence in the page and moves the clock out: a service worker is not a
+tab and is not throttled, and `chrome.tabs.sendMessage` is an *event* rather than a timer,
+so it is delivered at full rate into a hidden page. `startCompletionTicks` drives
+`tick_completion` every 2s from the worker; the content script's own interval stays as a
+backstop for a worker evicted mid-turn. **A Worker inside the page would also have worked
+and was rejected**: creating one from a content script means either a `blob:` URL, which
+gemini.google.com's CSP is entitled to refuse, or a `chrome-extension://` URL, which is
+cross-origin for a worker. The service worker needs no new capability and is already kept
+alive for the turn by the heartbeat.
+
+With the clock outside the tab, **focus is returned as soon as the send lands** rather than
+when the reply does — the tab only has to be in front long enough to accept the paste.
+
+**Chrome also discards background tabs**, which looks identical to a hang: the tab stays in
+the strip with its title intact while the page and content script are gone.
+`prepareTabForTurn` sets `autoDiscardable: false` on a tab about to hold a turn, and
+reloads plus re-handshakes one that was already discarded. The flag is a request, not a
+guarantee, which is why the repair exists alongside it.
+
+**What is still unexamined:** the `MutationObserver` watches `document.body` with
+`subtree: true, characterData: true`, which on an app as busy as Gemini fires far more than
+it needs to. Narrowing it to the response container is a real cost saving and a real risk —
+a wrong selector observes nothing and every turn breaks — so it wants measuring against the
+live page, not a guess.
+
 ### Prompt economics
 
 `PromptBuilder` sends the **full system prompt + tool definitions only on turn 0 and every
@@ -1021,13 +1070,8 @@ measurement.
 
 **The extension.** Chrome throttling of background tabs, the retry behaviour around it, and
 whatever else the bridge is papering over. Raised 2026-09-11, to be planned rather than patched.
-**Partly answered 2026-09-17** — see "Bridge liveness" above. The reconnect alarm, the dropped
-`inject_prompt`, the fixed sleeps and the 3-second nudge are fixed. What is *not* fixed is the
-thing those were papering over: completion is still detected by a 2s `setInterval` in the
-content script, which Chrome throttles to once a minute in a background tab, and that is why
-`trySendToTab` still activates the tab and holds focus until the reply lands. Moving
-completion detection onto the existing `MutationObserver` is what would let a turn run in a
-genuinely background tab, and it is the next thing to plan here.
+**Answered 2026-09-17** — see "Bridge liveness" above, and "The clock was the only throttled
+thing" below.
 
 **`/skills` needs a proper look.** The list is aligned and reachable from settings now, and
 escape steps back — but the shape of the feature was not examined. `/skills dir` prints a

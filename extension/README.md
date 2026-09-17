@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.18.0**
+## Current version: **1.19.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,41 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.19.0 — 2026-09-17
+
+- **A turn no longer needs the tab in front.** Completion was detected by a 2s
+  `setInterval` in the content script, and Chrome throttles page timers in a
+  hidden tab — which is the entire reason this extension activated the model
+  tab and held your focus for the length of a turn. Measured on example.com in
+  a genuinely hidden tab, Chrome 152, over 334 seconds:
+
+  | mechanism | delivered | expected |
+  | --- | --- | --- |
+  | page `setInterval(100ms)` | 63 | 3340 (**1.9%**) |
+  | Worker `setInterval(100ms)` | 3344 | 3340 (100%) |
+  | `MutationObserver` | 10/s throughout | 10/s |
+  | `getBoundingClientRect()` | 3213 real boxes | 0 empty |
+
+  So the scrape was never the problem and neither was layout — only the clock
+  was, and it degraded to roughly one tick per minute within 60 seconds of the
+  tab being hidden, holding there past the five-minute intensive-throttling
+  boundary. A service worker is not a tab and is not throttled, and
+  `chrome.tabs.sendMessage` is an event rather than a timer, so the worker now
+  drives the check over `tick_completion` at full rate while the evidence
+  stays in the page. The local interval remains as a backstop for a worker
+  that has been evicted mid-turn.
+
+- **Focus comes back when the prompt lands, not when the reply does.** It was
+  held for the whole turn because giving it back early meant completion took a
+  minute to notice. With the clock outside the tab, the tab only has to be in
+  front long enough to accept the paste.
+
+- **Model tabs are opted out of discarding, and repaired if they were.** Chrome
+  discards background tabs under memory pressure: the tab stays in the strip
+  and looks fine while the page and its content script are gone.
+  `autoDiscardable: false` asks Chrome not to, and a tab found already
+  discarded is reloaded and re-handshaked rather than reported unreachable.
 
 ### 1.18.0 — 2026-09-17
 

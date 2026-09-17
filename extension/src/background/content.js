@@ -289,6 +289,7 @@ export const isSubagentTab = (tabId) => subagentTabs.has(tabId);
  * into a tab that no longer exists and reports the site as unreachable.
  */
 export function forgetTab(tabId) {
+  stopCompletionTicks(tabId);
   subagentTabs.delete(tabId);
   focusTakenFrom.delete(tabId);
   for (const [session, id] of sessionTabs) {
@@ -411,7 +412,117 @@ export async function waitForBridge(tabId, budgetMs) {
   return sawAlive;
 }
 
+/**
+ * Drive a tab's completion check from out here, where Chrome does not throttle.
+ *
+ * This is the mechanism that makes a turn survive you looking away. Measured
+ * in a hidden tab: the content script's own `setInterval` fell to 0.98/s at
+ * 30s hidden and 0.03/s by 90s, while `MutationObserver` deliveries held at
+ * 9.97/s and `getBoundingClientRect()` never once returned an empty box. The
+ * scrape was never the problem — the clock was.
+ *
+ * A service worker is not a tab, so its timers run at full rate, and
+ * `chrome.tabs.sendMessage` is an event rather than a timer, so it is
+ * delivered at full rate too. That is the whole trick: the evidence stays in
+ * the page, the clock moves out here.
+ *
+ * Only while a turn is in flight, and stopped by the first tick the tab says
+ * it is no longer watching — so between turns this costs nothing.
+ */
+const COMPLETION_TICK_MS = 2000;
+
+/** @type {Map<number, any>} tab id -> interval handle */
+const completionTickers = new Map();
+
+/**
+ * The cadence, as an argument, because the tests would otherwise take 35s.
+ *
+ * A seam nobody pulls is API surface with no reason to exist — this one is
+ * pulled by `test/background/completion-ticks.test.js`, which drives real
+ * timers and would spend half a minute of every suite run waiting out 2s
+ * intervals otherwise. Production callers pass nothing.
+ */
+export function startCompletionTicks(tabId, everyMs = COMPLETION_TICK_MS) {
+  stopCompletionTicks(tabId);
+
+  const timer = setInterval(async () => {
+    try {
+      const res = await chrome.tabs.sendMessage(tabId, { type: 'tick_completion' });
+      // An older content script that predates this message answers `undefined`
+      // rather than an object. Treat that as "keep ticking": the cost is one
+      // message every two seconds and the alternative is silently dropping
+      // back to the throttled path in exactly the tab that needs this most.
+      if (res && res.watching === false) stopCompletionTicks(tabId);
+    } catch {
+      // The tab is gone, discarded, or its script died. Nothing left to tick.
+      stopCompletionTicks(tabId);
+    }
+  }, everyMs);
+
+  // A service worker has no `unref`; Node does, and without it this interval
+  // holds the test runner's event loop open forever — `node --test` hangs
+  // rather than fails, which is the least readable way to break a suite.
+  // Same guard `bridge/extension-lock.js` puts on its watchdog.
+  timer.unref?.();
+
+  completionTickers.set(tabId, timer);
+}
+
+export function stopCompletionTicks(tabId) {
+  const timer = completionTickers.get(tabId);
+  if (timer === undefined) return;
+  clearInterval(timer);
+  completionTickers.delete(tabId);
+}
+
+/**
+ * Make a tab fit to hold a turn, and repair it if it is not.
+ *
+ * Two failures this prevents, both of which look like "the agent hung":
+ *
+ *  - **Chrome discards background tabs under memory pressure.** The tab stays
+ *    in the strip and its title stays readable, but the page — and the content
+ *    script with it — is gone. `autoDiscardable: false` opts the tabs we are
+ *    actually using out of that. It is a request, not a guarantee: Chrome
+ *    still discards on real pressure, which is why the repair below exists.
+ *  - **A tab that was already discarded** answers no messages at all. Reloading
+ *    it brings the page and a fresh content script back, which is strictly
+ *    better than reporting the site as unreachable.
+ *
+ * Both are best-effort: a failure here is not a reason to abandon the send,
+ * because the send may well work anyway.
+ */
+async function prepareTabForTurn(tabId) {
+  let info = null;
+  try {
+    info = await chrome.tabs.get(tabId);
+  } catch {
+    return; // Gone; the send will fail and report it properly.
+  }
+
+  try {
+    if (info.autoDiscardable !== false) {
+      await chrome.tabs.update(tabId, { autoDiscardable: false });
+    }
+  } catch {
+    // Not supported or not permitted. The repair below still applies.
+  }
+
+  if (!info.discarded) return;
+
+  try {
+    await chrome.tabs.reload(tabId);
+    // Nothing to race here: the readiness handshake is the thing that waits,
+    // and it is what the caller does next.
+    await waitForBridge(tabId, 10000);
+  } catch {
+    // Reload refused. Let the send produce the real error.
+  }
+}
+
 async function trySendToTab(tab, message, targetModel) {
+  await prepareTabForTurn(tab.id);
+
   let originalActiveTabId = null;
   try {
     const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -421,11 +532,16 @@ async function trySendToTab(tab, message, targetModel) {
     if (tab.id !== originalActiveTabId) {
       await chrome.tabs.update(tab.id, { active: true });
       await new Promise(r => setTimeout(r, 250)); // Wait for Chrome to wake up the DOM
-      // Remember what we took it from. Restoring here would undo the wakeup —
-      // completion is detected by a 2s `setInterval` in the content script, and
-      // Chrome throttles that to once a minute in a background tab, so a turn
-      // would take a minute to be noticed as finished. The tab has to stay in
-      // front until the reply lands; `restoreFocusFrom` is called then.
+      // Remember what we took it from. This used to be held for the *whole
+      // turn*, because completion was detected by a 2s `setInterval` in the
+      // content script and Chrome throttles that to roughly once a minute in a
+      // hidden tab — so giving focus back immediately meant a turn took a
+      // minute to be noticed as finished.
+      //
+      // `startCompletionTicks` moved that clock into the service worker, which
+      // is not a tab and is not throttled. The tab only has to be in front long
+      // enough to accept the paste, so the focus goes back as soon as the send
+      // lands rather than when the reply does.
       rememberFocus(tab.id, originalActiveTabId);
     }
   } catch (e) {
@@ -457,7 +573,14 @@ async function trySendToTab(tab, message, targetModel) {
     }
   }
 
-  // Keep the target model tab active to prevent Chrome from throttling background DOM operations
+  if (success) {
+    // The turn is live in that tab now, so take over its clock.
+    startCompletionTicks(tab.id);
+    // And give the browser back. `restoreFocusFrom` is a no-op if the user has
+    // already moved on, and is called again when the reply lands, by which
+    // time this one has cleared the entry.
+    await restoreFocusFrom(tab.id);
+  }
 
   return success;
 }
