@@ -437,6 +437,30 @@ repo: **25,445 characters against 9,991, a 61% cut.** `requestToolRedeclaration(
 condensed reminder plus the full definitions and nothing else. It outranks the periodic
 refresh, because that tier sends tool *names* and names are what just failed.
 
+**Saying what would prove you wrong (`pro-hypothesis.md`).** Proposed as a "hypothesis
+engine": a falsifiable hypothesis before every search, with `<invalidation_criteria>` and a
+1–100 `<confidence_score>`. Measuring the prompts first narrowed it a long way. `standard`
+already asks for *"what you expect the next call to show"*, which is most of a hypothesis —
+what no rung asked was **what would disprove it**, or what to do when the answer is not clear.
+Those two are the whole gap, and they cost **714 characters** rather than a taxonomy rewrite.
+
+Scoped to `standard` and `deep`, because it costs **output** tokens and output is generation
+time: `brief` promises "straight to work", and the flash rungs are written for a model that
+follows short prompts and ignores long ones. Verified the way the last prompt move was —
+**6 of the 10 effort × topology shapes come out byte-identical**, and the four that change do
+so by exactly +714. The first attempt was +1 character on `brief` too, from a newline left
+outside the conditional.
+
+**The numeric confidence score was declined.** A model asked for a number produces one, and a
+fabricated `87` reads as evidence. The instruction is behavioural instead — if you would not
+bet on it, ask — which is the part that changes what the agent *does*.
+
+**And the rungs were not as thin as they looked.** An earlier note here claimed the three pro
+rungs "differ only by `isBrief`". Measured: 21,907 / 25,436 / 26,343 characters, differing by
+plan-first, a phase-2 analysis, adversarial self-review and an assumption ledger. What is
+genuinely thin is `standard` → `deep`, at **+3.6%** — that is the rung worth revisiting, not
+the set.
+
 ### Tools
 
 `mcp/mcp-server.js` holds a flat `TOOL_DEFINITIONS` array (name, description, parameters,

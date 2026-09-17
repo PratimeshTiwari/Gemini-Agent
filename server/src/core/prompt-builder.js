@@ -629,7 +629,7 @@ Before forming an opinion or writing code:
 
 **Chain-of-Thought**: Open each phase with a <thought> block — what you know, what you need
 next, what you expect the next call to show. One per phase, not one per call: a four-point
-preamble in front of every read turns a five-file investigation into twenty round-trips.`;
+preamble in front of every read turns a five-file investigation into twenty round-trips.${isBrief ? '' : `\n\n${prompt('pro-hypothesis')}`}`;
 
     const analyse = isBrief ? '' : (isDeep ? `
 ### PHASE 2: CRITICAL ANALYSIS
