@@ -447,24 +447,44 @@ export function blockLines(text, width, indent = 0) {
  * **This row was unbounded, and it is the one rule this directory has.** A
  * live turn lives in Ink's repainted frame, and a frame taller than the
  * viewport makes Ink write `ESC[2J ESC[3J` and repaint on *every* render —
- * which destroys the terminal's scrollback and the user's selection. `shown`
- * above carefully caps the action rows at `liveBudget`; the reply underneath
- * then rendered in full regardless.
+ * which destroys the terminal's scrollback. `shown` in `TranscriptTurn`
+ * carefully caps the action rows at `liveBudget`; the reply underneath then
+ * rendered in full regardless.
  *
  * Reported as "it gave me much more output but I received only a portion of
- * it", with a screenshot of a reply cut mid-sentence and blank space below.
- * The text was never lost — `history.jsonl` had all 5,090 characters and
- * `renderMarkdown` returns all of them — but at ~85 rendered rows in a
- * ~30-row terminal, the frame blew past the viewport and what survived the
- * repaint was its top.
+ * it". The text was never lost — `history.jsonl` held all of it and
+ * `renderMarkdown` returns all of it, both checked — it was never drawn.
+ *
+ * **The first version of this counted `\n`, and that was the same bug again.**
+ * A 1,450-character reply is 18 source lines and **26 rendered rows at 100
+ * columns**, so an 18-line clamp against a 14-row budget passed untouched
+ * while the frame still overflowed by twelve rows. This file's own rule says
+ * it: a row that wraps is two. So the budget is spent in *wrapped* rows, at
+ * the width the terminal actually is.
  *
  * Clamped only while live. The committed copy goes to `<Static>`, is written
- * once and never repainted, and is the one the user actually reads — so it
- * stays whole, and the rest of the reply appears there a moment later.
+ * once and never repainted, and is the one the user reads — so it stays
+ * whole, and the rest of the reply appears there a moment later.
  */
-export function liveMessageText(text, budget) {
-  const max = Math.max(3, (Number(budget) || 12) - 2);
-  const lines = String(text ?? '').split('\n');
-  if (lines.length <= max) return text;
-  return `${lines.slice(0, max).join('\n')}\n… +${lines.length - max} more lines`;
+export function liveMessageText(text, budget, width = 80) {
+  const maxRows = Math.max(3, (Number(budget) || 12) - 2);
+  const cols = Math.max(20, Number(width) || 80);
+  const source = String(text ?? '');
+  const lines = source.split('\n');
+
+  // How many rows each source line will actually occupy once wrapped.
+  const rowsFor = (line) => Math.max(1, Math.ceil(line.length / cols));
+
+  let used = 0;
+  let kept = 0;
+  for (const line of lines) {
+    const next = used + rowsFor(line);
+    // The marker costs a row of its own, so stop while there is room for it.
+    if (kept > 0 && next > maxRows - 1) break;
+    used = next;
+    kept += 1;
+  }
+  if (kept >= lines.length) return source;
+
+  return `${lines.slice(0, kept).join('\n')}\n… +${lines.length - kept} more lines`;
 }

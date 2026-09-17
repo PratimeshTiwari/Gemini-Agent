@@ -125,7 +125,7 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
           <Box flexGrow={1} flexShrink={1}>
             <Text wrap="wrap">
               {isLive
-                ? liveMessageText(renderMarkdown(fm.content), liveBudget)
+                ? liveMessageText(renderMarkdown(fm.content), liveBudget, terminalWidth)
                 : renderMarkdown(fm.content)}
             </Text>
           </Box>

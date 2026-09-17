@@ -57,3 +57,39 @@ test('the committed copy is not this function\'s business', () => {
   assert.notEqual(liveMessageText(whole, 20), whole);
   assert.equal(count(whole), 85, 'the source text itself is never mutated');
 });
+
+/**
+ * The budget is spent in *wrapped* rows, not newlines.
+ *
+ * The first version of this clamp counted `\n`, which is the same bug it was
+ * written to fix. The real reply that provoked it is 1,450 characters over 18
+ * source lines — and 26 rendered rows at 100 columns. An 18-line clamp against
+ * a 14-row budget passed untouched while the frame still overflowed by twelve
+ * rows, so the terminal cleared and the user saw the top of the answer and
+ * nothing else. This file's own rule: a row that wraps is two.
+ */
+const wrapped = (s, cols) => String(s).split('\n')
+  .reduce((n, l) => n + Math.max(1, Math.ceil(l.length / cols)), 0);
+
+test('a few long lines that wrap are clamped, though there are few of them', () => {
+  // Six source lines, each three rows wide at 40 columns: 18 rows in 6 lines.
+  const text = Array.from({ length: 6 }, () => 'x'.repeat(115)).join('\n');
+  assert.equal(text.split('\n').length, 6, 'only six newlines');
+  assert.ok(wrapped(text, 40) >= 18, 'but far more rows');
+
+  const out = liveMessageText(text, 12, 40);
+  assert.ok(wrapped(out, 40) <= 12, `must fit the budget in rows, got ${wrapped(out, 40)}`);
+  assert.match(out, /… \+\d+ more lines$/);
+});
+
+test('the same text is left alone when the terminal is wide enough', () => {
+  // Nothing wraps at 200 columns, so six lines is six rows and fits.
+  const text = Array.from({ length: 6 }, () => 'x'.repeat(115)).join('\n');
+  assert.equal(liveMessageText(text, 12, 200), text);
+});
+
+test('a single line far wider than the budget still yields something', () => {
+  const out = liveMessageText('y'.repeat(5000), 6, 40);
+  assert.ok(out.length > 0);
+  assert.ok(out.startsWith('y'));
+});
