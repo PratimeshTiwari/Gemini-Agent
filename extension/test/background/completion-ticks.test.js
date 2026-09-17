@@ -103,3 +103,40 @@ test('starting twice does not double the cadence', async () => {
 test('stopCompletionTicks is safe for a tab that was never started', () => {
   assert.doesNotThrow(() => mod.stopCompletionTicks(999));
 });
+
+test('confirms fast when the tab says it is one observation from done', async () => {
+  // The latency this exists to remove. Measured over 74 real turns, every
+  // `complete` landed on a ~2000ms boundary because a finished reply was only
+  // noticed on the next slow tick — a turn that ended at 4.2s was delivered
+  // at 6s, and requiring a second consecutive quiet check added another whole
+  // interval on top.
+  const ticks = stubChrome(() => ({ watching: true, confirmSoon: true }));
+  mod.startCompletionTicks(7, TICK);
+  await elapse(TICK * 1.6);
+
+  // One slow tick would have fired once in that window; the fast confirm
+  // turns it into several.
+  assert.ok(ticks.length >= 3, `expected fast re-checks, got ${ticks.length}`);
+});
+
+test('does not poll fast while the model is still writing', async () => {
+  // Slow is correct during generation: a fast poll there buys nothing and
+  // just burns messages into the tab.
+  const ticks = stubChrome(() => ({ watching: true, confirmSoon: false }));
+  mod.startCompletionTicks(7, TICK);
+  await elapse(TICK * 2.5);
+
+  assert.ok(ticks.length <= 3, `expected the slow cadence, got ${ticks.length}`);
+});
+
+test('a fast confirmation stops with the turn, not after it', async () => {
+  // confirmSoon on the first reply, finished on the next: the scheduled
+  // follow-up must not keep the ticker alive past the end of the turn.
+  const ticks = stubChrome((n) => (n === 1
+    ? { watching: true, confirmSoon: true }
+    : { watching: false }));
+  mod.startCompletionTicks(7, TICK);
+  await elapse(TICK * 4);
+
+  assert.equal(ticks.length, 2, `should stop on the confirming check, got ${ticks.length}`);
+});

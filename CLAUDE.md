@@ -328,6 +328,42 @@ composer re-renders — either alone looks exactly like finished. The condition
 must now hold across consecutive checks. **A fix that makes something reliable
 will find every place that was quietly relying on it being unreliable.**
 
+**Turn latency, measured — and where it actually goes.**
+
+`core/trace-log.js` records five stages per turn (`find_input`, `type`, `send`,
+`first_token`, `complete`); `/trace` reads them back. From 74 real turns on the
+owner's machine:
+
+| stage | median | p90 |
+| --- | --- | --- |
+| `find_input` | 1ms | 13ms |
+| `type` | 24ms | 513ms |
+| `send` | 514ms | 1201ms |
+| `first_token` | **0ms** | 1ms |
+| `complete` | 6004ms | 18981ms |
+
+Two things fall out of that table, and neither is Gemini being slow.
+
+**`first_token` measured nothing.** It was marked one line after the send, so
+it timed the gap between two adjacent statements. The number it is named for —
+the one that separates *the model thinking* from *our overhead* — was never
+captured; it all went into `complete`. Marked now when the observer first sees
+text, which is what makes any further latency claim checkable.
+
+**`complete` was quantised to the poll interval.** 6004, 8966, 10001, 16002,
+30064: every sample sits on a ~2000ms boundary, because a finished reply is
+only noticed when the check next fires. A reply that ended at 4.2s was
+delivered at 6s, and the two-consecutive-checks rule that stopped truncated
+replies added another whole interval. The rule is right and the *cadence* was
+wrong: the tab now reports `confirmSoon` as soon as it goes quiet and the
+worker returns at a quarter of the interval for the confirming look — slow
+while the model writes, fast only when there is something to confirm.
+
+The remaining per-turn overhead is `send` (~0.5s median, 1.2s p90), and the
+real multiplier is **round trips**: every tool call is another full
+inject → think → scrape cycle, so tail latency is paid once per round, not
+once per turn.
+
 ### Prompt economics
 
 `PromptBuilder` sends the **full system prompt + tool definitions only on turn 0 and every

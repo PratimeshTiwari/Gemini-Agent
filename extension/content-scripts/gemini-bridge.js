@@ -149,6 +149,8 @@ const RESPONSE_SETTLE_CHECKS = 2;
 let activityCheckTimer = null;
 /** The in-flight turn's completion check, or null between turns. */
 let completionCheck = null;
+/** Whether the in-flight turn is one observation short of settled. */
+let quietPending = () => false;
 let currentRequestData = null;
 let sawGenerating = false;
 
@@ -579,7 +581,6 @@ function startResponseObserver() {
   stopResponseObserver();
   lastResponseText = '';
   responseStartTime = Date.now();
-  traceMark('first_token');
   lastActivityTime = Date.now();
   sawGenerating = false;
 
@@ -601,6 +602,9 @@ function startResponseObserver() {
    * makes both transients unrepresentable.
    */
   let quietStreak = 0;
+  // Read by the `tick_completion` reply so the worker can come back quickly
+  // for the confirming observation instead of waiting out a whole interval.
+  quietPending = () => quietStreak > 0 && quietStreak < RESPONSE_SETTLE_CHECKS;
 
   responseObserver = new MutationObserver((mutations) => {
     // Only process if a NEW response element has appeared
@@ -612,6 +616,16 @@ function startResponseObserver() {
     const currentResponse = extractLatestResponse();
 
     if (currentResponse && currentResponse !== lastResponseText) {
+      /**
+       * The first text Gemini actually produced.
+       *
+       * This was marked in `startResponseObserver`, one line after the send —
+       * so it measured the gap between two adjacent statements and read 0ms
+       * or 1ms on all 74 recorded turns. The number it was named for, and the
+       * only one that separates *Gemini thinking* from *our overhead*, was
+       * never captured: everything went into `complete`.
+       */
+      if (!lastResponseText) traceMark('first_token');
       lastResponseText = currentResponse;
       lastActivityTime = Date.now(); // Reset activity timer
 
@@ -878,6 +892,7 @@ function stopResponseObserver() {
   clearInterval(activityCheckTimer);
   activityCheckTimer = null;
   completionCheck = null;
+  quietPending = () => false;
 }
 
 /**
@@ -1329,7 +1344,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
      */
     case 'tick_completion':
       if (completionCheck) completionCheck();
-      sendResponse({ watching: !!completionCheck });
+      sendResponse({
+        watching: !!completionCheck,
+        /**
+         * "I am one observation away from done — come back sooner."
+         *
+         * Measured over 74 real turns: every `complete` lands on a ~2000ms
+         * boundary (6004, 8966, 10001, 16002, 30064…), because the answer is
+         * only noticed on the next tick. A reply that truly finished at 4.2s
+         * is delivered at 6s, and the debounce that stopped replies being
+         * truncated added a second whole tick on top.
+         *
+         * The debounce is not the problem — two independent observations is
+         * the right rule. Waiting a *slow* interval for the second one is.
+         */
+        confirmSoon: quietPending(),
+      });
       break;
 
     case 'ping':

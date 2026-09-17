@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.22.0**
+## Current version: **1.23.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,30 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.23.0 — 2026-09-17
+
+- **The end of a turn is noticed in a quarter second, not on the next tick.**
+  Measured over 74 real turns from one machine's `traces.jsonl`, every
+  `complete` landed on a ~2000ms boundary — 6004, 8966, 10001, 16002, 30064 —
+  because a finished reply is only seen when the poll next fires. A reply that
+  genuinely ended at 4.2s was delivered at 6s, and requiring two consecutive
+  quiet checks (1.22.0, which stopped replies arriving truncated) added a
+  second whole interval on top of that.
+
+  Two independent observations is the right rule; waiting a *slow* interval for
+  the second one is not. The cadence is now slow while the model is writing —
+  where a fast poll buys nothing and just burns messages — and the tab reports
+  `confirmSoon` the moment it goes quiet, so the worker comes back at a quarter
+  of the interval for the confirming look.
+
+- **`first_token` was measuring nothing, and it is the number that matters.**
+  It was marked one line after the send, so it timed the gap between two
+  adjacent statements: 0ms or 1ms on all 74 recorded turns. Everything real
+  went into `complete`, which meant *Gemini thinking* and *our detection lag*
+  could not be told apart — exactly the distinction needed to make turns faster
+  without touching reasoning. It is now marked when the observer first sees
+  response text.
 
 ### 1.22.0 — 2026-09-17
 

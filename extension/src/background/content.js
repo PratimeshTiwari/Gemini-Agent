@@ -431,6 +431,22 @@ export async function waitForBridge(tabId, budgetMs) {
  */
 const COMPLETION_TICK_MS = 2000;
 
+/**
+ * How soon to come back when the tab says it is one observation from done.
+ *
+ * Measured over 74 real turns before this existed: every `complete` landed on
+ * a ~2000ms boundary — 6004, 8966, 10001, 16002, 30064 — because a finished
+ * reply is only noticed on the next tick. A turn that genuinely ended at 4.2s
+ * was delivered at 6s, and requiring two consecutive quiet checks (which is
+ * what stopped replies arriving truncated) added a second whole interval.
+ *
+ * Two independent observations is the right rule; waiting a *slow* interval
+ * for the second one is not. So the cadence is slow while the model is
+ * writing — where it costs nothing and a fast poll would just burn messages —
+ * and fast the moment the tab reports it has gone quiet.
+ */
+const COMPLETION_CONFIRM_MS = 250;
+
 /** @type {Map<number, any>} tab id -> interval handle */
 const completionTickers = new Map();
 
@@ -445,19 +461,32 @@ const completionTickers = new Map();
 export function startCompletionTicks(tabId, everyMs = COMPLETION_TICK_MS) {
   stopCompletionTicks(tabId);
 
-  const timer = setInterval(async () => {
+  const tick = async () => {
     try {
       const res = await chrome.tabs.sendMessage(tabId, { type: 'tick_completion' });
       // An older content script that predates this message answers `undefined`
       // rather than an object. Treat that as "keep ticking": the cost is one
       // message every two seconds and the alternative is silently dropping
       // back to the throttled path in exactly the tab that needs this most.
-      if (res && res.watching === false) stopCompletionTicks(tabId);
+      if (res && res.watching === false) {
+        stopCompletionTicks(tabId);
+        return;
+      }
+      // One observation short of settled: confirm in a quarter second rather
+      // than on the next slow tick. This is where the turn's tail latency was.
+      if (res && res.confirmSoon && completionTickers.has(tabId)) {
+        // A fraction of the cadence, never more: the confirming look is only
+        // useful if it lands well before the next ordinary tick would.
+        const soon = setTimeout(tick, Math.min(COMPLETION_CONFIRM_MS, everyMs / 4));
+        soon.unref?.();
+      }
     } catch {
       // The tab is gone, discarded, or its script died. Nothing left to tick.
       stopCompletionTicks(tabId);
     }
-  }, everyMs);
+  };
+
+  const timer = setInterval(tick, everyMs);
 
   // A service worker has no `unref`; Node does, and without it this interval
   // holds the test runner's event loop open forever — `node --test` hangs

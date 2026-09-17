@@ -240,17 +240,26 @@
     return sawAlive;
   }
   var COMPLETION_TICK_MS = 2e3;
+  var COMPLETION_CONFIRM_MS = 250;
   var completionTickers = /* @__PURE__ */ new Map();
   function startCompletionTicks(tabId, everyMs = COMPLETION_TICK_MS) {
     stopCompletionTicks(tabId);
-    const timer = setInterval(async () => {
+    const tick = async () => {
       try {
         const res = await chrome.tabs.sendMessage(tabId, { type: "tick_completion" });
-        if (res && res.watching === false) stopCompletionTicks(tabId);
+        if (res && res.watching === false) {
+          stopCompletionTicks(tabId);
+          return;
+        }
+        if (res && res.confirmSoon && completionTickers.has(tabId)) {
+          const soon = setTimeout(tick, Math.min(COMPLETION_CONFIRM_MS, everyMs / 4));
+          soon.unref?.();
+        }
       } catch {
         stopCompletionTicks(tabId);
       }
-    }, everyMs);
+    };
+    const timer = setInterval(tick, everyMs);
     timer.unref?.();
     completionTickers.set(tabId, timer);
   }
