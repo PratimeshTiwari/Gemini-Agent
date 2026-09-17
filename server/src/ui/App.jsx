@@ -566,18 +566,40 @@ export function App({ agentLoop, wsServer }) {
       return;
     }
 
-    setIsProcessing(true);
-    setStatus('Thinking...');
-    setActiveToolCalls([]);
+    /**
+     * A local command must not disturb a turn that is still running.
+     *
+     * Every submit used to `setIsProcessing(true)` and `setActiveToolCalls([])`
+     * before looking at what it was, and every slash handler ends with
+     * `setIsProcessing(false)`. So typing anything starting with `/` while the
+     * agent was mid-turn wiped the live turn's tool rows and then declared the
+     * turn finished — while the loop carried on working.
+     *
+     * Reported exactly that way: `/efforttt` typed during a turn, and the CLI
+     * "stopped responding and did not output the result". It had not stopped.
+     * Gemini ran the tool calls and produced the answer, and the terminal was
+     * left with no spinner, no rows, and no reason to believe anything was
+     * still happening.
+     *
+     * A local command is local: it answers in the transcript and leaves the
+     * turn's state alone. `setIsProcessing` is swapped for a no-op while the
+     * loop is busy, because the handlers are many and each one calls it.
+     */
+    const turnInFlight = Boolean(agentLoop.isProcessing);
 
     if (query.startsWith('/')) {
+      if (!turnInFlight) {
+        setIsProcessing(true);
+        setStatus('Thinking...');
+        setActiveToolCalls([]);
+      }
       await handleSlashCommand(query, {
         agentLoop,
         wsServer,
         resetScreen,
         setActiveMenu,
         setHistory,
-        setIsProcessing,
+        setIsProcessing: turnInFlight ? () => {} : setIsProcessing,
         setPendingImage,
         // So `/github …` can answer on the GitHub screen instead of filling
         // the agent's transcript with polling notices.
@@ -585,6 +607,10 @@ export function App({ agentLoop, wsServer }) {
       });
       return;
     }
+
+    setIsProcessing(true);
+    setStatus('Thinking...');
+    setActiveToolCalls([]);
 
     // The prompt carries markers; the model gets what was actually pasted. The
     // transcript keeps the marker form, so a 500-line paste never becomes a

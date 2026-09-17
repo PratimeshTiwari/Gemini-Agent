@@ -1236,6 +1236,26 @@ have a key.
   behind explicit dependency lists; the `<Static>` element, `staticEpoch` and the streaming
   path stayed in `App.jsx` deliberately, and adding memoization to the transcript rows is how
   the scroll glitches came back the last two times.
+- **A local command must not touch a running turn.** `handleSubmit` set
+  `isProcessing` and cleared `activeToolCalls` before looking at what was
+  submitted, and every slash handler ends with `setIsProcessing(false)` — so
+  typing anything starting with `/` mid-turn wiped the live turn's rows and
+  then declared it finished while the loop carried on. Reported as `/efforttt`
+  during a turn and "the agent stopped responding and did not output the
+  result": it had not stopped, it had run the tool calls and produced the
+  answer. `turnInFlight` is read from **`agentLoop.isProcessing`**, not from
+  React's copy, which this very function sets true. Pinned by a source
+  assertion, because observing it needs a live turn under the pty harness and
+  because moving two `set…` calls back above the branch reads as tidying.
+
+  **The transcript only advances on `agent_response`** — `mergeLoopHistory`
+  runs in that one branch of `sendToPanel` — and `agent_response` is only sent
+  when a reply has prose left after the tool calls are stripped. So a round
+  that is *only* tool calls leaves the screen exactly as it was. That is why
+  the report looked like a dead agent rather than a busy one, and it is still
+  the case: the live tool rows are the only sign of progress during those
+  rounds, which is precisely what the bug above was wiping.
+
 - **A menu opened from `/settings` must not answer in the transcript.** `returnTo` is the
   settings page, so setting it back reopens that page *on top of* whatever the command just
   said. Four screens did this — `/effort`, `/config`, and two on the allowlist — and the
