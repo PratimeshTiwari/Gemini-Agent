@@ -143,6 +143,58 @@ Modules are kebab-case; React components keep PascalCase (`ui/App.jsx`). Tests l
    dispatches through `MCPServer.executeTool`.
 6. Results are fed back via `buildToolResultPrompt` and the loop repeats.
 
+### Bridge liveness — why a prompt used to wait for you to open Chrome
+
+Reported from use, 2026-09-17: *"most of the time the prompt is not sent while I am out
+of Chrome, and as soon as I open Chrome or the Gemini tab it is sent."* That is two
+independent faults that produce one symptom, and neither is throttling.
+
+**The reconnect alarm was cleared on connect.** `chrome.alarms.create('reconnect')` was
+called in `scheduleRetry` and `chrome.alarms.clear` in `stopKeepAlive` — which runs on
+`onopen`. So a *healthy* bridge had no alarm at all. Chrome can still evict a service
+worker that believes it is connected, and when it does the socket dies with it: `onclose`
+never runs inside a worker that is already gone, no `setTimeout` survives it, and nothing
+outside the browser can reach in and start it. What actually revived it was incidental —
+the user focusing a tab, `chrome.tabs.onUpdated` firing, and Chrome starting the worker to
+deliver that event, which re-runs the module and its bottom-line `connectWebSocket()`.
+The alarm is periodic and permanent now. While connected it costs nothing, because the
+heartbeat already keeps the worker resident; it is the only thing that can resurrect a
+worker Chrome has silently collected. `test/background/watchdog-alarm.test.js` pins it,
+including a source assertion that `stopKeepAlive` does not clear it — re-adding that line
+reads as ordinary cleanup in a diff.
+
+**And the prompt it was waiting for had already been thrown away.** `broadcast` returns
+whether it reached anyone; every caller ignored it. `injectPrompt` with no extension
+connected wrote to no sockets and vanished, leaving the lane busy until the seven-minute
+watchdog. `sendInjectPrompt` honours the return and holds what it could not deliver;
+`flushPendingInjects` drains it when a client **identifies as an extension** — not on
+socket open, because the socket is open before we know what is on the other end and the
+side panel uses the same transport. Held prompts past `INJECT_BUFFER_TTL_MS` are dropped
+rather than sent: the lane watchdog has already abandoned that turn, and typing it into
+Gemini then starts a conversation nobody is listening to.
+
+**Fixed sleeps became a readiness handshake.** 4000ms after opening a subagent tab, 1500ms
+after a new main tab loaded, 1000ms after re-injecting — 6.5s of unconditional waiting per
+new tab, wrong in both directions: seconds burnt on a warm machine, and still too early on
+a cold one, where the send lands before the listener exists and is reported as an
+unreachable tab. `waitForBridge` polls a `ping` the content script answers. It reports two
+things because they fail differently: `ready` (this script is listening and not orphaned)
+and `canType` (the composer is in the DOM, which is the real precondition for an inject).
+**Gating only on `canType` would be worse than the sleep it replaces** — a changed composer
+selector would turn "the send fails with a readable error" into "every turn burns its whole
+budget first" — so the last 40% of the budget accepts `ready` alone and lets the send
+produce the honest error.
+
+**The 3-second nudge was the third mechanism doing this job, and the most expensive.** Every
+model tab ran `setInterval(() => safeSend({type:'connect'}), 3000)` for the life of the
+page, so an open Gemini tab woke the service worker twenty times a minute forever — a
+worker never allowed to go idle, to solve a problem that only exists while there is nothing
+to connect to. The worker now answers `connect` with its state and the tab backs off to 30s
+once connected, which is a tenth of the steady-state cost with the fast cadence still there
+for the case it was written for. It reports the state *before* attempting the connection:
+`connectWebSocket` resolves long before a socket is open, and answering "connected" there
+would slow the nudge down at the moment it is working.
+
 ### Prompt economics
 
 `PromptBuilder` sends the **full system prompt + tool definitions only on turn 0 and every
@@ -157,10 +209,23 @@ its tools, it forgets them completely — mid-session it answers "I cannot execu
 commands or access your local file system" with total confidence and the turn is lost. Three
 detectors in `core/drift-detector.js` back that up, each with a different response:
 `looksLikeMultipleDrafts` → bring the refresh forward; `looksLikeCapabilityDenial` → resend the
-full definitions and retry the turn once; `looksLikeProviderError` → Gemini's own error rather
+full definitions and retry the turn once (`requestToolRedeclaration`, **not**
+`resetPromptState` — see below); `looksLikeProviderError` → Gemini's own error rather
 than an answer, so re-ask (this one used to be written to disk as a PR plan). All three match
 prose and will always trail the model's phrasing, which is why the anchor exists: prevention
 first, detection as the backstop.
+
+**The repair for tool amnesia used to be the heaviest prompt in the system.** It called
+`resetPromptState()`, which does not mean "send the tools again" — it means "pretend this
+chat has never seen a prompt", so the next turn was a full turn-0 payload: system
+instructions, tool definitions, `AGENT.md`, memory and the skill catalogue. The model had
+not forgotten the project; it had forgotten one block. And the reason prompts are tiered at
+all is that a large repeated payload trips Gemini's repetition and A/B-test filters — so
+the old repair fired the largest prompt available at exactly the moment the session was
+already unhealthy, which makes it a plausible *cause* of the next failure. Measured on this
+repo: **25,445 characters against 9,991, a 61% cut.** `requestToolRedeclaration()` sends the
+condensed reminder plus the full definitions and nothing else. It outranks the periodic
+refresh, because that tier sends tool *names* and names are what just failed.
 
 ### Tools
 
@@ -956,6 +1021,13 @@ measurement.
 
 **The extension.** Chrome throttling of background tabs, the retry behaviour around it, and
 whatever else the bridge is papering over. Raised 2026-09-11, to be planned rather than patched.
+**Partly answered 2026-09-17** — see "Bridge liveness" above. The reconnect alarm, the dropped
+`inject_prompt`, the fixed sleeps and the 3-second nudge are fixed. What is *not* fixed is the
+thing those were papering over: completion is still detected by a 2s `setInterval` in the
+content script, which Chrome throttles to once a minute in a background tab, and that is why
+`trySendToTab` still activates the tab and holds focus until the reply lands. Moving
+completion detection onto the existing `MutationObserver` is what would let a turn run in a
+genuinely background tab, and it is the next thing to plan here.
 
 **`/skills` needs a proper look.** The list is aligned and reachable from settings now, and
 escape steps back — but the shape of the feature was not examined. `/skills dir` prints a

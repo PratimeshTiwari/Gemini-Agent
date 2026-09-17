@@ -44,8 +44,29 @@ import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendT
  */
 const KEEPALIVE_MS = 20000;
 
-/** The backstop for the case this file cannot cover: the worker dies anyway. */
+/**
+ * The backstop for the case this file cannot cover: the worker dies anyway.
+ *
+ * **It is armed while connected too, and that is the whole point.** It used to
+ * be created in `scheduleRetry` and cleared in `stopKeepAlive`, which runs on
+ * `onopen` — so a healthy bridge had no alarm at all. Chrome can still evict a
+ * service worker that believes it is connected, and when it does the socket
+ * dies with it, `onclose` never runs inside a worker that is already gone, and
+ * there is no timer and no alarm left to notice. Nothing can push at a dead
+ * worker from outside: the agent cannot wake it.
+ *
+ * What actually revived it was incidental — `chrome.tabs.onUpdated` firing
+ * because the user came back and focused a tab. That is exactly the reported
+ * symptom: "the prompt only sends once I open Chrome or the Gemini tab". The
+ * prompt was not slow, the extension was not running, and the thing that
+ * brought it back was the user's own navigation.
+ *
+ * So the alarm is periodic and permanent. While connected it costs nothing —
+ * the worker is already resident on the heartbeat — and it is the only thing
+ * that can resurrect a worker Chrome has silently collected.
+ */
 const ALARM_FALLBACK_MINUTES = 0.5; // the clamp floor; asking for less is ignored
+const WATCHDOG_ALARM = 'reconnect';
 
 const HEARTBEAT_INTERVAL = 10000;
 
@@ -108,6 +129,7 @@ export async function connectWebSocket() {
   ws.onopen = async () => {
     attempt = 0;
     stopKeepAlive();              // connected: the heartbeat keeps the worker up
+    ensureWatchdogAlarm();        // but the worker can still be evicted; see above
     await setState({ connected: true, reconnectAttempts: 0, lastError: null });
 
     ws.send(JSON.stringify({
@@ -162,7 +184,7 @@ function scheduleRetry() {
   retryTimer = setTimeout(() => connectWebSocket(), delay);
 
   startKeepAlive();
-  chrome.alarms.create('reconnect', { delayInMinutes: ALARM_FALLBACK_MINUTES });
+  ensureWatchdogAlarm();
   setState({ reconnectAttempts: attempt }).catch(() => {});
 }
 
@@ -182,7 +204,29 @@ function stopKeepAlive() {
     clearInterval(keepAliveTimer);
     keepAliveTimer = null;
   }
-  chrome.alarms.clear('reconnect').catch(() => {});
+  // The watchdog alarm is deliberately *not* cleared here. Being connected is
+  // not evidence the worker will stay alive, and this function runs on `onopen`
+  // — clearing it here is what left a healthy bridge with no way back.
+}
+
+/**
+ * Arm the periodic watchdog, if it is not already armed.
+ *
+ * `chrome.alarms.create` with an existing name replaces the alarm and restarts
+ * its period, so re-arming on every retry would push the backstop further away
+ * each time it is needed most. Checking first keeps the cadence honest.
+ */
+export async function ensureWatchdogAlarm() {
+  try {
+    const existing = await chrome.alarms.get(WATCHDOG_ALARM);
+    if (existing) return;
+    chrome.alarms.create(WATCHDOG_ALARM, {
+      delayInMinutes: ALARM_FALLBACK_MINUTES,
+      periodInMinutes: ALARM_FALLBACK_MINUTES,
+    });
+  } catch {
+    // Alarms unavailable is not a reason to fail a connection attempt.
+  }
 }
 
 function startHeartbeat() {

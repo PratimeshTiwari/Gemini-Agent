@@ -214,6 +214,30 @@
     const host = pattern.replace(/^https?:\/\//, "").replace(/\/\*$/, "").replace(/\*$/, "");
     return url.includes(host);
   }
+  var BRIDGE_PING_START_MS = 50;
+  var BRIDGE_PING_MAX_MS = 400;
+  var BRIDGE_CAN_TYPE_SHARE = 0.6;
+  async function waitForBridge(tabId, budgetMs) {
+    const start = Date.now();
+    const deadline = start + budgetMs;
+    const canTypeDeadline = start + budgetMs * BRIDGE_CAN_TYPE_SHARE;
+    let delay = BRIDGE_PING_START_MS;
+    let sawAlive = false;
+    while (Date.now() < deadline) {
+      try {
+        const res = await chrome.tabs.sendMessage(tabId, { type: "ping" });
+        if (res?.canType) return true;
+        if (res?.ready) {
+          sawAlive = true;
+          if (Date.now() > canTypeDeadline) return true;
+        }
+      } catch {
+      }
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(Math.round(delay * 1.5), BRIDGE_PING_MAX_MS);
+    }
+    return sawAlive;
+  }
   async function trySendToTab(tab, message, targetModel) {
     let originalActiveTabId = null;
     try {
@@ -239,7 +263,7 @@
       if (scriptPath) {
         try {
           await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [scriptPath] });
-          await new Promise((r) => setTimeout(r, 1e3));
+          await waitForBridge(tab.id, 3e3);
           const response = await chrome.tabs.sendMessage(tab.id, message);
           if (response && response.success === false) throw new Error(response.error || "Content script reported failure");
           success = true;
@@ -280,7 +304,7 @@
       }
       chrome.tabs.onUpdated.addListener(listener);
     });
-    await new Promise((r) => setTimeout(r, 1500));
+    await waitForBridge(newTab.id, 5e3);
     mainTabs.set(targetModel, newTab.id);
     await claimOwnedTab(newTab.id);
     broadcastTabStatus();
@@ -323,7 +347,7 @@
       } else {
         const newTab = await chrome.tabs.create({ url: targetUrl.replace("/*", ""), active: false });
         claimSubagentTab(newTab.id, payload.sessionId);
-        await new Promise((r) => setTimeout(r, 4e3));
+        await waitForBridge(newTab.id, 1e4);
         success = await trySendToTab(newTab, message, targetModel);
       }
     } else {
@@ -431,6 +455,7 @@
   // src/background/socket.js
   var KEEPALIVE_MS = 2e4;
   var ALARM_FALLBACK_MINUTES = 0.5;
+  var WATCHDOG_ALARM = "reconnect";
   var HEARTBEAT_INTERVAL = 1e4;
   var ws = null;
   var isSocketOpen = () => Boolean(ws) && ws.readyState === WebSocket.OPEN;
@@ -467,6 +492,7 @@
     ws.onopen = async () => {
       attempt = 0;
       stopKeepAlive();
+      ensureWatchdogAlarm();
       await setState({ connected: true, reconnectAttempts: 0, lastError: null });
       ws.send(JSON.stringify({
         id: crypto.randomUUID(),
@@ -502,7 +528,7 @@
     clearTimeout(retryTimer);
     retryTimer = setTimeout(() => connectWebSocket(), delay);
     startKeepAlive();
-    chrome.alarms.create("reconnect", { delayInMinutes: ALARM_FALLBACK_MINUTES });
+    ensureWatchdogAlarm();
     setState({ reconnectAttempts: attempt }).catch(() => {
     });
   }
@@ -520,8 +546,17 @@
       clearInterval(keepAliveTimer);
       keepAliveTimer = null;
     }
-    chrome.alarms.clear("reconnect").catch(() => {
-    });
+  }
+  async function ensureWatchdogAlarm() {
+    try {
+      const existing = await chrome.alarms.get(WATCHDOG_ALARM);
+      if (existing) return;
+      chrome.alarms.create(WATCHDOG_ALARM, {
+        delayInMinutes: ALARM_FALLBACK_MINUTES,
+        periodInMinutes: ALARM_FALLBACK_MINUTES
+      });
+    } catch {
+    }
   }
   function startHeartbeat() {
     stopHeartbeat();
@@ -643,8 +678,8 @@
           break;
         }
         case "connect":
+          sendResponse({ success: true, connected: isSocketOpen() });
           connectWebSocket();
-          sendResponse({ success: true });
           break;
         default:
           sendResponse({ success: false, error: "Unknown message type" });
@@ -653,13 +688,17 @@
     return true;
   });
   chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === "reconnect") connectWebSocket();
+    if (alarm.name !== "reconnect") return;
+    if (isSocketOpen()) return;
+    connectWebSocket();
   });
   chrome.runtime.onInstalled.addListener(() => {
     console.log("\u{1F916} Agent CLI extension installed");
+    ensureWatchdogAlarm();
     connectWebSocket();
   });
   chrome.runtime.onStartup.addListener(() => {
+    ensureWatchdogAlarm();
     connectWebSocket();
   });
   chrome.runtime.onConnect.addListener((port) => {
@@ -668,6 +707,7 @@
       });
     }
   });
+  ensureWatchdogAlarm();
   connectWebSocket();
   reinjectModelTabs();
 })();

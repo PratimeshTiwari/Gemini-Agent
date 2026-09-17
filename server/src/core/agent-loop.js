@@ -520,7 +520,7 @@ export class AgentLoop {
           message: 'Model denied having tools; re-sent the definitions',
           detail: cleanContent.slice(0, 400),
         });
-        this.promptBuilder.resetPromptState(); // next prompt carries the tool definitions
+        this.promptBuilder.requestToolRedeclaration(); // definitions only, not a whole turn-0 prompt
 
         this.callbacks.sendToPanel({
           id: randomUUID(),

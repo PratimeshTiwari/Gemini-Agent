@@ -62,6 +62,7 @@ export class PromptBuilder {
     this.agentMdContent = this._loadAgentMd();
     this.messagesSinceRefresh = 0; // Messages sent to the tab since the last reminder
     this.hasSeenSystemPrompt = false; // Has the current chat session received a system prompt?
+    this.pendingToolRedeclare = false; // Does the next prompt owe the model its tools back?
   }
 
   /**
@@ -70,6 +71,31 @@ export class PromptBuilder {
   resetPromptState() {
     this.messagesSinceRefresh = 0;
     this.hasSeenSystemPrompt = false;
+    // A full prompt carries the definitions anyway, so any outstanding
+    // redeclaration is already satisfied by the turn this reset causes.
+    this.pendingToolRedeclare = false;
+  }
+
+  /**
+   * The model denied having tools: put the definitions back, and nothing else.
+   *
+   * This used to go through `resetPromptState()`, which makes the next turn a
+   * *turn-0* prompt — system instructions, tool definitions, `AGENT.md`,
+   * memory and the skill catalogue, all of it again. The model had not
+   * forgotten what project it was in or what it had learned here; it had
+   * forgotten it has tools, which is one block of that payload.
+   *
+   * Resending the rest is not merely wasteful. The whole reason
+   * `PromptBuilder` tiers its prompts is that a large repeated payload trips
+   * Gemini's repetition and A/B-test filters — so the heaviest possible
+   * recovery prompt is a plausible *cause* of the next failure, fired
+   * precisely when the session is already unhealthy.
+   *
+   * The condensed reminder still rides along, because a model that has lost
+   * its tools has usually lost the framing with them, and that block is small.
+   */
+  requestToolRedeclaration() {
+    this.pendingToolRedeclare = true;
   }
 
   /**
@@ -91,7 +117,11 @@ export class PromptBuilder {
     const parts = [];
 
     const needsFullPrompt = !this.hasSeenSystemPrompt;
-    const needsRefresh = !needsFullPrompt && this.messagesSinceRefresh >= REFRESH_INTERVAL_MESSAGES;
+    // A repair outranks the periodic refresh: the refresh sends names only,
+    // which is exactly what the model has just demonstrated is not enough.
+    const needsToolRedeclare = !needsFullPrompt && this.pendingToolRedeclare;
+    const needsRefresh = !needsFullPrompt && !needsToolRedeclare
+      && this.messagesSinceRefresh >= REFRESH_INTERVAL_MESSAGES;
 
     if (needsFullPrompt) {
       // First turn in this chat session — send everything
@@ -127,6 +157,14 @@ export class PromptBuilder {
       parts.push(`</system_state>`);
 
       this.hasSeenSystemPrompt = true;
+      this.messagesSinceRefresh = 0;
+      this.pendingToolRedeclare = false;
+    } else if (needsToolRedeclare) {
+      // The targeted repair: the framing and the full definitions, without
+      // AGENT.md, memory or the skill catalogue, which the model never lost.
+      parts.push(this._buildCondensedReminder(mode, objective, modelConfig));
+      parts.push(this._buildToolDefinitions(topology, modelConfig));
+      this.pendingToolRedeclare = false;
       this.messagesSinceRefresh = 0;
     } else if (needsRefresh) {
       // Periodic refresh — a reminder, not a re-teach. Gemini Web still has the full

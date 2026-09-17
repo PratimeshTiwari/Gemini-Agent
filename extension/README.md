@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.17.0**
+## Current version: **1.18.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,31 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.18.0 — 2026-09-17
+
+- **The reconnect alarm now outlives the connection.** It was created on retry
+  and cleared on `onopen`, so a *healthy* bridge had no alarm at all. Chrome
+  can still evict a service worker that believes it is connected, and when it
+  does the socket dies with it: `onclose` never runs inside a worker that is
+  already gone, no timer survives it, and nothing outside the browser can wake
+  it. What actually revived it was the user focusing a tab and
+  `chrome.tabs.onUpdated` starting the worker to deliver the event — which is
+  exactly the reported symptom, "the prompt only sends once I open Chrome".
+  The alarm is periodic and permanent now; while connected it costs nothing,
+  because the heartbeat already keeps the worker resident.
+
+- **The send path asks the tab whether it is ready instead of sleeping.**
+  4000ms after opening a subagent tab, 1500ms after a new main tab loaded and
+  1000ms after re-injecting were flat `setTimeout`s — 6.5 seconds of
+  unconditional waiting per new tab, and wrong in both directions: seconds
+  wasted on a warm machine, and still too early on a cold one, where the send
+  lands before the listener exists and is reported as an unreachable tab. A
+  `ping` the content script answers replaces the guess with the fact. It
+  reports two things, because they fail differently: `ready` (this script is
+  listening and not orphaned) and `canType` (the composer is actually in the
+  DOM). The tail of the budget accepts `ready` alone, so a changed composer
+  selector still produces a real send error rather than burning the budget.
 
 ### 1.17.0 — 2026-09-17
 

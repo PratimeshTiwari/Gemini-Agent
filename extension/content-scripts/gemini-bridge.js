@@ -1179,6 +1179,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const { type, payload } = message;
 
   switch (type) {
+    /**
+     * Readiness probe. The service worker polls this instead of sleeping a
+     * fixed number of milliseconds after opening or re-injecting into a tab.
+     *
+     * Two answers, because they fail differently. `ready` means this script is
+     * listening and not orphaned. `canType` means the composer is actually in
+     * the DOM — which is the real precondition for an inject, and the reason
+     * the old waits were seconds long rather than milliseconds.
+     */
+    case 'ping':
+      sendResponse({
+        ready: bridgeAlive(),
+        canType: bridgeAlive() && !!findElement(SELECTORS.inputField),
+      });
+      break;
+
     case 'inject_prompt':
       currentRequestData = {
         requestId: payload.requestId,
@@ -1289,6 +1305,8 @@ safeSend({
  * message every few seconds.
  */
 const CONNECT_NUDGE_MS = 3000;
+/** Once connected there is nothing to nudge for; this is only a backstop. */
+const CONNECT_NUDGE_IDLE_MS = 30000;
 let keepAlivePort = null;
 
 function connectToServiceWorker() {
@@ -1304,7 +1322,30 @@ function connectToServiceWorker() {
 }
 connectToServiceWorker();
 
-const nudgeTimer = setInterval(() => {
-  safeSend({ type: 'connect' });
-}, CONNECT_NUDGE_MS);
-onInvalidated.push(() => clearInterval(nudgeTimer));
+/**
+ * Nudge hard while disconnected, barely at all once connected.
+ *
+ * This was a flat 3-second `setInterval` that ran for the life of the page, so
+ * an open Gemini tab woke the service worker twenty times a minute forever —
+ * a worker that is never allowed to go idle, to solve a problem that only
+ * exists while there is nothing to connect to. The fast cadence is worth
+ * paying when the agent has just started and the bridge is down; it buys
+ * nothing at all when the socket is already open.
+ *
+ * So the worker answers `connect` with whether it is connected, and the tab
+ * backs off to a slow heartbeat when the answer is yes. A `setTimeout` chain
+ * rather than an interval, because the delay changes between ticks.
+ */
+let nudgeTimer = null;
+
+function scheduleConnectNudge(delay) {
+  nudgeTimer = setTimeout(async () => {
+    const res = await safeSend({ type: 'connect' });
+    // No answer means the worker did not reply — treat that as disconnected
+    // and keep the fast cadence, which is the case this exists for.
+    scheduleConnectNudge(res?.connected ? CONNECT_NUDGE_IDLE_MS : CONNECT_NUDGE_MS);
+  }, delay);
+}
+
+scheduleConnectNudge(CONNECT_NUDGE_MS);
+onInvalidated.push(() => clearTimeout(nudgeTimer));

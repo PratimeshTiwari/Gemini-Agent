@@ -29,6 +29,18 @@ import { logError } from '../core/error-log.js';
 const LOOPBACK = '127.0.0.1';
 
 /**
+ * How long a prompt held for an absent extension is still worth delivering.
+ *
+ * Tied to `EXTENSION_RESPONSE_TIMEOUT` in `core/agent-loop.js`: that is when
+ * the lane's watchdog gives up on the turn, and a prompt delivered after it
+ * would be typed into Gemini for a turn the loop has already abandoned.
+ */
+const INJECT_BUFFER_TTL_MS = 7 * 60 * 1000;
+
+/** Enough for a stalled lane per model plus a subagent fan-out, not a backlog. */
+const MAX_PENDING_INJECTS = 8;
+
+/**
  * Who may open a socket here.
  *
  * A Chrome extension sends `chrome-extension://<id>`; Firefox sends
@@ -52,6 +64,20 @@ export class WebSocketServer {
     this.wss = null;
     this.clients = new Map(); // id -> { ws, type, connectedAt }
     this.pendingGitHubNotifications = []; // Buffer for CLI
+    /**
+     * Prompts that had nowhere to go, waiting for the extension to come back.
+     *
+     * `broadcast` returns whether it reached anyone and every caller ignored
+     * it, so a prompt dispatched while the extension was away was written to
+     * no sockets and dropped on the floor — the loop then sat on a busy lane
+     * until the seven-minute watchdog. That is the other half of "the prompt
+     * only sends when I open Chrome": the extension is evicted, the prompt is
+     * discarded, and the turn is already lost by the time anyone notices.
+     *
+     * Held here rather than in `ExtensionLock` because the lock's job is
+     * ordering turns, and this is about the transport being absent.
+     */
+    this.pendingInjects = [];
 
     // Wire GitHub events to broadcast
     if (this.githubHandler) {
@@ -66,12 +92,7 @@ export class WebSocketServer {
   _wireBackgroundCallbacks() {
     const backgroundCallbacks = {
       sendToPanel: (msg) => this.broadcast('extension', msg),
-      injectPrompt: (msg) => this.broadcast('extension', {
-        id: randomUUID(),
-        type: 'inject_prompt',
-        payload: msg,
-        timestamp: Date.now(),
-      }),
+      injectPrompt: (msg) => this.sendInjectPrompt(msg),
       // Background tasks have no one to ask. Reject rather than hang the loop
       // (the agent now awaits this decision) and rather than write unapproved edits.
       requestDiffApproval: (diff) =>
@@ -246,6 +267,20 @@ export class WebSocketServer {
     // Identify client type from first message
     if (payload?.clientType && client.type === 'unknown') {
       client.type = payload.clientType;
+
+      // An extension arriving is the only thing that can drain prompts held
+      // while it was gone. Done before the timing bookkeeping below so a
+      // resumed turn is not waiting on it.
+      if (client.type === 'extension') {
+        const resumed = this.flushPendingInjects();
+        if (resumed > 0) {
+          logError(this.agentLoop?.workspace, {
+            flow: 'bridge',
+            op: 'inject_resumed',
+            message: `Extension reconnected; re-sent ${resumed} prompt(s) held while it was away`,
+          });
+        }
+      }
 
       /**
        * How long the extension took to notice this server, in milliseconds.
@@ -738,12 +773,7 @@ export class WebSocketServer {
     // Set up callbacks so the agent loop can send messages back
     const callbacks = {
       sendToPanel: (msg) => this.broadcast('extension', msg),
-      injectPrompt: (msg) => this.broadcast('extension', {
-        id: randomUUID(),
-        type: 'inject_prompt',
-        payload: msg,
-        timestamp: Date.now(),
-      }),
+      injectPrompt: (msg) => this.sendInjectPrompt(msg),
       requestDiffApproval: (diff) => this.broadcast('extension', {
         id: randomUUID(),
         type: 'diff_request',
@@ -788,6 +818,57 @@ export class WebSocketServer {
    * Broadcast a message to all clients of a given type.
    * Returns true if at least one client received the message.
    */
+  /**
+   * Send a prompt to the extension, or hold it until there is an extension.
+   *
+   * The delivery question is not "is a client connected" but "did anyone
+   * receive this", which is what `broadcast`'s return value answers and what
+   * every caller used to throw away.
+   *
+   * A held prompt is still owed an answer: the lane that dispatched it is busy
+   * and its watchdog is running, so flushing on reconnect resumes a turn that
+   * is genuinely still waiting. Past the watchdog it is not — the loop has
+   * already given up and typing it into Gemini would start a conversation
+   * nobody is listening to — so stale entries are dropped rather than sent.
+   */
+  sendInjectPrompt(msg) {
+    const message = {
+      id: randomUUID(),
+      type: 'inject_prompt',
+      payload: msg,
+      timestamp: Date.now(),
+    };
+    if (this.broadcast('extension', message)) return true;
+
+    this.pendingInjects.push({ message, queuedAt: Date.now() });
+    // Bounded so a long offline stretch cannot grow without limit. The oldest
+    // go first: they are the ones closest to their watchdog.
+    while (this.pendingInjects.length > MAX_PENDING_INJECTS) this.pendingInjects.shift();
+    return false;
+  }
+
+  /**
+   * The extension is back — send it what it missed.
+   *
+   * Called when a client identifies as an extension, not on socket open: the
+   * socket is open before we know what is on the other end of it, and the side
+   * panel connects over the same transport.
+   */
+  flushPendingInjects() {
+    if (this.pendingInjects.length === 0) return 0;
+
+    const now = Date.now();
+    const queued = this.pendingInjects;
+    this.pendingInjects = [];
+
+    let sent = 0;
+    for (const entry of queued) {
+      if (now - entry.queuedAt > INJECT_BUFFER_TTL_MS) continue;
+      if (this.broadcast('extension', entry.message)) sent++;
+    }
+    return sent;
+  }
+
   broadcast(clientType, message) {
     let sentCount = 0;
     for (const [id, client] of this.clients) {

@@ -355,6 +355,62 @@ export function matchesModelUrl(url, targetModel) {
   return url.includes(host);
 }
 
+/**
+ * Wait until the bridge in a tab actually answers, rather than for a guess.
+ *
+ * Every wait on this path used to be a flat `setTimeout`: 4000ms after opening
+ * a subagent tab, 1500ms after a new main tab finished loading, 1000ms after
+ * re-injecting the script. 6.5 seconds of unconditional waiting per new tab,
+ * and it was wrong in both directions — too long on a warm machine, where the
+ * script is listening in a couple of hundred milliseconds, and too short on a
+ * cold one, where the send lands before the listener exists and is reported as
+ * an unreachable tab.
+ *
+ * A ping the content script answers replaces the guess with the fact. The
+ * budget is the only number left, and it is a ceiling rather than a cost:
+ * reaching it means the bridge really is not there.
+ */
+const BRIDGE_PING_START_MS = 50;
+const BRIDGE_PING_MAX_MS = 400;
+
+/**
+ * Past this fraction of the budget, a listening script is good enough.
+ *
+ * Waiting for `canType` is the point — a script that is listening before the
+ * composer exists is exactly the case the old fixed sleeps were padding for.
+ * But gating *only* on it would turn a changed composer selector from "the
+ * send fails with a real error" into "every turn burns its whole budget and
+ * then fails", which is strictly worse and harder to read in a log. So the
+ * tail of the budget accepts a merely-alive script and lets the send produce
+ * the honest error.
+ */
+const BRIDGE_CAN_TYPE_SHARE = 0.6;
+
+export async function waitForBridge(tabId, budgetMs) {
+  const start = Date.now();
+  const deadline = start + budgetMs;
+  const canTypeDeadline = start + budgetMs * BRIDGE_CAN_TYPE_SHARE;
+  let delay = BRIDGE_PING_START_MS;
+  let sawAlive = false;
+
+  while (Date.now() < deadline) {
+    try {
+      const res = await chrome.tabs.sendMessage(tabId, { type: 'ping' });
+      if (res?.canType) return true;
+      if (res?.ready) {
+        sawAlive = true;
+        if (Date.now() > canTypeDeadline) return true;
+      }
+    } catch {
+      // No listener yet, or the tab is still navigating. Both are ordinary
+      // here — this loop exists precisely because the script is not up.
+    }
+    await new Promise((r) => setTimeout(r, delay));
+    delay = Math.min(Math.round(delay * 1.5), BRIDGE_PING_MAX_MS);
+  }
+  return sawAlive;
+}
+
 async function trySendToTab(tab, message, targetModel) {
   let originalActiveTabId = null;
   try {
@@ -389,7 +445,8 @@ async function trySendToTab(tab, message, targetModel) {
     if (scriptPath) {
       try {
         await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [scriptPath] });
-        await new Promise(r => setTimeout(r, 1000));
+        // The freshly injected copy, not the orphan: wait for it to answer.
+        await waitForBridge(tab.id, 3000);
         const response = await chrome.tabs.sendMessage(tab.id, message);
         if (response && response.success === false) throw new Error(response.error || 'Content script reported failure');
         success = true;
@@ -445,8 +502,9 @@ export async function ensureModelTab(targetModel = 'gemini') {
     chrome.tabs.onUpdated.addListener(listener);
   });
 
-  // Brief pause for the content script bridge to mount into the DOM
-  await new Promise(r => setTimeout(r, 1500));
+  // The bridge mounts at document_idle, which is not the same moment as
+  // `status === 'complete'`. Ask it rather than guess at the gap.
+  await waitForBridge(newTab.id, 5000);
   mainTabs.set(targetModel, newTab.id);
   await claimOwnedTab(newTab.id);
   broadcastTabStatus();
@@ -504,8 +562,9 @@ export async function injectPromptIntoModel(payload) {
       // dispatched during those four seconds, and an unclaimed tab is one the
       // main lane will happily pick as "the newest matching tab".
       claimSubagentTab(newTab.id, payload.sessionId);
-      // Wait for initial load
-      await new Promise(r => setTimeout(r, 4000));
+      // Was a flat 4s. A subagent fan-out pays this per tab, so it was the
+      // single largest fixed cost on the parallel path.
+      await waitForBridge(newTab.id, 10000);
       success = await trySendToTab(newTab, message, targetModel);
     }
   } else {
