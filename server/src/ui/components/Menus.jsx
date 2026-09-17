@@ -972,11 +972,50 @@ export function Menus({
  * cannot see is not approval. The preview is capped so a large edit cannot push
  * the buttons off screen.
  */
+/** Collapsed: enough to see the shape of the change without filling the box. */
+const DIFF_ROWS_COLLAPSED = 16;
+
+/**
+ * Furniture around the diff rows: the box border, the heading, the risk line,
+ * the margin, the two choices and the hint. Subtracted so an expanded diff
+ * grows into the room that is actually there and no further.
+ */
+const DIFF_BOX_FURNITURE = 12;
+
 export function DiffApproval({
   diffRequest,
   handleDiffResponse,
   setFocus,
+  terminalHeight = 24,
 }) {
+  const [expanded, setExpanded] = React.useState(false);
+
+  // Collapsed again for the next file, or this one would open expanded
+  // because the previous decision left the flag set.
+  const requestKey = diffRequest?.diffId ?? null;
+  const lastKey = React.useRef(requestKey);
+  if (lastKey.current !== requestKey) {
+    lastKey.current = requestKey;
+    if (expanded) setExpanded(false);
+  }
+
+  /**
+   * `d` opens the rest of the diff.
+   *
+   * A letter rather than a chord: `ctrl+e` is already transcript verbosity and
+   * is pulled off stdin before Ink sees it, so it would toggle the wrong thing
+   * from here. And a third `SelectInput` row was the other option — rejected,
+   * because this list is a safety decision and putting a *view* action in it
+   * is how someone approves a write while meaning to look at it.
+   *
+   * Registered before the early return would be a conditional hook, so the
+   * guard is inside the handler.
+   */
+  useInput((input) => {
+    if (!diffRequest) return;
+    if (input === 'd' || input === 'D') setExpanded((v) => !v);
+  });
+
   if (!diffRequest) return null;
 
   // Built from the patch, not from `diffRequest.hunks`.
@@ -989,7 +1028,21 @@ export function DiffApproval({
   // diff at all, on the one screen whose entire job is showing you the change
   // before you approve it.
   const hunks = diffRequest.hunks ?? [];
-  const rows = rowsFromPatch(diffRequest.patch, { maxLines: 16 });
+  /**
+   * Bounded even when expanded — this box is in Ink's live frame.
+   *
+   * "Show me the whole diff" is the obvious request and the obvious
+   * implementation of it (drop the cap) is the single most reliable way to
+   * bring back the full-screen repaint: a frame taller than the viewport makes
+   * Ink write `ESC[2J ESC[3J` on every render and the scrollback goes with it.
+   * So expanding grows into the room the terminal actually has, and the
+   * `… N more lines` row keeps saying what is still hidden.
+   */
+  const maxLines = expanded
+    ? Math.max(DIFF_ROWS_COLLAPSED, terminalHeight - DIFF_BOX_FURNITURE)
+    : DIFF_ROWS_COLLAPSED;
+  const rows = rowsFromPatch(diffRequest.patch, { maxLines });
+  const hidden = rows.some((r) => r.type === 'more');
   const added = rows.filter((r) => r.type === 'add').length;
   const removed = rows.filter((r) => r.type === 'del').length;
   const critical = diffRequest.riskLevel === 'critical';
@@ -1037,6 +1090,14 @@ export function DiffApproval({
           setFocus(FOCUS_INPUT);
         }}
       />
+
+      {(hidden || expanded) && (
+        <Text dimColor wrap="truncate">
+          {expanded
+            ? '  d — collapse'
+            : '  d — show the rest of the diff'}
+        </Text>
+      )}
     </Box>
   );
 }

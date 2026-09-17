@@ -965,6 +965,7 @@ export function App({ agentLoop, wsServer }) {
             diffRequest={diffRequest}
             handleDiffResponse={handleDiffResponse}
             setFocus={setFocus}
+            terminalHeight={terminalHeight}
           />
 
           <InputBar
