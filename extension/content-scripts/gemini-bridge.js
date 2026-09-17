@@ -648,24 +648,9 @@ function startResponseObserver() {
     // Do not check for completion in the first 3 seconds to allow the DOM to update
     if (totalElapsed < 3000) return;
 
-    // Detect and dismiss Gemini A/B test dialog ("Which response is more helpful?")
-    // These dialogs block the UI and prevent completion
-    const abTestTitle = document.querySelector('h2, .title');
-    if (abTestTitle && abTestTitle.textContent.toLowerCase().includes('which response is more helpful')) {
-      // `:has-text()` is Playwright syntax, not CSS. querySelector threw a
-      // SyntaxError on it, which aborted this whole block before the text search
-      // below could run — so the dialog was never actually dismissed.
-      let btnToClick = document.querySelector('.choice-a, [aria-label*="Choice A" i], [aria-label*="Choice 1" i]');
-      if (!btnToClick) {
-        const buttons = Array.from(document.querySelectorAll('button'));
-        btnToClick = buttons.find(b => b.textContent.includes('Choice A') || b.textContent.includes('Choice 1'));
-      }
-
-      if (btnToClick) {
-        console.warn('[Gemini Bridge] Detected A/B test dialog! Auto-selecting Choice A to dismiss it.');
-        btnToClick.click();
-        lastActivityTime = Date.now(); // reset timeout to allow extraction
-      }
+    // Gemini's A/B modal blocks the turn until something is chosen.
+    if (dismissChoiceDialog()) {
+      lastActivityTime = Date.now(); // reset timeout to allow extraction
     }
 
     // Check if the "Stop Generating" button exists in the DOM and is visible
@@ -745,6 +730,65 @@ function startResponseObserver() {
 
   completionCheck = runCompletionCheck;
   activityCheckTimer = setInterval(runCompletionCheck, 2000);
+}
+
+/**
+ * Gemini's "Which response is more helpful?" modal, answered so the turn ends.
+ *
+ * The modal holds two complete replies and will not resolve to one until a
+ * button is pressed, so a turn that meets it simply never finishes. It shows
+ * up most on large prompts — which is why `PromptBuilder` tiers them at all.
+ *
+ * **Choosing beats retrying.** Re-sending the prompt costs a whole turn, can
+ * raise the same modal again, and leaves two half-answers in the thread. One
+ * click resolves it to a single reply that the existing scrape then reads
+ * normally — and "one answer per turn" is a standing product decision, so
+ * surfacing both to the user was never an option either.
+ *
+ * It takes the **first** choice, deliberately: there is no signal available
+ * here that would make a quality judgement anything but a coin toss dressed
+ * up as one, and a deterministic pick is at least reproducible.
+ *
+ * Two faults this had, both of which meant it never fired:
+ *
+ *  - `document.querySelector('h2, .title')` returns the FIRST such node in the
+ *    document, not the dialog's. Any other heading above it and the check was
+ *    answered by the wrong element.
+ *  - It hunted for a button reading `Choice A`. The real control is labelled
+ *    **"This response is more helpful"**, with the text down in a nested
+ *    `<span>`. No selector matched, so nothing was ever clicked.
+ *
+ * The earlier repair here fixed a `:has-text()` SyntaxError and stopped there,
+ * because the actual DOM had not been seen. It has now.
+ *
+ * @returns {boolean} whether a choice was made
+ */
+function dismissChoiceDialog() {
+  const asks = (el) => (el.textContent || '').toLowerCase().includes('which response is more helpful');
+  const heading = Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"], .title'))
+    .find(asks);
+  if (!heading) return false;
+
+  const buttons = Array.from(document.querySelectorAll('button'));
+  const labelled = (b) => (b.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+  // DOM order is left-to-right, so the first match is Choice A.
+  let pick = buttons.find((b) => labelled(b).includes('this response is more helpful'));
+
+  // Older or differently-bucketed variants, kept as fallbacks rather than
+  // removed: this modal is an experiment and its markup has changed before.
+  if (!pick) {
+    pick = buttons.find((b) => {
+      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+      return aria.includes('choice a') || aria.includes('choice 1');
+    });
+  }
+  if (!pick) pick = document.querySelector('.choice-a');
+  if (!pick) return false;
+
+  console.warn('[Gemini Bridge] A/B modal — taking the first choice to unblock the turn.');
+  pick.click();
+  return true;
 }
 
 /**

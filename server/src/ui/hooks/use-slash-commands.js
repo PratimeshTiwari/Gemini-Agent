@@ -11,6 +11,7 @@ import { resolveWorkspaceInput, validateWorkspace } from '../../core/workspaces.
 import { SLASH_COMMANDS } from '../constants.js';
 import { AGENT_COMMANDS } from '../../core/slash-commands.js';
 import { oneLine } from '../format.js';
+import { planResume } from '../../core/chat-thread.js';
 import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
 import { canPickFolder, pickFolder } from '../../core/folder-picker.js';
 import { summariseTraces, formatMs } from '../../core/trace-log.js';
@@ -447,6 +448,68 @@ export async function handleSlashCommand(query, {
         return;
       }
       setActiveMenu({ type: 'plans', plans });
+      setIsProcessing(false);
+      return;
+    }
+
+    /**
+     * Past conversations, and the way back into one.
+     *
+     * Until now the only way to reopen a conversation was to quit and relaunch
+     * with `--resume <id>` — which meant the CLI's own answer to "where did my
+     * last chat go?" was to restart the program. The side panel had a proper
+     * picker all along; this is the same machinery, reachable from the place
+     * people actually are.
+     *
+     * Bare `/history` lists; `/history <id>` acts. Same split as `/update`,
+     * and it is what lets the picker below simply submit a command rather than
+     * reach into the loop itself.
+     */
+    if (command === 'history' || command === 'sessions' || command === 'resume') {
+      const store = agentLoop.sessionStore;
+      const wanted = (args[0] || '').trim();
+
+      if (wanted) {
+        const outcome = agentLoop.resumeSessionById(wanted);
+        if (outcome.ok) {
+          // The restored turns become the transcript. `isLocal` is wrong for
+          // these — they really were said to a model — so they go in as they
+          // were recorded, and the note about what just happened follows.
+          resetScreen();
+          setHistory([...(outcome.turns || []), {
+            role: 'assistant', isLocal: true, content: `↺ ${outcome.message}`,
+          }]);
+        } else {
+          setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+            role: 'assistant', isLocal: true, content: outcome.message,
+          }]);
+        }
+        setIsProcessing(false);
+        return;
+      }
+
+      const live = agentLoop.chatThread || null;
+      const sessions = (store?.listSessions?.() || []).slice(0, 30).map((session) => ({
+        ...session,
+        // Worked out per row, before the choice is made, because "continue"
+        // and "replay" are different promises: one carries on in a thread the
+        // model still has, the other has to re-explain itself to a model that
+        // was never there.
+        resume: planResume(session.thread, live).action,
+      }));
+
+      if (sessions.length === 0) {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+          role: 'assistant',
+          isLocal: true,
+          content: 'No past conversations yet.\n\nStarting the agent without `--continue` files '
+            + 'the previous conversation here, so this fills up as you go.',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      setActiveMenu({ type: 'history', sessions });
       setIsProcessing(false);
       return;
     }

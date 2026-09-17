@@ -460,52 +460,22 @@ export class WebSocketServer {
       }
 
       case 'resume_session': {
-        const store = this.agentLoop?.sessionStore;
-        const id = payload?.id;
-        const record = (store?.listSessions?.() || []).find((r) => r.id === id);
-
-        // File what is on screen now, or resuming destroys it — the mistake
-        // that made `--sessions` useless in the first place.
-        store?.rollover?.();
-        const turns = store?.resumeSession?.(id);
-        if (!turns) {
+        // The whole of this — file the current conversation, restore the old
+        // one, and point the tab back at its thread — lives on the loop, so
+        // the CLI's `/history` cannot drift from the panel's picker.
+        const outcome = this.agentLoop.resumeSessionById(payload?.id);
+        if (!outcome.ok) {
           this.broadcast('extension', {
             id: randomUUID(), type: 'error',
-            payload: { op: 'resume_session', message: `No session ${id}.` },
+            payload: { op: 'resume_session', message: outcome.message },
             timestamp: Date.now(),
           });
           break;
         }
 
-        this.agentLoop.conversationHistory = turns;
-        this.agentLoop.promptBuilder?.resetPromptState?.();
-        this.agentLoop.chatThread = record?.thread || null;
-
-        /**
-         * Reopen the conversation rather than describe it.
-         *
-         * A recap is a paraphrase; the thread *is* the memory. Gemini puts it
-         * in the URL, so the tab can simply be pointed back at it — and then
-         * the model has the real history, including everything a twelve-turn
-         * summary would have dropped.
-         *
-         * The recap survives as the fallback for a session that never reached a
-         * thread, or a browser that could not open one.
-         */
-        let message;
-        if (record?.thread?.id) {
-          this.agentLoop._toExtension('open_thread', { thread: record.thread });
-          this.agentLoop.promptBuilder.pendingRecap = null;
-          message = 'Resumed — pointing the tab back at that conversation.';
-        } else {
-          this.agentLoop.promptBuilder.pendingRecap = turns;
-          message = 'Resumed. That conversation never reached a browser thread, '
-            + 'so the next message carries a recap instead.';
-        }
-
         this.broadcast('extension', {
           id: randomUUID(), type: 'session_reset',
-          payload: { message },
+          payload: { message: outcome.message },
           timestamp: Date.now(),
         });
         for (const client of this.clients.values()) this._sendHistory(client.ws);

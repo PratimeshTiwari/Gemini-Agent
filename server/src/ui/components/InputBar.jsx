@@ -122,7 +122,7 @@ export function InputBar({
         <Box flexDirection="column" marginTop={compact ? 0 : 1}>
           {/*
             What happened to the last conversation.
-            
+
             Starting without `--continue` files it and clears the screen, which
             from the outside is indistinguishable from losing it. The storage,
             the flags and the picker were all built and nothing ever said a
@@ -130,24 +130,25 @@ export function InputBar({
             displaying the session id for resume?"
 
             One row, once, and only on the run that filed something. It is
-            dismissed by the first message, because after that the id is
-            history rather than an offer.
+            dismissed by the first message, because after that it is history
+            rather than an offer.
+
+            **It used to print `--resume <id>`, and that was the wrong offer.**
+            A 28-character timestamp id is not something anyone reads or types,
+            and the command it belonged to only works at launch — so the CLI's
+            answer to "where did my last chat go?" was to quit and start again.
+            Reported as exactly that. `/history` is in the session you are
+            already in, lists every conversation rather than the most recent
+            one, and says per row whether the model still remembers it.
           */}
           {filedSession && !isProcessing && history.length === 0 && (
             <Box marginBottom={1}>
-              {/*
-                The id leads, and the prose trails it, because `wrap="truncate"`
-                eats the tail: with the sentence first, an 80-column terminal cut
-                the id mid-suffix and left a `--resume` that resumes nothing —
-                which is worse than showing no row at all. The id is 28
-                characters and fixed-width, so putting it first puts the only
-                part that must survive where truncation cannot reach it.
-              */}
               <Text dimColor wrap="truncate">
-                {'  ↺ '}
-                <Text color="cyan">--resume {filedSession.id}</Text>
-                {'  · previous conversation'}
+                {'  ↺ previous conversation filed'}
                 {filedSession.turns ? `, ${filedSession.turns} turns` : ''}
+                {'  · '}
+                <Text color="cyan">/history</Text>
+                {' to reopen it'}
               </Text>
             </Box>
           )}

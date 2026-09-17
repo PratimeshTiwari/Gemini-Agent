@@ -42,6 +42,14 @@ import { FOCUS_INPUT } from '../constants.js';
  */
 const TOGGLES = new Set(['/plan', '/auto', '/memory on', '/memory off', '/allowlist enable', '/allowlist disable']);
 
+/** A session's own timestamp, formatted, or '' when it has none. */
+function stampOf(session) {
+  const ms = session?.updated ?? session?.started;
+  if (!ms) return '';
+  const when = new Date(ms);
+  return Number.isNaN(when.getTime()) ? '' : localStamp(when);
+}
+
 /** `2026-09-10 14:32`, in the reader's own timezone. */
 function localStamp(when) {
   const pad = (n) => String(n).padStart(2, '0');
@@ -538,6 +546,53 @@ export function Menus({
               key="commands-days"
             />
             <Text dimColor>↑↓ move · enter open · esc cancel</Text>
+          </Box>
+        )}
+
+        {activeMenu?.type === 'history' && (
+          <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+            <Text bold color="cyan">
+              {activeMenu.sessions.length} past conversation{activeMenu.sessions.length === 1 ? '' : 's'}
+            </Text>
+            {/*
+              The disposition is said per row, before the choice is made,
+              because "continue" and "replay" are different promises and
+              collapsing them is how a picker silently does the second while
+              looking like the first. `continue` means the tab is still on that
+              Gemini thread and the model genuinely remembers; `replay` means it
+              is not, so the next message has to carry a recap.
+            */}
+            <Text dimColor wrap="wrap">
+              Enter reopens one. ↩ continue = the tab still has that thread ·
+              ↻ replay = the model gets a recap first.
+            </Text>
+            <SelectInput
+              limit={10}
+              items={activeMenu.sessions.map((session) => ({
+                // Date first because that is how you look for one, then what
+                // it was about — a column of timestamps says nothing about
+                // which conversation you actually want back.
+                // `localStamp` takes a Date; a session record carries
+                // `updated`/`started` as millisecond numbers. Copying the
+                // plans row verbatim left this reading `session.when`, which
+                // does not exist — the column rendered blank, and only a pty
+                // run showed it.
+                label: `${stampOf(session) || '                '}`
+                  + `  ${session.resume === 'continue' ? '↩' : '↻'}`
+                  + `  ${String(session.turns ?? '?').padStart(3)} turns`
+                  + `  ${oneLine(session.title || session.id, 44)}`,
+                value: session.id,
+                key: session.id,
+              }))}
+              onSelect={(item) => {
+                setActiveMenu(null);
+                setFocus(FOCUS_INPUT);
+                // Back through the command, not into the loop from here: the
+                // slash-command path already owns restoring the transcript.
+                handleSubmit(`/history ${item.value}`);
+              }}
+            />
+            <Text dimColor>↑↓ move · enter reopen · esc cancel</Text>
           </Box>
         )}
 

@@ -23,6 +23,7 @@ const SLASH_COMMANDS = [
   { name: 'github', desc: 'Run GitHub commands (e.g. /github refresh)' },
   { name: 'image', desc: 'Attach an image — a path, or bare for the clipboard' },
   { name: 'plans', desc: 'Past plans, newest first' },
+  { name: 'history', desc: 'Past conversations — pick one to reopen it' },
   { name: 'commands', desc: 'Every shell command the agent has run, by day' },
   { name: 'name', desc: 'Name the agent — shown in the banner' },
   { name: 'update', desc: 'Pull the agent\'s own repo, and say what to reload' },

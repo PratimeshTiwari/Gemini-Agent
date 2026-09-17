@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.20.0**
+## Current version: **1.21.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -74,6 +74,25 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.21.0 — 2026-09-17
+
+- **The A/B modal is actually dismissed now.** Gemini's "Which response is more
+  helpful?" holds two complete replies and resolves to neither until a button
+  is pressed, so a turn that meets it never finishes — it waits out the
+  five-minute cap and reports a timeout. The dismissal existed and never fired,
+  for two reasons: it read `document.querySelector('h2, .title')`, which is the
+  first such node in the *document* rather than the dialog's own heading, and
+  it hunted for a button reading `Choice A` when the real control says **"This
+  response is more helpful"** with its text two spans deep. An earlier repair
+  here fixed a `:has-text()` SyntaxError and stopped, because nobody had seen
+  the real DOM. Tests now run against that markup, and the previous
+  implementation fails them.
+
+  It **chooses** rather than retries: re-sending costs a whole turn, can raise
+  the same modal again, and leaves two half-answers in the thread. It takes the
+  first choice deterministically — there is no signal here that would make a
+  quality judgement anything but a coin toss.
 
 ### 1.20.0 — 2026-09-17
 

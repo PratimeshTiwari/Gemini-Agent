@@ -1205,6 +1205,55 @@ export class AgentLoop {
     this.abortExtensionWork();
   }
 
+  /**
+   * Reopen a past conversation — the state here, and the memory in the browser.
+   *
+   * Two halves, and only the first is obvious. `history.jsonl` is the *human's*
+   * record; the model's memory is the chat thread in the tab, and Gemini keeps
+   * that thread's identity in the URL. So restoring the transcript alone hands
+   * the model a conversation it has never seen and asks it to carry on — the
+   * exact failure `chat-thread.js` exists to prevent.
+   *
+   * Pointing the tab back at `/app/<id>` gives it the real history, including
+   * everything a summary would have dropped. The recap is the fallback for a
+   * session that never reached a thread, and `thread_opened` moves us onto that
+   * fallback if the browser could not get there.
+   *
+   * Lifted out of the panel's `resume_session` handler so the CLI's `/history`
+   * runs the same code. Two copies of "restore a conversation" is how one of
+   * them ends up forgetting to file what is on screen.
+   *
+   * @returns {{ok: boolean, message: string, turns?: object[]}}
+   */
+  resumeSessionById(id) {
+    const store = this.sessionStore;
+    const record = (store?.listSessions?.() || []).find((r) => r.id === id);
+
+    // File what is on screen now, or resuming destroys it — the mistake that
+    // made `--sessions` useless in the first place.
+    store?.rollover?.();
+    const turns = store?.resumeSession?.(id);
+    if (!turns) return { ok: false, message: `No session ${id}.` };
+
+    this.conversationHistory = turns;
+    this.promptBuilder?.resetPromptState?.();
+    this.chatThread = record?.thread || null;
+
+    if (record?.thread?.id) {
+      this._toExtension('open_thread', { thread: record.thread });
+      if (this.promptBuilder) this.promptBuilder.pendingRecap = null;
+      return { ok: true, turns, message: 'Resumed — pointing the tab back at that conversation.' };
+    }
+
+    if (this.promptBuilder) this.promptBuilder.pendingRecap = turns;
+    return {
+      ok: true,
+      turns,
+      message: 'Resumed. That conversation never reached a browser thread, '
+        + 'so the next message carries a recap instead.',
+    };
+  }
+
   async _sendToGemini(prompt, callbacks) {
     // Create a promise that will be resolved when we get the Gemini response
     this.pendingGeminiResponse = true;
