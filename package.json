@@ -10,7 +10,8 @@
   "scripts": {
     "start": "npm run start --workspace=server",
     "dev": "npm run dev --workspace=server",
-    "test": "npm run test --workspace=server && npm run test --workspace=extension"
+    "test": "npm run test --workspace=server && npm run test --workspace=extension",
+    "harness": "node harness/run.mjs"
   },
   "engines": {
     "node": ">=20.0.0"
