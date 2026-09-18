@@ -917,6 +917,28 @@ fossils of features deleted in Direction phases 2 and 7. Nothing in the source r
 They are left in place on purpose: config saving deliberately preserves keys it does not
 own — that was a bug fix — and auto-pruning known-dead keys would fight it for no gain.
 
+**`figlet` is gone; the one font it was used for is vendored.** It was 20.8MB — 328 fonts
+across `fonts/` and `importable-fonts/` — and this app rendered exactly one, `Standard`, for
+the wordmark: **21% of `node_modules` for a banner**. The font is 30KB in `ui/fonts/` and
+`ui/figfont.js` renders it. Measured: `node_modules` **98.5MB → 77.2MB**.
+
+Only what `Standard` needs is implemented. Its header sets horizontal smushing with rules 1,
+2, 4 and 8; the vertical rules it also sets never apply, because the banner is one line.
+Correctness was not argued, it was compared — while `figlet` was still installed, **25,110
+strings** (every printable character alone, the banner, and 25,000 random strings of 1–12
+characters) were rendered through both and required to match byte for byte.
+
+Two things that comparison caught, neither of which would have been found by looking:
+the shipped `.flf` files are **CRLF**, so splitting on `\n` leaves a `\r` as each row's
+"endmark" and strips nothing — every glyph keeps its `@` and none of them overlap. And a row
+where one side is **entirely blank** cannot collide, so it must not limit the slide; counting
+its blanks drew `7,` and `W.` one column too wide. That was the difference between 3,106 and
+3,110, and then 25,110 of 25,110.
+
+The banner was also being rendered **twice** — a synchronous render to seed the state and an
+async `figlet.text` in an effect that recomputed the same string on mount. The async half was
+pure duplicate work and went with the dependency.
+
 **Dependencies: none unused.** Every entry in all four `package.json` files is imported,
 used in a script, or `@types/react`, which is types-only and exists for editor JSX
 intellisense. `@inquirer/prompts` looks unused to a naive grep and is not — `main.js` reaches

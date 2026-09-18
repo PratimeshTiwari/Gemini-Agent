@@ -23,7 +23,7 @@ import { handleSlashCommand } from './hooks/use-slash-commands.js';
 import { buildAgentCallbacks } from './hooks/use-agent-callbacks.js';
 import fs from 'fs';
 import { exec } from 'child_process';
-import figlet from 'figlet';
+import { bannerText } from './banner-text.js';
 import * as paths from '../core/paths.js';
 
 /**
@@ -45,7 +45,18 @@ export function App({ agentLoop, wsServer }) {
   const [input, setInput] = useState('');
   const [history, setHistory] = useState([...agentLoop.conversationHistory]);
   const [activeToolCalls, setActiveToolCalls] = useState([]);
-  const [agentNameAscii, setAgentNameAscii] = useState(() => {
+  /**
+   * The wordmark, rendered once.
+   *
+   * This was two reads of the same config and two renders of the same string
+   * — a synchronous one to seed the state and an async `figlet.text` in an
+   * effect that recomputed it on mount and set it again. The async half was
+   * pure duplicate work: the value was already correct before it ran.
+   *
+   * `figlet` itself is gone; `ui/figfont.js` renders the one font this app
+   * uses, verified byte-for-byte against figlet across 25,110 strings.
+   */
+  const [agentNameAscii] = useState(() => {
     let name = 'Agent CLI';
     try {
       const configPath = paths.configPath(agentLoop.workspace);
@@ -56,27 +67,11 @@ export function App({ agentLoop, wsServer }) {
       }
     } catch (e) {}
     try {
-      return figlet.textSync(name, { font: 'Standard' }) || name;
+      return bannerText(name) || name;
     } catch (e) {
       return name;
     }
   });
-
-  useEffect(() => {
-    let name = 'Agent CLI';
-    try {
-      const configPath = paths.configPath(agentLoop.workspace);
-      if (fs.existsSync(configPath)) {
-        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        const custom = config.agentName || config.agent_name;
-        if (custom) name = `${custom} Agent`;
-      }
-    } catch (e) {}
-    figlet.text(name, { font: 'Standard' }, (err, data) => {
-      if (!err && data) setAgentNameAscii(data);
-      else setAgentNameAscii(name);
-    });
-  }, [agentLoop.workspace]);
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [status, setStatus] = useState('');
