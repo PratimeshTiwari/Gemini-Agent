@@ -89,6 +89,67 @@ marked.use({
       return renderBlock(String(token.lang || '').trim(), String(token.text ?? ''));
     },
 
+    /**
+     * Tables are drawn here, for the reason code blocks are.
+     *
+     * `marked-terminal` hands them to `cli-table3`, which sizes to **content**
+     * and ignores the `width` option entirely. Measured on a three-column
+     * table from a real reply: **158 visible columns**, whatever the terminal
+     * is. At 90 columns every one of those lines wraps, and a wrapped border
+     * is not a narrow table — it is the top-left corner of a box on one line
+     * and the rest of it on the next, which is what was reported.
+     *
+     * Asking the model to emit a custom tag instead was considered and is the
+     * wrong half of the system to change: it costs prompt budget on every
+     * refresh turn, it is ignored some fraction of the time, and a markdown
+     * table is what the model writes unprompted. **The renderer is ours to
+     * control; the output format is not.** Same argument that moved code
+     * blocks off `marked-terminal`.
+     *
+     * A table is also the one element that must never be wrapped by Ink —
+     * `wrap="truncate"` would cut the right border off and `wrap="wrap"`
+     * destroys the box — so this is the only renderer that has to know the
+     * terminal width.
+     */
+    table(token) {
+      const cell = (c) => this.parser.parseInline(c.tokens).replace(/\n+/g, ' ').trim();
+      const header = (token.header || []).map(cell);
+      const rows = (token.rows || []).map((r) => r.map(cell));
+      if (header.length === 0) return '';
+
+      const natural = header.map((h, i) => Math.max(
+        visibleWidth(h),
+        ...rows.map((r) => visibleWidth(r[i] ?? '')),
+      ));
+      const widths = fitColumns(natural, renderWidth);
+
+      const rule = (l, mid, r) => DIM + l + widths.map((w) => '─'.repeat(w + 2)).join(mid) + r + RESET;
+      const line = (cells) => {
+        const wrapped = cells.map((c, i) => wrapAnsi(c ?? '', widths[i]));
+        const height = Math.max(1, ...wrapped.map((w) => w.length));
+        const out = [];
+        for (let i = 0; i < height; i += 1) {
+          const parts = wrapped.map((w, c) => {
+            const text = w[i] ?? '';
+            return ` ${text}${' '.repeat(Math.max(0, widths[c] - visibleWidth(text)))} `;
+          });
+          out.push(`${DIM}│${RESET}${parts.join(`${DIM}│${RESET}`)}${DIM}│${RESET}`);
+        }
+        return out.join('\n');
+      };
+
+      return [
+        '',
+        rule('┌', '┬', '┐'),
+        line(header.map((h) => `${BOLD}${h}${RESET}`)),
+        rule('├', '┼', '┤'),
+        ...rows.map((r) => line(r)),
+        rule('└', '┴', '┘'),
+        '',
+        '',
+      ].join('\n');
+    },
+
     list(token) {
       let n = Number(token.start || 1);
       const lines = token.items.map((item) => {
@@ -150,6 +211,9 @@ export function extractCodeBlocks(content) {
 /** Dim, so the rules read as furniture rather than as part of the code. */
 const DIM = '\x1b[2m';
 const RESET = '\x1b[22m';
+// `22m` is "normal intensity", which ends bold and dim alike — one reset for
+// both, and it does not clobber a colour the way `0m` would.
+const BOLD = '\x1b[1m';
 
 /**
  * A block, bounded by rules that a drag does not pick up.
@@ -166,6 +230,103 @@ function renderBlock(lang, code) {
   const top = label + '\u2500'.repeat(Math.max(2, width - label.length));
   const bottom = '\u2500'.repeat(width);
   return `${DIM}${top}${RESET}\n${code}\n${DIM}${bottom}${RESET}`;
+}
+
+/**
+ * How many columns a string occupies, ignoring the escapes that colour it.
+ *
+ * Every alignment bug in this file has been the same one: `padEnd` counts
+ * code units, and a coloured string is mostly escape bytes. The box was drawn
+ * by padding strings that carried chalk's output, so every row came out a
+ * different width and the right border zig-zagged.
+ */
+/**
+ * The width the next render should fit into.
+ *
+ * Module state rather than a threaded parameter because `marked.use` installs
+ * the renderers once, at import, and they take only their token. Set by
+ * `renderMarkdown` before it parses; the render cache is keyed on it, so two
+ * widths cannot serve each other's output.
+ */
+let renderWidth = 80;
+
+const ANSI = /\x1b\[[0-9;]*m/g;
+export const visibleWidth = (s) => String(s).replace(ANSI, '').length;
+
+/**
+ * Wrap to `width` columns without cutting an escape sequence in half.
+ *
+ * Walks the string rather than wrapping the stripped copy, because a cell can
+ * contain an inline code span and re-emitting it uncoloured to make the
+ * arithmetic easy would lose the one thing that marks it as code. Escapes
+ * cost zero columns and travel with the text.
+ *
+ * Breaks at the last space that fits; a token longer than the column is cut,
+ * because the alternative is a row wider than the table claims to be.
+ */
+export function wrapAnsi(text, width) {
+  const w = Math.max(1, width);
+  const out = [];
+  let line = '';
+  let col = 0;
+  let lastSpace = -1;
+
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '\x1b') {
+      const m = /^\x1b\[[0-9;]*m/.exec(text.slice(i));
+      if (m) { line += m[0]; i += m[0].length - 1; continue; }
+    }
+    const ch = text[i];
+    if (ch === '\n') { out.push(line); line = ''; col = 0; lastSpace = -1; continue; }
+    if (ch === ' ') lastSpace = line.length;
+    // A break can land just before a space — the hard-cut path especially —
+    // and a continuation line that opens with one is off by a column against
+    // every other row in the cell.
+    if (ch === ' ' && col === 0) continue;
+    line += ch;
+    col += 1;
+    if (col >= w) {
+      // Break at the last space if there was one, so words stay whole.
+      if (lastSpace > 0) {
+        out.push(line.slice(0, lastSpace));
+        line = line.slice(lastSpace + 1);
+        col = visibleWidth(line);
+      } else {
+        out.push(line);
+        line = '';
+        col = 0;
+      }
+      lastSpace = -1;
+    }
+  }
+  if (line.length > 0 || out.length === 0) out.push(line);
+  return out;
+}
+
+/**
+ * Fit column widths into the terminal, taking from the widest first.
+ *
+ * Proportional shrinking is the obvious approach and is wrong here: it takes
+ * as much from a 6-column `Status` as from a 70-column `Verdict`, and the
+ * narrow columns are the ones that cannot afford it. Taking from the widest
+ * each round converges on "every column as wide as it needs, and the prose
+ * column absorbs the shortfall", which is what a person does by hand.
+ */
+export function fitColumns(natural, budget, min = 6) {
+  const cols = [...natural];
+  // Two border columns per cell (`│ ` and ` `), plus the closing `│`.
+  const chrome = cols.length * 3 + 1;
+  let total = cols.reduce((a, b) => a + b, 0) + chrome;
+  // A guard, not a loop bound: every round removes a column from the widest,
+  // so it terminates — but a bug here would hang the renderer, and this is on
+  // the path that draws every reply.
+  for (let guard = 0; total > budget && guard < 10000; guard += 1) {
+    const widest = cols.indexOf(Math.max(...cols));
+    if (cols[widest] <= min) break;
+    cols[widest] -= 1;
+    total -= 1;
+  }
+  return cols;
 }
 
 /** Collapse any value to a single line of at most `max` characters. */
@@ -358,10 +519,14 @@ export function formatCommandResult(result, maxLines = 20) {
 const RENDER_CACHE = new Map();
 const RENDER_CACHE_MAX = 200;
 
-export function renderMarkdown(content) {
+export function renderMarkdown(content, width = 80) {
   const source = content || '';
-  const hit = RENDER_CACHE.get(source);
+  // Keyed on the width too: the table renderer fits itself to it, so the same
+  // markdown has a different correct answer at 72 columns and at 200.
+  const key = `${width}\u0000${source}`;
+  const hit = RENDER_CACHE.get(key);
   if (hit !== undefined) return hit;
+  renderWidth = Math.max(20, width);
 
   let out;
   try {
@@ -412,7 +577,7 @@ export function renderMarkdown(content) {
   if (RENDER_CACHE.size >= RENDER_CACHE_MAX) {
     RENDER_CACHE.delete(RENDER_CACHE.keys().next().value);
   }
-  RENDER_CACHE.set(source, out);
+  RENDER_CACHE.set(key, out);
   return out;
 }
 

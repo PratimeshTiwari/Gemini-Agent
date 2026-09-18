@@ -151,4 +151,23 @@ export const SCENARIOS = [
     rows: 24, cols: 90,
     maxClears: 0,
   },
+  {
+    name: 'a table fits the terminal instead of wrapping its own borders',
+    // `cli-table3` sizes to content and ignores its width option: measured at
+    // 158 visible columns on a three-column table, whatever the terminal was.
+    replies: [
+      'Here is the check:\n\n'
+      + '| Review Item | Task Status | Verdict |\n'
+      + '| --- | --- | --- |\n'
+      + '| Direct text fallback in `agent-loop.js` | Task 2: root-cause verification |'
+      + ' Verified: inspected lines 1929-1951 and confirmed the early exit. |\n'
+      + '| Tool boundary integrity | Task 3: registry audit | Confirmed in `mcp-server.js`. |\n',
+    ],
+    steps: [{ send: 'compare them\r' }, { wait: 'Verdict', timeout: 30 }],
+    // A wrapped border shows up as a corner glyph with nothing before it on
+    // the line; the box characters are the assertion that one was drawn at all.
+    expect: ['┌', '│ Review Item', '└'],
+    rows: 24, cols: 90,
+    maxClears: 0,
+  },
 ];
