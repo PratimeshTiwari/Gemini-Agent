@@ -373,7 +373,7 @@ export class PromptBuilder {
       ? this._buildFlashCoreInstructions()
       : this._buildFullCoreInstructions(modelTier);
 
-    const reasoningInstructions = this._getReasoningInstructions(modelTier, reasoningLevel);
+    const reasoningInstructions = this._getReasoningInstructions(modelTier, reasoningLevel, topology);
 
     // Tool call format (Flash gets examples, Pro gets description only)
     const toolCallFormat = this._buildToolCallFormat(modelTier);
@@ -525,7 +525,7 @@ ${modelTier === 'pro' ? `## 4. Communication
    * Tier-specific reasoning instructions.
    * This is the core differentiation between model tiers.
    */
-  _getReasoningInstructions(tier, level = 'standard') {
+  _getReasoningInstructions(tier, level = 'standard', topology = 'single') {
     switch (tier) {
       case 'flash':
         return this._getFlashInstructions();
@@ -533,7 +533,7 @@ ${modelTier === 'pro' ? `## 4. Communication
         return this._getFlashThinkingInstructions();
       case 'pro':
       default:
-        return this._getProInstructions(this._normalizeLevel(level));
+        return this._getProInstructions(this._normalizeLevel(level), topology);
     }
   }
 
@@ -603,9 +603,11 @@ ${modelTier === 'pro' ? `## 4. Communication
    *   standard — restate and decompose first, then the 4-phase protocol. (default)
    *   deep     — standard, plus approach enumeration and adversarial self-review.
    */
-  _getProInstructions(level = 'standard') {
+  _getProInstructions(level = 'standard', topology = 'single') {
     const isBrief = level === 'brief';
     const isDeep = level === 'deep';
+    // A second *model*, not a second persona. See the review step below.
+    const hasReviewer = topology === 'duo';
 
     const header = `## Cognitive Mode: PRINCIPAL ENGINEER
 
@@ -663,9 +665,12 @@ and what could go wrong with it — empty inputs, concurrent access, scale, erro
 1. **Re-read the edited file** — confirm the edit landed as intended.
 2. **Run the tests** if they exist.
 3. **Re-check the callers** you found in Phase 1. Does your change break them?
-4. **Name the gaps** — any path you introduced that nothing covers.${isDeep ? `
+4. **Name the gaps** — any path you introduced that nothing covers.${isDeep ? (hasReviewer ? `
+5. **Send the diff to \`ask_reviewer\`** — a second model, reading it cold, with no memory of
+   why you chose any of it. Give it the diff and what the change is meant to do. Act on what
+   comes back or say why you are not; do not paste it onward unread.` : `
 5. **Adversarial self-review** — read the diff as a hostile reviewer. What would you flag?
-   Say it out loud rather than hoping nobody looks.` : ''}`;
+   Say it out loud rather than hoping nobody looks.`) : ''}`;
 
     const guardrails = `\n${prompt('pro-guardrails')}`;
 

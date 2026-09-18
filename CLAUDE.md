@@ -461,6 +461,36 @@ plan-first, a phase-2 analysis, adversarial self-review and an assumption ledger
 genuinely thin is `standard` → `deep`, at **+3.6%** — that is the rung worth revisiting, not
 the set.
 
+**On `deep`, the hostile reviewer is a different model.** `deep` ended with "read the diff as
+a hostile reviewer", and a model reviewing its own diff is the weakest reviewer available: it
+shares every assumption that produced the code. With a reviewer configured it now calls
+`ask_reviewer` instead.
+
+Scoped to `deep` **and** `topology === 'duo'`. On solo the step stays self-review, because
+naming `ask_reviewer` in a prompt that does not define it instructs a call to a tool the model
+has never been given — the drift `toolCatalogDrift` exists to catch. Verified: 9 of the 10
+effort × topology shapes byte-identical, `deep/duo` +111 characters.
+
+**Why this shape and not a multi-agent pipeline.** The current reading of the literature is
+that extra agents earn their place when they contribute *intelligence rather than actions* and
+writes stay single-threaded — [Cognition's "Don't Build Multi-Agents"](https://cognition.com/blog/dont-build-multi-agents)
+reports coordination breakdowns as ~37% of multi-agent production failures, and its core
+objection is that summaries lose the implicit decisions behind them. One reviewer with no write
+access is that shape; a planner → tech-planner → reviewer chain handing each other summaries is
+precisely the failure mode.
+
+It is also the only fan-out that is *real* here. `extension-lock` gives each model a lane, so
+Gemini and ChatGPT genuinely overlap; two **same-model** requests serialise behind one tab and
+can interleave two prompts into one conversation, which is why phase 6 made that
+unrepresentable. Claude Code's subagents buy *context isolation* rather than speed, and Cursor
+3's eight parallel agents are bought with **git worktree isolation** — a separate filesystem per
+agent, which this project does not have and would need before parallel *writers* were safe.
+
+**Subagents are not faster here, and the reason is measured.** Each subagent turn opens a tab
+that is closed when the turn ends, so turn 2 has never seen turn 1 — **81% of characters
+resent** over ten turns. Holding one tab across a subagent's turns is the largest single waste
+left in the system, and it is a bridge change rather than a prompt one.
+
 ### Tools
 
 `mcp/mcp-server.js` holds a flat `TOOL_DEFINITIONS` array (name, description, parameters,
