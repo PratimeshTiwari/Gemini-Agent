@@ -1301,9 +1301,16 @@ responses, ascending:
 **A. Make the text channel as good as it gets** — P1's validation plus a sentinel-delimited
 call block. Free, no product decisions.
 
-**B. Measure before believing.** `parse_tool_calls`, `tool_amnesia` and `provider_error` are
-all logged and nothing reads them as rates. Any claim about how far behind this is — including
-the ones in this file — is an estimate until that view exists.
+**B. Measure before believing.** `parse_tool_calls`, `tool_amnesia`, `provider_error` and
+`multiple_drafts` are logged, and **`/logs rates` reads them back as rates** —
+`core/channel-health.js`, gated at `MIN_TURNS_FOR_RATE` so a handful of turns cannot look like
+a trend. This note used to say nothing read them; that stopped being true and the note did not
+follow, which nearly bought a second implementation of a view that already shipped.
+
+First real reading, 99 turns on the owner's machine: unparseable tool call **0%**, denied
+having tools **1.0%**, provider error **0%**, multiple drafts **0%**. The text channel is in
+better shape than the estimates in this file assume — which is the point of having the number
+rather than the estimate.
 
 **C. An optional API backend.** The only option that actually removes the ceiling: structured
 calls, real parallelism, caching, and `looksLikeCapabilityDenial` plus half of `PromptBuilder`'s
@@ -1311,6 +1318,24 @@ economics become dead code. It contradicts the standing "no API keys" decision a
 recorded as a fork, not a plan. The framing that preserves the thesis: the browser bridge stays
 the default and the identity of the project; an API backend is opt-in for people who already
 have a key.
+
+**Prompts typed during a turn are queued, not dropped.** `handleUserMessage` returns early
+when busy, pushing a transient status line the thinking cycle paints over — and by then
+`handleSubmit` has echoed the message into the transcript and cleared the input box. It looked
+sent, the text was gone, and nothing would ever answer it. Reported as four prompts typed and
+one reply. `queuedUserMessage` had sat on the loop as a field that nothing read or wrote.
+
+The queue lives in the UI, because that is where the transcript and the marker are, and
+because "one turn at a time" is the contract that keeps the loop tractable. Busy is read from
+`agentLoop.isProcessing`, never React's copy — `handleSubmit` sets that itself. Draining is
+gated on the loop being idle *and* no diff prompt or menu being open, because the two flags
+disagree during an approval and draining then injects a prompt into a turn parked on a
+decision. `:stop` empties the queue, or stopping is followed instantly by the next prompt.
+
+**Up-arrow takes a queued prompt back** when the box is empty — press enter and it rejoins the
+queue, press nothing and it is gone, which is the cancel nobody had to invent a key for. Only
+when the box is empty: half a typed sentence must not be replaced by something queued a minute
+ago.
 
 ## Gotchas
 

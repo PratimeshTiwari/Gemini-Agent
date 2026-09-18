@@ -38,8 +38,11 @@ export function useKeyBindings({
   handleSubmit,
   historyIdx,
   inputHistory,
+  input,
   isProcessing,
   newlineRef,
+  queued = [],
+  setQueued,
   setActiveTab,
   setFocus,
   setHistoryIdx,
@@ -129,6 +132,27 @@ export function useKeyBindings({
         setPaletteSuppressed(true);
         return;
       }
+      /**
+       * A queued prompt has not been sent yet, so up takes it back.
+       *
+       * Prompts typed during a turn now wait rather than being discarded —
+       * and the thing you want next is almost always to change one you have
+       * not sent, not to scroll through ones you have. So while the queue has
+       * something in it and the box is empty, up pulls the most recent queued
+       * prompt back into the field and drops it from the queue. Press enter
+       * and it goes to the back again; press nothing and it is simply gone,
+       * which is the "cancel" nobody had to invent a key for.
+       *
+       * Only when the box is empty: half a typed sentence must not be
+       * replaced by something you queued a minute ago.
+       */
+      if (queued.length > 0 && input === '') {
+        setQueued((q) => q.slice(0, -1));
+        setInputAtEnd(queued[queued.length - 1]);
+        setPaletteSuppressed(true);
+        return;
+      }
+
       if (inputHistory.length > 0) {
         const nextIdx = historyIdx === -1 ? inputHistory.length - 1 : Math.max(0, historyIdx - 1);
         setHistoryIdx(nextIdx);

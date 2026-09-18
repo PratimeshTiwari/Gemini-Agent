@@ -817,6 +817,9 @@ export function App({ agentLoop, wsServer }) {
   }, !diffRequest && !activeMenu);
 
   useKeyBindings({
+    input,
+    queued,
+    setQueued,
     activeMenu,
     activeTab,
     agentLoop,
