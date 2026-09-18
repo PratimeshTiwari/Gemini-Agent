@@ -4,7 +4,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { groupTurns, parseTurnActions , mergeLoopHistory } from '../../src/ui/transcript.js';
+import { groupTurns, parseTurnActions, parseFsEventPath, mergeLoopHistory } from '../../src/ui/transcript.js';
 
 describe('groupTurns', () => {
   it('starts a turn at each user message and attaches what follows', () => {
@@ -308,5 +308,102 @@ describe('groupTurns — a turn is timed from stamps, never from the clock', () 
       { role: 'agent', content: 'b', timestamp: 4000 },
     ]);
     for (const t of turns) assert.ok(t.endTime >= t.startTime, `${t.endTime} < ${t.startTime}`);
+  });
+});
+
+/**
+ * A file moving on disk is not work the agent did.
+ *
+ * `watcher/file-watcher.js` appends `[System Event] File X was modified`
+ * turns whenever anything on disk changes, and the generic `role: 'system'`
+ * branch turned every one into an action. A turn where the agent ran nothing
+ * read `Worked for 8.1s · 3 actions`, and spent three rows of the live budget
+ * saying one thing three times.
+ */
+describe('parseTurnActions — the watcher is not the agent', () => {
+  const fsEvent = (path, event = 'modified') => ({
+    role: 'system',
+    type: 'fs_event',
+    content: `[System Event] File ${path} was ${event} externally by the user.`,
+  });
+
+  it('consecutive file events fold into one action', () => {
+    const { actions } = parseTurnActions({
+      id: 1,
+      steps: [fsEvent('CLAUDE.md'), fsEvent('src/App.jsx'), fsEvent('src/x.js', 'added')],
+    });
+    assert.strictEqual(actions.length, 1);
+    assert.strictEqual(actions[0].type, 'fs_event');
+    assert.deepStrictEqual(actions[0].paths, ['CLAUDE.md', 'src/App.jsx', 'src/x.js']);
+  });
+
+  it('but tool calls are still counted one each', () => {
+    // The negative control. Folding that also folded real actions would read
+    // as a working test and hide every tool call after the first.
+    const steps = [1, 2, 3, 4, 5].map((i) => ({ type: 'tool_call', toolName: 'read_file', args: { i } }));
+    const { actions } = parseTurnActions({ id: 1, steps });
+    assert.strictEqual(actions.length, 5);
+  });
+
+  it('a file event between two tool calls does not merge them', () => {
+    const { actions } = parseTurnActions({
+      id: 1,
+      steps: [
+        { type: 'tool_call', toolName: 'read_file', args: {} },
+        fsEvent('a.js'),
+        { type: 'tool_call', toolName: 'grep_search', args: {} },
+      ],
+    });
+    assert.deepStrictEqual(actions.map((a) => a.type), ['tool', 'fs_event', 'tool']);
+  });
+
+  it('two separated runs of file events stay two rows', () => {
+    // Folding is on adjacency, not on being an fs_event at all — the ordering
+    // is what makes a run one event.
+    const { actions } = parseTurnActions({
+      id: 1,
+      steps: [
+        fsEvent('a.js'), fsEvent('b.js'),
+        { role: 'assistant', content: 'done' },
+        fsEvent('c.js'),
+      ],
+    });
+    const fs = actions.filter((a) => a.type === 'fs_event');
+    assert.strictEqual(fs.length, 2);
+    assert.deepStrictEqual(fs.map((a) => a.paths), [['a.js', 'b.js'], ['c.js']]);
+  });
+
+  it('the same path twice in a run is listed once', () => {
+    const { actions } = parseTurnActions({
+      id: 1,
+      steps: [fsEvent('a.js'), fsEvent('a.js'), fsEvent('a.js')],
+    });
+    assert.deepStrictEqual(actions[0].paths, ['a.js']);
+  });
+
+  it('an unparseable sentence still makes a row, with no path', () => {
+    // Fails to a count rather than to nothing: the tree moved, and that is
+    // worth a row even when we cannot name what moved.
+    const { actions } = parseTurnActions({
+      id: 1,
+      steps: [{ role: 'system', type: 'fs_event', content: 'something happened' }],
+    });
+    assert.strictEqual(actions.length, 1);
+    assert.deepStrictEqual(actions[0].paths, []);
+  });
+
+  it('a path containing the word "was" survives the parse', () => {
+    assert.strictEqual(
+      parseFsEventPath('[System Event] File src/was/it.js was added externally by the user.'),
+      'src/was/it.js',
+    );
+  });
+
+  it('an ordinary system message is still a system action', () => {
+    const { actions } = parseTurnActions({
+      id: 1,
+      steps: [{ role: 'system', content: 'ERROR PARSING TOOL CALLS' }],
+    });
+    assert.strictEqual(actions[0].type, 'system');
   });
 });

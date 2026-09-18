@@ -81,6 +81,16 @@ for step in STEPS:
         if q > 0: quiet(q)
         else: time.sleep(0.9)  # a human's gap between prompts, not a paste
         label = repr(step['send'])
+    elif 'touch' in step:
+        # Drive the file watcher the only way it can be driven: move a file.
+        # `chokidar` is watching the workspace, and the CLI turns each change
+        # into a `[System Event]` turn — the thing that used to be counted as
+        # work the agent did.
+        for name in step['touch']:
+            with open(os.path.join(WS, name), 'a') as fh:
+                fh.write('x\n')
+        time.sleep(float(step.get('settle', 1.5)))
+        label = 'touch ' + ','.join(step['touch'])
     elif 'wait' in step:
         ok = wait_for(step['wait'], int(step.get('timeout', 45)))
         if not ok: fails.append(f"never saw {step['wait']!r}")

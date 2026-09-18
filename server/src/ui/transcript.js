@@ -47,9 +47,28 @@ export function groupTurns(history) {
   return turns;
 }
 
+/**
+ * The path out of a watcher message, or null.
+ *
+ * The watcher writes prose (`[System Event] File x/y.js was modified
+ * externally by the user.`) and carries no structured field, so the path has
+ * to come back out of the sentence. Anchored on both sides rather than
+ * greedily, because a path can contain the word `was`.
+ *
+ * Returns null rather than guessing when the sentence is not that shape,
+ * and the row then says how many changed without naming them — which is the
+ * honest answer and still shorter than three lines of prose.
+ */
+export function parseFsEventPath(content) {
+  const m = /^\[System Event\] File (.+?) was \w+ externally/.exec(String(content || ''));
+  return m ? m[1] : null;
+}
+
 export function parseTurnActions(turn) {
   const actions = [];
   const finalMessages = [];
+  /** Which step produced the last file event, so a run can be told from a pair. */
+  let lastFsStep = -2;
 
   for (let sIdx = 0; sIdx < turn.steps.length; sIdx++) {
     const msg = turn.steps[sIdx];
@@ -128,6 +147,39 @@ export function parseTurnActions(turn) {
         success: msg.success,
         msg
       });
+    } else if (msg.type === 'fs_event') {
+      /**
+       * A file moving on disk is not work the agent did.
+       *
+       * These arrive from `watcher/file-watcher.js` as `role: 'system'`, and
+       * the generic system branch below turned each one into an action — so
+       * `Worked for 8.1s · 3 actions` on a turn where the agent ran nothing
+       * meant "three files changed under us". It also spent three rows of the
+       * live budget saying one thing three times.
+       *
+       * Folded into the previous one when they are adjacent, which they
+       * almost always are: a save in an editor touches several files inside a
+       * few milliseconds. Adjacent in `steps`, not within a time window — the
+       * ordering is what makes them one event, and a window would need a
+       * clock in a pure function.
+       */
+      const prev = actions[actions.length - 1];
+      const path = msg.path || parseFsEventPath(msg.content);
+      // Adjacent in `steps`, which is not the same as adjacent in `actions`:
+      // a reply between two runs goes to `finalMessages` and leaves no gap
+      // here, so folding on the last *action* silently merged runs that were
+      // minutes apart. The step index is the only thing that knows.
+      if (prev && prev.type === 'fs_event' && lastFsStep === sIdx - 1) {
+        if (path && !prev.paths.includes(path)) prev.paths.push(path);
+      } else {
+        actions.push({
+          type: 'fs_event',
+          id: `turn_${turn.id}_act_${sIdx}_fs`,
+          paths: path ? [path] : [],
+          msg,
+        });
+      }
+      lastFsStep = sIdx;
     } else if (msg.role === 'system') {
       if (msg.type === 'command_output') {
         actions.push({

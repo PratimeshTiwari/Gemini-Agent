@@ -74,4 +74,20 @@ export const SCENARIOS = [
     rows: 14, cols: 72,
     maxClears: 0,
   },
+  {
+    name: 'files changing on disk are one row, not one row each',
+    // The watcher's turns were counted as agent actions, so a turn where the
+    // agent ran nothing read `Worked for 8.1s · 3 actions` and spent three
+    // rows of the live budget saying one thing three times.
+    replies: ['WATCHED and answered.'],
+    steps: [
+      { touch: ['one.txt', 'two.txt', 'three.txt'] },
+      { send: 'what changed\r' },
+      { wait: 'WATCHED', timeout: 30 },
+    ],
+    expect: ['WATCHED'],
+    absent: ['3 actions', 'was modified externally'],
+    rows: 14, cols: 72,
+    maxClears: 0,
+  },
 ];

@@ -54,6 +54,17 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
   const shown = isLive ? actions.slice(-Math.max(1, liveBudget - 2)) : actions;
   const hidden = actions.length - shown.length;
 
+  /**
+   * What the agent did, counted separately from what happened to it.
+   *
+   * A file changing on disk is not work: a turn where the watcher fired three
+   * times and the agent ran nothing used to read `Worked for 8.1s · 3
+   * actions`. The files are still worth a row — you want to know the tree
+   * moved under the answer you are reading — they are just not the agent's.
+   */
+  const worked = actions.filter((a) => a.type !== 'fs_event').length;
+  const touched = actions.reduce((n, a) => (a.type === 'fs_event' ? n + a.paths.length : n), 0);
+
   return (
     <Box flexDirection="column" marginBottom={1} width="100%">
       {/*
@@ -106,7 +117,12 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
             ) : (
               <>{'  '}{duration === null ? 'Worked' : `Worked for ${duration}s`}</>
             )}
-            <Text dimColor> · {actions.length} action{actions.length === 1 ? '' : 's'}</Text>
+            {worked > 0 && (
+              <Text dimColor> · {worked} action{worked === 1 ? '' : 's'}</Text>
+            )}
+            {touched > 0 && (
+              <Text dimColor> · {touched} file{touched === 1 ? '' : 's'} changed on disk</Text>
+            )}
           </Text>
 
           {hidden > 0 && (
@@ -240,6 +256,24 @@ function ActionRow({ act, verbose, isLive }) {
       <Box width="100%">
         <Text dimColor wrap="wrap">{clampForDisplay(act.content, limit.lines, limit.chars)}</Text>
       </Box>
+    );
+  }
+
+  if (act.type === 'fs_event') {
+    /**
+     * One row, however many files, and never prose.
+     *
+     * The watcher's own sentence is 70 characters for one path; three of them
+     * filled a quarter of a short terminal to say the same thing three times.
+     * `wrap="truncate"` because this is drawn in the live frame and a row
+     * that wraps is charged as one and drawn as two.
+     */
+    const n = act.paths.length;
+    return (
+      <Text dimColor wrap="truncate">
+        ∙ {n || '?'} file{n === 1 ? '' : 's'} changed on disk
+        {n > 0 ? ` — ${act.paths.join(', ')}` : ''}
+      </Text>
     );
   }
 
