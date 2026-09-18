@@ -292,11 +292,26 @@ async function main() {
     await wsServer.start();
   } catch (err) {
     if (err.code === 'EADDRINUSE') {
-      const { confirm } = await import('@inquirer/prompts');
+      /**
+       * One yes/no, on an error path, from the standard library.
+       *
+       * This was `@inquirer/prompts` — sixteen packages for a single confirm
+       * that fires only when the port is taken. `readline/promises` is built
+       * in and does the same job in six lines.
+       *
+       * The default is unchanged: a bare Enter still means yes, which is what
+       * `confirm()` did with no `default` set. Worth revisiting on its own —
+       * Enter meaning "kill -9 that process" is a generous default — but that
+       * is a behaviour change and this is a dependency removal.
+       */
+      const { createInterface } = await import('node:readline/promises');
       const { execSync } = await import('child_process');
-      const shouldKill = await confirm({
-        message: `Port ${config.port} is already in use by another process. Do you want to kill it?`
-      });
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await rl.question(
+        `Port ${config.port} is already in use by another process. Do you want to kill it? (Y/n) `,
+      );
+      rl.close();
+      const shouldKill = !/^n(o)?$/i.test(answer.trim());
       if (shouldKill) {
         try {
           execSync(`lsof -t -i:${config.port} | xargs kill -9`);

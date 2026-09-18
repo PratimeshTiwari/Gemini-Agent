@@ -939,6 +939,27 @@ The banner was also being rendered **twice** — a synchronous render to seed th
 async `figlet.text` in an effect that recomputed the same string on mount. The async half was
 pure duplicate work and went with the dependency.
 
+**`@inquirer/prompts` went too** — sixteen packages for one yes/no that fires only when the
+port is taken. `node:readline/promises` does it in six lines. Measured: another **4.4MB**,
+more than the 0.6MB the top-level directory suggested, because of what it pulled in behind it.
+
+**Code blocks are drawn plainly whichever way they were written.** `renderMarkdown` lifts
+*fenced* blocks out before `marked` sees them and draws them with `renderBlock`; an *indented*
+block never matched that lift and fell through to `marked-terminal`, which highlights it. The
+result was backwards — the shape this project controls and designed for came out plain, the
+rare untagged four-space shape came out coloured. Measured with colour forced: fenced 6 ANSI
+spans, all of them rules; indented 14, with the number green. A `code` renderer now draws both
+the same way. It is overridden rather than lifted out by regex because four-space indentation
+is also how a list continues, and `marked` can already tell those apart.
+
+That makes `highlight.js` unreachable — **4.3MB and ~60ms of startup for output that can no
+longer be shown** — but it is a transitive dependency of `marked-terminal`, so removing it
+means replacing that renderer. `format.js` already overrides lists and code; what remains is
+headings, tables, blockquotes, emphasis, links and rules. Left as a deliberate choice, not an
+oversight.
+
+**Total: `node_modules` 98.5MB → 72.7MB.**
+
 **Dependencies: none unused.** Every entry in all four `package.json` files is imported,
 used in a script, or `@types/react`, which is types-only and exists for editor JSX
 intellisense. `@inquirer/prompts` looks unused to a naive grep and is not — `main.js` reaches

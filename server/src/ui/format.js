@@ -65,6 +65,30 @@ marked.use(markedTerminal({
  */
 marked.use({
   renderer: {
+    /**
+     * Code blocks are drawn plainly, whichever way they were written.
+     *
+     * `renderMarkdown` lifts **fenced** blocks out before `marked` sees them
+     * and draws them with `renderBlock` — no colour, dim rules top and
+     * bottom, copy-clean. An **indented** block never matched that lift, so
+     * it fell through to `marked-terminal`, which syntax-highlights it. The
+     * result was backwards: the shape this project controls and has a
+     * deliberate design for came out plain, while the rare untagged
+     * four-space shape came out coloured, with auto-detected language.
+     *
+     * Measured with colour forced on: a fenced block rendered 6 ANSI spans,
+     * all of them `renderBlock`'s rules with an uncoloured body; an indented
+     * one rendered 14, with `42` green and `function` blue.
+     *
+     * Drawing it here rather than lifting it out is deliberate. Four-space
+     * indentation is also how a list continues, and a regex that hunts for
+     * indented blocks cannot tell the two apart — `marked` already can, so
+     * the fix belongs where `marked` hands the block over.
+     */
+    code(token) {
+      return renderBlock(String(token.lang || '').trim(), String(token.text ?? ''));
+    },
+
     list(token) {
       let n = Number(token.start || 1);
       const lines = token.items.map((item) => {
