@@ -85,12 +85,34 @@ export function useKeyBindings({
       return;
     }
 
-    // Escape cancels processing if active, otherwise closes whatever is open
-    // and puts the caret back in the prompt.
+    /**
+     * Escape, cheapest thing first — and never the destructive one by default.
+     *
+     * The order used to be: close the palette, else **stop the turn**, else
+     * tidy up. So the fallback for "escape while a turn is running" was to
+     * kill it, and reaching that fallback took nothing more than having text
+     * in the box the palette did not recognise: `//effort` fails
+     * `/^\/[a-z-]*$/`, and `/efforttt` matches no command, so `slashOpen` is
+     * false for both. Reported twice, from both spellings — typed a command,
+     * changed their mind, pressed escape, and the answer the browser was in
+     * the middle of producing was thrown away.
+     *
+     * Clearing what you typed is what escape means in a text field, it is the
+     * only branch here that undoes something *you* just did, and it is free.
+     * The interrupt is still one key — it just needs the box to be empty
+     * first, which is exactly the state you are in when the thing you want to
+     * stop is the turn rather than the line.
+     */
     if (key.escape) {
       if (slashOpen) {
         setInput('');
         setSlashIdx(0);
+        return;
+      }
+      if (input) {
+        setInput('');
+        setSlashIdx(0);
+        setPaletteSuppressed(false);
         return;
       }
       if (isProcessing) {
