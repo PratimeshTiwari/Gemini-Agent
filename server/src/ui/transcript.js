@@ -64,6 +64,51 @@ export function parseFsEventPath(content) {
   return m ? m[1] : null;
 }
 
+/**
+ * What a write to the agent's own artifacts actually means.
+ *
+ * `edit_file` on `.agent/artifacts/task.md` is not a file edit in the sense
+ * the user cares about — it is the agent ticking a box, and the system prompt
+ * tells it to do that on every turn. Drawn as `⏺ edit_file`, it is
+ * indistinguishable from an edit to their source, which is alarming directly
+ * after "don't implement anything": two `edit_file` rows appeared on a turn
+ * that was explicitly read-only, and both were the checklist.
+ *
+ * Only `.agent/artifacts/` counts, matched on the path rather than the file
+ * name. A bare `task.md` is the user's own file at the workspace root —
+ * `isAgentArtifact` resolves it and refuses it the approval exemption, so the
+ * transcript must not claim it as the agent's either.
+ *
+ * @returns {{verb: string, detail: string} | null}
+ */
+export function describeArtifactWrite(toolName, args) {
+  const path = String(args?.path || '');
+  if (!/(^|\/)\.agent\/artifacts\//.test(path)) return null;
+  const file = path.split('/').pop() || path;
+
+  if (toolName === 'create_file') {
+    const items = (String(args.content || '').match(/^\s*[-*]\s*\[[ xX]\]/gm) || []).length;
+    if (file === 'task.md' && items > 0) {
+      return { verb: 'task list written', detail: `${items} item${items === 1 ? '' : 's'}` };
+    }
+    return { verb: `${file} written`, detail: '' };
+  }
+
+  if (toolName !== 'edit_file') return null;
+
+  // A tick is a line that was `[ ]` and is now `[x]`. Checking both halves is
+  // what separates "ticked an item" from "reworded one".
+  const ticked = [];
+  for (const edit of Array.isArray(args?.edits) ? args.edits : []) {
+    const was = /^\s*[-*]\s*\[ \]/m.test(String(edit?.oldText || ''));
+    const now = /^\s*[-*]\s*\[[xX]\]\s*(.+)$/m.exec(String(edit?.newText || ''));
+    if (was && now) ticked.push(now[1].trim());
+  }
+  if (ticked.length === 1) return { verb: 'task done', detail: ticked[0] };
+  if (ticked.length > 1) return { verb: `${ticked.length} tasks done`, detail: ticked.join(' · ') };
+  return { verb: `${file} updated`, detail: '' };
+}
+
 export function parseTurnActions(turn) {
   const actions = [];
   const finalMessages = [];

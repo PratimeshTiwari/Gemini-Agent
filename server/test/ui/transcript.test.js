@@ -4,7 +4,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { groupTurns, parseTurnActions, parseFsEventPath, mergeLoopHistory } from '../../src/ui/transcript.js';
+import { groupTurns, parseTurnActions, parseFsEventPath, describeArtifactWrite, mergeLoopHistory } from '../../src/ui/transcript.js';
 
 describe('groupTurns', () => {
   it('starts a turn at each user message and attaches what follows', () => {
@@ -405,5 +405,87 @@ describe('parseTurnActions — the watcher is not the agent', () => {
       steps: [{ role: 'system', content: 'ERROR PARSING TOOL CALLS' }],
     });
     assert.strictEqual(actions[0].type, 'system');
+  });
+});
+
+/**
+ * A write to the agent's own artifacts is drawn as what it means.
+ *
+ * `edit_file` on `.agent/artifacts/task.md` is the agent ticking a box — the
+ * system prompt tells it to, every turn, and `isAgentArtifact` exempts it from
+ * approval for that reason. Drawn with the same row as a source edit it reads
+ * as an unapproved write to the user's code, which is how it was reported: two
+ * `edit_file` rows on a turn that had said "don't implement anything", and
+ * both of them were the checklist.
+ */
+describe('describeArtifactWrite', () => {
+  const task = '.agent/artifacts/task.md';
+
+  it('names the item that was ticked', () => {
+    assert.deepStrictEqual(
+      describeArtifactWrite('edit_file', {
+        path: task,
+        edits: [{ oldText: '- [ ] write the test', newText: '- [x] write the test' }],
+      }),
+      { verb: 'task done', detail: 'write the test' },
+    );
+  });
+
+  it('counts several ticks in one call', () => {
+    const d = describeArtifactWrite('edit_file', {
+      path: `/Users/x/p/${task}`,
+      edits: [
+        { oldText: '- [ ] a', newText: '- [x] a' },
+        { oldText: '- [ ] b', newText: '- [x] b' },
+      ],
+    });
+    assert.strictEqual(d.verb, '2 tasks done');
+    assert.strictEqual(d.detail, 'a · b');
+  });
+
+  it('a new checklist says how many items it has', () => {
+    assert.deepStrictEqual(
+      describeArtifactWrite('create_file', { path: task, content: '- [ ] a\n- [ ] b\n- [ ] c\n' }),
+      { verb: 'task list written', detail: '3 items' },
+    );
+  });
+
+  it('rewording an item is an update, not a tick', () => {
+    // Both halves are checked — `[ ]` before and `[x]` after — because only
+    // that separates finishing an item from renaming one.
+    assert.deepStrictEqual(
+      describeArtifactWrite('edit_file', {
+        path: task,
+        edits: [{ oldText: '- [ ] a', newText: '- [ ] a, but clearer' }],
+      }),
+      { verb: 'task.md updated', detail: '' },
+    );
+  });
+
+  it('a bare task.md is the user\'s own file, not an artifact', () => {
+    // `isAgentArtifact` resolves a relative path against the workspace, so
+    // `task.md` at the root gets no approval exemption. The transcript must
+    // not claim it as the agent's either.
+    assert.strictEqual(describeArtifactWrite('edit_file', { path: 'task.md', edits: [] }), null);
+    assert.strictEqual(
+      describeArtifactWrite('edit_file', { path: 'docs/artifacts/task.md', edits: [] }),
+      null,
+    );
+  });
+
+  it('source files are left alone', () => {
+    assert.strictEqual(
+      describeArtifactWrite('edit_file', { path: 'server/src/ui/App.jsx', edits: [] }),
+      null,
+    );
+    assert.strictEqual(describeArtifactWrite('read_file', { path: task }), null);
+    assert.strictEqual(describeArtifactWrite('run_command', { command: 'ls' }), null);
+  });
+
+  it('another artifact says which file', () => {
+    assert.deepStrictEqual(
+      describeArtifactWrite('edit_file', { path: '.agent/artifacts/plan.md', edits: [] }),
+      { verb: 'plan.md updated', detail: '' },
+    );
   });
 });

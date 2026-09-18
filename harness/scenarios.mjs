@@ -90,4 +90,65 @@ export const SCENARIOS = [
     rows: 14, cols: 72,
     maxClears: 0,
   },
+  {
+    name: 'the task panel opens on its own key without clearing',
+    replies: [
+      'Working on it.\n\n```json\n' + JSON.stringify({
+        name: 'create_file',
+        args: {
+          path: '.agent/artifacts/task.md',
+          content: '- [x] read the file\n- [x] find the caller\n- [ ] write the test\n'
+            + '- [ ] run the suite\n- [ ] check the frame budget\n- [ ] update the docs\n',
+        },
+      }) + '\n```',
+      'TASK LIST written.',
+    ],
+    steps: [
+      { send: 'make a task list\r' },
+      { wait: 'TASK LIST', timeout: 40 },
+      { send: '\u0007' },
+      { wait: 'read the file', timeout: 10 },
+      { send: '\u0007' },
+    ],
+    // The header answers the question without being opened, and the body
+    // appears on ctrl+g — with no clear, because the panel is in the live
+    // frame and needs no reprint. ctrl+e used to be the only way in, and it
+    // reprints the whole transcript.
+    // Two body rows is all a 13-row terminal can spare, and the panel says
+    // so rather than drawing six and blowing the frame.
+    expect: ['TASK LIST', '2/6 done', 'read the file', '+4 more'],
+    rows: 13, cols: 80,
+    maxClears: 0,
+  },
+  {
+    name: 'ticking the checklist does not look like editing your code',
+    // Reported after "do everything but don't implement": two `⏺ edit_file`
+    // rows on a read-only turn, both of them the agent ticking its own box.
+    replies: [
+      'Working.\n\n```json\n' + JSON.stringify({
+        name: 'create_file',
+        args: { path: '.agent/artifacts/task.md', content: '- [ ] read it\n- [ ] verify it\n' },
+      }) + '\n```',
+      'And the checks.\n\n```json\n' + JSON.stringify({
+        name: 'create_file',
+        args: { path: '.agent/artifacts/review.md', content: '- [ ] npm test passes\n' },
+      }) + '\n```',
+      'Ticking.\n\n```json\n' + JSON.stringify({
+        name: 'edit_file',
+        args: {
+          path: '.agent/artifacts/task.md',
+          edits: [{ oldText: '- [ ] read it', newText: '- [x] read it' }],
+        },
+      }) + '\n```',
+      'READ AND VERIFIED.',
+    ],
+    steps: [
+      { send: 'read and verify only\r' },
+      { wait: 'READ AND VERIFIED', timeout: 50 },
+    ],
+    expect: ['task list written', 'review.md written', 'task done', 'read it'],
+    absent: ['⏺ edit_file'],
+    rows: 24, cols: 90,
+    maxClears: 0,
+  },
 ];

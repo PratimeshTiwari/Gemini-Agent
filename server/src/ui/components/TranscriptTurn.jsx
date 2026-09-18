@@ -4,7 +4,7 @@ import { DiffRows } from './DiffRows.jsx';
 import { rowsFromPatch } from '../diff-preview.js';
 import { Dots } from './RunningLine.jsx';
 import { renderMarkdown, oneLine, summarizeResult, clampForDisplay, formatCommandResult, blockLines, liveMessageText } from '../format.js';
-import { parseTurnActions } from '../transcript.js';
+import { parseTurnActions, describeArtifactWrite } from '../transcript.js';
 
 /**
  * The user's own message, shortened to fit.
@@ -195,6 +195,26 @@ const limitsFor = (isLive, verbose) => {
 function ActionRow({ act, verbose, isLive }) {
   const limit = limitsFor(isLive, verbose);
   if (act.type === 'tool') {
+    /**
+     * A write to the agent's own artifacts is drawn as what it means.
+     *
+     * `⏺ edit_file` on `.agent/artifacts/task.md` is the agent ticking a box —
+     * which the system prompt tells it to do every turn — and it is exempt
+     * from approval for that reason. Drawn with the same row as a source edit
+     * it reads as an unapproved write to the user's code, which is exactly how
+     * it was reported: two `edit_file` rows on a turn that had said "don't
+     * implement", both of them the checklist.
+     */
+    const artifact = act.success !== false && describeArtifactWrite(act.toolName, act.args);
+    if (artifact) {
+      return (
+        <Text wrap="truncate">
+          <Text color="green">{'✓ '}</Text>
+          <Text color="gray">{artifact.verb}</Text>
+          {artifact.detail ? <Text dimColor> · {artifact.detail}</Text> : null}
+        </Text>
+      );
+    }
     return (
       <Box flexDirection="column" width="100%">
         <Box flexDirection="row">
