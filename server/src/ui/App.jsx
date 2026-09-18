@@ -151,7 +151,19 @@ export function App({ agentLoop, wsServer }) {
   const [activeMenu, setActiveMenu] = useState(null);
   const [planReviewReady, setPlanReviewReady] = useState(false);
   const [walkthroughReady, setWalkthroughReady] = useState(false);
-  const [artifacts, setArtifacts] = useState({ task: null, walkthrough: null });
+  const [artifacts, setArtifacts] = useState({ task: null, review: null, walkthrough: null });
+
+  /**
+   * The artifact panel opens on its own key, and does not clear the screen.
+   *
+   * It used to ride on `verbose` — the *transcript* toggle — so seeing your
+   * task list meant expanding every tool result in the history, and vice
+   * versa. Worse, `toggleVerbose` clears and reprints the whole transcript
+   * (the only `ESC[2J` this app writes, because `<Static>` cannot be
+   * repainted). This panel is in the **live** frame, so it needs no reprint
+   * at all: React redraws it and nothing else moves.
+   */
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
 
   /**
    * Whether this agent is behind its own remote, and what a past `/update`
@@ -431,6 +443,27 @@ export function App({ agentLoop, wsServer }) {
     - (isThinkingTooLong ? 1 : 0)
     - noticeRows);
 
+  /**
+   * How many lines the expanded artifact panel may draw.
+   *
+   * It was not budgeted at all, and it is in the live frame. Measured at
+   * 13x80 with a six-item task list: **0 clears closed, 6 open** — two of
+   * those the deliberate cost of the two toggles, four the frame overflowing.
+   * `RESERVED_ROWS` is the furniture and never included this panel, so an
+   * expanded `task.md` plus `walkthrough.md` asked for 9 + 14 rows of a
+   * 13-row terminal.
+   *
+   * Budgeted against the terminal rather than `liveBudget`, because the two
+   * never coexist: the panel draws only when `!isProcessing`, and the live
+   * turn only when processing. Capped at 12 so a tall terminal does not turn
+   * the prompt area into a document viewer — the file is on disk, and the
+   * row names it.
+   */
+  const artifactLines = Math.max(
+    1,
+    Math.min(12, terminalHeight - reservedRows(terminalHeight) - 2),
+  );
+
   // Shown in the status bar rather than under the prompt: it is rare, it is one
   // short field, and a conditional row under the input is a row RESERVED_ROWS
   // has to budget for whether or not it is ever drawn.
@@ -474,14 +507,29 @@ export function App({ agentLoop, wsServer }) {
       } catch (e) {}
     }
 
+    /**
+     * The three documents the panel tracks, read as a set.
+     *
+     * `review.md` joined `task.md` and `walkthrough.md` because the agent
+     * started writing one — the checks it intends to run, written *before*
+     * the work rather than claimed after it. That ordering is the whole
+     * value: a handover that reports `3/3` against a list invented in the
+     * same sentence is the failure already recorded in
+     * `plans/verified-handover.md`.
+     *
+     * Compared field by field rather than by identity, so a render that
+     * changes nothing returns the previous object and React can skip it.
+     */
     try {
-      const taskPath = paths.artifactPath(agentLoop.workspace, 'task.md');
-      const walkPath = paths.artifactPath(agentLoop.workspace, 'walkthrough.md');
-      const taskContent = fs.existsSync(taskPath) ? fs.readFileSync(taskPath, 'utf8') : null;
-      const walkContent = fs.existsSync(walkPath) ? fs.readFileSync(walkPath, 'utf8') : null;
-      setArtifacts((prev) => (prev.task === taskContent && prev.walkthrough === walkContent
-        ? prev
-        : { task: taskContent, walkthrough: walkContent }));
+      const read = (name) => {
+        const at = paths.artifactPath(agentLoop.workspace, name);
+        return fs.existsSync(at) ? fs.readFileSync(at, 'utf8') : null;
+      };
+      const next = { task: read('task.md'), review: read('review.md'), walkthrough: read('walkthrough.md') };
+      setArtifacts((prev) => (
+        prev.task === next.task && prev.review === next.review && prev.walkthrough === next.walkthrough
+          ? prev
+          : next));
     } catch (err) {
       /* ignore fs errors */
     }
@@ -744,6 +792,7 @@ export function App({ agentLoop, wsServer }) {
   // answered yet.
   useHotkeys({
     expand: toggleVerbose,
+    artifacts: () => setArtifactsOpen((open) => !open),
     tabs: () => setActiveTab((prev) => {
       const next = prev === 'agent' ? 'github' : 'agent';
       if (next === 'github') github.clearNewEvent();
@@ -1090,6 +1139,8 @@ export function App({ agentLoop, wsServer }) {
             terminalOpen={terminalOpen}
             thinkingText={thinkingText}
             artifacts={artifacts}
+            artifactsOpen={artifactsOpen}
+            artifactLines={artifactLines}
             verbose={verbose}
             compact={compact}
           />

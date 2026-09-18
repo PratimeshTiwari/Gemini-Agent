@@ -8,14 +8,6 @@ import { oneLine } from '../format.js';
 import { hasClipboardImage } from '../clipboard-image.js';
 
 /** First `n` non-empty lines of an artifact, for the one-glance summary. */
-function head(text, n) {
-  return String(text || '')
-    .split('\n')
-    .filter((l) => l.trim())
-    .slice(0, n)
-    .join('\n');
-}
-
 /**
  * The bottom of the agent tab: the thinking line while a turn runs, then the
  * prompt with its slash palette.
@@ -32,6 +24,8 @@ export function InputBar({
   activeMenu,
   addPaste,
   artifacts,
+  artifactsOpen,
+  artifactLines = 6,
   filedSession,
   history,
   diffRequest,
@@ -62,7 +56,36 @@ export function InputBar({
   verbose,
   compact,
 }) {
-  const hasArtifacts = Boolean(artifacts?.task || artifacts?.walkthrough);
+  const hasArtifacts = Boolean(artifacts?.task || artifacts?.review || artifacts?.walkthrough);
+
+  /**
+   * `3/6 done` on the header row, so the panel answers the question it exists
+   * for without being opened at all. Counted from the file, which is the only
+   * copy either the user or the model can be looking at.
+   */
+  const progress = (() => {
+    if (!artifacts?.task) return '';
+    const items = String(artifacts.task).match(/^\s*[-*]\s*\[[ xX]\]/gm) || [];
+    if (items.length === 0) return '';
+    const done = items.filter((l) => /\[[xX]\]/.test(l)).length;
+    return `${done}/${items.length} done`;
+  })();
+
+  /**
+   * Counted before it is cut, or the count is always zero.
+   *
+   * The first version ran `head(task, artifactLines)` and *then* sliced to
+   * `artifactLines`, so the overflow was the difference between a number and
+   * itself — the `… +N more` row could never appear, and a list cut to two
+   * lines looked like a list with two items.
+   */
+  const artifactBody = [artifacts?.task, artifacts?.review, artifacts?.walkthrough]
+    .filter(Boolean)
+    .join('\n')
+    .split('\n')
+    .filter((l) => l.trim());
+  const shownArtifactLines = artifactBody.slice(0, artifactLines);
+  const artifactOverflow = artifactBody.length - shownArtifactLines.length;
   const promptVisible = !diffRequest && !terminalOpen && !activeMenu;
 
   // Bracketed paste, which this hook turns on, is what separates "the user
@@ -183,15 +206,28 @@ export function InputBar({
 
           {hasArtifacts && !isProcessing && (
             <Box flexDirection="column" marginBottom={1}>
-              <Text color="cyan">
-                {'▸ '}{[artifacts.task && 'task.md', artifacts.walkthrough && 'walkthrough.md'].filter(Boolean).join(' · ')}
-                <Text dimColor>{verbose ? '' : ' — ctrl+e to expand'}</Text>
+              <Text color="cyan" wrap="truncate">
+                {artifactsOpen ? '▾ ' : '▸ '}
+                {[artifacts.task && 'task.md', artifacts.review && 'review.md',
+                  artifacts.walkthrough && 'walkthrough.md'].filter(Boolean).join(' · ')}
+                {progress ? <Text dimColor>{'  '}{progress}</Text> : null}
+                <Text dimColor>{artifactsOpen ? ' — ctrl+g to collapse' : ' — ctrl+g to expand'}</Text>
               </Text>
-              {verbose && artifacts.task && (
-                <Text dimColor wrap="wrap">{head(artifacts.task, 6)}</Text>
-              )}
-              {verbose && artifacts.walkthrough && (
-                <Text dimColor wrap="wrap">{head(artifacts.walkthrough, 6)}</Text>
+              {/*
+                Bounded, because this is the live frame. Unbudgeted it cost
+                4 clears at 13x80 on a six-item list, on top of the two the
+                toggle itself pays — and the toggle used to be ctrl+e, which
+                reprints the whole transcript to show you six lines.
+
+                `truncate` per row for the same reason the GitHub rows have
+                it: a row that wraps is charged as one and drawn as two.
+              */}
+              {artifactsOpen && shownArtifactLines.map((line, i) => (
+                // eslint-disable-next-line react/no-array-index-key
+                <Text key={i} dimColor wrap="truncate">{'  '}{line}</Text>
+              ))}
+              {artifactsOpen && artifactOverflow > 0 && (
+                <Text dimColor>{'  '}… +{artifactOverflow} more — open the file</Text>
               )}
             </Box>
           )}
