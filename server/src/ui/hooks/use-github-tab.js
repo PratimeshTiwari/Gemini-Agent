@@ -166,6 +166,18 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
         (n) => n.type !== 'github_error' && n.type !== 'github_auth_rejected',
       );
       if (events.length > 0) setActivity((prev) => [...prev, ...events].slice(-50));
+
+      // The queue says what it is doing; the rows follow it.
+      const starts = events.filter((n) => n.type === 'github_processing_started');
+      const ends = events.filter((n) => n.type === 'github_processing_finished');
+      if (starts.length > 0 || ends.length > 0) {
+        setAnalysing((prev) => {
+          const next = new Set(prev);
+          for (const n of starts) if (n.payload?.commentId != null) next.add(n.payload.commentId);
+          for (const n of ends) if (n.payload?.commentId != null) next.delete(n.payload.commentId);
+          return next;
+        });
+      }
       if (activeTab !== 'github') setHasNewEvent(true);
 
       /**
@@ -208,6 +220,43 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
     }].slice(-50));
     setHasNewEvent(true);
   }, []);
+
+  /**
+   * The comments the agent is working on right now.
+   *
+   * Pressing ⏎ on a comment started an analysis and left the row saying
+   * `⚠ not analysed` — which by then was a lie, and the row is where you are
+   * looking. The notice it did push went to the *transcript*, on the other
+   * tab, and `groupTurns` drops a system row that arrives before the session's
+   * first prompt, so on a fresh session there was no feedback anywhere.
+   *
+   * Driven by the queue's own `processing_started` / `processing_finished`
+   * events rather than only by the keypress, so a comment the *poller* picked
+   * up animates too. The keypress adds an optimistic entry because those
+   * events arrive through a 1s poll, and can be up to a cooldown behind if
+   * something is already in flight — the row has to change on the key, not a
+   * second later.
+   *
+   * `processing_finished` is the clear, not `plan_generated`: triage can
+   * decide a comment is conversational and write no plan at all, and a
+   * spinner that never stops is worse than the wrong label.
+   */
+  const [analysing, setAnalysing] = useState(() => new Set());
+
+  /**
+   * One tick, and only while something is spinning.
+   *
+   * App owns a tick that runs only while a turn does; this screen is not a
+   * turn. An interval that ran whenever the tab was open would repaint an
+   * idle frame eight times a second, which is the exact shape of the flicker
+   * bug this UI is built around.
+   */
+  const [spin, setSpin] = useState(0);
+  useEffect(() => {
+    if (analysing.size === 0) return undefined;
+    const t = setInterval(() => setSpin((n) => n + 1), 120);
+    return () => clearInterval(t);
+  }, [analysing.size]);
 
   /**
    * Say that an analysis was asked for.
@@ -346,13 +395,47 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
     // already being analysed, so leaning on the key does not queue it twice.
     const handler = agentLoop.githubHandler;
     const pr = row.plan?.payload?.pr || selectedPr;
-    if (handler?.forceAnalyzeComment) {
-      handler.forceAnalyzeComment(pr, row.comment).catch(() => {});
-    } else {
-      handler?._enqueueComment?.({ pr, comment: row.comment, force: true });
-    }
+    const id = row.comment.id;
     setError('');
+    setAnalysing((prev) => new Set(prev).add(id));
     notifyReanalysing(selectedPr.number, row.comment.author);
+
+    /**
+     * A failure here is shown, not swallowed.
+     *
+     * `.catch(() => {})` is what hid the real bug for as long as it existed:
+     * `forceAnalyzeComment` threw on a field that had been refactored away, so
+     * the key did nothing at all, for every comment, with nothing anywhere
+     * saying why. A key that silently does nothing is the hardest kind of
+     * broken to report.
+     */
+    const failed = (message) => {
+      setError(message);
+      setAnalysing((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    };
+
+    if (handler?.forceAnalyzeComment) {
+      handler.forceAnalyzeComment(pr, row.comment)
+        .then((res) => {
+          // Already running is not a failure — the spinner is telling the truth.
+          if (res?.skipped && res.reason !== 'processing') {
+            failed(`Not analysed: ${res.reason}`);
+          }
+        })
+        .catch((err) => failed(`Analysis could not start: ${err?.message || err}`));
+    } else if (handler?._enqueueComment) {
+      try {
+        handler._enqueueComment({ pr, comment: row.comment, force: true });
+      } catch (err) {
+        failed(`Analysis could not start: ${err?.message || err}`);
+      }
+    } else {
+      failed('GitHub agent is not running, so nothing can be analysed.');
+    }
   }, [agentLoop, commentRows, selectedPrCommentIdx, selectedPr, notifyReanalysing]);
 
   const addAvoidWord = useCallback((word) => {
@@ -396,6 +479,7 @@ export function useGithubTab({ agentLoop, wsServer, activeTab, setHistory }) {
     authRejected, setAuthRejected,
     prs, prSummary, selectedPr, selectedPrIdx,
     commentRows, selectedPrCommentIdx,
+    analysing, spin,
     loadingPrs, loadingPrComments,
     expandedComments, avoidWords, newAvoidWord, setNewAvoidWord,
     hasNewEvent, lastNotice,

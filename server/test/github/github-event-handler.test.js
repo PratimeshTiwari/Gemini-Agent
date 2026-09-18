@@ -411,3 +411,60 @@ describe('a row knows whether it was analysed', () => {
     assert.equal(runs, 2, 'asking again explicitly must re-run it');
   });
 });
+
+/**
+ * The path the ⏎ key takes, which nothing above covers.
+ *
+ * Every test in this file enqueues through `_enqueueComment`. The GitHub tab
+ * does not: it calls `forceAnalyzeComment`, which does three things first —
+ * refuse a duplicate in flight, delete the stale review, and clear the dedup
+ * memory. That third line referenced `_processedCommentIds`, a field that
+ * stopped existing when dedup moved into `WorkQueue`, so the method threw
+ * before it ever reached the enqueue and the UI's `.catch(() => {})` ate it.
+ * Pressing ⏎ on a comment did nothing, for every comment, silently.
+ */
+describe('forceAnalyzeComment — the UI entry point', () => {
+  test('analyses a comment that has never been seen', async () => {
+    const h = handler();
+    const plans = [];
+    h.on('plan_generated', (e) => plans.push(e));
+    const r = await h.forceAnalyzeComment(PR, comment());
+    assert.deepEqual(r, { queued: true });
+    await settle();
+    assert.equal(plans.length, 1, 'the analysis never ran');
+  });
+
+  test('re-analyses one the queue has already done', async () => {
+    const h = handler();
+    let runs = 0;
+    h.on('processing_started', () => { runs += 1; });
+    h._enqueueComment({ pr: PR, comment: comment() });
+    await settle();
+    await h.forceAnalyzeComment(PR, comment());
+    await settle();
+    assert.equal(runs, 2);
+  });
+
+  test('and the queue no longer believes it is done', async () => {
+    // Deleting the review file while the queue still holds the id is a state
+    // where nothing on disk agrees with what the queue thinks it handled.
+    const h = handler();
+    h._enqueueComment({ pr: PR, comment: comment() });
+    await settle();
+    assert.equal(h._queue.done.has(1), true);
+    h._queue.current = null;
+    await h.forceAnalyzeComment(PR, comment());
+    assert.equal(h._queue.done.has(1), true, 'the re-run re-marks it');
+  });
+
+  test('refuses while that same comment is in flight', async () => {
+    const h = handler();
+    let release;
+    h.agentLoop.runHeadlessTask = () => new Promise((r) => { release = r; });
+    h._enqueueComment({ pr: PR, comment: comment() });
+    await settle();
+    const r = await h.forceAnalyzeComment(PR, comment());
+    assert.deepEqual(r, { skipped: true, reason: 'processing' });
+    release({ success: true, result: '# Plan' });
+  });
+});

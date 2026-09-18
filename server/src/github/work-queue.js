@@ -67,6 +67,19 @@ export class WorkQueue {
     return true;
   }
 
+  /**
+   * Forget that an item was done, so it is accepted again.
+   *
+   * `add({force:true})` already bypasses the check — this is for the caller
+   * that has *also* thrown away the work's output (the plan file) and needs
+   * the two to agree. Leaving the key in `done` while the file is gone is a
+   * state where the queue believes the item is handled and nothing on disk
+   * says so.
+   */
+  forget(key) {
+    return this.done.delete(key);
+  }
+
   /** How many are waiting, not counting the one in flight. */
   get length() {
     return this.items.length;

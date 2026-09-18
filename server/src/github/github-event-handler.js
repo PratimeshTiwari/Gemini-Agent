@@ -178,8 +178,14 @@ export class GitHubEventHandler extends EventEmitter {
     const planPath = join(prDir, `comment-${comment.id}.md`);
     try { unlinkSync(planPath); } catch (_) {}
 
-    // Remove from dedup set so the queue processes it
-    this._processedCommentIds.delete(comment.id);
+    // Let the queue forget it too, so its memory and the disk agree.
+    //
+    // This line used to read `this._processedCommentIds.delete(...)` — a field
+    // that stopped existing when dedup moved into `WorkQueue`, so **every**
+    // press of ⏎ on a comment threw `Cannot read properties of undefined`
+    // before reaching the enqueue below. The UI caught that with
+    // `.catch(() => {})`, so the key did nothing, silently, for every comment.
+    this._queue.forget(comment.id);
 
     // Enqueue with force flag
     this._enqueueComment({ pr, comment, force: true });

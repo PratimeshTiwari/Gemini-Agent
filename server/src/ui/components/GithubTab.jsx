@@ -5,6 +5,7 @@ import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import { formatPollTime, formatTokenExpiry, oneLine, blockLines } from '../format.js';
 import { KeyHints } from './KeyHints.jsx';
+import { FRAMES } from './RunningLine.jsx';
 
 /**
  * The GitHub screen (ctrl+o).
@@ -379,6 +380,7 @@ function PrList({ github, maxRows, width = 80 }) {
 function Comments({ agentLoop, github, maxRows, width = 80 }) {
   const {
     commentRows, selectedPrCommentIdx, loadingPrComments, selectedPr, expandedComments,
+    analysing, spin = 0,
   } = github;
 
   const title = (
@@ -448,7 +450,21 @@ function Comments({ agentLoop, github, maxRows, width = 80 }) {
             <Text color={selected ? 'cyan' : undefined} wrap="truncate">
               {selected ? '❯ ' : '  '}@{row.comment.author || 'someone'}
               {row.comment.type === 'review_comment' ? <Text dimColor>{'  review'}</Text> : null}
-              {row.analysed ? null : <Text color="yellow">{'  ⚠ not analysed'}</Text>}
+              {/*
+                Three states, one slot. The row is the only place the answer to
+                "did my keypress do anything" can appear — the notice it used to
+                rely on goes to the *other* tab, and is dropped there entirely
+                before the session's first prompt.
+
+                The same frames as the agent's own spinner, so a thing that is
+                working looks like a thing that is working everywhere in this
+                app. Nothing is drawn for an analysed row: the plan path
+                underneath already says so, and a tick would be a second badge
+                for one fact.
+              */}
+              {analysing?.has(row.comment.id)
+                ? <Text color="cyan">{'  '}{FRAMES[spin % FRAMES.length]} analysing…</Text>
+                : row.analysed ? null : <Text color="yellow">{'  ⚠ not analysed'}</Text>}
             </Text>
 
             {/*
