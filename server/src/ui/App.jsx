@@ -62,8 +62,18 @@ export function App({ agentLoop, wsServer }) {
       const configPath = paths.configPath(agentLoop.workspace);
       if (fs.existsSync(configPath)) {
         const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        /**
+         * The name as given, with nothing glued on.
+         *
+         * This appended " Agent", so `/name Jarvis` drew **Jarvis Agent** —
+         * while the command that set it had just replied "The agent is called
+         * Jarvis". The two disagreed, and the default never went through this
+         * path, so `Agent CLI` stayed `Agent CLI` while every chosen name got
+         * a suffix. Reported after setting the name to "AGENT CLI" and
+         * watching the banner read **AGENT CLI Agent**.
+         */
         const custom = config.agentName || config.agent_name;
-        if (custom) name = `${custom} Agent`;
+        if (custom) name = custom;
       }
     } catch (e) {}
     try {
