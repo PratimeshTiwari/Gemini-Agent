@@ -96,6 +96,24 @@ during a live turn" measurement had no live turn in it.
 empty catalog and went green — it needed a negative control per branch before the pass meant
 anything.
 
+**And a tool with no test at all is worse.** `find_symbol` had 1,474 green tests around it and
+not one that called it, so a stray edit that left `isMethod` referenced in `findSymbol` — where
+it is never defined — made **every** `find_symbol` call return `Tool find_symbol failed:
+isMethod is not defined`, and shipped. Its sibling `find_references` was covered in detail;
+the tool beside it was covered not at all.
+
+The cause is a class, not an accident: **a Python `str.replace(old, new)` with no count
+replaces every occurrence**, and the tail of `findSymbol` was byte-identical to the tail of
+`findReferences`. This file already said "a string anchor hits the first match"; replacing
+without a count is the same trap with the opposite failure. When editing by script, assert the
+match count before writing.
+
+`test/mcp/tool-smoke.test.js` is the answer that generalises: every registered tool called once
+on its happy path, plus a membership assertion so a tool added later cannot slip past by simply
+not being in the map. It asserts almost nothing about *what* comes back — the per-tool suites
+do that — only that the call the agent makes does not throw. A tool that cannot run at all is
+the failure that costs a whole turn, and the model has been told by the prompt that it exists.
+
 ## Layout
 
 ```

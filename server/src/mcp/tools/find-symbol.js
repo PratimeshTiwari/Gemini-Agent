@@ -56,11 +56,6 @@ export async function findSymbol(args, context) {
     filesIndexed: index.indexed,
     definitions: hits.slice(0, MAX_HITS),
     ...(hits.length > MAX_HITS ? { truncated: hits.length - MAX_HITS } : {}),
-    ...(isMethod ? {
-      methodNote: `"${name}" is a method here, so \`x.${name}\` uses are included and marked `
-        + '`viaMember`. Those could be a same-named method on another object — check the line '
-        + 'before treating one as a call to this definition.',
-    } : {}),
     ...(coverage(index) ? { note: coverage(index) } : {}),
   };
 }
