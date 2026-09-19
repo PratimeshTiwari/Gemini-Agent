@@ -27,10 +27,11 @@ session. No API key, no hosted backend, no telemetry.
 - **Editor awareness.** A VS Code companion hands over your active file, cursor position and
   the Problems panel, so `get_diagnostics` reads your real TypeScript and ESLint errors
   instead of running a build.
-- **One effort ladder.** `/effort` runs from `⚡ flash` (terse) through `🧠 flash-thinking`
-  (3-phase) to `🏃 brief` / `🪜 standard` / `🔭 deep` on Pro, which add a checklist, then
-  approach enumeration and an adversarial self-review. Each rung names the browser tab its
-  prompt is written for — that pairing is the whole point, so there is one setting, not two.
+- **One effort ladder, three rungs.** `/effort` runs from `⚡ flash` (terse) through
+  `🧠 flash-thinking` (3-phase) to `🪜 pro`, which plans first, then investigates,
+  implements, verifies, and sends the diff to a second tab reading it cold. Each rung names
+  the browser tab its prompt is written for — that pairing is the whole point, so there is
+  one setting, not two.
 - **A terminal UI that behaves like one.** Real streaming, no mouse tracking, so scroll,
   drag-select and copy stay your terminal's. Settled turns are committed to scrollback and
   only the in-flight turn repaints.
@@ -466,7 +467,9 @@ model. The list says which is which.
 Once the agent is running, you can use built-in slash commands to manage your session:
 - Type `/help` in the CLI to see all available commands.
 - Type `/config` to turn the reviewer on or off. With one on, a second Gemini tab audits the work without having seen the conversation that produced it — which is the point of it, and why the tab is worth opening. There is no separate `/mode` screen any more, though the name still answers.
-- Type `/effort` to pick how hard the agent works — one ladder from `flash` to `deep`. It sets
+- Type `/effort` to pick how hard the agent works — one ladder, `flash` · `flash-thinking` ·
+  `pro`. Changing it mid-chat says so: the next message resends the whole system prompt into
+  the thread, and the row names `/compact` as the way to start a fresh one instead. It sets
   the prompt profile **and switches the browser's mode picker to match**, so a prompt written
   for Pro is not typed into a Flash tab. It tells you which model it chose. Nothing is
   hardcoded — the names and the list differ by subscription, so it reads your picker and
@@ -670,15 +673,16 @@ missing one**, since the model reaches for it and concludes the code is not ther
 
 ### Unreleased — `fix/bridge-speed-and-stability`
 
-82 commits, not yet through a PR. **43 of them are `fix`** — this release is
-mostly the product being made to do what it already said it did.
+Not yet through a PR, and **most of it is `fix`** — this release is mostly the
+product being made to do what it already said it did.
 
 ```bash
 git rev-list --left-right --count main...fix/bridge-speed-and-stability
 ```
 
 The count is deliberately not written out in prose. It said "113 commits ahead"
-for about a day, during which it was wrong roughly forty times.
+for about a day, during which it was wrong roughly forty times — and "82" for
+another, which is the same mistake made by the paragraph warning about it.
 
 #### What this branch is
 
@@ -700,6 +704,20 @@ while I'm not looking at Chrome".
 (2,009 lines, documented first for a possible rebuild) and ChatGPT (one bridge,
 one model). `agent-loop.js` 2,669 → 2,193 lines.
 
+**The transcript stopped lying about order and about how many times it happened.**
+A turn is drawn in the order things occurred rather than "all the tools, then all
+the prose" — and `<Static>` is handed **rows** instead of turns. Ink's `<Static>`
+never re-renders an item, so a growing turn could only be shown by remounting it
+and reprinting the whole transcript *below* the copy already on screen. On a tall
+terminal you saw the banner three times, once per tool round. Measured at 210×64:
+**3× → 1×**, 0 full clears, 22,868 → 15,312 bytes.
+
+**The effort ladder is three rungs** — `flash`, `flash-thinking`, `pro` — because
+five was one tier wearing three hats. `standard → deep` was three substantive
+blocks for 4.2%, so `pro` is the old `standard` plus the one of them with a
+demonstrated job: a second tab reading the diff cold. The other two are paid in
+*output* tokens on every turn, which no prompt measurement shows.
+
 **Added**
 - `/history` — reopen a past conversation from inside the session.
 - `/image <path>` and `/image remove`, with `1 image` in the status bar.
@@ -712,13 +730,16 @@ one model). `agent-loop.js` 2,669 → 2,193 lines.
 - One ceiling for a batch of tool results, divided fairly rather than
   first-come.
 - `setup.sh` asks where to install.
+- A pty harness in the repo — 17 scenarios driving the real CLI with a fake
+  extension, asserting text, files and that the frame cost 0 full clears.
 
 **Removed**
 - The GitHub PR agent — `github/`, the tab, two hooks, a content script.
 - ChatGPT, the second bridge, and `topology` as a stored setting.
 - `figlet` and `@inquirer/prompts`; `node_modules` 98.5 MB → 72.7 MB.
+- The `brief` and `deep` effort rungs; a stored config naming one folds to `pro`.
 
-**Quality**: 1,710 tests, **92.5% line coverage** (90.8% branch, 94.3% function).
+**Quality**: 1,741 tests (1,537 server + 204 extension) and 17 pty scenarios, **92.8% line coverage** (91.0% branch, 94.4% function).
 
 
 #### The GitHub PR agent is gone (2026-09-19)
