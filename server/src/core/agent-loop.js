@@ -2595,7 +2595,7 @@ ${compactedSummary}`;
           + '_Not `/new` — that clears the conversation here, and this summary with it._';
 
       return {
-        message: `✅ Compacted ${toCompact.length} turn${toCompact.length === 1 ? '' : 's'} into one summary, `
+        message: `✓ Compacted ${toCompact.length} turn${toCompact.length === 1 ? '' : 's'} into one summary, `
           + `${how}.\n\n`
           + `Kept the last ${toKeep.length} turns as they were. `
           + `Context is roughly ${before.toLocaleString()} → ${after.toLocaleString()} tokens.\n\n`
