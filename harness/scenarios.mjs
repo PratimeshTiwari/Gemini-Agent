@@ -343,4 +343,45 @@ export const SCENARIOS = [
     rows: 64, cols: 210,
     maxClears: 0,
   },
+  {
+    name: 'ask_subagent runs a second session and its answer comes back',
+    /*
+     * The one tool never verified end to end — the handoff has said so for
+     * days, on the grounds that it needs a real browser. It does not: a
+     * subagent turn is an ordinary `inject_prompt` carrying `isSubagent` and
+     * its own `requestId`, and the fake extension already echoes both. What it
+     * needs is the replies sequenced across two sessions.
+     *
+     * Three scripted replies, in the order the loop asks for them:
+     *   1. main       — delegates
+     *   2. subagent   — answers with `return_result`
+     *   3. main       — reports what came back
+     *
+     * `CLAUDE.md` records a fake extension that answered subagent requests
+     * *without* `isSubagent` and hung compaction, so the echo is load-bearing
+     * and this scenario is also its regression test.
+     */
+    replies: [
+      'Delegating the read.\n\n```json\n' + JSON.stringify({
+        name: 'ask_subagent',
+        args: { role: 'research', prompt: 'What is in a.txt? Answer in one line.' },
+      }) + '\n```',
+      'Read it.\n\n```json\n' + JSON.stringify({
+        name: 'return_result',
+        args: { result: 'SUBAGENT SAYS the file holds one line.' },
+      }) + '\n```',
+      'DELEGATION DONE — the subagent reported one line.',
+    ],
+    steps: [
+      { seed: { 'a.txt': 'hello\n' } },
+      { send: 'ask a subagent what is in a.txt\r' },
+      { wait: 'DELEGATION DONE', timeout: 90 },
+    ],
+    expect: ['ask_subagent', 'DELEGATION DONE'],
+    // The turn must not end on the failure path `CLAUDE.md` describes, where a
+    // reviewer that answers in prose has its whole answer thrown away.
+    absent: ['Subagent failed to use the return_result tool'],
+    rows: 30, cols: 100,
+    maxClears: 0,
+  },
 ];
