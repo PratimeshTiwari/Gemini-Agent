@@ -147,8 +147,12 @@ export function describeSettings(agentLoop) {
       // read `modelConfig.agentName` — a key nothing has ever written — so the
       // screen reported "Agent CLI" while the banner said something else.
       value: cfg?.agentName || 'Agent CLI',
-      hint: 'shown in the banner — `/name <text>` to change it',
+      hint: 'shown in the banner — enter to rename, empty to clear',
+      // `/name` with no argument only *prints* the current name, so this row
+      // promised a change and delivered a paragraph. It opens an editor now;
+      // `Menus.jsx` runs `/name <text>` with what you type.
       run: '/name',
+      edits: 'name',
     },
     {
       group: 'Status',
@@ -278,6 +282,37 @@ export function filterSettings(rows, query, group = null) {
   const pool = q ? rows : inGroup;
   return pool.filter((row) =>
     `${row.label} ${row.value} ${row.hint || ''}`.toLowerCase().includes(q));
+}
+
+/**
+ * The two column widths the settings list pads to.
+ *
+ * It is given the rows being **drawn**, and that is the whole of the fix: the
+ * page computed these over every row it knew about and then padded the
+ * filtered ones to them. Filter to two short rows and they were still spaced
+ * for the widest label in the entire set, which is where
+ * `Effort              deep` came from — a gap wide enough to read as a
+ * missing column, on a screen whose whole job is showing what is set to what.
+ *
+ * `VALUE_MAX` is the same clamp the caller applies with `oneLine`, and the
+ * width is measured on the clamped text rather than the raw value, because
+ * padding to a length nothing will occupy is the same bug one column over.
+ *
+ * @param {Array<{label: string, value: string}>} rows - the rows being drawn
+ * @returns {{ width: number, vwidth: number }}
+ */
+export const VALUE_MAX = 30;
+
+export function settingsColumns(rows) {
+  const drawn = Array.isArray(rows) ? rows : [];
+  const longest = (pick) => drawn.reduce((n, row) => Math.max(n, pick(row).length), 0);
+  return {
+    width: longest((row) => String(row?.label ?? '')),
+    // Collapsed the way `oneLine` collapses it: a value carrying a newline or a
+    // run of spaces is drawn shorter than it measures.
+    vwidth: Math.min(VALUE_MAX, longest((row) =>
+      String(row?.value ?? '').replace(/\s+/g, ' ').trim().slice(0, VALUE_MAX))),
+  };
 }
 
 function safe(fn, fallback) {

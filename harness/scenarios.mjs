@@ -85,8 +85,18 @@ export const SCENARIOS = [
       { send: 'what changed\r' },
       { wait: 'WATCHED', timeout: 30 },
     ],
-    expect: ['WATCHED'],
-    absent: ['3 actions', 'was modified externally'],
+    // The row names the files; the *count* belongs to the summary line above
+    // it, which already reads `· 3 files changed on disk`. It used to say both
+    // — `∙ 3 files changed on disk — one.txt, …` — four rows apart. The `∙`
+    // in `absent` is what separates the row from that summary, so this fails
+    // against the old wording and passes against the new.
+    expect: ['WATCHED', '∙ changed on disk — '],
+    // `files changed on disk — ` is the old row exactly: `∙ 3 files changed on
+    // disk — one.txt, …`. The summary line keeps the count and ends there, so
+    // the em-dash is what tells the two apart — and unlike a filename it does
+    // not depend on the watcher's ordering or on where a 72-column row
+    // truncates, both of which vary run to run.
+    absent: ['3 actions', 'was modified externally', 'files changed on disk — '],
     rows: 14, cols: 72,
     maxClears: 0,
   },
@@ -214,6 +224,54 @@ export const SCENARIOS = [
     // nothing — the negative control passed with the fix removed.
     expect: ['NOTHING to do'],
     absent: ['ctrl+g to expand'],
+    rows: 24, cols: 90,
+    maxClears: 0,
+  },
+  {
+    name: 'a filtered settings list pads to what it is showing',
+    // `width` was measured over every row and applied to the filtered ones, so
+    // narrowing to one short setting still spaced it for `Command rules` — the
+    // widest label in the set. That is where `Effort              standard`
+    // came from: a gap wide enough to read as a missing column, on the one
+    // screen whose whole job is showing what is set to what.
+    replies: [],
+    steps: [
+      { send: '/settings\r' },
+      { wait: 'Settings   Status', timeout: 20 },
+      { send: 'effort' },
+      { wait: '⌕ effort', timeout: 10 },
+    ],
+    // `expect` alone, and deliberately: the *unfiltered* list is in this same
+    // transcript a moment earlier and pads to 13 perfectly correctly, so an
+    // `absent` on wide padding would fail on the right behaviour. Three spaces
+    // after a six-character label is a width the old code could not produce
+    // at all — it measured every row, always.
+    expect: ['Effort   standard'],
+    rows: 24, cols: 90,
+    maxClears: 0,
+  },
+  {
+    name: 'the agent name is edited in place, not printed at you',
+    // The row ran `/name`, and `/name` with no argument prints the current
+    // name — so the one row that reads as directly editable was the one that
+    // could not be edited, and its answer landed in the transcript behind the
+    // page. `absent` carries both halves: that printout is the old behaviour
+    // *and* the thing `applyAndReturn` exists to prevent.
+    replies: [],
+    steps: [
+      { send: '/settings\r' },
+      { wait: 'Settings   Status', timeout: 20 },
+      { send: 'agent name' },
+      { wait: 'Agent name', timeout: 10 },
+      { send: '\r' },
+      { wait: 'enter save', timeout: 10 },
+      { send: 'Nova' },
+      { wait: 'Nova', timeout: 10 },
+      { send: '\r' },
+      { wait: 'Agent name   Nova', timeout: 10 },
+    ],
+    expect: ['Agent name   Nova'],
+    absent: ['The agent is called'],
     rows: 24, cols: 90,
     maxClears: 0,
   },

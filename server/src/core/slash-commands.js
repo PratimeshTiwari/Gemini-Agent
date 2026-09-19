@@ -24,6 +24,16 @@ import { logError } from './error-log.js';
 import { planModelSwitch } from './model-match.js';
 
 /**
+ * How long a name the banner can take.
+ *
+ * Exported because the settings screen now edits the name in place and has to
+ * refuse the same lengths this does — and `applyAndReturn` drops the handler's
+ * message on the way back to the page, so a rejection made here alone would be
+ * a keystroke that silently did nothing. One number, both readers.
+ */
+export const MAX_AGENT_NAME = 20;
+
+/**
  * Run one slash command.
  *
  * @param {import('./agent-loop.js').AgentLoop} loop
@@ -208,8 +218,8 @@ export async function handleSlashCommand(loop, command, args) {
       }
 
       // Drawn as a figlet wordmark, so a long one is a wall of ASCII.
-      if (wanted.length > 20) {
-        return { message: `! "${wanted}" is too long for the banner — 20 characters or fewer.` };
+      if (wanted.length > MAX_AGENT_NAME) {
+        return { message: `! "${wanted}" is too long for the banner — ${MAX_AGENT_NAME} characters or fewer.` };
       }
 
       const clearing = wanted.toLowerCase() === 'default' || wanted.toLowerCase() === 'reset';

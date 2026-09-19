@@ -766,3 +766,29 @@ export function liveMessageText(text, budget, width = 80) {
 
   return `${lines.slice(0, kept).join('\n')}\n… +${lines.length - kept} more lines`;
 }
+
+/**
+ * The `∙` row for files that changed on disk under the turn.
+ *
+ * It used to read `∙ 3 files changed on disk — a.js, b.js, c.js` directly
+ * beneath a summary line already reading `Worked for 8.1s · 2 actions · 3
+ * files changed on disk`. The same count, twice, four rows apart — and the
+ * count is the half the summary is *for*, aggregated across every group in
+ * the turn, while the paths are the half only this row can carry.
+ *
+ * So the row drops the number and keeps the names. It is also shorter, which
+ * matters more here than it looks: the row is drawn `wrap="truncate"` inside
+ * the live frame, cut from the right, and the characters it stops spending on
+ * a number it is repeating are characters a path gets instead.
+ *
+ * With no path parsed there is nothing to name and the summary shows nothing
+ * either — `touched` counts paths, not events — so the row has to be
+ * self-sufficient in that one case, and says so in words.
+ *
+ * @param {string[]} paths
+ */
+export function fsEventRow(paths) {
+  const named = (Array.isArray(paths) ? paths : []).filter(Boolean);
+  if (named.length === 0) return '∙ a file changed on disk';
+  return `∙ changed on disk — ${named.join(', ')}`;
+}

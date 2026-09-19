@@ -3,7 +3,7 @@ import { Box, Text } from 'ink';
 import { DiffRows } from './DiffRows.jsx';
 import { rowsFromPatch } from '../diff-preview.js';
 import { Dots } from './RunningLine.jsx';
-import { renderMarkdown, oneLine, summarizeResult, subjectOf, clampForDisplay, formatCommandResult, blockLines, liveMessageText } from '../format.js';
+import { renderMarkdown, oneLine, summarizeResult, subjectOf, clampForDisplay, formatCommandResult, blockLines, liveMessageText, fsEventRow } from '../format.js';
 import { parseTurnActions, describeArtifactWrite } from '../transcript.js';
 
 /**
@@ -309,13 +309,12 @@ function ActionRow({ act, verbose, isLive, width = 80 }) {
      * filled a quarter of a short terminal to say the same thing three times.
      * `wrap="truncate"` because this is drawn in the live frame and a row
      * that wraps is charged as one and drawn as two.
+     *
+     * The wording is `fsEventRow`, in `format.js`, because that is where a
+     * test can reach it — the same reason `liveMessageText` lives there.
      */
-    const n = act.paths.length;
     return (
-      <Text dimColor wrap="truncate">
-        ∙ {n || '?'} file{n === 1 ? '' : 's'} changed on disk
-        {n > 0 ? ` — ${act.paths.join(', ')}` : ''}
-      </Text>
+      <Text dimColor wrap="truncate">{fsEventRow(act.paths)}</Text>
     );
   }
 

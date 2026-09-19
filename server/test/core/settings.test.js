@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { describeSettings, filterSettings, settingsChanged, SETTING_GROUPS } from '../../src/core/settings.js';
+import { describeSettings, filterSettings, settingsChanged, settingsColumns, SETTING_GROUPS, VALUE_MAX } from '../../src/core/settings.js';
 
 /** Enough of an AgentLoop for the page to describe. */
 const loop = (over = {}) => ({
@@ -208,5 +208,67 @@ test('settingsChanged only reports settings', async (t) => {
     const row = settingsChanged(before, after).find((c) => c.label === 'Agent name');
     assert.ok(row);
     assert.equal(row.restore, undefined);
+  });
+});
+
+/*
+ * The settings list padded the rows it drew to the widest row it knew about.
+ *
+ * `width` and `vwidth` were computed over every row and then applied to the
+ * *filtered* ones, so narrowing to two short settings still spaced them for
+ * the longest label in the whole set — `Effort              deep`, a gap wide
+ * enough to read as a missing column on the one screen whose job is showing
+ * what is set to what.
+ */
+test('settingsColumns measures the rows being drawn', async (t) => {
+  const ALL = [
+    { label: 'Effort', value: 'deep' },
+    { label: 'Workspace', value: '/Users/x/code' },
+    { label: 'A very long setting label', value: 'x' },
+  ];
+
+  await t.test('the whole set pads to the whole set', () => {
+    assert.equal(settingsColumns(ALL).width, 'A very long setting label'.length);
+  });
+
+  // The negative control: passing `ALL` here is exactly what the page did.
+  await t.test('a filtered set pads to the filtered set', () => {
+    const { width } = settingsColumns([ALL[0]]);
+    assert.equal(width, 'Effort'.length);
+    assert.notEqual(width, settingsColumns(ALL).width);
+  });
+
+  await t.test('the value column is clamped the way the caller clamps it', () => {
+    const long = [{ label: 'x', value: 'y'.repeat(200) }];
+    assert.equal(settingsColumns(long).vwidth, VALUE_MAX);
+  });
+
+  /*
+   * `oneLine` collapses whitespace before the value is drawn, so a value that
+   * measures wide and draws narrow would pad the column to a width nothing
+   * occupies — the same bug one column over.
+   */
+  await t.test('whitespace is collapsed before measuring, as oneLine will', () => {
+    assert.equal(settingsColumns([{ label: 'x', value: 'a     b' }]).vwidth, 'a b'.length);
+    assert.equal(settingsColumns([{ label: 'x', value: '  hi  ' }]).vwidth, 2);
+  });
+
+  await t.test('nothing to draw is zero, not -Infinity', () => {
+    for (const empty of [[], null, undefined]) {
+      assert.deepEqual(settingsColumns(empty), { width: 0, vwidth: 0 }, JSON.stringify(empty));
+    }
+  });
+
+  await t.test('a row missing a field does not take the column with it', () => {
+    assert.deepEqual(settingsColumns([{ label: 'abc' }, {}]), { width: 3, vwidth: 0 });
+  });
+
+  // The real rows, filtered the way the page filters them.
+  await t.test('it holds against describeSettings and filterSettings', () => {
+    const rows = describeSettings(loop());
+    const all = settingsColumns(rows);
+    const narrowed = settingsColumns(filterSettings(rows, 'effort'));
+    assert.ok(narrowed.width <= all.width);
+    assert.ok(narrowed.width > 0);
   });
 });

@@ -10,11 +10,12 @@ import { oneLine } from '../format.js';
 import { canPickFolder, pickFolder } from '../../core/folder-picker.js';
 import { readCommands, listCommandDays } from '../../core/command-log.js';
 import { EFFORT_LEVELS, resolveEffort } from '../../core/effort.js';
-import { describeSettings, filterSettings, settingsChanged, SETTING_GROUPS } from '../../core/settings.js';
+import { describeSettings, filterSettings, settingsChanged, settingsColumns, SETTING_GROUPS, VALUE_MAX } from '../../core/settings.js';
 import { listWorkspaceCandidates } from '../../core/workspaces.js';
 import { skillsDir, agentDir } from '../../core/paths.js';
 import { skillSearchPath, listSkills } from '../../core/skills.js';
 import { FOCUS_INPUT } from '../constants.js';
+import { MAX_AGENT_NAME } from '../../core/slash-commands.js';
 
 /**
  * Every modal the agent can raise: questions, command approval, plan review,
@@ -295,6 +296,60 @@ export function Menus({
           );
         })()}
 
+        {activeMenu?.type === 'name' && (() => {
+          /*
+           * Renaming the agent, where the row that names it is.
+           *
+           * The row ran `/name`, and `/name` with no argument prints. So the
+           * one row on the settings page that reads as directly editable was
+           * the one that could not be edited — the plan-mode-markdown shape in
+           * miniature: an interface that says one thing and does another.
+           *
+           * The length is checked *here* as well as in the handler, and that
+           * is not belt and braces. `applyAndReturn` drops the handler's
+           * message whenever there is a `returnTo`, which there always is from
+           * this page — so a name that is too long would return to the settings
+           * screen with nothing changed and nothing said, which is the failure
+           * this whole row is being fixed for. `MAX_AGENT_NAME` is imported so
+           * the two cannot drift apart.
+           *
+           * Empty clears the name, because that is what the field being empty
+           * means; the handler spells it `default`.
+           */
+          const draft = activeMenu.draft ?? '';
+          const wanted = draft.trim();
+          const over = wanted.length - MAX_AGENT_NAME;
+
+          return (
+            <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+              <Text bold color="cyan">Agent name</Text>
+              <Box>
+                <Text dimColor>{'  '}</Text>
+                <TextInput
+                  value={draft}
+                  placeholder="Agent CLI"
+                  onChange={(value) => setActiveMenu((m) => ({ ...m, draft: value }))}
+                  onSubmit={async () => {
+                    if (over > 0) return;
+                    await applyAndReturn(activeMenu, 'name', [wanted || 'default']);
+                  }}
+                />
+              </Box>
+              <Text dimColor wrap="truncate">
+                {'  ↳ '}
+                {over > 0
+                  ? `${wanted.length}/${MAX_AGENT_NAME} — too long for the banner, drop ${over}`
+                  : (wanted
+                    ? 'drawn as the banner wordmark · restart to see it'
+                    : 'empty clears it — the banner reads “Agent CLI”')}
+              </Text>
+              <Text dimColor wrap="truncate">
+                {'  '}enter {over > 0 ? '· fix the length first' : 'save'} · esc cancel
+              </Text>
+            </Box>
+          );
+        })()}
+
         {/*
           One screen, and now one question. It used to be a role picker, then a
           model picker, then Solo-or-Duo — a chain that existed because there
@@ -403,8 +458,10 @@ export function Menus({
           // how much it is not showing. See ui/constants.js.
           const LIMIT = 8;
           const hidden = Math.max(0, matches.length - LIMIT);
-          const width = Math.max(...rows.map((r) => r.label.length), 0);
-          const vwidth = Math.min(30, Math.max(...rows.map((r) => r.value.length), 0));
+          // Over `matches`, not `rows`. See `settingsColumns`: measuring the
+          // whole set and padding the filtered one is where the gap in
+          // `Effort              deep` came from.
+          const { width, vwidth } = settingsColumns(matches);
           const selected = matches[Math.min(activeMenu.at || 0, matches.length - 1)];
 
           return (
@@ -438,7 +495,7 @@ export function Menus({
                     // here and was truncated mid-word at every width — it is
                     // only ever wanted for the row you are looking at, so it
                     // moved below the list where it has the whole line.
-                    label: `${row.label.padEnd(width)}   ${oneLine(row.value, 30).padEnd(vwidth)}`,
+                    label: `${row.label.padEnd(width)}   ${oneLine(row.value, VALUE_MAX).padEnd(vwidth)}`,
                     value: row.run || '',
                     key: row.label,
                   }))}
@@ -455,6 +512,17 @@ export function Menus({
                     // change — and never returning — is why the summary on the
                     // way out could never fire: there was no way out that still
                     // knew what you had come in with.
+                    // A row that edits a value in place opens its editor.
+                    // `/name` with no argument only prints the current name,
+                    // so running it from here promised a change and delivered
+                    // a paragraph — in the transcript, behind the page.
+                    const picked = matches.find((r) => r.label === item.key);
+                    if (picked?.edits === 'name') {
+                      setActiveMenu({
+                        type: 'name', draft: agentLoop.agentName || '', returnTo: back,
+                      });
+                      return;
+                    }
                     if (item.value === '/effort') {
                       setActiveMenu({ type: 'effort', returnTo: back });
                       return;
@@ -505,11 +573,24 @@ export function Menus({
                 />
               )}
               {hidden > 0 ? <Text dimColor>{`  ↓ ${hidden} more — type to narrow`}</Text> : null}
+              {/*
+                `↳` and a matching indent, rather than a blank row between.
+
+                The hint sat flush under the last row at the same indent and
+                read as one more setting. A separator row is the obvious fix
+                and is the wrong one here: this list is drawn inside Ink's
+                repainted frame, where a row spent on spacing is a row the
+                viewport does not have — the settings page is already border,
+                padding, tabs, filter, eight rows, trim notice, hint and keys.
+                The marker costs nothing and says the same thing.
+
+                The key hints take the same indent, which they did not before.
+              */}
               {selected?.hint
-                ? <Text dimColor wrap="truncate">{'  '}{selected.hint}</Text>
+                ? <Text dimColor wrap="truncate">{'  ↳ '}{selected.hint}</Text>
                 : null}
-              <Text dimColor>
-                type to filter · tab switches · ↑↓ move · enter change · esc {query ? 'clear' : 'close'}
+              <Text dimColor wrap="truncate">
+                {'  '}type to filter · tab switches · ↑↓ move · enter change · esc {query ? 'clear' : 'close'}
               </Text>
             </Box>
           );
