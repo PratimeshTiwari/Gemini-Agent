@@ -13,10 +13,12 @@
 
 import path from 'path';
 import * as paths from './paths.js';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, rmSync } from 'fs';
+import { randomUUID } from 'crypto';
 import os from 'os';
 import { resolve, relative, join, dirname } from 'path';
 import { CodeMinifier } from '../context/code-minifier.js';
+import { allocate, headAndTail, planSpoolPruning } from './result-budget.js';
 import { skillCatalogue } from './skills.js';
 import { resolveEffort } from './effort.js';
 import { renderToolDefinitions } from './tool-catalog.js';
@@ -54,6 +56,15 @@ export function agentMdState(body) {
 /** The checklist is model-written and nothing prunes it, so it is bounded. */
 const MAX_TASK_ITEMS = 40;
 const MAX_TASK_CHARS = 2000;
+
+/**
+ * Characters the tool results of one prompt may occupy between them.
+ *
+ * ~16 KB, against a `run_command` cap of 50 KB **each**. Not a token budget:
+ * this is about what a content script types into a composer, and the cost that
+ * matters is the one paid on the wire and in Gemini's repetition heuristics.
+ */
+const RESULT_BUDGET_CHARS = 16000;
 
 export class PromptBuilder {
   constructor(workspace, agentSourceDir) {
@@ -298,18 +309,40 @@ export class PromptBuilder {
   buildToolResultBatch(results = [], turnEvidence = '') {
     const failures = results.filter((r) => r.failed);
 
-    const body = results.map(({ name, result, failed }) => [
+    /**
+     * One ceiling for the whole batch, divided fairly.
+     *
+     * The per-tool caps do not compose — `run_command` allows 50 KB *each* and
+     * `_executeToolCalls` runs calls in parallel, so five commands was 250 KB
+     * typed into a browser composer by a content script. Nothing capped the
+     * batch, in the project whose entire prompt strategy exists to avoid large
+     * payloads.
+     *
+     * Serialised first, because the budget is about what is *typed*, and a
+     * minified object is a different size from the object.
+     */
+    const serialised = results.map(({ name, result, failed }) => ({
+      name,
       // `status="failed"` is the point: a non-zero exit code inside minified
       // JSON is easy to skim past, and the model would summarise a failed
       // command back to the user as though it had worked.
-      failed ? `<result tool="${name}" status="failed">` : `<result tool="${name}">`,
+      failed,
       // Minified, not pretty-printed. Every tool result goes into the prompt,
       // and indentation is the single largest avoidable cost there — a plain
       // list_directory result is 40% smaller without it. The model does not
       // read the whitespace; the token budget does.
-      typeof result === 'string' ? result : CodeMinifier.minifyJson(result),
+      text: typeof result === 'string' ? result : CodeMinifier.minifyJson(result),
+    }));
+    const allowances = allocate(serialised.map((r) => r.text.length), RESULT_BUDGET_CHARS);
+
+    const body = serialised.map(({ name, text, failed }, i) => [
+      failed ? `<result tool="${name}" status="failed">` : `<result tool="${name}">`,
+      allowances[i] >= text.length
+        ? text
+        : headAndTail(text, allowances[i], this._spool(name, text)),
       `</result>`,
     ].join('\n'));
+
 
     const instruction = failures.length > 0
       // Fix, do not narrate. Left to itself the model reports the error back to
@@ -354,6 +387,38 @@ export class PromptBuilder {
       '',
       instruction,
     ].join('\n');
+  }
+
+  /**
+   * Write a result that did not fit, and say where it went.
+   *
+   * This is what makes truncation non-lossy, and it is the difference between
+   * a batch ceiling and the per-tool caps that already existed: the model can
+   * `read_file` the rest if it turns out to need it. Without it, a cut result
+   * is a decision made on the model's behalf about what mattered.
+   *
+   * Best-effort. A workspace we cannot write to is not a reason to fail a turn
+   * — the excerpt is still useful — so a failure here just drops the pointer.
+   *
+   * @returns {string} a note for the cut marker, or '' if nothing was written
+   */
+  _spool(name, text) {
+    try {
+      const dir = paths.tmpDir(this.workspace);
+      mkdirSync(dir, { recursive: true });
+      const file = `${name}-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}.txt`;
+      writeFileSync(path.join(dir, file), text, 'utf-8');
+
+      // Or `.agent/tmp/` grows by one file per over-budget batch, forever.
+      // Pruned after the write rather than before, so the one just written is
+      // counted and the newest is never the one deleted.
+      for (const old of planSpoolPruning(readdirSync(dir))) {
+        try { rmSync(path.join(dir, old), { force: true }); } catch { /* it can wait */ }
+      }
+      return `full output: \`.agent/tmp/${file}\` (read_file it)`;
+    } catch {
+      return '';
+    }
   }
 
   /** Single-result convenience wrapper over {@link buildToolResultBatch}. */
