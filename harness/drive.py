@@ -90,6 +90,18 @@ for step in STEPS:
         if q > 0: quiet(q)
         else: time.sleep(0.9)  # a human's gap between prompts, not a paste
         label = repr(step['send'])
+    elif 'seed' in step:
+        # Write a file with an mtime in the past, before the CLI's own clock
+        # started — which is how a leftover artifact from a previous session
+        # looks on disk, and the only way to test that it is not shown.
+        for name, body in step['seed'].items():
+            at = os.path.join(WS, name)
+            os.makedirs(os.path.dirname(at), exist_ok=True)
+            with open(at, 'w') as fh:
+                fh.write(body)
+            old = time.time() - 86400
+            os.utime(at, (old, old))
+        label = 'seed ' + ','.join(step['seed'])
     elif 'touch' in step:
         # Drive the file watcher the only way it can be driven: move a file.
         # `chokidar` is watching the workspace, and the CLI turns each change

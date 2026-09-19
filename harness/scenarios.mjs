@@ -146,7 +146,10 @@ export const SCENARIOS = [
       { send: 'read and verify only\r' },
       { wait: 'READ AND VERIFIED', timeout: 50 },
     ],
-    expect: ['task list written', 'review.md written', 'task done', 'read it'],
+    // The positive control for the fresh-chat rule below: an artifact the
+    // agent wrote *this* session must still reach the panel.
+    expect: ['task list written', 'review.md written', 'task done', 'read it',
+             'ctrl+g to expand'],
     absent: ['⏺ edit_file'],
     rows: 24, cols: 90,
     maxClears: 0,
@@ -192,6 +195,25 @@ export const SCENARIOS = [
     ],
     expect: ['Approve, and stop asking', 'WRITTEN'],
     wrote: 'switch.js',
+    rows: 24, cols: 90,
+    maxClears: 0,
+  },
+  {
+    name: 'a fresh chat does not show the last one\'s task list',
+    // The panel reads the files off disk and they outlive the conversation,
+    // so a brand-new chat drew the previous session's review.md — a lie in
+    // the one place that is supposed to say what the agent is doing now.
+    replies: ['NOTHING to do yet.'],
+    steps: [
+      { seed: { '.agent/artifacts/task.md': '- [ ] left over from last time\n' } },
+      { send: 'hello\r' },
+      { wait: 'NOTHING to do', timeout: 30 },
+    ],
+    // On the panel's own marker, not on the file's text: collapsed, the row
+    // shows only the filename, so asserting the *content* was absent proved
+    // nothing — the negative control passed with the fix removed.
+    expect: ['NOTHING to do'],
+    absent: ['ctrl+g to expand'],
     rows: 24, cols: 90,
     maxClears: 0,
   },

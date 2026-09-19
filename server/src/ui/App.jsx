@@ -41,9 +41,20 @@ import * as paths from '../core/paths.js';
  * leaves alone in the scrollback, and the live frame holds only the in-flight
  * turn, the input and the status bar — bounded by `liveBudget` rows.
  */
+/**
+ * When this process started.
+ *
+ * Module scope so it cannot move, and so a remount cannot reset it. The
+ * artifact panel compares file mtimes against it to tell "this
+ * conversation's task list" from "the last one's, still on disk".
+ */
+const SESSION_STARTED_AT = Date.now();
+
 export function App({ agentLoop, wsServer }) {
   const [input, setInput] = useState('');
   const [history, setHistory] = useState([...agentLoop.conversationHistory]);
+
+
   const [activeToolCalls, setActiveToolCalls] = useState([]);
   /**
    * The wordmark, rendered once.
@@ -521,9 +532,32 @@ export function App({ agentLoop, wsServer }) {
      * changes nothing returns the previous object and React can skip it.
      */
     try {
+      /**
+       * An artifact belongs to a conversation, and the files outlive it.
+       *
+       * On a brand-new chat the panel was drawing the *last* session's
+       * `review.md` — reported that way, and it is a lie in the one place
+       * that is supposed to say what the agent is working on now. The files
+       * are deliberately durable (they are written for the user to read and
+       * survive a restart), so the panel has to be the thing that decides.
+       *
+       * The rule is just the mtime: **written during this session, or not
+       * shown**. Two looser rules were tried and both leaked the same lie a
+       * beat later — `history.length > 0` is true within seconds of launch
+       * because the file watcher appends a turn whenever anything on disk
+       * moves, and "has a user turn" brings the stale file back the moment
+       * you say anything at all.
+       *
+       * The file is not hidden, only unclaimed: it is on disk, `/plans` lists
+       * it, and the moment the agent writes to it this session the panel
+       * picks it up. What the panel must not do is present the last
+       * conversation's checklist as this one's.
+       */
       const read = (name) => {
         const at = paths.artifactPath(agentLoop.workspace, name);
-        return fs.existsSync(at) ? fs.readFileSync(at, 'utf8') : null;
+        if (!fs.existsSync(at)) return null;
+        if (fs.statSync(at).mtimeMs < SESSION_STARTED_AT) return null;
+        return fs.readFileSync(at, 'utf8');
       };
       const next = { task: read('task.md'), review: read('review.md'), walkthrough: read('walkthrough.md') };
       setArtifacts((prev) => (
