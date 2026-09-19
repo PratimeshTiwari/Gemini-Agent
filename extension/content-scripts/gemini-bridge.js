@@ -882,8 +882,25 @@ function looksUnfinished(text) {
   const t = String(text || '');
   if (!t) return false;
   if ((t.match(/```/g) || []).length % 2 === 1) return true;
-  // A lone backtick on the final line, with nothing closing it.
-  const lastLine = t.slice(t.lastIndexOf('\n') + 1);
+  /*
+   * A lone *inline* backtick on the final line — and the fences have to come
+   * out first.
+   *
+   * `extractTextContent` ends with `.trim()`, so a reply that ends in a code
+   * block ends on its closing fence. Three backticks is an odd count, so this
+   * rule vetoed **every reply that ended in a code block** — which is every
+   * tool call, and therefore every round of the agent loop. Each veto reset
+   * `quietStreak`, and six grace holds at the confirming cadence is roughly
+   * twenty seconds added to a turn that had already finished. Reported from
+   * use as "a considerable delay between Gemini sending the JSON block and us
+   * sending back the tool result", at 28s on a `list_directory` call.
+   *
+   * The old test missed it by ending its fixture `\n\`\`\`\nDone.` — the
+   * block followed by prose, so the last line was never the fence. Real
+   * replies end on it.
+   */
+  const outside = t.replace(/```[\s\S]*?```/g, '');
+  const lastLine = outside.slice(outside.lastIndexOf('\n') + 1);
   return (lastLine.match(/`/g) || []).length % 2 === 1;
 }
 

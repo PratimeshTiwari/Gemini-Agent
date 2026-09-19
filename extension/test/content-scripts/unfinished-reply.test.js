@@ -46,6 +46,32 @@ describe('looksUnfinished', () => {
     assert.equal(looksUnfinished('Here it is:\n```json\n{"a":1}\n```\nDone.'), false);
   });
 
+  /*
+   * The case the line above missed, and it is the common one.
+   *
+   * That fixture ends `\n```\nDone.` — the block followed by prose, so the last
+   * line is never the fence. `extractTextContent` ends with `.trim()`, so a
+   * real reply that ends in a code block ends *on* the fence: three backticks,
+   * an odd count, and the inline-backtick rule vetoed it.
+   *
+   * Which is every tool call, and therefore every round of the agent loop.
+   * Reported from use as a 28-second gap between Gemini writing the JSON and
+   * the tool result going back.
+   */
+  test('a reply that ENDS on its closing fence is finished', () => {
+    for (const t of [
+      '```json\n{"name":"list_directory","args":{"path":"server/src/core"}}\n```',
+      'Listing it.\n\n```json\n{"name":"ls"}\n```',
+      '```\nplain block, no language\n```',
+    ]) assert.equal(looksUnfinished(t), false, JSON.stringify(t));
+  });
+
+  // And the rule still earns its place: an inline backtick left open *after* a
+  // completed block is exactly what it was written to catch.
+  test('an inline backtick after a closed block is still unfinished', () => {
+    assert.equal(looksUnfinished('```json\n{}\n```\n\nNow set `flag'), true);
+  });
+
   // The reported shape, exactly: the reply stopped at an inline backtick while
   // Gemini was about to render the block after it.
   test('a trailing inline backtick is unfinished', () => {
