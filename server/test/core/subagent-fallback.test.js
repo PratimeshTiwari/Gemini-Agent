@@ -102,3 +102,92 @@ describe('_runSubAgentSession falls back to prose', () => {
     assert.equal(out.unstructured, true);
   });
 });
+
+/**
+ * A subagent that cannot run hands the work back, labelled.
+ *
+ * Returning a bare error loses the task: the model reads "that call failed, fix
+ * it yourself" as being about the *call* rather than about the work the call was
+ * carrying, and the round is spent.
+ *
+ * The label is the difficulty, not the fallback. If a failed `review` quietly
+ * becomes the author reviewing their own diff, the one thing a reviewer was for
+ * — not sharing the assumptions that produced the code — is gone, and nothing on
+ * screen says so. Degrade, and say you degraded.
+ */
+describe('a failed subagent falls back in-thread', () => {
+  const driven = (subagentResult) => {
+    const dir = mkdtempSync(join(tmpdir(), 'fallback-'));
+    const l = Object.create(AgentLoop.prototype);
+    Object.assign(l, {
+      workspace: dir,
+      mode: 'auto',
+      modelConfig: { main: 'gemini', subagents: true },
+      conversationHistory: [],
+      commandRules: { enabled: false, allow: [], block: [] },
+      sessionStore: { appendTurn() {} },
+      riskClassifier: { classify: () => ({ level: 'safe', reason: '' }) },
+      mcpServer: { executeTool: async () => ({ success: true }) },
+      promptBuilder: { noteMessageSent() {}, buildToolResultBatch: (r) => JSON.stringify(r) },
+      callbacks: { sendToPanel() {} },
+      _sendToGemini() {},
+      _turnEvidence: new Map(),
+      _runSubAgentSession: async () => subagentResult,
+    });
+    return { l, dir };
+  };
+
+  const failed = { success: false, error: 'no Gemini tab' };
+
+  test('the task comes back rather than being lost', async () => {
+    const { l, dir } = driven(failed);
+    await l._executeToolCalls([
+      { name: 'ask_subagent', args: { role: 'research', prompt: 'find every caller of _findMatch' } },
+    ]);
+
+    const turn = l.conversationHistory.find((t) => t.type === 'tool_result');
+    assert.match(turn.result, /could not run/);
+    assert.match(turn.result, /find every caller of _findMatch/, 'the task was dropped');
+    assert.equal(turn.success, true, 'a recoverable failure must not end the round');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /*
+   * The control that matters. Without this line the user reads a review
+   * believing it came from a fresh context, which is the confident-wrong-answer
+   * class this whole mechanism exists to avoid.
+   */
+  test('a fallback review is required to admit it is self-review', async () => {
+    const { l, dir } = driven(failed);
+    await l._executeToolCalls([
+      { name: 'ask_subagent', args: { role: 'review', prompt: 'check this diff' } },
+    ]);
+
+    const turn = l.conversationHistory.find((t) => t.type === 'tool_result');
+    assert.match(turn.result, /reviewing your own work/);
+    assert.match(turn.result, /say in your answer that this review is your own/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Research and errands have no such trap — there is nothing about a fresh
+  // context that made the answer trustworthy, so no warning is owed.
+  test('only review carries the warning', async () => {
+    for (const role of ['research', 'task']) {
+      const { l, dir } = driven(failed);
+      await l._executeToolCalls([{ name: 'ask_subagent', args: { role, prompt: 'x' } }]);
+      const turn = l.conversationHistory.find((t) => t.type === 'tool_result');
+      assert.doesNotMatch(turn.result, /your own work/, `${role} should not warn`);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a subagent that worked is passed through untouched', async () => {
+    const { l, dir } = driven({ success: true, result: 'the review body' });
+    await l._executeToolCalls([{ name: 'ask_subagent', args: { role: 'review', prompt: 'x' } }]);
+
+    const turn = l.conversationHistory.find((t) => t.type === 'tool_result');
+    assert.equal(turn.result, 'the review body');
+    assert.doesNotMatch(turn.result, /could not run/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

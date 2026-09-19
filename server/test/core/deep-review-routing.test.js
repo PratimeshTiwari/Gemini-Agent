@@ -23,28 +23,28 @@ import assert from 'node:assert/strict';
 import { PromptBuilder } from '../../src/core/prompt-builder.js';
 
 const WS = process.cwd();
-const build = (topology, modelConfig) => new PromptBuilder(WS, `${WS}/server`)
-  .buildPrompt({ userMessage: 'x', mode: 'auto', topology, modelConfig, objective: 'x' });
+const build = (subagents, modelConfig) => new PromptBuilder(WS, `${WS}/server`)
+  .buildPrompt({ userMessage: 'x', mode: 'auto', subagents, modelConfig, objective: 'x' });
 
-const DUO = { effort: 'deep', main: 'gemini', reviewer: 'gemini' };
-const SOLO = { effort: 'deep', main: 'gemini' };
+const WITH_SUBAGENTS = { effort: 'deep', main: 'gemini' };
+const NO_SUBAGENTS = { effort: 'deep', main: 'gemini' };
 
-test('with a reviewer, deep sends the diff out rather than reviewing itself', () => {
-  const p = build('duo', DUO);
-  assert.match(p, /Send the diff to `ask_reviewer`/);
+test('with subagents, deep sends the diff out rather than reviewing itself', () => {
+  const p = build(true, WITH_SUBAGENTS);
+  assert.match(p, /Send the diff to `ask_subagent` with `role: "review"`/);
   assert.ok(!/Adversarial self-review/.test(p), 'and stops asking it to review itself');
 });
 
 test('the tool it is told to call is actually offered', () => {
   // Instructing a call to a tool the prompt never defines is the drift
   // `toolCatalogDrift` exists to catch.
-  assert.match(build('duo', DUO), /^## ask_reviewer$/m);
+  assert.match(build(true, WITH_SUBAGENTS), /^## ask_subagent$/m);
 });
 
-test('without a reviewer, deep reviews itself as before', () => {
-  const p = build('single', SOLO);
+test('without subagents, deep reviews itself as before', () => {
+  const p = build(false, NO_SUBAGENTS);
   assert.match(p, /Adversarial self-review/);
-  assert.equal((p.match(/ask_reviewer/g) || []).length, 0,
+  assert.equal((p.match(/ask_subagent/g) || []).length, 0,
     'solo must not mention a tool it has not been given');
 });
 

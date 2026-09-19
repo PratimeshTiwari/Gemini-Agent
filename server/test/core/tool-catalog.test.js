@@ -19,13 +19,30 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
+import { readFileSync } from 'node:fs';
 import { TOOL_CATALOG, toolsFor, toolNames, renderToolDefinitions, toolCatalogDrift }
   from '../../src/core/tool-catalog.js';
 import { MCPServer } from '../../src/mcp/mcp-server.js';
 import { HEADLESS_SYSTEM_PROMPT } from '../../src/core/agent-loop.js';
 
 /** The five the agent loop dispatches itself; they have no MCP handler. */
-const LOOP_DISPATCHED = TOOL_CATALOG.filter((t) => t.dispatch === 'loop').map((t) => t.name);
+/**
+ * The loop-dispatched tools, read out of `agent-loop.js` itself.
+ *
+ * This used to be `TOOL_CATALOG.filter(dispatch === 'loop')` — derived from the
+ * catalog and then checked against the catalog, so that half of the drift check
+ * could never disagree with itself. The same shape as the `toolCatalogDrift()`
+ * bug already recorded in `CLAUDE.md`: an empty list compared to an empty list,
+ * green forever.
+ *
+ * Reading the source is what makes it a check. When `ask_reviewer` and
+ * `ask_researcher` were collapsed into one `ask_subagent`, the derived list
+ * followed silently and only the hardcoded list below noticed.
+ */
+const LOOP_DISPATCHED = [...new Set(
+  readFileSync(new URL('../../src/core/agent-loop.js', import.meta.url), 'utf8')
+    .matchAll(/else if \(call\.name === '([a-z_]+)'/g),
+)].map((m) => m[1]);
 
 /** The runnable registry, read the way the prompt builder would have to. */
 function registry() {
@@ -41,8 +58,21 @@ describe('the catalog and the runnable registry agree', () => {
     assert.deepEqual(problems, [], problems.join('\n'));
   });
 
-  test('the five loop-dispatched tools are declared', () => {
-    for (const name of ['ask_question', 'ask_subagent', 'ask_researcher', 'ask_reviewer', 'manage_memory']) {
+  test('every tool the loop dispatches itself is declared', () => {
+    // Read from the source above, so adding a branch to `_executeToolCalls`
+    // without a catalog entry fails here rather than shipping a tool the model
+    // is never told about.
+    assert.ok(LOOP_DISPATCHED.length >= 3,
+      `parsed ${LOOP_DISPATCHED.length} dispatch branches — the shape of that chain changed`);
+
+    // `run_command` is branched on in the loop *and* registered with MCP — the
+    // branch is the approval path, not the dispatch. The registry is what tells
+    // the two apart, so a name it knows is not a loop tool.
+    const mcp = new Set(registry().map((t) => t.name));
+    const loopOnly = LOOP_DISPATCHED.filter((n) => !mcp.has(n));
+    assert.ok(loopOnly.length >= 3, `only ${loopOnly.length} loop-only tools parsed`);
+
+    for (const name of loopOnly) {
       const entry = TOOL_CATALOG.find((t) => t.name === name);
       assert.ok(entry, `${name} is dispatched in agent-loop.js and declared nowhere`);
       assert.equal(entry.dispatch, 'loop');
@@ -61,28 +91,34 @@ describe('the catalog and the runnable registry agree', () => {
   });
 });
 
-describe('what each topology is offered', () => {
-  test('the reviewer appears only in duo', () => {
-    assert.ok(!toolNames('single').includes('ask_reviewer'));
-    assert.ok(toolNames('duo').includes('ask_reviewer'));
-    assert.equal(toolsFor('single').length + 1, toolsFor('duo').length);
+describe('the subagent toggle', () => {
+  test('ask_subagent is the only tool it gates', () => {
+    assert.ok(!toolNames(false).includes('ask_subagent'));
+    assert.ok(toolNames(true).includes('ask_subagent'));
+    assert.equal(toolsFor(false).length + 1, toolsFor(true).length);
   });
 
   /*
-   * The reviewer is a second tab of the same model, so what the block has to
-   * convey is not *which* model but that it has no context: a caller that
-   * assumes shared memory sends a question the reviewer cannot answer.
+   * A description is a routing rule. `ask_subagent`'s used to read "Delegate a
+   * task to a generic parallel Gemini subagent" — a capability with no trigger,
+   * which is the documented reason auto-delegation never fires. Each role has
+   * to say *when*.
    */
-  test('the reviewer block says the reviewer has not seen the conversation', () => {
-    const defs = renderToolDefinitions('pro', 'duo', { reviewer: 'gemini' });
-    assert.match(defs, /NOT seen this conversation/);
-    assert.match(defs, /include the code and the claim/);
+  test('the description says when to reach for each role, not just what it is', () => {
+    const defs = renderToolDefinitions('pro', true);
+
+    assert.match(defs, /own empty context/, 'the one property that matters is unstated');
+    assert.match(defs, /long serial chain of read_file calls/, 'research has no trigger');
+    assert.match(defs, /does not share your assumptions/, 'review has no trigger');
+    assert.match(defs, /role \(string, required\)/, 'the role is not a declared parameter');
   });
 
-  // The negative control: single must not carry the block at all, or the model
-  // is told about a tool it was never given.
-  test('single is told nothing about a reviewer', () => {
-    assert.doesNotMatch(renderToolDefinitions('pro', 'single', {}), /NOT seen this conversation/);
+  // The negative control: with subagents off the model must not be told about a
+  // tool it was never given — the drift `toolCatalogDrift` exists to catch.
+  test('with subagents off it is told nothing about them', () => {
+    const defs = renderToolDefinitions('pro', false);
+    assert.doesNotMatch(defs, /ask_subagent/);
+    assert.doesNotMatch(defs, /own empty context/);
   });
 });
 

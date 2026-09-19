@@ -6,7 +6,7 @@ import { describeSettings, filterSettings, SETTING_GROUPS } from '../../src/core
 const loop = (over = {}) => ({
   workspace: '/work/repo',
   mode: 'plan',
-  modelConfig: { main: 'gemini', reviewer: null, effort: 'standard' },
+  modelConfig: { main: 'gemini', subagents: true, effort: 'standard' },
   commandRules: { enabled: true, allow: ['git status'], block: [] },
   memoryManager: { isMemoryEnabled: () => true, getAllMemories: () => ['a', 'b'] },
   skillFolders: [],
@@ -24,17 +24,21 @@ test('describeSettings', async (t) => {
     assert.equal(row(rows, 'Memory').value, 'on');
   });
 
-  await t.test('the reviewer row is where solo and duo become visible', () => {
-    assert.equal(row(describeSettings(loop()), 'Reviewer').value, 'none');
-    const duo = loop({ modelConfig: { main: 'gemini', reviewer: 'chatgpt', effort: 'brief' } });
-    assert.equal(row(describeSettings(duo), 'Reviewer').value, 'chatgpt');
-    assert.match(row(describeSettings(duo), 'Reviewer').hint, /duo/);
+  await t.test('the subagent row is where on and off become visible', () => {
+    assert.equal(row(describeSettings(loop()), 'Subagents').value, 'on');
+    const off = loop({ modelConfig: { main: 'gemini', subagents: false, effort: 'brief' } });
+    assert.equal(row(describeSettings(off), 'Subagents').value, 'off');
+    assert.match(row(describeSettings(off), 'Subagents').hint, /one tab/);
   });
 
-  // A reviewer set to the main model is not a duo — same blind spots.
-  await t.test('a reviewer equal to the main model reads as none', () => {
-    const same = loop({ modelConfig: { main: 'gemini', reviewer: 'gemini' } });
-    assert.equal(row(describeSettings(same), 'Reviewer').value, 'none');
+  /*
+   * Absent means on. A config written before the toggle existed had subagent
+   * tools available, so reading a missing key as "off" would silently take a
+   * capability away from every existing workspace.
+   */
+  await t.test('a config with no subagent key reads as on', () => {
+    const legacy = loop({ modelConfig: { main: 'gemini', effort: 'standard' } });
+    assert.equal(row(describeSettings(legacy), 'Subagents').value, 'on');
   });
 
   await t.test('each row that can be changed says what to run', () => {
@@ -61,7 +65,7 @@ test('describeSettings', async (t) => {
 
 test('filterSettings', async (t) => {
   const rows = describeSettings(loop({
-    modelConfig: { main: 'gemini', reviewer: 'chatgpt', effort: 'deep' },
+    modelConfig: { main: 'gemini', subagents: false, effort: 'deep' },
   }));
 
   await t.test('an empty query is everything', () => {
@@ -76,13 +80,15 @@ test('filterSettings', async (t) => {
   });
 
   await t.test('matches the value, so you can search for what it is set to', () => {
-    assert.ok(filterSettings(rows, 'chatgpt').some((r) => r.label === 'Reviewer'));
+    assert.ok(filterSettings(rows, 'deep').some((r) => r.label === 'Effort'));
   });
 
-  // "duo" appears in no label. It is exactly what someone types to find out
-  // whether a reviewer is on, so the hint has to be searchable too.
+  // "review" appears in no label. It is exactly what someone types to find out
+  // whether subagents are on, so the hint has to be searchable too.
   await t.test('matches the hint', () => {
-    assert.ok(filterSettings(rows, 'duo').some((r) => r.label === 'Reviewer'));
+    const on = describeSettings(loop({ modelConfig: { main: 'gemini', subagents: true } }));
+    assert.ok(filterSettings(on, 'review').some((r) => r.label === 'Subagents'));
+    assert.ok(filterSettings(rows, 'delegated').some((r) => r.label === 'Subagents'));
   });
 
   await t.test('case does not matter', () => {

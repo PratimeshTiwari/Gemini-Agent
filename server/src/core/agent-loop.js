@@ -206,10 +206,15 @@ export class AgentLoop {
     this.mode = 'plan'; // 'plan' | 'auto'
     this.modelConfig = {
       main: 'gemini',
-      // No reviewer is what makes the topology single. It used to be its own
-      // setting, so "duo" could be on with nowhere to route a review to, and
-      // "single" could be on while a reviewer sat configured and unused.
-      reviewer: null,
+      /*
+        * On. A subagent is a second tab of the same model with an empty
+        * context, which is the only thing this architecture can fan out to.
+        *
+        * This was `reviewer: <model>`, whose presence stood for the topology —
+        * a knob describing a two-model world that no longer exists. One toggle
+        * now, and nothing derived from it that could disagree with it.
+        */
+      subagents: true,
       effort: 'standard' // one of core/effort.js's five rungs
     };
     
@@ -372,7 +377,7 @@ export class AgentLoop {
       const prompt = this.promptBuilder.buildPrompt({
         userMessage: content,
         mode: this.mode,
-        topology: this.topology,
+        subagents: this.subagentsEnabled,
         modelConfig: this.modelConfig,
         objective: this.currentObjective,
       });
@@ -620,7 +625,7 @@ export class AgentLoop {
         this._sendToGemini(this.promptBuilder.buildPrompt({
           userMessage: this.currentObjective,
           mode: this.mode,
-          topology: this.topology,
+          subagents: this.subagentsEnabled,
           modelConfig: this.modelConfig,
           objective: this.currentObjective,
         }), this.callbacks);
@@ -665,7 +670,7 @@ export class AgentLoop {
         this._sendToGemini(this.promptBuilder.buildPrompt({
           userMessage: this.currentObjective,
           mode: this.mode,
-          topology: this.topology,
+          subagents: this.subagentsEnabled,
           modelConfig: this.modelConfig,
           objective: this.currentObjective,
         }), this.callbacks);
@@ -822,7 +827,7 @@ export class AgentLoop {
     this._sendToGemini(this.promptBuilder.buildPrompt({
       userMessage: prompt,
       mode: this.mode,
-      topology: this.topology,
+      subagents: this.subagentsEnabled,
       modelConfig: this.modelConfig,
       objective: this.currentObjective,
     }), this.callbacks);
@@ -1072,14 +1077,20 @@ export class AgentLoop {
         // editing this file by hand. `/name` writes it now.
         if (typeof data.agentName === 'string') this.agentName = data.agentName;
         if (Array.isArray(data.skillFolders)) this.skillFolders = data.skillFolders;
-        // `topology` used to be stored beside `modelConfig` and could contradict
-        // it. Folded into the one thing it was ever describing: is there a
-        // second model to review with?
-        if (data.topology === 'single') {
-          this.modelConfig.reviewer = null;
-        } else if (data.topology === 'duo' && !this.modelConfig.reviewer) {
-          this.modelConfig.reviewer = this.mainModel;
+        // `topology` used to be stored beside `modelConfig` and could
+        // contradict it. Folded into the one thing left to decide.
+        // `topology` and `reviewer` are both gone. Duo meant "a second tab
+        // reviews", which is now one of three roles on one tool, so a stored
+        // duo folds to subagents-on and single to nothing — single never meant
+        // "no subagents", it meant "no reviewer", and `ask_researcher` and
+        // `ask_subagent` were offered either way.
+        if (data.topology === 'duo' || data.modelConfig?.reviewer) {
+          this.modelConfig.subagents = true;
         }
+        if (typeof data.modelConfig?.subagents === 'boolean') {
+          this.modelConfig.subagents = data.modelConfig.subagents;
+        }
+        delete this.modelConfig.reviewer;
         /**
          * Fold a config written when ChatGPT was a model.
          *
@@ -1092,9 +1103,6 @@ export class AgentLoop {
          */
         if (data.modelConfig?.main && data.modelConfig.main !== 'gemini') {
           this.modelConfig.main = 'gemini';
-        }
-        if (data.modelConfig?.reviewer && data.modelConfig.reviewer !== 'gemini') {
-          this.modelConfig.reviewer = 'gemini';
         }
         // The memory toggle used to live only in the MemoryManager instance, so
         // /memory off lasted until you quit. PromptBuilder reads the same key
@@ -1124,7 +1132,7 @@ export class AgentLoop {
       } catch {
         /* absent or unparseable: start from nothing rather than refuse to save */
       }
-      // `topology` is not written: it is derived from modelConfig.reviewer, and
+      // `topology` is not written: it was derived, and
       // a derived value in a config file is one someone will edit and be
       // ignored for editing.
       const { topology: _dropped, ...rest } = existing;
@@ -1338,7 +1346,7 @@ export class AgentLoop {
   }
 
   /**
-   * Solo, or a reviewer in a second tab.
+   * Whether this session can fan work out to parallel tabs of itself.
    *
    * Derived rather than stored. As a knob of its own it could disagree with
    * the thing it describes: duo with no reviewer configured advertised
@@ -1358,8 +1366,11 @@ export class AgentLoop {
    * enough to cite and then reasons from the citation. A cold reader has
    * nothing to reason from but the file, so it opens the file.
    */
-  get topology() {
-    return this.modelConfig.reviewer ? 'duo' : 'single';
+  get subagentsEnabled() {
+    // Absent means on. A config written before the toggle existed had three
+    // subagent tools available, so reading it as "off" would silently take a
+    // capability away from every existing workspace.
+    return this.modelConfig.subagents !== false;
   }
 
   _enqueueExtensionRequest(payload) {
@@ -1527,7 +1538,7 @@ export class AgentLoop {
 
     for (let i = 0; i < toolCalls.length; i++) {
       const call = toolCalls[i];
-      const isParallel = ['ask_researcher', 'ask_reviewer', 'ask_subagent'].includes(call.name);
+      const isParallel = call.name === 'ask_subagent';
 
       // Counted where they are dispatched, not where they succeed: "I ran the
       // tests and they failed" is a true claim, and a tally that only counted
@@ -1692,11 +1703,39 @@ export class AgentLoop {
             timestamp: Date.now(),
           });
         });
-      } else if (call.name === 'ask_reviewer' || call.name === 'ask_researcher' || call.name === 'ask_subagent') {
-        const role = call.name.split('_')[1];
-        const targetModel = this.modelConfig[role] || 'gemini'; // default to gemini for subagents if not set
-        
-        result = await this._runSubAgentSession(role, call.args.prompt || call.args.query, targetModel);
+      } else if (call.name === 'ask_subagent') {
+        const role = String(call.args.role || 'task').toLowerCase();
+        const task = call.args.prompt || call.args.query || '';
+        result = await this._runSubAgentSession(role, task, this.mainModel);
+
+        /**
+         * A subagent that could not run hands the work back, labelled.
+         *
+         * Returning a bare error loses the task: the model is told "that call
+         * failed, fix it yourself", which it reads as being about the call
+         * rather than about the work the call was carrying.
+         *
+         * **The label is the whole difficulty.** If a failed `review` quietly
+         * becomes the author reviewing their own diff, the one thing a
+         * reviewer was for — not sharing the assumptions that produced the
+         * code — is gone, and nothing on screen says so. So the fallback names
+         * what it is and requires the answer to name it too. Same rule as
+         * `unstructured` and "unsupported, never false": degrade, and say you
+         * degraded.
+         */
+        if (!result.success) {
+          const cold = role === 'review'
+            ? ' Because you are reviewing your own work, you share every assumption that '
+              + 'produced it — re-read the files rather than trusting your memory of them, '
+              + 'and **say in your answer that this review is your own**.'
+            : '';
+          result = {
+            success: true,
+            fellBack: true,
+            result: `The ${role} subagent could not run (${result.error}). Do it here instead, `
+              + `in this conversation.${cold}\n\n--- the task ---\n${task}`,
+          };
+        }
       } else if (call.name === 'manage_memory') {
         if (call.args.action === 'add') {
           if (!this.memoryManager.isMemoryEnabled()) {

@@ -22,7 +22,7 @@ describe('AgentLoop._saveConfig', () => {
   const loopFor = (workspace) => {
     const loop = Object.create(AgentLoop.prototype);
     loop.workspace = workspace;
-    loop.modelConfig = { main: 'gemini', reviewer: 'chatgpt', effort: 'standard' };
+    loop.modelConfig = { main: 'gemini', subagents: true, effort: 'standard' };
     loop.commandRules = { enabled: true, allow: [], block: [] };
     return loop;
   };
@@ -59,7 +59,7 @@ describe('AgentLoop._saveConfig', () => {
     assert.strictEqual(saved.modelConfig.main, 'gemini', 'and owned keys still win');
   });
 
-  // topology is derived from modelConfig.reviewer now. Leaving a stale copy in
+  // topology no longer exists. Leaving a stale copy in
   // the file is worse than dropping it: it is a value someone would edit and
   // then be ignored for editing.
   test('a stored topology is dropped rather than written back', () => {
@@ -71,52 +71,56 @@ describe('AgentLoop._saveConfig', () => {
     assert.strictEqual(saved.agentName, 'DCX', 'without taking its neighbours with it');
   });
 
-  test('a config that stored topology folds it into the reviewer', () => {
-    writeFileSync(paths.configPath(ws), JSON.stringify({ topology: 'single' }));
-    const loop = loopFor(ws);
-    loop._loadConfig();
-    assert.strictEqual(loop.modelConfig.reviewer, null, 'single means nobody reviews');
-    assert.strictEqual(loop.topology, 'single');
-  });
-
-  test('a stored duo with no reviewer named gets a second tab of the one model', () => {
+  /*
+   * `topology` and `reviewer` are both gone. Duo meant "a second tab reviews",
+   * which is one of three roles on one tool now, so a stored duo folds to
+   * subagents-on.
+   *
+   * A stored `single` folds to nothing, and that is the part worth stating:
+   * single never meant "no subagents", it meant "no *reviewer*" —
+   * `ask_researcher` and `ask_subagent` were offered either way. Reading it as
+   * off would take two working tools away from every existing workspace.
+   */
+  test('a stored duo folds to subagents on', () => {
     writeFileSync(paths.configPath(ws), JSON.stringify({
       topology: 'duo', modelConfig: { main: 'gemini', reviewer: null },
     }));
     const loop = loopFor(ws);
     loop._loadConfig();
-    assert.strictEqual(loop.modelConfig.reviewer, 'gemini');
-    assert.strictEqual(loop.topology, 'duo');
+    assert.strictEqual(loop.modelConfig.subagents, true);
+    assert.strictEqual(loop.subagentsEnabled, true);
   });
 
-  /*
-   * `_saveConfig` preserves keys it does not own, which is what makes a config
-   * written when ChatGPT existed survive every later save. Left alone it points
-   * the agent at a site with no bridge, and nothing on screen says why.
-   */
-  test('a config naming ChatGPT is folded to the one model that is left', () => {
+  test('a stored reviewer folds to subagents on, whatever it named', () => {
     writeFileSync(paths.configPath(ws), JSON.stringify({
-      modelConfig: { main: 'chatgpt', reviewer: 'chatgpt', effort: 'standard' },
+      modelConfig: { main: 'gemini', reviewer: 'chatgpt' },
     }));
     const loop = loopFor(ws);
     loop._loadConfig();
-    assert.strictEqual(loop.modelConfig.main, 'gemini');
-    assert.strictEqual(loop.modelConfig.reviewer, 'gemini', 'a reviewer was asked for, so keep one');
-    assert.strictEqual(loop.topology, 'duo');
+    assert.strictEqual(loop.modelConfig.subagents, true);
+    assert.strictEqual(loop.modelConfig.reviewer, undefined, 'the dead key is dropped');
   });
 
-  // The negative control. Folding must not invent a reviewer where the config
-  // says there is none — that would turn every solo session into a duo one.
-  test('a ChatGPT main with no reviewer stays solo', () => {
+  test('a stored single does not turn subagents off', () => {
     writeFileSync(paths.configPath(ws), JSON.stringify({
-      modelConfig: { main: 'chatgpt', reviewer: null, effort: 'standard' },
+      topology: 'single', modelConfig: { main: 'gemini' },
     }));
     const loop = loopFor(ws);
-    loop.modelConfig = { main: 'gemini', reviewer: null, effort: 'standard' };
+    loop.modelConfig = { main: 'gemini', subagents: true, effort: 'standard' };
     loop._loadConfig();
-    assert.strictEqual(loop.modelConfig.main, 'gemini');
-    assert.strictEqual(loop.modelConfig.reviewer, null);
-    assert.strictEqual(loop.topology, 'single');
+    assert.strictEqual(loop.subagentsEnabled, true,
+      'single meant no reviewer, not no subagents');
+  });
+
+  // The negative control. An explicit `false` is a decision someone made and
+  // must survive every fold above it.
+  test('an explicit off is honoured', () => {
+    writeFileSync(paths.configPath(ws), JSON.stringify({
+      topology: 'duo', modelConfig: { main: 'gemini', subagents: false },
+    }));
+    const loop = loopFor(ws);
+    loop._loadConfig();
+    assert.strictEqual(loop.subagentsEnabled, false);
   });
 
   test('a missing config is created rather than refused', () => {

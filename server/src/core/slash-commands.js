@@ -114,48 +114,55 @@ export async function handleSlashCommand(loop, command, args) {
      * reviewer's value is that it has not seen the conversation, not that it
      * has different weights.
      */
+    /**
+     * One toggle. There is one model, so "who reviews" stopped being a
+     * question — what is left is whether this session can fan work out to
+     * parallel tabs of itself at all.
+     *
+     * `reviewer <model>` and the single/duo topology it stood for are gone;
+     * `_loadConfig` folds an old config into this.
+     */
     case 'mode':
     case 'config': {
-      const role = args?.[0]?.toLowerCase();
-      const model = args?.[1]?.toLowerCase();
+      const word = String(args?.[0] || '').toLowerCase();
+      const value = String(args?.[1] ?? '').toLowerCase();
+      const OFF = ['off', 'none', 'no', 'false', 'solo'];
+      const ON = ['on', 'yes', 'true', 'gemini', 'duo'];
 
-      if (role === 'reviewer' && ['none', 'off', 'solo'].includes(model)) {
-        loop.modelConfig.reviewer = null;
-        loop._saveConfig();
-        loop.promptBuilder.resetPromptState();
-        return { message: '👤 Solo — one tab plans, implements and reviews its own work.' };
-      }
+      // `/config off` as well as `/config subagents off`: the noun is the only
+      // thing this command has, so requiring it is ceremony.
+      const asked = ['subagents', 'subagent', 'reviewer'].includes(word) ? value : word;
 
-      if (role === 'reviewer' && ['gemini', 'on', 'duo'].includes(model)) {
-        loop.modelConfig.reviewer = 'gemini';
+      if (OFF.includes(asked)) {
+        loop.modelConfig.subagents = false;
         loop._saveConfig();
         loop.promptBuilder.resetPromptState();
         return {
-          message: '🔍 Duo — a second Gemini tab reviews, reading the work cold.\n\n'
-            + 'It shares the model, not the conversation: it has never seen the reasoning '
-            + 'that produced the change, so it has nothing to check against but the code.',
+          message: '👤 Subagents off — one tab, start to finish. Research, review and '
+            + 'implementation are all this conversation.',
         };
       }
 
-      // Accepted and idempotent. `main gemini` is the only main there is, and
-      // answering "unknown command" to the thing that is already true is worse
-      // than doing nothing visibly.
-      if (role === 'main' && model === 'gemini') {
-        loop.modelConfig.main = 'gemini';
+      if (ON.includes(asked)) {
+        loop.modelConfig.subagents = true;
         loop._saveConfig();
-        return { message: '✔ main → **gemini** (the only model — inference runs in your own browser session).' };
+        loop.promptBuilder.resetPromptState();
+        return {
+          message: '🔭 Subagents on — `ask_subagent` can fan work out to parallel tabs.\n\n'
+            + 'Each one starts with an empty context: it has not seen this conversation, which '
+            + 'is the point of the `review` role and the cost of the others.',
+        };
       }
 
       const renamed = command === 'mode'
-        ? '_(`/mode` is now `/config` — the topology follows from who reviews.)_\n\n'
+        ? '_(`/mode` is now `/config` — there is one model, so the only question left is '
+          + 'whether it can delegate.)_\n\n'
         : '';
       return {
-        message: `${renamed}### 🌐 ${loop.topology === 'duo' ? 'Duo' : 'Solo'}\n\n`
-          + `  Main:     **${loop.mainModel}**\n`
-          + `  Reviewer: **${loop.modelConfig.reviewer ? 'gemini — a second tab, reading cold' : 'none'}**\n\n`
-          + '_`/config reviewer on` · `/config reviewer off`_\n'
-          + '_The reviewer is a second Gemini tab that has not seen this conversation. '
-          + 'That is what it checks with — the code, rather than the reasoning that produced it._',
+        message: `${renamed}### 🌐 Subagents: ${loop.subagentsEnabled ? '**on**' : '**off**'}\n\n`
+          + '  `ask_subagent` opens a second tab of this model with an empty context.\n'
+          + '  Roles: `research` (explore), `review` (read a change cold), `task` (an errand).\n\n'
+          + '_`/config subagents on` · `/config subagents off`_',
       };
     }
 

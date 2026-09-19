@@ -29,7 +29,7 @@
  * `prompt-builder.js` byte-for-byte; `tool-catalog.test.js` pins that.
  */
 
-/** @typedef {{name: string, dispatch: 'mcp'|'loop', when?: 'duo', lead?: string, flash: string|Function, pro: string|Function}} ToolDoc */
+/** @typedef {{name: string, dispatch: 'mcp'|'loop', when?: 'subagents', lead?: string, flash: string|Function, pro: string|Function}} ToolDoc */
 
 /** In prompt order, which is the order the model sees. */
 export const TOOL_CATALOG = [
@@ -331,61 +331,84 @@ Parameters:
   {
     name: 'ask_subagent',
     dispatch: 'loop',
-    flash: ` — Delegate to Gemini subagent. Args: prompt (string)
+    when: 'subagents',
+    /*
+     * A description is a **routing rule**, not a capability list.
+     *
+     * There used to be three tools here — `ask_subagent`, `ask_researcher` and
+     * `ask_reviewer` — and they were the same tool three times:
+     * `buildSubagentWrapper(role)` took the role and ignored it, so all three
+     * got one generic "you are a helper subagent" wrapper. The names were the
+     * only thing implying otherwise.
+     *
+     * Of the three descriptions only `ask_researcher`'s said *when* to use it
+     * ("instead of a long serial chain of your own read_file calls"), which is
+     * the half that makes delegation fire at all. `ask_subagent`'s said
+     * "Delegate a task to a generic parallel Gemini subagent" — a capability
+     * with no trigger, which is the documented reason auto-delegation never
+     * happens. Every role below leads with its trigger.
+     */
+    flash: ` — Delegate to a parallel tab. Args: role ("review"|"research"|"task"), prompt (string)
 `,
     pro: `
-Delegate a task to a generic parallel Gemini subagent. It will run in the background and return the result.
+Hand work to a subagent — a second tab of this model with its **own empty context**. It has not
+seen this conversation and cannot see your files, so it knows only what you put in \`prompt\`.
+It has read-only tools and returns one answer. Several run at once.
+
+Reach for it when:
+  - **role "research"** — you are about to make a long serial chain of read_file calls to answer
+    one question ("where is X implemented", "what depends on Y"). Say what to find and where you
+    have already looked.
+  - **role "review"** — you have finished a non-trivial change and want it read by someone who
+    does not share your assumptions. Send the diff, the file paths, and what the change is meant
+    to do. Its value is that it has no memory of why you chose any of it, so paste the code —
+    a reference to "the fix above" means nothing to it.
+  - **role "task"** — a self-contained side errand whose result you need but whose working you
+    do not.
+
+Do NOT use it for anything that writes: it cannot edit files or run commands, and the approval
+path for those is yours.
 Parameters:
-  - prompt (string, required): The task for the subagent.
+  - role (string, required): "review", "research" or "task"
+  - prompt (string, required): everything it needs — it has no other context.
 
 `,
-  },
-  {
-    name: 'ask_researcher',
-    dispatch: 'loop',
-    flash: ` — Delegate read-only codebase exploration. Args: prompt (string)
-`,
-    pro: `
-Delegate codebase exploration to a read-only researcher subagent — tracing a dependency, finding where
-something is implemented, gathering context across many files. Runs in parallel and returns findings with
-file paths and line numbers. Use it instead of a long serial chain of your own read_file calls.
-Parameters:
-  - prompt (string, required): What to find, and where you have already looked.
-`,
-  },
-  {
-    name: 'ask_reviewer',
-    dispatch: 'loop',
-    when: 'duo',
-    lead: '\n',
-    flash: () => `\nSend work to the Reviewer — a second tab that has NOT seen this conversation.\nIt reads only what you send, so include the code and the claim you want checked.\nParameters:\n  - prompt (string, required): The task, the relevant code, and the specific questions.\n\n`,
   },
 ];
 
-/** The tools offered for this topology, in prompt order. */
-export function toolsFor(topology) {
-  return TOOL_CATALOG.filter((t) => !t.when || t.when === topology);
+/**
+ * The tools offered, in prompt order.
+ *
+ * `when` used to name a topology (`'duo'`), which meant the catalog knew about
+ * a two-model world. There is one model and one gate now: are subagents on.
+ *
+ * Accepts a boolean or `{subagents}` so the many call sites that pass one
+ * value do not each need an object literal.
+ *
+ * @param {boolean|{subagents?: boolean}} [ctx]
+ */
+export function toolsFor(ctx) {
+  const subagents = typeof ctx === 'object' && ctx !== null ? Boolean(ctx.subagents) : Boolean(ctx);
+  return TOOL_CATALOG.filter((t) => !t.when || (t.when === 'subagents' && subagents));
 }
 
 /** Just the names — what the anchor and the reminder index need. */
-export function toolNames(topology) {
-  return toolsFor(topology).map((t) => t.name);
+export function toolNames(ctx) {
+  return toolsFor(ctx).map((t) => t.name);
 }
 
 /**
  * The `<available_tools>` block for a tier.
  *
- * Two oddities are preserved rather than tidied, because this file's job was to
- * stop the lists drifting and not to change what the model reads on the way
- * past. `ask_reviewer` carries no `pro` text because it never had any — the duo
- * block was appended outside the tier branch, so both tiers got the same
- * paragraph — and it carries a `lead` newline, which is the blank line that
- * separated that appended block from the list above it.
+ * `ask_reviewer` used to be an oddity here — no `pro` text, a `lead` newline —
+ * both artefacts of the duo block having been appended outside the tier branch.
+ * It is gone: one `ask_subagent` with a role covers what three names pretended
+ * to.
  */
-export function renderToolDefinitions(tier, topology, modelConfig = {}) {
+export function renderToolDefinitions(tier, ctx, modelConfig = {}) {
   const isFlash = tier === 'flash';
   let out = '<available_tools>\n';
-  for (const tool of toolsFor(topology)) {
+  for (const tool of toolsFor(ctx)) {
     const text = (isFlash ? tool.flash : (tool.pro ?? tool.flash));
     out += `${tool.lead || ''}## ${tool.name}${typeof text === 'function' ? text(modelConfig) : text}`;
   }

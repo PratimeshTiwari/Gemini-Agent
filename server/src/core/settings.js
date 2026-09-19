@@ -58,7 +58,7 @@ export function describeSettings(agentLoop) {
   ), {});
   const effort = resolveEffort(mc.effort);
   const main = mc.main || 'gemini';
-  const reviewer = mc.reviewer && mc.reviewer !== main ? mc.reviewer : null;
+  const subagents = mc.subagents !== false;
   const rules = agentLoop?.commandRules || { enabled: true, allow: [], block: [] };
   const memoryOn = agentLoop?.memoryManager?.isMemoryEnabled?.() !== false;
   const facts = memoryOn ? (agentLoop?.memoryManager?.getAllMemories?.() || []).length : 0;
@@ -93,11 +93,13 @@ export function describeSettings(agentLoop) {
     },
     {
       group: 'Settings',
-      label: 'Reviewer',
-      value: reviewer || 'none',
-      hint: reviewer ? 'duo — audits every non-trivial change' : 'solo — nothing reviews the work',
+      label: 'Subagents',
+      value: subagents ? 'on' : 'off',
+      hint: subagents
+        ? 'parallel tabs with empty context — research, review, errands'
+        : 'one tab, start to finish — nothing can be delegated',
       run: '/config',
-      restore: (value) => `/config reviewer ${value}`,
+      restore: (value) => `/config subagents ${value}`,
     },
     {
       group: 'Settings',
@@ -227,8 +229,8 @@ export function describeSettings(agentLoop) {
  * Rows matching what has been typed.
  *
  * Matches the label, the value and the hint, because people look for a setting
- * by any of the three — "duo" is not in any label but it is exactly what
- * someone types when they want to know whether a reviewer is on.
+ * by any of the three — "review" is not in any label but it is exactly what
+ * someone types when they want to know whether subagents are on.
  */
 /**
  * What changed between two readings of the page.

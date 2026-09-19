@@ -296,37 +296,34 @@ export function Menus({
         })()}
 
         {/*
-          One screen, not three. It used to be a role picker, then a model
-          picker, with "View Current Config" as a third row that navigated away
-          to print what the screen could have shown. The topology is just
-          whether these two models differ, so both states are on the list and
-          the current one is the heading.
+          One screen, and now one question. It used to be a role picker, then a
+          model picker, then Solo-or-Duo — a chain that existed because there
+          were two models to arrange. With one, the only thing left to decide is
+          whether this session can fan work out to parallel tabs of itself.
         */}
         {activeMenu?.type === 'config' && (() => {
-          const main = agentLoop.modelConfig?.main || 'gemini';
-          const reviewer = agentLoop.modelConfig?.reviewer || null;
-          const isDuo = Boolean(reviewer);
+          const on = agentLoop.subagentsEnabled;
           const run = async (args) => { await applyAndReturn(activeMenu, 'config', args); };
 
           return (
             <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
               <Text bold color="cyan">
-                🌐 {isDuo ? 'Duo' : 'Solo'} — {main} implements
-                {isDuo ? ', a second tab reviews' : ' and reviews its own work'}
+                🌐 Subagents {on ? 'on' : 'off'}
               </Text>
               <Text dimColor wrap="wrap">
-                The reviewer shares the model, not the conversation — it has never seen the
-                reasoning that produced the change, so it checks the code instead.
+                A subagent is a second tab of this model with an empty context — it has never
+                seen this conversation. That is the point of the review role and the cost of
+                the others: it knows only what it is sent.
               </Text>
               <SelectInput
                 items={[
                   {
-                    label: `👤  Solo — one tab, start to finish${isDuo ? '' : '  ← current'}`,
-                    value: 'reviewer none',
+                    label: `🔭  On — ask_subagent can research, review and run errands${on ? '  ← current' : ''}`,
+                    value: 'subagents on',
                   },
                   {
-                    label: `🔍  Duo — a second tab reviews, reading cold${isDuo ? '  ← current' : ''}`,
-                    value: 'reviewer gemini',
+                    label: `👤  Off — one tab, start to finish${on ? '' : '  ← current'}`,
+                    value: 'subagents off',
                   },
                 ]}
                 onSelect={(item) => run(item.value.split(' '))}

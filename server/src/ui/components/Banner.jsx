@@ -64,8 +64,7 @@ function Wordmark({ text }) {
 
 export function Banner({ agentLoop, agentNameAscii }) {
   const models = (() => {
-    const topology = agentLoop.topology || 'single';
-    const roles = topology === 'duo' ? ['main', 'reviewer'] : ['main'];
+    const roles = ['main'];
     const named = roles.map((r) => agentLoop.modelConfig?.[r]).filter(Boolean);
     return [...new Set(named)].join(', ') || 'gemini';
   })();

@@ -139,30 +139,30 @@ describe('PromptBuilder — instructions the model can actually act on', () => {
 describe('PromptBuilder — the advertised tool set matches the dispatchable one', () => {
   const names = (text) => [...text.matchAll(/^## ([a-z_]+)/gm)].map((m) => m[1]);
 
-  test('ask_researcher is advertised in every tier', () => {
+  test('ask_subagent is advertised in every tier when subagents are on', () => {
     for (const effort of ['flash', 'flash-thinking', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
-      const defs = pb._buildToolDefinitions('single', { effort });
-      assert.ok(names(defs).includes('ask_researcher'),
-        `${effort} omits ask_researcher, which agent-loop dispatches`);
+      const defs = pb._buildToolDefinitions(true, { effort });
+      assert.ok(names(defs).includes('ask_subagent'),
+        `${effort} omits ask_subagent, which agent-loop dispatches`);
     }
   });
 
   test('the reminder index cannot drift from the definitions', () => {
-    for (const topology of ['single', 'duo']) {
+    for (const subagents of [true, false]) {
       const pb = new PromptBuilder(ws, ws);
-      const defs = names(pb._buildToolDefinitions(topology, {}));
-      const index = pb._buildToolIndex(topology, {});
+      const defs = names(pb._buildToolDefinitions(subagents, {}));
+      const index = pb._buildToolIndex(subagents, {});
       for (const n of defs) {
-        assert.ok(index.includes(n), `${topology}: ${n} missing from the reminder index`);
+        assert.ok(index.includes(n), `subagents=${subagents}: ${n} missing from the index`);
       }
     }
   });
 
-  test('subagent tools appear only where that topology can route them', () => {
+  test('ask_subagent appears only when it can actually be routed', () => {
     const pb = new PromptBuilder(ws, ws);
-    assert.ok(!names(pb._buildToolDefinitions('single', {})).includes('ask_reviewer'));
-    assert.ok(names(pb._buildToolDefinitions('duo', {})).includes('ask_reviewer'));
+    assert.ok(!names(pb._buildToolDefinitions(false, {})).includes('ask_subagent'));
+    assert.ok(names(pb._buildToolDefinitions(true, {})).includes('ask_subagent'));
   });
 
   test('ask_reasoner is gone, in every topology', () => {
@@ -220,10 +220,15 @@ describe('PromptBuilder — pro reasoning levels', () => {
     assert.match(proPrompt('deep'), /RESTATE AND DECOMPOSE/);
   });
 
+  /*
+   * `Adversarial self-review` is now the *fallback*: with subagents on, deep
+   * sends the diff to one instead. `proPrompt` builds with them on, so the
+   * self-review line only appears where there is nobody to send it to.
+   */
   test('deep adds approach enumeration and an adversarial pass', () => {
     assert.match(proPrompt('deep'), /Approach enumeration/);
-    assert.match(proPrompt('deep'), /Adversarial self-review/);
-    assert.doesNotMatch(proPrompt('standard'), /Adversarial self-review/);
+    assert.match(proPrompt('deep'), /Send the diff to `ask_subagent`/);
+    assert.doesNotMatch(proPrompt('standard'), /Send the diff to `ask_subagent`/);
   });
 
   test('the levels are ordered by how much prompt they spend', () => {
@@ -265,15 +270,25 @@ describe('PromptBuilder — pro reasoning levels', () => {
   });
 });
 
-describe('PromptBuilder — the solo topology tells the truth about delegation', () => {
-  test('single no longer claims there is nothing to delegate to while listing subagent tools', () => {
+describe('PromptBuilder — the prompt tells the truth about delegation', () => {
+  test('with subagents on it says they exist and what they are for', () => {
     const pb = new PromptBuilder(ws, ws);
-    const p = build(pb, { topology: 'single' });
+    const p = build(pb, { subagents: true });
     assert.doesNotMatch(p, /There are no other models to delegate to/);
-    // Both of these dispatch fine in single topology (agent-loop.js), so the
-    // prompt has to admit they exist.
-    assert.match(p, /ask_researcher/);
     assert.match(p, /ask_subagent/);
+    assert.match(p, /role: "research"/);
+  });
+
+  /*
+   * The half that used to be wrong in the other direction: a prompt that lists
+   * subagent tools while telling the model it has nobody to delegate to. With
+   * the toggle off it must do neither — no tool, and no claim that one exists.
+   */
+  test('with subagents off it says so, and names no subagent tool', () => {
+    const pb = new PromptBuilder(ws, ws);
+    const p = build(pb, { subagents: false });
+    assert.match(p, /no subagents available in this session/);
+    assert.doesNotMatch(p, /ask_subagent/);
   });
 });
 

@@ -124,7 +124,7 @@ export class PromptBuilder {
    * @param {string} options.mode - 'plan' or 'auto'
    * @returns {string} The complete prompt to inject
    */
-  buildPrompt({ userMessage, mode = 'plan', topology = 'single', modelConfig = {}, objective = '' }) {
+  buildPrompt({ userMessage, mode = 'plan', subagents = true, modelConfig = {}, objective = '' }) {
     const parts = [];
 
     const needsFullPrompt = !this.hasSeenSystemPrompt;
@@ -136,9 +136,9 @@ export class PromptBuilder {
 
     if (needsFullPrompt) {
       // First turn in this chat session — send everything
-      parts.push(`<system_state mode="${mode}" topology="${topology}">`);
-      parts.push(this._buildSystemInstructions(mode, topology, modelConfig));
-      parts.push(this._buildToolDefinitions(topology, modelConfig));
+      parts.push(`<system_state mode="${mode}" subagents="${subagents ? 'on' : 'off'}">`);
+      parts.push(this._buildSystemInstructions(mode, subagents, modelConfig));
+      parts.push(this._buildToolDefinitions(subagents, modelConfig));
       
       if (objective && objective.trim() !== userMessage.trim()) {
         parts.push(`<current_objective>\n${objective}\n</current_objective>`);
@@ -174,7 +174,7 @@ export class PromptBuilder {
       // The targeted repair: the framing and the full definitions, without
       // AGENT.md, memory or the skill catalogue, which the model never lost.
       parts.push(this._buildCondensedReminder(mode, objective, modelConfig));
-      parts.push(this._buildToolDefinitions(topology, modelConfig));
+      parts.push(this._buildToolDefinitions(subagents, modelConfig));
       this.pendingToolRedeclare = false;
       this.messagesSinceRefresh = 0;
     } else if (needsRefresh) {
@@ -182,7 +182,7 @@ export class PromptBuilder {
       // definitions in its own thread, so resending them buys nothing and resending a
       // large block is what trips the A/B-test modal. Names only.
       parts.push(this._buildCondensedReminder(mode, objective, modelConfig));
-      parts.push(this._buildToolIndex(topology, modelConfig));
+      parts.push(this._buildToolIndex(subagents, modelConfig));
       this.messagesSinceRefresh = 0;
     } else {
       // Regular turn — just a brief context line
@@ -195,7 +195,7 @@ export class PromptBuilder {
       }
       // The anchor goes on the same line as the workspace: one short bracketed
       // context line, not two competing headers.
-      const anchor = this._buildToolAnchor(topology, modelConfig);
+      const anchor = this._buildToolAnchor(subagents, modelConfig);
       parts.push(anchor ? `${contextLine} ${anchor}` : contextLine);
     }
 
@@ -451,7 +451,7 @@ export class PromptBuilder {
 
   // ── Private Methods ──────────────────────────────────────────────
 
-  _buildSystemInstructions(mode, topology = 'single', modelConfig = {}) {
+  _buildSystemInstructions(mode, subagents = true, modelConfig = {}) {
     const modeInstructions = mode === 'auto'
       ? 'You are in AUTO MODE. Safe operations (reads, searches, small additions) will be auto-applied. Risky operations (large rewrites, deletions, commands) will still require user approval.'
       // "Require user approval before being applied" is true and reads as
@@ -478,7 +478,7 @@ export class PromptBuilder {
       ? this._buildFlashCoreInstructions()
       : this._buildFullCoreInstructions(modelTier);
 
-    const reasoningInstructions = this._getReasoningInstructions(modelTier, reasoningLevel, topology);
+    const reasoningInstructions = this._getReasoningInstructions(modelTier, reasoningLevel, subagents);
 
     // Tool call format (Flash gets examples, Pro gets description only)
     const toolCallFormat = this._buildToolCallFormat(modelTier);
@@ -499,41 +499,42 @@ ${reasoningInstructions}
 `;
 
     // Topology-specific instructions
-    let topologyInstructions = '';
+    /*
+     * One block, not two.
+     *
+     * There were a Solo and a Duo version, and Duo's told the model it was
+     * "the PRIMARY coding agent in a 2-agent system" with a "Security Reviewer
+     * subagent (powered by gemini, but abstract this detail)" — a two-model
+     * framing that outlived the second model, a reviewer narrowed to security
+     * that `deep` then asked for general review, and an instruction to abstract
+     * a detail it was being given in the same sentence.
+     *
+     * Its one genuinely load-bearing line survives, moved into the subagent
+     * paragraph below: give the reviewer the specific paths and the purpose.
+     * That is what makes a reader with no context useful rather than decorative.
+     */
+    const subagentParagraph = subagents ? `
+You can fan work out to parallel tabs of yourself with \`ask_subagent\` — \`role: "research"\` for
+read-only exploration you would otherwise do with a long serial chain of read_file calls,
+\`role: "review"\` to have a finished change read by someone who does not share your assumptions,
+\`role: "task"\` for a self-contained errand. Each one starts empty: it has not seen this
+conversation, so send the specific file paths, the change itself, and what it is meant to do.
+A reference to "the fix above" means nothing to it. They run in parallel and return to you.
+Delegating judgement about what to *write* is what you cannot do — every edit is yours.` : `
+There are no subagents available in this session, so planning, research, implementation and
+review are all yours. Nothing can be delegated; say what you have not checked rather than
+implying it was checked elsewhere.`;
 
-    if (topology === 'single') {
-      topologyInstructions = `
-## Role: Solo Agent
-You are the only *model* on this task — there is no reviewer to defer to, so
-planning, implementation, review and testing are all yours. You can still fan work out to
-parallel tabs of yourself: \`ask_researcher\` for read-only exploration you would otherwise do
-with a long serial chain of read_file calls, \`ask_subagent\` for a self-contained side task.
-They run in parallel and return to you. Delegating judgement is what you cannot do here.
+    const topologyInstructions = `
+## Role: Coding Agent
+You are the only agent on this task — planning, implementation, review and testing are yours.
+${subagentParagraph}
 
 - When tasks are complex, create a plan first (save it to \`.agent/artifacts/implementation_plan.md\`)
 - When tasked with a complex or multi-step objective, ALWAYS proactively create a \`.agent/artifacts/task.md\` checklist using the \`create_file\` tool to plan your work, similar to Antigravity IDE. Its current contents are given back to you in \`<task_checklist>\` on every turn — tick an item the moment it is done, with \`edit_file\` replacing that exact line's \`- [ ]\` with \`- [x]\`. The user is reading that file to see where you are.
 - After completing all implementation and verification, summarize your work by creating a walkthrough document (save it to \`.agent/artifacts/walkthrough.md\`). Document changes made, what was tested, and validation results.
 - After implementing changes, self-review: re-read the edited files and verify correctness
 - If you're not confident in a change, tell the user explicitly rather than guessing`;
-
-    } else if (topology === 'duo') {
-      const reviewer = modelConfig.reviewer || 'gemini';
-      topologyInstructions = `
-## Role: Primary Agent (Duo System)
-You are the PRIMARY coding agent in a 2-agent system.
-You have a Security Reviewer subagent (powered by ${reviewer}, but abstract this detail) available via the \`ask_reviewer\` tool.
-
-**Your Role**: Plan, research, and implement changes using your tools.
-**Reviewer's Role**: Verify your work — find bugs, security issues, and quality problems.
-
-**Delegation Rules**:
-- ALWAYS send completed edits to the reviewer before telling the user you're done (for non-trivial changes)
-- Provide the reviewer with the SPECIFIC file path, the changes made, and the purpose
-- If the reviewer finds issues, fix them and re-submit
-- Do NOT send vague questions. Send concrete code + context
-- For trivial changes (typos, formatting), skip the review`;
-
-    }
 
     // toolCallFormat goes last: <available_tools> is appended straight after
     // this block, and the format is the contract for reading that list.
@@ -552,15 +553,62 @@ ${toolCallFormat}
    * Build a wrapper prompt for subagent delegation.
    * This is prepended to the user's prompt when sending to a subagent.
    */
+  /**
+   * What the subagent is told it is.
+   *
+   * This took a `role` and **ignored it**: every subagent — reviewer,
+   * researcher, generic — got one "you are a HELPER SUBAGENT … return a clear,
+   * concise result" wrapper. So `ask_reviewer`, `ask_researcher` and
+   * `ask_subagent` were the same tool three times, and the cold adversarial
+   * read that `deep` promised was never asked for anywhere. The three names
+   * were the only thing implying otherwise.
+   *
+   * Each wrapper below leads with the one thing that role must not forget. For
+   * `review` that is **read before judging**: the failure this exists to catch
+   * is a reviewer reading enough to cite and then reasoning from the citation,
+   * which is exactly what an unbriefed helper does with a diff.
+   */
   buildSubagentWrapper(role) {
-    
-    // Default generic subagent wrapper
-    return `<role>
-You are a HELPER SUBAGENT. The main coding agent has delegated a task to you to run in parallel.
-Your job is to execute the task using your read-only tools if necessary and return a clear, concise result.
+    const ROLES = {
+      review: `<role>
+You are a REVIEWER. You have not seen the conversation that produced this work and you cannot
+see the repository state the author sees — you have only what is below, plus read-only tools.
+
+**Read before you judge.** If the request claims something about a file, open that file and
+check the claim before agreeing or disagreeing with it. Do not reason from a line number
+someone quoted at you; go and read around it. A review that repeats the author's assumptions
+back to them is worth nothing, and that is the failure this role exists to prevent.
+
+Report what you found, with file and line for every claim you make. If you did not check
+something, say so plainly rather than hedging — "not checked" is a useful answer and "this
+should be fine" is not.
 </role>
 
-`;
+`,
+      research: `<role>
+You are a RESEARCHER. You have read-only tools and no memory of the conversation that sent you.
+
+Your job is to find things and report where they are, not to judge or fix them. Answer with
+file paths and line numbers; a finding without a location cannot be acted on. Cover breadth
+before depth — the caller usually wants to know everywhere something appears, not everything
+about the first place it appears. If you cannot find it, say where you looked, because that is
+what stops the caller repeating your search.
+</role>
+
+`,
+      task: `<role>
+You are a HELPER SUBAGENT. The main coding agent has delegated a self-contained task to you to
+run in parallel. You have read-only tools and only the context below.
+
+Do the task and return the result, not a narration of how you got it. If the task is
+underspecified, say what you assumed rather than guessing silently.
+</role>
+
+`,
+    };
+    // An unknown role is the generic one rather than an error: the role comes
+    // from the model, and a turn should not die because it invented a word.
+    return ROLES[String(role || '').toLowerCase()] || ROLES.task;
   }
 
   /**
@@ -630,7 +678,7 @@ ${modelTier === 'pro' ? `## 4. Communication
    * Tier-specific reasoning instructions.
    * This is the core differentiation between model tiers.
    */
-  _getReasoningInstructions(tier, level = 'standard', topology = 'single') {
+  _getReasoningInstructions(tier, level = 'standard', subagents = true) {
     switch (tier) {
       case 'flash':
         return this._getFlashInstructions();
@@ -638,7 +686,7 @@ ${modelTier === 'pro' ? `## 4. Communication
         return this._getFlashThinkingInstructions();
       case 'pro':
       default:
-        return this._getProInstructions(this._normalizeLevel(level), topology);
+        return this._getProInstructions(this._normalizeLevel(level), subagents);
     }
   }
 
@@ -708,11 +756,11 @@ ${modelTier === 'pro' ? `## 4. Communication
    *   standard — restate and decompose first, then the 4-phase protocol. (default)
    *   deep     — standard, plus approach enumeration and adversarial self-review.
    */
-  _getProInstructions(level = 'standard', topology = 'single') {
+  _getProInstructions(level = 'standard', subagents = true) {
     const isBrief = level === 'brief';
     const isDeep = level === 'deep';
     // A second *model*, not a second persona. See the review step below.
-    const hasReviewer = topology === 'duo';
+    const hasReviewer = Boolean(subagents);
 
     const header = `## Cognitive Mode: PRINCIPAL ENGINEER
 
@@ -771,9 +819,10 @@ and what could go wrong with it — empty inputs, concurrent access, scale, erro
 2. **Run the tests** if they exist.
 3. **Re-check the callers** you found in Phase 1. Does your change break them?
 4. **Name the gaps** — any path you introduced that nothing covers.${isDeep ? (hasReviewer ? `
-5. **Send the diff to \`ask_reviewer\`** — a second model, reading it cold, with no memory of
-   why you chose any of it. Give it the diff and what the change is meant to do. Act on what
-   comes back or say why you are not; do not paste it onward unread.` : `
+5. **Send the diff to \`ask_subagent\` with \`role: "review"\`** — a second tab, reading it
+   cold, with no memory of why you chose any of it. Paste the diff itself, the file paths,
+   and what the change is meant to do — it cannot see your files. Act on what comes back
+   or say why you are not; do not paste it onward unread.` : `
 5. **Adversarial self-review** — read the diff as a hostile reviewer. What would you flag?
    Say it out loud rather than hoping nobody looks.`) : ''}`;
 
@@ -839,11 +888,11 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
    * were registered, implemented and unreachable for exactly that reason.
    *
    * The text is unchanged: it was moved byte-for-byte and `tool-catalog.test.js`
-   * pins every tier x topology shape against what this method used to return.
+   * pins every tier x subagent shape against what this method used to return.
    */
-  _buildToolDefinitions(topology = 'single', modelConfig = {}) {
+  _buildToolDefinitions(subagents = true, modelConfig = {}) {
     const tier = resolveEffort(modelConfig.effort).tier;
-    return renderToolDefinitions(tier, topology, modelConfig);
+    return renderToolDefinitions(tier, subagents, modelConfig);
   }
 
   /**
@@ -909,13 +958,13 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
    * confidence, and the turn is lost. Detecting that afterwards is guesswork
    * over prose; keeping a name list in front of it is not.
    *
-   * Names are fixed for a given topology, so this is computed once.
+   * The names are fixed for a given toggle state, so this is computed once.
    */
-  _buildToolAnchor(topology = 'single', modelConfig = {}) {
-    const key = `${topology}:${modelConfig.reviewer || ''}`;
+  _buildToolAnchor(subagents = true, modelConfig = {}) {
+    const key = String(Boolean(subagents));
     if (this._anchorCache?.key === key) return this._anchorCache.value;
 
-    const defs = this._buildToolDefinitions(topology, modelConfig);
+    const defs = this._buildToolDefinitions(subagents, modelConfig);
     const names = [...defs.matchAll(/^## ([a-z_]+)/gm)].map((m) => m[1]);
     const value = names.length
       ? `[tools: ${names.join(' ')}]`
@@ -924,8 +973,8 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
     return value;
   }
 
-  _buildToolIndex(topology = 'single', modelConfig = {}) {
-    const defs = this._buildToolDefinitions(topology, modelConfig);
+  _buildToolIndex(subagents = true, modelConfig = {}) {
+    const defs = this._buildToolDefinitions(subagents, modelConfig);
     const names = [...defs.matchAll(/^## ([a-z_]+)/gm)].map(m => m[1]);
     return `<available_tools>
 ${names.join(', ')}
