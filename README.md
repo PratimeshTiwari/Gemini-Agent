@@ -107,6 +107,9 @@ cd Gemini-Agent
 npm install                          # both workspaces
 npm run build --workspace=extension  # Chrome loads the bundle, not the sources
 npm test                             # optional, and a good smoke check
+
+npm start                            # run it; workspace defaults to ../
+cd server && npm start -- --workspace /path/to/project
 ```
 
 The build step is not optional on a fresh clone. `extension/service-worker.js` is a
