@@ -685,6 +685,49 @@ about a day, during which it was wrong roughly forty times — a count in prose
 is stale the moment the next commit lands, and the command is both shorter and
 always right.
 
+#### At a glance
+
+The detail is grouped by area below. This is the shape of it.
+
+**Added**
+- `find_symbol` / `find_references` — structural code search, on acorn.
+- `grep_search` takes several patterns at once, with context lines and ranking.
+- `run_background` + `manage_task` — dev servers and watchers that outlive a turn.
+- `recall_history` — the model can look into its own compacted history.
+- A **second Gemini tab as a reviewer** (`/config`), with no memory of the
+  conversation that produced the work.
+- `/history`, `/plans`, `/commands`, `/logs`, `/update`, `/name`, `/restart`.
+- A **command audit trail** — every shell command run, blocked or refused.
+- Prompts typed during a turn are **queued**, not dropped; `↑` takes one back.
+- `/image <path>` and `/image remove`, with `1 image` in the status bar.
+- A VS Code companion that forwards failed terminal commands and the Problems panel.
+
+**Changed**
+- **One instruction surface**: `AGENT.md`, walked up from the code.
+- **One effort ladder**: `/effort` — flash · flash-thinking · brief · standard · deep.
+- **One lane per browser tab**, so subagents genuinely run at once.
+- The turn's clock moved **out of the tab**, so a turn survives you looking away.
+- Approval is decided in one place from the tool catalog's own flags.
+- `node_modules` **98.5 MB → 72.7 MB** (figlet and `@inquirer/prompts` gone).
+- Startup **2.46 s → 0.53 s** to the prompt box.
+
+**Removed**
+- The **GitHub PR agent** (2,009 lines) — documented first, for a possible rebuild.
+- **ChatGPT**, and with it the second bridge. One model, one bridge.
+- `semantic_search` and the retrieval subsystem; `ast-chunker`; the skills registry.
+- `rules.md`, `mistakes.md`, `contextFolders`, `memory.json`.
+- `topology`, `reasoningEffort`, `modelTier`/`reasoningLevel` as stored settings.
+- Mouse tracking, permanently — scroll, drag-select and copy are the terminal's.
+- The runtime scope switcher, and `/agent-dir`.
+
+**Fixed** — the ones worth naming are in *Told the truth, enforced something
+else* below: nine cases where the model was handed an accurate description and
+the code did something different. Plus the flicker that was deleting your
+scrollback seven times a second, prompts lost while Chrome was in the
+background, and a rejected edit that drew in green as though it had applied.
+
+**Quality**: 1,710 tests, **92.5% line coverage** (90.8% branch, 94.3% function).
+
 #### The GitHub PR agent is gone (2026-09-19)
 - **Removed**, and documented in `CLAUDE.md` in enough detail to rebuild from:
   what each of the nine files did, the interface decisions worth keeping, and
@@ -788,6 +831,41 @@ saying so once, beside its description.
 - **A rejected edit stops looking like an applied one.** The model was told the
   truth and the transcript drew `✓ edit_file` in green on a change never
   written.
+
+#### Made honest by testing it (2026-09-19, late)
+
+Coverage was measured rather than assumed — `node --test
+--experimental-test-coverage` — and the low files were worked in order of how
+badly they would fail, not how interesting they were.
+
+- **Every tool is now called once by a test.** That sweep did not exist, and its
+  absence had already shipped a total breakage: a stray edit left `find_symbol`
+  referring to a variable it never defines, so **every** call returned
+  `isMethod is not defined` while 1,474 other tests stayed green. The sweep
+  asserts almost nothing about what comes back — only that the call the agent
+  makes does not throw, which is the failure that costs a whole turn.
+- **Every slash command is now driven once, bare and with arguments.**
+  `use-slash-commands.js` was the least-covered file in the repo at 8.7%, and
+  the surface almost every bug reported from use has come from. It is 55.5% now.
+- **A wrong effort word is rejected instead of ignored.** `/effort deeep` fell
+  through to the status display, which prints the current rung and the ladder
+  and reads exactly like a confirmation — so you believe it changed and every
+  later turn goes out on the old rung.
+- **A bare `/` lists the commands.** It used to answer `No such command: /` and
+  then advise "Type `/` on its own to see what there is", which is what had just
+  been done. An unknown command now says so *and then* lists them.
+- **The minifier on the tool-result path always returns a string.** A cycle or a
+  BigInt threw, was caught, and returned `''` — handing the model a tool that
+  ran and produced nothing, which is worse than an error. Every test fixture
+  passed a *string* result, so that branch had never been taken.
+- **The startup migration's three promises are assertions now.** It moves your
+  config, instructions, backups and logs before anything is on screen, and sat
+  at 46% coverage. Nothing was wrong — all four behaviours were probed first and
+  all four held — but a migration that clobbers has destroyed the thing it
+  overwrote by the time anyone looks.
+- **`server/README.md` is gone.** It had drifted for nine days advertising two
+  subsystems deleted in September, and everything in it was already in this file
+  or `CLAUDE.md`. A third document is a third place to drift.
 
 #### The engine
 - **Prompt economics.** The full system prompt goes out on turn 0 and every Nth
