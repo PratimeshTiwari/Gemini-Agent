@@ -455,6 +455,19 @@ export function summarizeResult(toolName, result) {
       }
       case 'edit_file':
       case 'create_file': {
+        /*
+         * The approval outcome, when there is one.
+         *
+         * A rejected edit used to summarise as the whole sentence the *model*
+         * was sent — "User REJECTED the edit to AGENT.md. Do not retry the same
+         * edit — ask what they want changed." That is an instruction to the
+         * model, not a description for the person who just pressed reject and
+         * knows perfectly well what they did.
+         */
+        if (typeof r === 'string') {
+          if (/REJECTED/.test(r)) return 'rejected — nothing written';
+          if (/APPROVED/.test(r)) return 'approved — written to disk';
+        }
         // { diffId, filePath, hunkCount, status }
         if (r?.filePath) {
           const name = String(r.filePath).split('/').pop();

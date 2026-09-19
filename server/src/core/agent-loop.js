@@ -1906,7 +1906,35 @@ export class AgentLoop {
 
           // Replace the "pending approval" payload so the model is told what
           // actually happened, and is not fed the whole patch back.
-          toolResults[i] = { name: call.name, result: outcome.result || outcome.error };
+          toolResults[i] = {
+            name: call.name,
+            result: outcome.result || outcome.error,
+            failed: outcome.success === false,
+          };
+
+          /**
+           * And tell the screen, which used to be the only one left believing
+           * the edit had landed.
+           *
+           * `resultTurn` is recorded ~90 lines above this, when the diff was
+           * *generated* — which succeeds whether or not anyone approves it. The
+           * decision arrives here, and only `toolResults` was corrected. So a
+           * rejected edit drew `✓ edit_file · 1 hunk in AGENT.md`, in green, on
+           * a change that was never written: the model was told the truth and
+           * the person watching was not, which is the worse half of the two.
+           *
+           * Mutated rather than re-pushed: the transcript is built from these
+           * objects, so correcting the record corrects every later reading of
+           * it, and a second row would read as a second edit.
+           */
+          resultTurn.success = outcome.success === true;
+          resultTurn.result = outcome.result || outcome.error;
+          this.callbacks?.sendToPanel?.({
+            id: randomUUID(),
+            type: 'tool_result',
+            payload: { name: call.name, result: resultTurn.result, success: resultTurn.success },
+            timestamp: Date.now(),
+          });
         }
       }
       })();
