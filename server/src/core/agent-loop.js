@@ -85,6 +85,7 @@ import { ContextManager } from '../context/context-manager.js';
 import { MemoryManager } from '../context/memory-manager.js';
 import { ExtensionLock, mainLane, subLane } from '../bridge/extension-lock.js';
 import { runBatchTask } from './turn-runner.js';
+import { requiresApproval, isBlockedOutright } from './tool-policy.js';
 
 
 // Backstop for a prompt the extension never answers. Longer than the content
@@ -95,26 +96,10 @@ const EXTENSION_RESPONSE_TIMEOUT = 7 * 60 * 1000;
 const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n```/gi;
 
 
-/**
- * Is this path one of the agent's own artifacts under `.agent/artifacts/`?
- *
- * Resolved and prefix-checked rather than matched by name, because the model
- * supplies the path: `task.md`, `./task.md`, an absolute path and
- * `../../../etc/task.md` are all the same string test and very different
- * files. `path.relative` answering with a leading `..` is the one reliable
- * way to ask "is this inside that directory".
- */
-export function isAgentArtifact(workspace, candidate) {
-  if (typeof candidate !== 'string' || !candidate) return false;
-  try {
-    const dir = paths.artifactsDir(workspace);
-    const abs = path.isAbsolute(candidate) ? candidate : path.resolve(workspace, candidate);
-    const rel = path.relative(dir, abs);
-    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
-  } catch {
-    return false; // unresolvable means "not an artifact", which means "ask"
-  }
-}
+// Moved to core/artifact-guard.js — re-exported so the many call sites and
+// `plan-mode-writes.test.js` keep importing it from here.
+export { isAgentArtifact } from './artifact-guard.js';
+
 
 /**
  * What a headless background turn is told it can call.
@@ -1639,57 +1624,15 @@ export class AgentLoop {
 
       // Check risk classification for auto mode
       const risk = this.riskClassifier.classify(call.name, call.args);
-      let needsApproval = false;
-      
-      if (this.mode === 'plan') {
-        /*
-         * Every tool that changes the machine, read from the catalog — not a
-         * list repeated here, because the list repeated here drifted.
-         *
-         * `run_background` was missing from it. `needsApproval` starts false
-         * and nothing in this branch set it, so plan mode spawned a shell
-         * process that outlives the turn without asking, while auto mode asked
-         * through the classifier's "Unknown tool" default. The mode that
-         * promises "every edit needs approval" was the permissive one.
-         */
-        if (MUTATING_TOOLS.has(call.name)) {
-          needsApproval = true;
-          /**
-           * The agent's own artifacts are exempt. Nothing else is.
-           *
-           * This read `path.endsWith('.md')`, and the comment beside it said
-           * "Creating/Editing Markdown files (like plans) is harmless". The
-           * intent was `task.md` and `plan.md` — the files the system prompt
-           * *tells* the model to keep up to date, which it cannot do if every
-           * tick needs a keystroke. But the test was the extension, not the
-           * location, so in plan mode the agent could silently write **any**
-           * markdown anywhere: `README.md`, `CLAUDE.md`, and `AGENT.md` —
-           * the one file this project promises "can always be trusted to say
-           * what the human wrote" — plus anything outside the workspace via
-           * an absolute path.
-           *
-           * Reported from use: `create_file test-agent-cli.md` in plan mode
-           * came back `"status":"applied"`, with the status bar reading
-           * "plan — every edit needs approval" at the time. A mode that
-           * claims every edit needs approval and quietly exempts a file type
-           * is worse than one that never claimed it.
-           */
-          if (call.name === 'create_file' || call.name === 'edit_file') {
-            if (isAgentArtifact(this.workspace, call.args.path)) needsApproval = false;
-          }
-          // Exception: Safe, read-only commands should not block
-          if (SHELL_TOOLS.has(call.name) && risk.level === 'safe') {
-            needsApproval = false;
-          }
-        }
-      } else {
-        needsApproval = risk.level === 'risky';
-      }
+      // Who may run what is `core/tool-policy.js`, not this function. It was
+      // decided inline here, in the middle of dispatch, which is how
+      // `run_background` came to skip plan mode's approval entirely.
+      const needsApproval = requiresApproval(call, { mode: this.mode, risk, workspace: this.workspace });
 
       // Execute the tool
       let result;
       
-      if (SHELL_TOOLS.has(call.name) && risk.level === 'critical') {
+      if (isBlockedOutright(call, risk)) {
         result = { success: false, error: `❌ Command blocked by Security Constraints: ${risk.reason}` };
         // Blocked commands are the most worth recording, not the least: what the
         // agent *tried* to do is the interesting half of an audit log.

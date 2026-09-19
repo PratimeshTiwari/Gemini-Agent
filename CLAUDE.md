@@ -544,6 +544,25 @@ Writes never go straight to disk. `edit_file` / `create_file` produce a `DiffEng
 Commands pass through `core/risk-classifier.js`, which decides whether `App.jsx` must prompt;
 persistent allow/block rules live in `commandRules`  (`/allowlist`).
 
+**Who may run what is `core/tool-policy.js`, not `_executeToolCalls`.** Two pure functions —
+`isBlockedOutright` and `requiresApproval` — over the catalog's own `mutates`, `shell` and
+`detached` flags. It was decided inline, 487 lines deep in dispatch, and that is precisely how
+`run_background` came to skip every gate: the plan-mode branch named the mutating tools
+literally, a fourth was added later and not added there, so the mode whose status bar reads
+"plan — every edit needs approval" spawned a detached shell process without asking, while auto
+mode asked about the same call through the classifier's "Unknown tool" default. **The careful
+mode was the permissive one.** The fix is not "add it to the list" — there is no list any more,
+so the next tool that writes is gated by declaring itself beside its description.
+
+**And the extraction immediately found a second one of the same shape.** The read-only
+exemption — `ls` must not need a keystroke, or the prompt becomes something people dismiss
+without reading — was written as *any shell tool the classifier calls safe*, and
+`run_background` is a shell tool. So `run_background npm run dev` was exempt on the strength of
+a verdict about the **command text**, while the process it spawns is still running after the
+turn, the mode, and possibly the session have ended. The classifier reads a string; it cannot
+see that. `DETACHED_TOOLS` is the flag that lets the exemption ask. It was invisible while the
+policy was a branch inside dispatch and took one test to surface once it was a function.
+
 **Plan mode exempts the agent's own artifacts, and nothing else.** The check was
 `path.endsWith('.md')`, beside a comment reading "Creating/Editing Markdown files (like plans)
 is harmless". The intent was real — `task.md` and `plan.md` are files the system prompt *tells*

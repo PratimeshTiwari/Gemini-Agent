@@ -31,7 +31,8 @@
 
 /**
  * @typedef {{name: string, dispatch: 'mcp'|'loop', when?: 'subagents', mutates?: boolean,
- *   shell?: boolean, lead?: string, flash: string|Function, pro: string|Function}} ToolDoc
+ *   shell?: boolean, detached?: boolean, lead?: string, flash: string|Function,
+ *   pro: string|Function}} ToolDoc
  */
 
 /** In prompt order, which is the order the model sees. */
@@ -271,6 +272,7 @@ Parameters:
     dispatch: 'mcp',
     mutates: true,
     shell: true,
+    detached: true,
     flash: ` — Spawn background process. Args: command (string), cwd? (string)
 `,
     pro: `
@@ -419,6 +421,23 @@ export const MUTATING_TOOLS = new Set(
  */
 export const SHELL_TOOLS = new Set(
   TOOL_CATALOG.filter((t) => t.shell).map((t) => t.name),
+);
+
+/**
+ * Shell tools whose effects outlive the turn that started them.
+ *
+ * The plan-mode exemption for read-only commands is real — `ls` behind a
+ * keystroke is how an approval prompt becomes something people dismiss without
+ * reading — but it was written as "any shell tool the classifier calls safe",
+ * and `run_background` is a shell tool. So the exemption meant to cover `ls`
+ * also covered `run_background npm run dev`: the command text is safe, and the
+ * process it spawns is still running after the turn, the mode and possibly the
+ * session have ended. The classifier reads the command; it cannot see that.
+ *
+ * The flag says what is different about the tool, so the exemption can ask.
+ */
+export const DETACHED_TOOLS = new Set(
+  TOOL_CATALOG.filter((t) => t.detached).map((t) => t.name),
 );
 
 /**
