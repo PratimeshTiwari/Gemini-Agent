@@ -70,7 +70,16 @@ for step in STEPS:
         # Named keys, so the caller never has to embed a raw escape byte.
         seq = {'up': '\x1b[A', 'down': '\x1b[B', 'esc': '\x1b',
                'enter': '\r', 'tab': '\t'}[step['key']]
-        os.write(fd, seq.encode()); time.sleep(0.6)
+        os.write(fd, seq.encode())
+        # Drain while waiting, never `sleep`.
+        #
+        # A bare sleep leaves the pty's output buffer unread, and macOS gives
+        # it only a few KB. The diff prompt redraws ~1.5KB per keypress, so
+        # two keys in a row filled it, the child blocked inside `write()`
+        # mid-render, and the next key was never handled — one `↓` moved the
+        # cursor and the second did nothing. It reads as the app dropping a
+        # keypress and it is the harness holding the pipe shut.
+        quiet(250, timeout=5)
         label = 'key ' + step['key']
     elif 'send' in step:
         os.write(fd, step['send'].encode())
