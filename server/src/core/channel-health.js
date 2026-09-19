@@ -28,7 +28,7 @@
 import { weightedErrors } from './error-log.js';
 import { readTraces } from './trace-log.js';
 
-/** The four failures that are the text channel's own, and what each one is. */
+/** The failures that are the text channel's own, and what each one is. */
 export const CHANNEL_OPS = [
   {
     op: 'parse_tool_calls',
@@ -49,6 +49,18 @@ export const CHANNEL_OPS = [
     op: 'multiple_drafts',
     label: 'Multiple drafts',
     detail: 'the reply offered alternatives instead of one answer',
+  },
+  /*
+   * Not a channel failure like the four above — the text arrived fine. It is
+   * here because it answers the same *kind* of question and there is no second
+   * place to put a rate: how often does the closing report claim something the
+   * turn has no record of doing? Until this existed, whether the handover list
+   * worked at all was an opinion.
+   */
+  {
+    op: 'handover_unsupported',
+    label: 'Unverified handover claim',
+    detail: 'the closing block reported work the turn has no record of',
   },
 ];
 

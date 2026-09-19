@@ -68,6 +68,7 @@ function oneLineError(result) {
 }
 import * as paths from './paths.js';
 import { threadFromUrl } from './chat-thread.js';
+import { auditHandover, describeFindings, countChecklist } from './handover-audit.js';
 import { resolveEffort, effortFromConfig } from './effort.js';
 import { normalizeQuestionSet } from './question.js';
 import { planModelSwitch } from './model-match.js';
@@ -695,6 +696,10 @@ export class AgentLoop {
     if (toolCalls.length > 0) {
       await this._executeToolCalls(toolCalls);
     } else {
+      // The turn is over, so its handover block can be checked against what it
+      // actually did. Only here: mid-turn there is still work to come, and a
+      // claim made in passing is not the closing report.
+      this._auditHandover(cleanContent);
       // No tool calls — agent is done
       this.isProcessing = false;
       // Restore background callbacks so GitHub tasks still work
@@ -893,6 +898,53 @@ export class AgentLoop {
      * resetting there would send it twice.
      */
     if (previous?.id) this.promptBuilder?.resetPromptState?.();
+  }
+
+  /**
+   * Compare the closing handover block to the turn's own record.
+   *
+   * Reports, never rewrites — the model's text has already reached the user
+   * unchanged, and editing an agent's self-report to make it accurate leaves
+   * nothing on screen that is the agent's own voice.
+   *
+   * One dim row, and an `op: 'handover_unsupported'` record so `/logs rates`
+   * can answer **how often**. That number is the point: whether the review list
+   * works is currently an opinion, and `channel-health.js` already exists to
+   * turn this kind of opinion into a percentage. Read it before writing any
+   * more prompt text.
+   *
+   * Never throws. It runs on the path that has just finished a turn, and a
+   * failure to audit must not be a failure to answer.
+   */
+  _auditHandover(reply) {
+    try {
+      let checklist = null;
+      try {
+        const file = paths.artifactPath(this.workspace, 'task.md');
+        if (fs.existsSync(file)) checklist = countChecklist(fs.readFileSync(file, 'utf-8'));
+      } catch { /* an unreadable artifact proves nothing either way */ }
+
+      const { findings } = auditHandover(reply, { evidence: this._turnEvidence, checklist });
+      if (!findings.length) return;
+
+      logError(this.workspace, {
+        flow: 'agent',
+        op: 'handover_unsupported',
+        message: findings.map((f) => `${f.claim}: ${f.because}`).join('; '),
+        detail: findings.map((f) => `${f.claim}: ${f.said}`).join('\n').slice(0, 500),
+      });
+
+      const row = describeFindings(findings);
+      if (!row) return;
+      const note = { role: 'system', content: row, timestamp: Date.now() };
+      this.conversationHistory.push(note);
+      this.callbacks?.sendToPanel?.({
+        id: randomUUID(),
+        type: 'status',
+        payload: { message: row },
+        timestamp: Date.now(),
+      });
+    } catch { /* never let the audit break the turn it is auditing */ }
   }
 
   _sendTaskList() {
