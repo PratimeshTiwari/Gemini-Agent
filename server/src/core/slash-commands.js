@@ -406,8 +406,20 @@ export async function handleSlashCommand(loop, command, args) {
       const list = EFFORT_LEVELS
         .map((e) => `  ${e.label} \`/effort ${e.id}\`${e.id === now.id ? '  ← current' : ''}\n      ${e.blurb}`)
         .join('\n');
+      /*
+       * A word that is not a rung has to be *rejected*, not ignored.
+       *
+       * Falling through to the status display is what this did, so `/effort
+       * deeep` printed "Effort: Standard" and the ladder — which reads exactly
+       * like a confirmation. The typo is the likeliest way to get here, and the
+       * one case where silence is worst: you believe the setting changed, and
+       * every later turn goes out on the old rung.
+       */
+      const rejected = wanted && !isEffort(wanted)
+        ? `⚠ \`${wanted}\` is not an effort level — nothing changed.\n\n`
+        : '';
       return {
-        message: `${renamed}🎚️ Effort: **${now.label}** · browser tab: **${now.browser}**\n\n${list}`,
+        message: `${renamed}${rejected}🎚️ Effort: **${now.label}** · browser tab: **${now.browser}**\n\n${list}`,
       };
     }
 

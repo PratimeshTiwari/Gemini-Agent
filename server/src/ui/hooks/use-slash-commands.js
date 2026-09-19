@@ -960,7 +960,22 @@ export async function handleSlashCommand(query, {
         }]);
       }
     } else {
-      setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `❌ No such command: \`/${command}\`\nType \`/\` on its own to see what there is.`, isLocal: true }]);
+      /*
+       * A bare `/` is not an unknown command, it is the question.
+       *
+       * It answered `No such command: /` followed by "Type `/` on its own to
+       * see what there is" — advice to do the thing that had just been done.
+       * The input bar opens the menu while you type it, so this is only reached
+       * by submitting it, and then the one reply guaranteed to be useless was
+       * the one it gave.
+       */
+      const unknown = command
+        ? `❌ No such command: \`/${command}\`\n\n`
+        : '';
+      const list = SLASH_COMMANDS
+        .map((c) => `  \`/${c.name}\`${' '.repeat(Math.max(1, 12 - c.name.length))}${c.desc}`)
+        .join('\n');
+      setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `${unknown}${list}`, isLocal: true }]);
     }
     setIsProcessing(false);
     return;

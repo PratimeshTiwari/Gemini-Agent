@@ -1601,6 +1601,31 @@ ago.
   behind explicit dependency lists; the `<Static>` element, `staticEpoch` and the streaming
   path stayed in `App.jsx` deliberately, and adding memoization to the transcript rows is how
   the scroll glitches came back the last two times.
+- **Every slash command is driven once by a test, bare and with arguments.**
+  `use-slash-commands.js` was 967 lines at **8.69% line coverage** — the lowest
+  in the repo, and the surface almost every bug reported from use has come from.
+  `test/ui/slash-command-smoke.test.js` is shallow and total, the same shape as
+  the tool smoke sweep and for the same reason: the failure worth guarding is
+  "this entry point throws", and a command that crashes takes the turn with it.
+  It also asserts no listed command answers *"No such command"* about itself —
+  the `/name` bug, which shipped fully implemented and unreachable because the
+  dispatcher kept its own copy of the list. **55.5% now, and 92.5% overall.**
+
+  **Use the real collaborators, not stubs.** A first pass with hand-written
+  stubs produced three confident false positives, including `getAllMemories is
+  not a function` against a method that exists and has three callers. Real
+  `MemoryManager`, `ContextManager`, `DiffEngine` and `TaskManager` cost nothing
+  in a temp workspace and cannot lie that way.
+
+  Two real faults fell out of the sweep, both the same shape — the interface not
+  saying what happened. **A wrong effort word was ignored rather than
+  rejected**: `/effort deeep` fell through to the status display, which prints
+  the current rung and the ladder and reads exactly like a confirmation, so you
+  believe it changed and every later turn goes out on the old rung. And **a bare
+  `/` answered "No such command: `/`" followed by "Type `/` on its own to see
+  what there is"** — advice to do the thing that had just been done. It lists
+  the commands now, and an unknown command says so *and then* lists them.
+
 - **A local command must not touch a running turn.** `handleSubmit` set
   `isProcessing` and cleared `activeToolCalls` before looking at what was
   submitted, and every slash handler ends with `setIsProcessing(false)` — so
