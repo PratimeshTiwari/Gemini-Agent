@@ -225,6 +225,8 @@ Parameters:
   - command (string, required): Shell command to execute
   - cwd (string, optional): Working directory
   - timeout (number, optional): Timeout in seconds (default: 30)
+For anything that does not finish on its own — a dev server, a watcher, a --watch build — use
+run_background instead. This will time out and tell you nothing.
 
 `,
   },
