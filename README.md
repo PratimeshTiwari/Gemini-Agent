@@ -396,7 +396,9 @@ pushing the transcript off screen, and shows `… N more lines` when it does.
 
 - **Paste** anything. More than four lines is folded to `[Pasted text #1 +42 lines]`
   so it costs one row; the model still gets all of it when you send.
-- **`ctrl+v`** attaches an image from the clipboard.
+- **`ctrl+v`** attaches an image from the clipboard; `/image <path>` attaches a
+  file. While one is attached the status bar says `1 image`, and `/image remove`
+  takes it back off.
 - **"Add to Agent Chat"** in VS Code (`cmd+alt+l`) drops the selection in as
   `@file.js:12-30`.
 - **`ctrl+f`** attaches commands that failed in a VS Code terminal. They are
@@ -595,11 +597,11 @@ Everything the agent writes into a workspace lives in one directory, `.agent/`:
 
 ```
 <your project>/.agent/
-├── config.json        # topology, model roles, command allowlist, agent name
+├── config.json        # model roles, effort, command allowlist, agent name
 ├── memory.md          # what the agent has learned here (/memory)
 ├── skills/            # one .md per skill (/skills)
 ├── artifacts/         # task.md, plan.md, walkthrough.md — written for you to read
-├── state/             # editor.json, github.json, plan-approval.json
+├── state/             # editor.json, diagnostics.json, plan-approval.json
 ├── backups/           # file backups powering /undo
 ├── sessions/          # conversation history, and archive.jsonl — turns a
 │                     #   summary replaced, kept so the agent can look them up
@@ -722,6 +724,68 @@ always right.
   there. It also stops the copy it replaces, rather than leaving its observers
   running.
 
+#### Told the truth, enforced something else (2026-09-19)
+
+Nine of these, all the same shape and all found by *using* the agent rather
+than reading it. The model was given an accurate description and the code did
+something different — which is the worst of the three arrangements, because
+nothing on screen gives you a reason to doubt it.
+
+- **Plan mode exempted every `.md` file, anywhere.** The exemption itself was
+  deliberate and is kept: `task.md` and `plan.md` are files the system prompt
+  *tells* the model to keep current, and it cannot tick a checklist if every
+  tick needs a keystroke. The bug was that the test was the **extension**
+  instead of the **location**, so `README.md`, `CLAUDE.md`, `AGENT.md` — and
+  anything at all outside the workspace, since these tools take absolute paths
+  — were exempt too. It now resolves the path and checks it is inside
+  `.agent/artifacts/`, and fails closed on anything it cannot resolve.
+- **`run_background` reached none of the safety machinery.** Not the risk
+  classifier, not the `critical` block, not the command log, and not plan
+  mode's approval — for the one tool that leaves a process running after the
+  turn ends. Every gate was written as `name === 'run_command'`.
+- **And plan mode still let it through after that was fixed.** The read-only
+  exemption said *any shell tool the classifier calls safe*, and
+  `run_background` is a shell tool — so `run_background npm run dev` was exempt
+  on the strength of a verdict about the **command text**, while the process it
+  spawns outlives the turn. The classifier reads a string; it cannot see that.
+- **`grep_search`'s `includes` matched nothing whenever it named a path**, and
+  its `pattern` rejected the array its own description told the model to send.
+- **Six tool parameters were undocumented**, one of them in neither form — so
+  the model never sent them. The drift check that should have caught it was
+  comparing an empty list to an empty list.
+- **`find_references` answered 0 for every method**, under the message *"It may
+  be dead code."* A method is only ever called as `x.name()`, and member
+  properties were excluded — correctly for a variable, wrongly for a method.
+  Measured on this repo: `buildToolResultBatch` 0 against 17 real call sites.
+  That is a tool arguing for the deletion of code called everywhere.
+- **…and the definition was missing** from the same answer, which promises
+  "list the definition too".
+- **`run_command`'s timeout pointed at an alternative it never named**, and
+  `cwd: "."` was judged outside the workspace, so the agent could not run its
+  own tests.
+
+The cure in each case was the same: stop keeping a list at the call site.
+Approval is decided in `core/tool-policy.js` from the catalog's own
+`mutates` / `shell` / `detached` flags, so a tool that writes is gated by
+saying so once, beside its description.
+
+#### Smaller, from the same pass (2026-09-19)
+- **An attached image can be removed.** `/image remove`, and the status bar
+  says `1 image` while one is armed. Before this, the only ways to be rid of one
+  were to send it or restart — and nothing on screen said it was there.
+- **An instant command stops leaving a frozen `Thinking…` behind.** Every local
+  command raised a spinner and took it down a moment later, around a write to
+  the committed transcript — stranding the row above the command it belonged
+  to, at `0s`, forever. Only `/compact` waits on anything, so only `/compact`
+  raises it now.
+- **The turn's confirming look leaked a timer, once per turn, compounding.** It
+  was scheduled with a `setTimeout` nobody held, so stopping a turn did not stop
+  it — and the next turn re-armed the same orphan into a second polling chain at
+  the old cadence, with no handle anywhere to stop it.
+- **A rejected edit stops looking like an applied one.** The model was told the
+  truth and the transcript drew `✓ edit_file` in green on a change never
+  written.
+
 #### The engine
 - **Prompt economics.** The full system prompt goes out on turn 0 and every Nth
   turn, never every turn — resending a large payload each time trips Gemini's
@@ -748,7 +812,9 @@ always right.
 #### Search and context
 - **`find_symbol` / `find_references`** — exact and structural. They return the
   definition rather than the forty call sites, and never the name in a comment
-  or a string.
+  or a string. For a **method**, `x.name()` uses are included and marked, because
+  that is the only way a method is ever called — without that, "who calls this?"
+  answered *nothing* for every method in a codebase.
 - **`grep_search` takes several patterns at once**, because when you do not know
   what a codebase calls something, guessing one term at a time costs a round
   trip per guess.

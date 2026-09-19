@@ -47,7 +47,7 @@ Chrome runs the bundle, not the sources.
 ## Layout
 
 ```
-manifest.json              MV3, side panel, three content scripts
+manifest.json              MV3, side panel, one content script
 service-worker.js          committed build artifact — do not edit by hand
 src/background/            the sources it is built from
   main.js                  message router: panel ⇄ worker ⇄ server
@@ -57,12 +57,19 @@ src/background/            the sources it is built from
   state.js  policy.js
 content-scripts/
   gemini-bridge.js         type into Gemini, scrape the reply
-  github-bridge.js         PR comments
 side-panel/                panel.html / panel.js / panel.css
 test/                      jsdom tests, run by `npm test` from the repo root
 ```
 
-**There is one bridge.** This used to say the two were deliberately not merged
+**There is one content script, and one bridge.** `github-bridge.js` read PR
+comment bodies off github.com and went with the GitHub agent on 2026-09-19;
+`chatgpt-bridge.js` went the same day. Both are gone from `manifest.json` too —
+and that matters more than it sounds, because emptying an entry's `matches`
+rather than deleting the entry makes Chrome refuse **the whole extension**,
+which is how a one-line edit took out the bridge, the side panel and the worker
+at once. `test/manifest.test.js` exists for that.
+
+This used to say the two bridges were deliberately not merged
 — ~600 duplicated lines kept apart because the jsdom tests ran against *both*
 files, so a scraping divergence failed the build. `chatgpt-bridge.js` was
 deleted on 2026-09-19 and took that argument with it. The tests still run,
