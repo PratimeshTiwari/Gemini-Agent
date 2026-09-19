@@ -69,6 +69,8 @@ function oneLineError(result) {
 import * as paths from './paths.js';
 import { threadFromUrl } from './chat-thread.js';
 import { auditHandover, describeFindings, countChecklist } from './handover-audit.js';
+import { compactHistory } from './compaction.js';
+import { runSubAgentSession } from './subagent-session.js';
 import { MUTATING_TOOLS, SHELL_TOOLS } from './tool-catalog.js';
 import { resolveEffort, effortFromConfig } from './effort.js';
 import { normalizeQuestionSet } from './question.js';
@@ -2223,124 +2225,11 @@ export class AgentLoop {
     });
   }
 
+  /** @see core/subagent-session.js — one subagent turn, in its own tab. */
   async _runSubAgentSession(role, prompt, targetModel) {
-    const wrapper = this.promptBuilder.buildSubagentWrapper(role);
-    const baseSystem = `${wrapper}\nYou also have access to read-only tools to explore the codebase if needed.
-Workspace root path: ${this.workspace}
-
-## TOOLS AVAILABLE:
-- grep_search({ "pattern": "string", "isRegex": false, "includes": ["*.js"] })
-- read_file({ "path": "path/to/file", "startLine": 1, "endLine": 50 })
-- list_directory({ "path": "." })
-- search_files({ "query": "filename" })
-- return_result({ "result": "your final markdown output" })
-
-## TOOL CALL FORMAT (exact format required):
-\`\`\`json
-{"name": "tool_name", "args": {"key": "value"}}
-\`\`\`
-RULES: Make up to 5 tool calls before calling return_result with your final answer.`;
-
-    const localHistory = [
-      { role: 'system', content: baseSystem },
-      { role: 'user', content: prompt }
-    ];
-
-    let lastCleanContent = '';
-
-    for (let turn = 0; turn < 6; turn++) {
-      const serializedPrompt = localHistory.map(t => {
-        if (t.role === 'system') return `[System Context/Tool Results]\n${t.content}`;
-        if (t.role === 'user') return `[User Task]\n${t.content}`;
-        if (t.role === 'agent') return `[Your Previous Output]\n${t.content}`;
-        return t.content;
-      }).join('\n\n');
-      const response = await this._executeSubagent(targetModel, serializedPrompt);
-      if (!response.success) return { success: false, error: response.error };
-
-      if (response.url) {
-        this.callbacks.sendToPanel({
-          id: randomUUID(),
-          type: 'status',
-          payload: { message: `🔗 [${role}] Subagent background tab: ${response.url}` },
-          timestamp: Date.now(),
-        });
-      }
-
-      const content = response.result || response.content;
-      localHistory.push({ role: 'agent', content });
-
-      let toolCalls = [];
-      let cleanContent = content;
-      try {
-        const extracted = this._extractToolCalls(content);
-        toolCalls = extracted.toolCalls;
-        cleanContent = extracted.cleanContent;
-      } catch (err) {
-        localHistory.push({ role: 'system', content: `JSON Parse Error: ${err.message}` });
-        continue;
-      }
-
-      if (cleanContent.trim()) lastCleanContent = cleanContent.trim();
-
-      // No tool call means the subagent stopped talking. Either it called
-      // `return_result` below on an earlier pass, or it answered in prose —
-      // which is what the fall-through after this loop is for.
-      if (toolCalls.length === 0) break;
-
-      const toolResults = [];
-      let returned = false;
-      for (const call of toolCalls) {
-        if (call.name === 'return_result') {
-          return { success: true, result: call.args.result };
-        }
-        
-        let result;
-        if (!['grep_search', 'read_file', 'list_directory', 'search_files'].includes(call.name)) {
-          result = { success: false, error: `Tool ${call.name} not permitted for subagents.` };
-        } else {
-          result = await this.mcpServer.executeTool(call.name, call.args, {
-            editor: this.editor, taskManager: this.taskManager,
-          });
-        }
-        toolResults.push({ name: call.name, result: result.result || result.error });
-      }
-      localHistory.push({ role: 'system', content: `Tool Results:\n${JSON.stringify(toolResults, null, 2)}` });
-    }
-    
-    /**
-     * A missing `return_result` is not a missing answer.
-     *
-     * Observed on `deep` + `duo`: `ask_reviewer` produced a full, well-formed
-     * adversarial review, ended it in prose rather than a tool call, and the
-     * turn reported `✗ ask_reviewer · Subagent failed to use the return_result
-     * tool` — discarding the review on a protocol technicality with the answer
-     * sitting in the payload. That is the one step whose whole purpose is
-     * catching what the author's own assumptions hide, and a long adversarial
-     * review is exactly the shape that drifts out of format.
-     *
-     * So: fail open, the same trade as `looksLikeCapabilityDenial`. Losing the
-     * answer is the expensive failure; using it unstructured is the cheap one.
-     * `unstructured` rides on the result so the caller can say so and
-     * `/logs agent` can answer how often the format is being missed — a silent
-     * fallback would just move the invisibility somewhere else.
-     *
-     * Only a genuinely empty run still fails. There is nothing to fall back to
-     * there, and calling it a success would hand the caller an empty review to
-     * reason from.
-     */
-    if (lastCleanContent) {
-      logError(this.workspace, {
-        flow: 'agent',
-        op: 'subagent_unstructured',
-        message: `${role} answered in prose instead of calling return_result`,
-        detail: lastCleanContent.slice(0, 500),
-      });
-      return { success: true, result: lastCleanContent, unstructured: true };
-    }
-
-    return { success: false, error: `The ${role} subagent returned no output at all.` };
+    return runSubAgentSession(this, role, prompt, targetModel);
   }
+
 
   /**
    * Run a batch task to completion, with no session and nobody waiting.
@@ -2528,141 +2417,9 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
     });
   }
 
+  /** @see core/compaction.js — summarise the older turns and hand the thread over. */
   async _compactHistory(focus) {
-    if (this.conversationHistory.length <= 5) {
-      return { message: 'Conversation is too short to compact.' };
-    }
-
-    this.isCompacting = true;
-
-    try {
-      // Keep the last 5 turns exactly as they are
-      const toCompact = this.conversationHistory.slice(0, -5);
-      const toKeep = this.conversationHistory.slice(-5);
-
-      // Deterministic lightweight truncation (fallback)
-      let compactedSummary = toCompact.map(turn => {
-        if (turn.role === 'system' && turn.content) {
-          if (turn.content.includes('**Command Output:**')) return '[System: Command executed. Output truncated for context compaction.]';
-          if (turn.content.includes('**File Contents:**') || turn.content.includes('**Search Results:**')) return '[System: File/Search data truncated for context compaction.]';
-          if (turn.content.length > 500) return `[System: Output truncated. Original length: ${turn.content.length}]`;
-        }
-        return `[${turn.role.toUpperCase()}]: ${turn.content}`;
-      }).join('\n\n');
-
-      this._notify('🧠 Summarising the older turns in a browser tab…');
-
-      const summaryPrompt = `You are a context compactor for an AI coding agent.
-Your job is to read the following conversation history and summarize it into a tight, dense block of text.
-CRITICAL RULES:
-1. Preserve ALL file paths that were explored.
-2. Preserve ALL technical conclusions, bugs found, or decisions made.
-3. Preserve the exact current state of the user's task.
-4. Do NOT output markdown formatting like \`\`\`json, just pure dense text.
-
-HISTORY TO SUMMARIZE:
-${compactedSummary}`;
-
-      const llmResponse = await this._executeSubagent('gemini', summaryPrompt);
-      let finalSummaryText = compactedSummary;
-      
-      if (llmResponse.success && llmResponse.result) {
-        finalSummaryText = llmResponse.result;
-      } else if (llmResponse.success && llmResponse.content) {
-        finalSummaryText = llmResponse.content;
-      }
-
-      const compactedTurn = {
-        role: 'system',
-        type: 'compaction_summary',
-        content: `[Context Summary of older turns]\n${finalSummaryText}`,
-        timestamp: Date.now(),
-      };
-
-      // Mutate the history safely
-      // Archive before the rewrite, not after: `saveHistory` overwrites both
-      // copies of history.jsonl, so without this the turns being summarised are
-      // gone from disk and not merely from the thread. `recall` searches what
-      // lands here, which is the whole reason it can answer anything.
-      archiveTurns(this.workspace, toCompact);
-
-      this.conversationHistory = [compactedTurn, ...toKeep];
-      this.sessionStore.saveHistory(this.conversationHistory);
-      this.promptBuilder.resetPromptState();
-
-      /**
-       * Compaction is a **handover**, and it used not to hand anything over.
-       *
-       * It rewrote `conversationHistory`, reset the prompt state and reset the
-       * counter — and sent nothing to the browser. The tab stayed on the thread
-       * that still held every turn just summarised, so:
-       *
-       * - the model's memory was unchanged; it still had all of it;
-       * - `resetPromptState` then sent a full turn-0 payload **plus** a summary
-       *   of those turns *into the thread that contains them* — the largest
-       *   prompt in the system, at the moment a large repeated payload is most
-       *   likely to trip Gemini's repetition filter;
-       * - and `contextChars`, documented as "everything ever typed into the
-       *   browser tab", was reset to the summary's length while the tab kept
-       *   the lot. It feeds the auto-compaction threshold, the status bar and
-       *   `/context`, so after one compaction the agent believed it had room it
-       *   did not have, in all three at once.
-       *
-       * `_resetContextCount`'s own comment already said compaction "throws that
-       * thread away and starts a new one from the summary". That was the
-       * intent; nothing implemented it. It does now, and the count is only
-       * reset **if the new chat actually happened** — a counter reset against a
-       * thread that never changed is the bug above, written deliberately.
-       */
-      const handedOver = await this.startNewChat();
-      if (handedOver) {
-        this._resetContextCount(
-          this.conversationHistory.reduce((n, t) => n + (t.content?.length || 0), 0),
-        );
-      }
-
-      // Say what actually happened. "✅ History compacted." told the user
-      // nothing — not how much went, not whether the model summarised it or the
-      // deterministic fallback did, and not where the summary went.
-      const approxTokens = (turns) => Math.round(
-        turns.reduce((sum, t) => sum + ((t.content?.length || 0) / 4), 0),
-      );
-      const before = approxTokens([...toCompact, ...toKeep]);
-      const after = this.contextTokens;
-      const how = llmResponse.success
-        ? 'summarised by the model'
-        : 'condensed locally (the model did not answer, so the deterministic fallback ran)';
-
-      // Say which half happened. The old message claimed the tab was "scratch
-      // space; nothing is left there" — true of the *summariser's* tab, which
-      // is a subagent's own, and read by everyone as the one they are looking
-      // at. When the handover fails, the honest thing is to say the old thread
-      // is still in front of them, because it is.
-      /*
-       * Do not send them to `/new`. It clears `conversationHistory`, which is
-       * where the summary that was just made now lives — so the one command
-       * that looks like the fix is the one that destroys the work. Ask for the
-       * thing only they can do: start a chat in the tab itself.
-       */
-      const where = handedOver
-        ? 'The tab has been handed over to a fresh conversation, and the summary goes into it '
-          + 'with your next message.'
-        : '⚠️ **The browser did not start a new conversation**, so the tab is still on the old '
-          + 'one — which already remembers every turn just summarised.\n\n'
-          + '**Please open a new chat in the Gemini tab yourself** (the ✚ / *New chat* button). '
-          + 'The next message will pick it up automatically.\n\n'
-          + '_Not `/new` — that clears the conversation here, and this summary with it._';
-
-      return {
-        message: `✓ Compacted ${toCompact.length} turn${toCompact.length === 1 ? '' : 's'} into one summary, `
-          + `${how}.\n\n`
-          + `Kept the last ${toKeep.length} turns as they were. `
-          + `Context is roughly ${before.toLocaleString()} → ${after.toLocaleString()} tokens.\n\n`
-          + 'The summary is now the first turn of this conversation — it is in the transcript above '
-          + `and saved to \`.agent/sessions/history.jsonl\`. ${where}`,
-      };
-    } finally {
-      this.isCompacting = false;
-    }
+    return compactHistory(this, focus);
   }
+
 }

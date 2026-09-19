@@ -266,8 +266,6 @@ export const errorLogPath = (workspace) => path.join(logsDir(workspace), 'errors
 
 // ── Workspace-relative (for configs and prompts that need a relative name) ──
 
-export const REL_PLANS_DIR = `${AGENT_DIR}/github-reviews`;
-export const REL_GITHUB_STATE = `${AGENT_DIR}/state/github.json`;
 
 // ── Home-scoped ──────────────────────────────────────────────────────
 
