@@ -697,7 +697,21 @@ identity fixed that, and the guard outlived its reason.
 
 `context/` — `code-minifier`, `context-manager`, `memory-manager`, `symbol-index`. `CodeMinifier.minifyJson` is on the hot
 path: `PromptBuilder.buildToolResultBatch` embeds every tool result in the next prompt, and
-serialising them compact rather than pretty-printed is ~40% fewer characters there.
+serialising them compact rather than pretty-printed is ~40% fewer characters there — measured
+on a 30-entry `list_directory` shape: 2,456 pretty against 1,424 compact, **42%**.
+
+**Nothing had ever called it from a test, and two things were wrong behind that.** Every
+fixture in the suite passed a *string* result, so the branch that serialises an object was
+never taken — while real tool results are mostly objects. `undefined` came back as `undefined`
+rather than a string, under a `@returns {string}` annotation, and the caller reads `.length`
+off it, so the whole prompt build throws and every other result in the batch dies with it.
+Worse, **a cycle or a BigInt threw, was caught, and returned `''`** — the model handed a tool
+that ran and produced nothing, which is a confident wrong answer where the other is merely a
+dead turn. A replacer keeps what can be serialised and marks what cannot.
+
+Neither was reachable from a path traced today — every `ask_question` resolver passes a
+`result` — so this is a contract made true rather than a reported bug. The doc already promised
+a caller could "pass it anything a tool handler might have produced".
 
 There is no `ast-chunker` and no `skills/` registry any more. Both were written, never wired to
 anything, and removed on 2026-09-10: the chunker resolved 24% of this repo's top-level symbols
