@@ -29,7 +29,11 @@
  * `prompt-builder.js` byte-for-byte; `tool-catalog.test.js` pins that.
  */
 
-/** @typedef {{name: string, dispatch: 'mcp'|'loop', when?: 'duo', lead?: string, flash: string|Function, pro: string|Function}} ToolDoc */
+/**
+ * @typedef {{name: string, dispatch: 'mcp'|'loop', when?: 'subagents', mutates?: boolean,
+ *   shell?: boolean, detached?: boolean, lead?: string, flash: string|Function,
+ *   pro: string|Function}} ToolDoc
+ */
 
 /** In prompt order, which is the order the model sees. */
 export const TOOL_CATALOG = [
@@ -78,7 +82,7 @@ Example:
   {
     name: 'search_files',
     dispatch: 'mcp',
-    flash: ` — Find files by name. Args: query (string)
+    flash: ` — Find files by name. Args: query (string), maxResults? (number)
 `,
     pro: `
 Search for files by name or path pattern using fuzzy matching.
@@ -91,7 +95,7 @@ Parameters:
   {
     name: 'grep_search',
     dispatch: 'mcp',
-    flash: ` — Search text across files, grouped by file. Args: pattern (string or string[] — pass several terms when unsure of the wording), isRegex? (bool), includes? (string[]), contextLines? (number)
+    flash: ` — Search text across files, grouped by file. Args: pattern (string or string[] — pass several terms when unsure of the wording), isRegex? (bool), includes? (string[]), contextLines? (number), maxResults? (number)
 `,
     pro: `
 Search file contents across the codebase, like ripgrep. Results come back grouped by file,
@@ -169,6 +173,7 @@ Parameters:
   {
     name: 'edit_file',
     dispatch: 'mcp',
+    mutates: true,
     flash: ` — Edit a file. Args: path (string), edits ([{oldText, newText}])
 `,
     pro: `
@@ -183,6 +188,7 @@ Parameters:
   {
     name: 'create_file',
     dispatch: 'mcp',
+    mutates: true,
     flash: ` — Create a file. Args: path (string), content (string)
 `,
     pro: `
@@ -196,7 +202,7 @@ Parameters:
   {
     name: 'list_directory',
     dispatch: 'mcp',
-    flash: ` — List dir contents. Args: path? (string), recursive? (bool)
+    flash: ` — List dir contents. Args: path? (string), recursive? (bool), maxDepth? (number)
 `,
     pro: `
 List directory contents.
@@ -210,7 +216,9 @@ Parameters:
   {
     name: 'run_command',
     dispatch: 'mcp',
-    flash: ` — Run shell command (needs approval). Args: command (string), cwd? (string)
+    mutates: true,
+    shell: true,
+    flash: ` — Run shell command (needs approval). Args: command (string), cwd? (string), timeout? (number, ms)
 `,
     pro: `
 Execute a shell command. Always requires user approval.
@@ -218,6 +226,8 @@ Parameters:
   - command (string, required): Shell command to execute
   - cwd (string, optional): Working directory
   - timeout (number, optional): Timeout in seconds (default: 30)
+For anything that does not finish on its own — a dev server, a watcher, a --watch build — use
+run_background instead. This will time out and tell you nothing.
 
 `,
   },
@@ -260,6 +270,9 @@ Parameters:
   {
     name: 'run_background',
     dispatch: 'mcp',
+    mutates: true,
+    shell: true,
+    detached: true,
     flash: ` — Spawn background process. Args: command (string), cwd? (string)
 `,
     pro: `
@@ -274,7 +287,7 @@ Parameters:
   {
     name: 'manage_task',
     dispatch: 'mcp',
-    flash: ` — Manage background tasks. Args: action ("status"|"read_logs"|"send_input"|"kill"|"list"), taskId? (string)
+    flash: ` — Manage background tasks. Args: action ("status"|"read_logs"|"send_input"|"kill"|"list"|"watch"|"unwatch"), taskId? (string), lines? (number), pattern? (string, for watch)
 `,
     pro: `
 Interact with background tasks spawned by run_background.
@@ -283,6 +296,8 @@ Parameters:
   - taskId (string, optional): Task ID (required for all actions except list)
   - lines (number, optional): Number of log lines to read (default: 50, for read_logs)
   - input (string, optional): Text to send to stdin (required for send_input)
+  - pattern (string, optional): for watch — a regex to look for in the output. Omit to use the
+    built-in failure patterns (error, failed, exception, traceback, EADDRINUSE, Cannot find module).
 
 `,
   },
@@ -331,61 +346,146 @@ Parameters:
   {
     name: 'ask_subagent',
     dispatch: 'loop',
-    flash: ` — Delegate to Gemini subagent. Args: prompt (string)
+    when: 'subagents',
+    /*
+     * A description is a **routing rule**, not a capability list.
+     *
+     * There used to be three tools here — `ask_subagent`, `ask_researcher` and
+     * `ask_reviewer` — and they were the same tool three times:
+     * `buildSubagentWrapper(role)` took the role and ignored it, so all three
+     * got one generic "you are a helper subagent" wrapper. The names were the
+     * only thing implying otherwise.
+     *
+     * Of the three descriptions only `ask_researcher`'s said *when* to use it
+     * ("instead of a long serial chain of your own read_file calls"), which is
+     * the half that makes delegation fire at all. `ask_subagent`'s said
+     * "Delegate a task to a generic parallel Gemini subagent" — a capability
+     * with no trigger, which is the documented reason auto-delegation never
+     * happens. Every role below leads with its trigger.
+     */
+    flash: ` — Delegate to a parallel tab. Args: role ("review"|"research"|"task"), prompt (string)
 `,
     pro: `
-Delegate a task to a generic parallel Gemini subagent. It will run in the background and return the result.
+Hand work to a subagent — a second tab of this model with its **own empty context**. It has not
+seen this conversation and cannot see your files, so it knows only what you put in \`prompt\`.
+It has read-only tools and returns one answer. Several run at once.
+
+Reach for it when:
+  - **role "research"** — you are about to make a long serial chain of read_file calls to answer
+    one question ("where is X implemented", "what depends on Y"). Say what to find and where you
+    have already looked.
+  - **role "review"** — you have finished a non-trivial change and want it read by someone who
+    does not share your assumptions. Send the diff, the file paths, and what the change is meant
+    to do. Its value is that it has no memory of why you chose any of it, so paste the code —
+    a reference to "the fix above" means nothing to it.
+  - **role "task"** — a self-contained side errand whose result you need but whose working you
+    do not.
+
+Do NOT use it for anything that writes: it cannot edit files or run commands, and the approval
+path for those is yours.
 Parameters:
-  - prompt (string, required): The task for the subagent.
+  - role (string, required): "review", "research" or "task"
+  - prompt (string, required): everything it needs — it has no other context.
 
 `,
-  },
-  {
-    name: 'ask_researcher',
-    dispatch: 'loop',
-    flash: ` — Delegate read-only codebase exploration. Args: prompt (string)
-`,
-    pro: `
-Delegate codebase exploration to a read-only researcher subagent — tracing a dependency, finding where
-something is implemented, gathering context across many files. Runs in parallel and returns findings with
-file paths and line numbers. Use it instead of a long serial chain of your own read_file calls.
-Parameters:
-  - prompt (string, required): What to find, and where you have already looked.
-`,
-  },
-  {
-    name: 'ask_reviewer',
-    dispatch: 'loop',
-    when: 'duo',
-    lead: '\n',
-    flash: (modelConfig) => `\nDelegate a code review or verification task to the Reviewer Subagent (${modelConfig.reviewer || 'chatgpt'}).\nParameters:\n  - prompt (string, required): The task, context, and specific questions for the reviewer.\n\n`,
   },
 ];
 
-/** The tools offered for this topology, in prompt order. */
-export function toolsFor(topology) {
-  return TOOL_CATALOG.filter((t) => !t.when || t.when === topology);
+/**
+ * Tools that change the machine, and therefore need approval in plan mode.
+ *
+ * A named set rather than a literal list at the call site, because the literal
+ * list drifted. Plan mode gated `edit_file`, `create_file` and `run_command`
+ * and **not** `run_background`, which spawns a shell process that outlives the
+ * turn: `needsApproval` starts false, nothing in the plan branch set it, so
+ * plan mode ran it immediately — while auto mode, through the classifier's
+ * "Unknown tool" default, asked. The careful mode was the permissive one, for
+ * the tool whose effects last longest.
+ *
+ * Declared on the catalog entry, so adding a tool that writes means saying so
+ * once beside its description rather than remembering a list in another file.
+ */
+export const MUTATING_TOOLS = new Set(
+  TOOL_CATALOG.filter((t) => t.mutates).map((t) => t.name),
+);
+
+/**
+ * Tools that hand a string to a shell.
+ *
+ * Separate from `MUTATING_TOOLS` because they need more than an approval
+ * prompt: risk classification of the command text, the `critical` block, and a
+ * line in the command log. All three were gated on `call.name === 'run_command'`
+ * literally, so `run_background` reached none of them — it was never risk
+ * classified, never blocked however destructive the command, and never audited,
+ * for a process that outlives the turn.
+ */
+export const SHELL_TOOLS = new Set(
+  TOOL_CATALOG.filter((t) => t.shell).map((t) => t.name),
+);
+
+/**
+ * Shell tools whose effects outlive the turn that started them.
+ *
+ * The plan-mode exemption for read-only commands is real — `ls` behind a
+ * keystroke is how an approval prompt becomes something people dismiss without
+ * reading — but it was written as "any shell tool the classifier calls safe",
+ * and `run_background` is a shell tool. So the exemption meant to cover `ls`
+ * also covered `run_background npm run dev`: the command text is safe, and the
+ * process it spawns is still running after the turn, the mode and possibly the
+ * session have ended. The classifier reads the command; it cannot see that.
+ *
+ * The flag says what is different about the tool, so the exemption can ask.
+ */
+export const DETACHED_TOOLS = new Set(
+  TOOL_CATALOG.filter((t) => t.detached).map((t) => t.name),
+);
+
+/**
+ * The tools offered, in prompt order.
+ *
+ * `when` used to name a topology (`'duo'`), which meant the catalog knew about
+ * a two-model world. There is one model and one gate now: are subagents on.
+ *
+ * Accepts a boolean or `{subagents}` so the many call sites that pass one
+ * value do not each need an object literal.
+ *
+ * @param {boolean|{subagents?: boolean}} [ctx]
+ */
+export function toolsFor(ctx) {
+  const subagents = typeof ctx === 'object' && ctx !== null ? Boolean(ctx.subagents) : Boolean(ctx);
+  return TOOL_CATALOG.filter((t) => !t.when || (t.when === 'subagents' && subagents));
 }
 
 /** Just the names — what the anchor and the reminder index need. */
-export function toolNames(topology) {
-  return toolsFor(topology).map((t) => t.name);
+export function toolNames(ctx) {
+  return toolsFor(ctx).map((t) => t.name);
 }
 
 /**
  * The `<available_tools>` block for a tier.
  *
- * Two oddities are preserved rather than tidied, because this file's job was to
- * stop the lists drifting and not to change what the model reads on the way
- * past. `ask_reviewer` carries no `pro` text because it never had any — the duo
- * block was appended outside the tier branch, so both tiers got the same
- * paragraph — and it carries a `lead` newline, which is the blank line that
- * separated that appended block from the list above it.
+ * `ask_reviewer` used to be an oddity here — no `pro` text, a `lead` newline —
+ * both artefacts of the duo block having been appended outside the tier branch.
+ * It is gone: one `ask_subagent` with a role covers what three names pretended
+ * to.
  */
-export function renderToolDefinitions(tier, topology, modelConfig = {}) {
-  const isFlash = tier === 'flash';
+export function renderToolDefinitions(tier, ctx, modelConfig = {}) {
+  /*
+   * Both cheap tiers get the terse list, not just the one called `flash`.
+   *
+   * This read `tier === 'flash'`, which is false for `flash-thinking` — so the
+   * rung whose own description says "still a short prompt" was handed the full
+   * 9,786-character block instead of the 2,048 one. Measured: 22,538 characters
+   * against the 14,800 it should be, with 7,738 of the difference being a tool
+   * list it was never meant to carry, on the rung written for a model that
+   * follows short prompts and ignores long ones.
+   *
+   * A typo of intent rather than of syntax: "flash" meant the cheap tiers, and
+   * there turned out to be two of them.
+   */
+  const isFlash = tier === 'flash' || tier === 'flash-thinking';
   let out = '<available_tools>\n';
-  for (const tool of toolsFor(topology)) {
+  for (const tool of toolsFor(ctx)) {
     const text = (isFlash ? tool.flash : (tool.pro ?? tool.flash));
     out += `${tool.lead || ''}## ${tool.name}${typeof text === 'function' ? text(modelConfig) : text}`;
   }
@@ -418,13 +518,39 @@ export function toolCatalogDrift(registry, loopDispatched) {
   for (const name of described) {
     if (!runnable.has(name)) problems.push(`${name} is described but nothing dispatches it`);
   }
+  /**
+   * Every declared parameter, in **each** form separately.
+   *
+   * This used to join `flash` and `pro` and look for the name in the pair — so
+   * a parameter documented in one and missing from the other passed. Five did:
+   * `maxResults` on `search_files` and `grep_search`, `maxDepth` on
+   * `list_directory`, `timeout` on `run_command`, `lines` on `manage_task`.
+   * All five were invisible to the two flash rungs, which could not use a
+   * feature the tool had.
+   *
+   * It also only checked `required`, and `manage_task`'s `pattern` — a real,
+   * implemented option on `watch` — was in neither form. A working feature the
+   * model was never told about at any rung. Optional is not the same as
+   * unnecessary: a parameter nobody is told about cannot be used.
+   *
+   * Function-form descriptions are called rather than skipped. They used to be
+   * filtered out as "not a string", which silently exempted every tool whose
+   * text is computed.
+   */
+  const render = (v) => {
+    if (typeof v === 'function') { try { return v({}) ?? ''; } catch { return ''; } }
+    return typeof v === 'string' ? v : '';
+  };
+
   for (const tool of registry) {
     const doc = TOOL_CATALOG.find((t) => t.name === tool.name);
     if (!doc) continue;
-    const text = [doc.flash, doc.pro].filter((v) => typeof v === 'string').join('\n');
-    for (const [param, spec] of Object.entries(tool.parameters || {})) {
-      if (spec?.required && !text.includes(param)) {
-        problems.push(`${tool.name}: required parameter "${param}" is in no description`);
+    const forms = { flash: render(doc.flash), pro: render(doc.pro ?? doc.flash) };
+    for (const param of Object.keys(tool.parameters || {})) {
+      for (const [which, text] of Object.entries(forms)) {
+        if (!text.includes(param)) {
+          problems.push(`${tool.name}: parameter "${param}" is missing from the ${which} description`);
+        }
       }
     }
   }

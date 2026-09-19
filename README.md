@@ -2,16 +2,18 @@
 
 A local, Claude Code-style coding agent with **no LLM API client**. Inference happens by
 driving a real browser tab: the agent sends your prompt over a WebSocket to a Chrome
-extension, which types it into gemini.google.com or chatgpt.com and streams the reply back.
+extension, which types it into gemini.google.com and streams the reply back.
 It reads and edits files in your workspace and runs commands, using your own logged-in chat
 session. No API key, no hosted backend, no telemetry.
 
 ## ✨ What it does
 
-- **Two topologies.** *Solo* — one agent plans, implements and reviews. *Duo* — a primary
-  agent implements and a reviewer subagent on the **other** model audits it. Same-model
-  review is not offered on purpose: two tabs of one model buy far less than one tab of a
-  second, and cross-model disagreement is the signal worth paying for.
+- **Two topologies.** *Solo* — one tab plans, implements and reviews. *Duo* — a reviewer
+  subagent audits the work from **a second Gemini tab that has never seen the
+  conversation**. What it contributes is not different weights, it is missing context: it
+  has nothing to check against but the code it is sent, so it reads the file instead of
+  reasoning from a citation. Each subagent turn gets its own tab and its own lane, so it
+  genuinely runs alongside your turn rather than queueing behind it.
 - **Every write is a diff you approve.** Per-hunk accept/reject, backups, atomic writes, and
   `/undo`. Commands are risk-classified before they run, and `/allowlist` remembers the
   answers you have already given.
@@ -29,8 +31,6 @@ session. No API key, no hosted backend, no telemetry.
   (3-phase) to `🏃 brief` / `🪜 standard` / `🔭 deep` on Pro, which add a checklist, then
   approach enumeration and an adversarial self-review. Each rung names the browser tab its
   prompt is written for — that pairing is the whole point, so there is one setting, not two.
-- **GitHub PR agent.** Polls your open PRs, classifies review comments, reads CI logs, and
-  writes a plan per comment. `ctrl+o` opens the dashboard.
 - **A terminal UI that behaves like one.** Real streaming, no mouse tracking, so scroll,
   drag-select and copy stay your terminal's. Settled turns are committed to scrollback and
   only the in-flight turn repaints.
@@ -95,7 +95,7 @@ and the same result:
 
 ```bash
 git clone https://github.com/PratimeshTiwari/Gemini-Agent.git
-cd Gemini-Agent && ./setup.sh
+cd Gemini-Agent && ./setup.sh   # asks where to install; enter for ~/Gemini-Agent
 ```
 
 #### Manual
@@ -106,7 +106,6 @@ cd Gemini-Agent
 
 npm install                          # both workspaces
 npm run build --workspace=extension  # Chrome loads the bundle, not the sources
-npm link --workspace=server          # puts `agent` and `agent-cli` on your PATH
 npm test                             # optional, and a good smoke check
 ```
 
@@ -114,21 +113,27 @@ The build step is not optional on a fresh clone. `extension/service-worker.js` i
 committed artifact and Chrome loads *that*, not the sources under
 `extension/src/background/` — skip it and you ship whatever was committed last.
 
-If `npm link` fails, see the locked-down note below; it is a normal outcome on a work
-machine, not a broken install.
+That leaves `agent` off your `PATH`. `npm start` from the checkout always works; for the
+command, `./setup.sh` installs a shim, or write one yourself — see below.
 
 <details>
-<summary>On a locked-down machine — no <code>npm link</code>, no <code>sudo</code></summary>
+<summary>Why there is no <code>npm link</code> step</summary>
 
-This is handled, and it needs neither. `npm link` writes into npm's **global prefix**, which
-on a managed machine is usually somewhere you cannot write — and `sudo npm link` is the wrong
-answer to that anyway, because it leaves root-owned files in a tree npm will later try to
-modify as you.
+Because it is the worse answer on every machine, and the *failing* answer on a managed one.
+`npm link` writes into npm's **global prefix**, which on a work laptop is usually somewhere
+you cannot write — and `sudo npm link` is the wrong fix, because it leaves root-owned files
+in a tree npm will later try to modify as you.
 
-When the link fails, `setup.sh` writes a two-line shim to `~/.local/bin` (or `~/bin`) instead
-— a directory you already own — that calls the checkout by absolute path. If that directory
-is not on your `PATH`, it offers to add the line to your shell rc file. Nothing is written to
-your rc file without asking.
+`setup.sh` writes a two-line shim to `~/.local/bin` (or `~/bin`) instead — a directory you
+already own — that calls the checkout by absolute path:
+
+```sh
+#!/bin/sh
+exec node /path/to/Gemini-Agent/server/src/index.js "$@"
+```
+
+If that directory is not on your `PATH`, setup offers to add the line to your shell rc file.
+Nothing is written to your rc file without asking.
 
 The shim has a second advantage over a link: it survives switching Node versions with `nvm`.
 A link points into the bin directory of whichever Node created it, so changing version
@@ -166,13 +171,12 @@ agent-cli --help
 <summary>If the command isn't found</summary>
 
 - Your shell may be caching an old lookup. Run `hash -r` (zsh/bash) or open a new terminal.
-- `npm link` installs into your **current Node version's** bin directory. If you switch Node
-  versions with `nvm`, re-run `npm link --workspace=server` on the new version.
-- **`npm link` refused, on a managed or work machine?** It writes into npm's *global* prefix,
-  which you often cannot write to there. `sudo npm link` is the wrong answer — it leaves
-  root-owned files in a tree npm later tries to modify as you. `./setup.sh` detects this and
-  installs a two-line shim into `~/.local/bin` instead, which needs no privileges and, unlike a
-  link, keeps working when you switch Node versions. If that directory is not on your `PATH` it
+- **There is no `npm link` step, deliberately.** It writes into npm's *global* prefix, which
+  on a managed or work machine you often cannot write to — and `sudo npm link` is the wrong
+  answer, because it leaves root-owned files in a tree npm later tries to modify as you.
+  `./setup.sh` installs a two-line shim into `~/.local/bin` instead, which needs no
+  privileges and, unlike a link, keeps working when you switch Node versions with `nvm`. If
+  that directory is not on your `PATH` it
   prints the one line to add. To do it by hand:
 
   ```bash
@@ -255,7 +259,7 @@ Type a request and press Enter. In **plan mode** (the default) every file edit i
 as a diff you approve; `shift+tab` switches to **auto mode**, which applies safe edits
 on its own.
 
-Handy keys: `ctrl+e` expand/collapse all steps · `ctrl+t` shell · `ctrl+o` GitHub tab ·
+Handy keys: `ctrl+e` expand/collapse all steps · `ctrl+t` shell · `ctrl+b` Gemini tab ·
 `esc` stop the run · `/help` for everything else.
 
 ## 📄 Project instructions
@@ -392,7 +396,9 @@ pushing the transcript off screen, and shows `… N more lines` when it does.
 
 - **Paste** anything. More than four lines is folded to `[Pasted text #1 +42 lines]`
   so it costs one row; the model still gets all of it when you send.
-- **`ctrl+v`** attaches an image from the clipboard.
+- **`ctrl+v`** attaches an image from the clipboard; `/image <path>` attaches a
+  file. While one is attached the status bar says `1 image`, and `/image remove`
+  takes it back off.
 - **"Add to Agent Chat"** in VS Code (`cmd+alt+l`) drops the selection in as
   `@file.js:12-30`.
 - **`ctrl+f`** attaches commands that failed in a VS Code terminal. They are
@@ -418,7 +424,7 @@ pushing the transcript off screen, and shows `… N more lines` when it does.
 ### When it asks before acting
 
 Commands that destroy more than they name stop and ask first, showing what is at
-stake — `/clear`, `/new`, `/allowlist clear`, `/github clear-state`. Cancel is
+stake — `/clear`, `/new`, `/allowlist clear`. Cancel is
 always the default, so a reflex `enter` changes nothing. Commands that name their
 target (`/memory forget 3`, `/allowlist remove <cmd>`) just do it.
 
@@ -456,7 +462,7 @@ model. The list says which is which.
 
 Once the agent is running, you can use built-in slash commands to manage your session:
 - Type `/help` in the CLI to see all available commands.
-- Type `/config` to choose which web model (Gemini, ChatGPT) implements and which one reviews it. Setting a reviewer on the *other* model is what Duo means, and it is the only kind of review worth a second tab — there is no separate `/mode` screen any more, though the name still answers.
+- Type `/config` to turn the reviewer on or off. With one on, a second Gemini tab audits the work without having seen the conversation that produced it — which is the point of it, and why the tab is worth opening. There is no separate `/mode` screen any more, though the name still answers.
 - Type `/effort` to pick how hard the agent works — one ladder from `flash` to `deep`. It sets
   the prompt profile **and switches the browser's mode picker to match**, so a prompt written
   for Pro is not typed into a Flash tab. It tells you which model it chose. Nothing is
@@ -591,13 +597,12 @@ Everything the agent writes into a workspace lives in one directory, `.agent/`:
 
 ```
 <your project>/.agent/
-├── config.json        # topology, model roles, command allowlist, agent name
+├── config.json        # model roles, effort, command allowlist, agent name
 ├── memory.md          # what the agent has learned here (/memory)
 ├── skills/            # one .md per skill (/skills)
 ├── artifacts/         # task.md, plan.md, walkthrough.md — written for you to read
-├── state/             # editor.json, github.json, plan-approval.json
+├── state/             # editor.json, diagnostics.json, plan-approval.json
 ├── backups/           # file backups powering /undo
-├── github-reviews/    # what the PR agent worked out about a comment
 ├── sessions/          # conversation history, and archive.jsonl — turns a
 │                     #   summary replaced, kept so the agent can look them up
 └── logs/
@@ -677,6 +682,110 @@ about a day, during which it was wrong roughly forty times — a count in prose
 is stale the moment the next commit lands, and the command is both shorter and
 always right.
 
+#### The GitHub PR agent is gone (2026-09-19)
+- **Removed**, and documented in `CLAUDE.md` in enough detail to rebuild from:
+  what each of the nine files did, the interface decisions worth keeping, and
+  the two things that were still broken. 2,009 lines plus a tab, two hooks, a
+  content script and eight test files.
+- *Why:* every `flow: 'github'` entry in the error log was `poll: fetch failed`,
+  three review directories were ever written, and the tab left comments reading
+  `⚠ not analysed` after being sent for analysis. It was a second product inside
+  the first, and the first still had bugs that stopped it doing its job.
+- The migrations stay: an older `.agent/github-pr-plans/` is still renamed on
+  startup, and the `github` flow label in the error log still exists so old logs
+  stay readable.
+
+#### One model, and five things that were silently wrong (2026-09-19)
+- **ChatGPT removed.** One bridge, one model. *Duo* now means a second Gemini
+  tab that has not seen your conversation — which is the half of a reviewer
+  that was ever doing the work. A config naming ChatGPT is folded to Gemini on
+  read, because config saving preserves keys it does not own and a stored
+  `main: 'chatgpt'` would otherwise point the agent at a site with no bridge.
+- **A review that ends in prose is kept.** `ask_reviewer` produced a complete
+  adversarial review, failed to wrap it in `return_result`, and the whole thing
+  was discarded as a failure with the answer sitting in the payload.
+- **`/compact` actually hands the conversation over.** It summarised, reset the
+  prompt state and reset the context counter — and never told the browser, so
+  the tab stayed on the thread that still held every turn it had just
+  summarised. The counter then described a conversation that did not exist, in
+  the status bar, in `/context` and in the auto-compaction threshold at once.
+  The new chat is acknowledged now, and the counter only resets if it happened.
+- **`/clear` stops zeroing the context counter.** It clears the CLI's record and
+  deliberately leaves the tab alone, so the model still remembers — and the bar
+  should say so.
+- **The tool-call repair loop is capped at two.** Every other retry here was
+  capped; a model stuck on a formatting habit could re-ask forever, a full
+  browser turn each round. When it stops it hands you the raw reply, which
+  usually contains the answer in prose.
+- **The bridge can be injected twice.** Its constants were declared at the top
+  level of a world that outlives the script, so re-injecting threw
+  `Identifier … has already been declared` on line one. That silently disabled
+  the repair rung written for exactly the case that guarantees a copy is already
+  there. It also stops the copy it replaces, rather than leaving its observers
+  running.
+
+#### Told the truth, enforced something else (2026-09-19)
+
+Nine of these, all the same shape and all found by *using* the agent rather
+than reading it. The model was given an accurate description and the code did
+something different — which is the worst of the three arrangements, because
+nothing on screen gives you a reason to doubt it.
+
+- **Plan mode exempted every `.md` file, anywhere.** The exemption itself was
+  deliberate and is kept: `task.md` and `plan.md` are files the system prompt
+  *tells* the model to keep current, and it cannot tick a checklist if every
+  tick needs a keystroke. The bug was that the test was the **extension**
+  instead of the **location**, so `README.md`, `CLAUDE.md`, `AGENT.md` — and
+  anything at all outside the workspace, since these tools take absolute paths
+  — were exempt too. It now resolves the path and checks it is inside
+  `.agent/artifacts/`, and fails closed on anything it cannot resolve.
+- **`run_background` reached none of the safety machinery.** Not the risk
+  classifier, not the `critical` block, not the command log, and not plan
+  mode's approval — for the one tool that leaves a process running after the
+  turn ends. Every gate was written as `name === 'run_command'`.
+- **And plan mode still let it through after that was fixed.** The read-only
+  exemption said *any shell tool the classifier calls safe*, and
+  `run_background` is a shell tool — so `run_background npm run dev` was exempt
+  on the strength of a verdict about the **command text**, while the process it
+  spawns outlives the turn. The classifier reads a string; it cannot see that.
+- **`grep_search`'s `includes` matched nothing whenever it named a path**, and
+  its `pattern` rejected the array its own description told the model to send.
+- **Six tool parameters were undocumented**, one of them in neither form — so
+  the model never sent them. The drift check that should have caught it was
+  comparing an empty list to an empty list.
+- **`find_references` answered 0 for every method**, under the message *"It may
+  be dead code."* A method is only ever called as `x.name()`, and member
+  properties were excluded — correctly for a variable, wrongly for a method.
+  Measured on this repo: `buildToolResultBatch` 0 against 17 real call sites.
+  That is a tool arguing for the deletion of code called everywhere.
+- **…and the definition was missing** from the same answer, which promises
+  "list the definition too".
+- **`run_command`'s timeout pointed at an alternative it never named**, and
+  `cwd: "."` was judged outside the workspace, so the agent could not run its
+  own tests.
+
+The cure in each case was the same: stop keeping a list at the call site.
+Approval is decided in `core/tool-policy.js` from the catalog's own
+`mutates` / `shell` / `detached` flags, so a tool that writes is gated by
+saying so once, beside its description.
+
+#### Smaller, from the same pass (2026-09-19)
+- **An attached image can be removed.** `/image remove`, and the status bar
+  says `1 image` while one is armed. Before this, the only ways to be rid of one
+  were to send it or restart — and nothing on screen said it was there.
+- **An instant command stops leaving a frozen `Thinking…` behind.** Every local
+  command raised a spinner and took it down a moment later, around a write to
+  the committed transcript — stranding the row above the command it belonged
+  to, at `0s`, forever. Only `/compact` waits on anything, so only `/compact`
+  raises it now.
+- **The turn's confirming look leaked a timer, once per turn, compounding.** It
+  was scheduled with a `setTimeout` nobody held, so stopping a turn did not stop
+  it — and the next turn re-armed the same orphan into a second polling chain at
+  the old cadence, with no handle anywhere to stop it.
+- **A rejected edit stops looking like an applied one.** The model was told the
+  truth and the transcript drew `✓ edit_file` in green on a change never
+  written.
+
 #### The engine
 - **Prompt economics.** The full system prompt goes out on turn 0 and every Nth
   turn, never every turn — resending a large payload each time trips Gemini's
@@ -687,7 +796,7 @@ always right.
   which tools exist and nothing checked any pair, which is how `recall_history`
   and `get_diagnostics` shipped registered, implemented and **unreachable**.
 - **One lane per tab** — `main:<model>` and `sub:<requestId>` — so a background
-  GitHub turn and your own prompt genuinely overlap instead of queueing.
+  background turn and your own prompt genuinely overlap instead of queueing.
 - **The extension addresses tabs by identity.** It used to take whatever tab was
   last, so your prompt could land in the middle of a subagent's conversation.
 - **Removed: `semantic_search` and the whole retrieval subsystem** (~290 lines,
@@ -703,7 +812,9 @@ always right.
 #### Search and context
 - **`find_symbol` / `find_references`** — exact and structural. They return the
   definition rather than the forty call sites, and never the name in a comment
-  or a string.
+  or a string. For a **method**, `x.name()` uses are included and marked, because
+  that is the only way a method is ever called — without that, "who calls this?"
+  answered *nothing* for every method in a codebase.
 - **`grep_search` takes several patterns at once**, because when you do not know
   what a codebase calls something, guessing one term at a time costs a round
   trip per guess.
@@ -821,10 +932,12 @@ always right.
   which is how a markdown file opened in RStudio.
 
 #### Not done, on purpose
-- **The two bridges were not collapsed** (~600 duplicated lines). The cost it
-  removes is "fix it twice", and fixing the scrape twice took one commit — the
-  jsdom tests now run against both files, so a divergence fails the build. Most
-  of the value, none of the risk of breaking both bridges at once.
+- **The two bridges were not collapsed** — and then one of them was deleted,
+  on 2026-09-19, which settled the argument by removing its subject. Keeping
+  ~600 duplicated lines was defensible while both shipped: the cost it removed
+  was "fix it twice", and fixing the scrape twice took one commit. The jsdom
+  tests still run, against the one bridge, and say in a comment not to restore
+  a second target just to make the comparison mean something again.
 - **An optional API backend** stays a fork rather than a plan. It would remove
   the ceiling — structured tool calls, real parallelism, caching — and it
   contradicts the standing "no API keys" decision that is the identity of the

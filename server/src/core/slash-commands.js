@@ -47,8 +47,29 @@ import { planModelSwitch } from './model-match.js';
 export const AGENT_COMMANDS = new Set([
   'plan', 'auto', 'memory', 'mode', 'config', 'name', 'clear', 'context', 'new',
   'compact', 'undo', 'agent-dir', 'model', 'reasoning', 'effort', 'allowlist',
-  'github', 'workspace',
+  'workspace',
 ]);
+
+/**
+ * The local commands that are worth a spinner.
+ *
+ * Every local command used to get one. `handleSubmit` set `isProcessing(true)`
+ * and `'Thinking...'` for anything starting with `/`, and each handler ends by
+ * setting it false — so an instant command drew a `Thinking…` row and erased it
+ * milliseconds later, having in between committed its own output to `<Static>`.
+ * The live row is stranded above the static write and becomes permanent
+ * scrollback: reported from use as a `Thinking… (0s · ↑ 29.4k tokens · esc to
+ * stop)` sitting above `❯ /image` forever, one per command, frozen at 0s.
+ * Above, because it was drawn before the rows it now sits on top of.
+ *
+ * `/compact` is the only one that genuinely waits — it asks the model for a
+ * summary. `/new` fires `startNewChat` without awaiting it, and the rest are
+ * arithmetic on state already in memory.
+ *
+ * A set beside the commands rather than a literal at the call site, for the
+ * same reason `MUTATING_TOOLS` is: the literal is what drifts.
+ */
+export const SLOW_COMMANDS = new Set(['compact']);
 
 export async function handleSlashCommand(loop, command, args) {
   switch (command) {
@@ -101,51 +122,68 @@ export async function handleSlashCommand(loop, command, args) {
       };
     }
 
-    // Topology is derived from whether a reviewer is set, so there is one
-    // place to change it and no way for the two to disagree.
+    /**
+     * Topology is derived from whether a reviewer is set, so there is one
+     * place to change it and no way for the two to disagree.
+     *
+     * There is one model now. `main` survives as a concept because everything
+     * downstream reads `mainModel`, but it has nothing to switch to, so the
+     * command is really an on/off for the reviewer. `reviewer gemini` used to
+     * be refused outright — a same-model review was both pointless and unsafe,
+     * because the extension raced two requests for one tab. Tab identity fixed
+     * the second, and the first was always narrower than it sounded: the
+     * reviewer's value is that it has not seen the conversation, not that it
+     * has different weights.
+     */
+    /**
+     * One toggle. There is one model, so "who reviews" stopped being a
+     * question — what is left is whether this session can fan work out to
+     * parallel tabs of itself at all.
+     *
+     * `reviewer <model>` and the single/duo topology it stood for are gone;
+     * `_loadConfig` folds an old config into this.
+     */
     case 'mode':
     case 'config': {
-      const role = args?.[0]?.toLowerCase();
-      const model = args?.[1]?.toLowerCase();
-      const MODELS = ['gemini', 'chatgpt'];
+      const word = String(args?.[0] || '').toLowerCase();
+      const value = String(args?.[1] ?? '').toLowerCase();
+      const OFF = ['off', 'none', 'no', 'false', 'solo'];
+      const ON = ['on', 'yes', 'true', 'gemini', 'duo'];
 
-      if (role === 'reviewer' && (model === 'none' || model === 'off')) {
-        loop.modelConfig.reviewer = null;
-        loop._saveConfig();
-        loop.promptBuilder.resetPromptState();
-        return { message: '👤 Solo — one model plans, implements and reviews its own work.' };
-      }
+      // `/config off` as well as `/config subagents off`: the noun is the only
+      // thing this command has, so requiring it is ceremony.
+      const asked = ['subagents', 'subagent', 'reviewer'].includes(word) ? value : word;
 
-      if (['main', 'reviewer'].includes(role) && MODELS.includes(model)) {
-        if (role === 'reviewer' && model === loop.mainModel) {
-          // The point of a reviewer is different blind spots. Same model,
-          // same blind spots, and the extension would race the two requests
-          // for one tab besides.
-          return {
-            message: `❌ The reviewer has to be a *different* model from the main agent `
-              + `(currently **${loop.mainModel}**). Try \`/config reviewer `
-              + `${MODELS.find((m) => m !== loop.mainModel)}\`, or \`/config reviewer none\`.`,
-          };
-        }
-        loop.modelConfig[role] = model;
-        if (role === 'main' && loop.modelConfig.reviewer === model) loop.modelConfig.reviewer = null;
+      if (OFF.includes(asked)) {
+        loop.modelConfig.subagents = false;
         loop._saveConfig();
         loop.promptBuilder.resetPromptState();
         return {
-          message: `✔ ${role} → **${model}**\n\nNow running **${loop.topology}**`
-            + `${loop.topology === 'duo' ? ` — ${loop.mainModel} implements, ${loop.modelConfig.reviewer} reviews.` : ' — one model, start to finish.'}`,
+          message: '👤 Subagents off — one tab, start to finish. Research, review and '
+            + 'implementation are all this conversation.',
+        };
+      }
+
+      if (ON.includes(asked)) {
+        loop.modelConfig.subagents = true;
+        loop._saveConfig();
+        loop.promptBuilder.resetPromptState();
+        return {
+          message: '🔭 Subagents on — `ask_subagent` can fan work out to parallel tabs.\n\n'
+            + 'Each one starts with an empty context: it has not seen this conversation, which '
+            + 'is the point of the `review` role and the cost of the others.',
         };
       }
 
       const renamed = command === 'mode'
-        ? '_(`/mode` is now `/config` — the topology follows from who reviews.)_\n\n'
+        ? '_(`/mode` is now `/config` — there is one model, so the only question left is '
+          + 'whether it can delegate.)_\n\n'
         : '';
       return {
-        message: `${renamed}### 🌐 ${loop.topology === 'duo' ? 'Duo' : 'Solo'}\n\n`
-          + `  Main:     **${loop.mainModel}**\n`
-          + `  Reviewer: **${loop.modelConfig.reviewer || 'none'}**\n\n`
-          + '_`/config main <gemini|chatgpt>` · `/config reviewer <gemini|chatgpt|none>`_\n'
-          + '_A reviewer on the other model is the point — the same model reviewing itself has the same blind spots._',
+        message: `${renamed}### 🌐 Subagents: ${loop.subagentsEnabled ? '**on**' : '**off**'}\n\n`
+          + '  `ask_subagent` opens a second tab of this model with an empty context.\n'
+          + '  Roles: `research` (explore), `review` (read a change cold), `task` (an errand).\n\n'
+          + '_`/config subagents on` · `/config subagents off`_',
       };
     }
 
@@ -207,9 +245,10 @@ export async function handleSlashCommand(loop, command, args) {
       loop.conversationHistory = [];
       loop.promptBuilder.resetPromptState();
       loop.contextChars = 0;
-      loop.chatThread = null;
       // A fresh browser thread too, or the model keeps the old conversation's
-      // memory while everything else has moved on.
+      // memory while everything else has moved on. `startNewChat` clears
+      // `chatThread` itself and keeps the outgoing id as `previousThread` —
+      // clearing it here first threw that away before it could be recorded.
       loop.startNewChat?.();
       // Name it. "The previous one is kept" is only useful if you can say
       // which one, and the id is the thing `--resume` takes.
@@ -221,14 +260,38 @@ export async function handleSlashCommand(loop, command, args) {
       };
     }
 
+    /**
+     * `/clear` clears the CLI's record. `/new` starts a fresh conversation.
+     * Different commands, different jobs, and this one deliberately leaves the
+     * browser tab alone — the model still remembers.
+     *
+     * Which is why it must not zero `contextChars`. That counter is
+     * "everything ever typed into the browser tab" (`AgentLoop.contextTokens`),
+     * and the tab still holds it, so zeroing it made the status bar, `/context`
+     * and the auto-compaction threshold all describe a thread that does not
+     * exist. The bar reading 40% straight after a clear is not a glitch: it is
+     * the useful half of what just happened.
+     */
     case 'clear':
       loop.conversationHistory = [];
       loop.sessionStore.clear();
       loop.promptBuilder.resetPromptState();
-      loop.contextChars = 0;
       // `reset` so every front-end drops the transcript it is showing. Without
       // it the panel kept displaying a conversation the agent had forgotten.
-      return { message: '🧹 Conversation history cleared.', reset: true };
+      /*
+       * Say which half went.
+       *
+       * "Conversation history cleared" reads as *all of it*, and it is not:
+       * the browser tab still holds every turn, so the model remembers a
+       * conversation the CLI has forgotten. Reported as confusing, and it is
+       * also the only thing that explains why the context bar does not drop to
+       * zero here — which is correct, and looks like a bug without this line.
+       */
+      return {
+        message: '🧹 Window cleared. The agent has forgotten this conversation; '
+          + 'the Gemini tab has not — `/new` starts a fresh one there.',
+        reset: true,
+      };
 
     // `/context` reports what is in the window. Registering folders of .md
     // files here was a second way to give the model standing instructions;
@@ -309,22 +372,29 @@ export async function handleSlashCommand(loop, command, args) {
          * The picker is the only place that is visible.
          */
         const plan = planModelSwitch(chosen.id, loop.modelOptions || []);
-        const confirm = (name) =>
-          `\n\n_Check the Gemini tab's model picker now reads **${name}** before you send `
-          + 'anything — the switch is a request to the page, and the picker is the only '
-          + 'proof it landed._';
+        /*
+         * This used to end with "check the Gemini tab's picker before you send
+         * anything — the picker is the only proof it landed". It was not: the
+         * extension re-reads the picker after the click and now reports what it
+         * actually says, so a line follows on its own confirming or
+         * contradicting. Asking someone to go and look was asking them to do a
+         * job the system had the answer to — and finding that tab is the whole
+         * friction being complained about.
+         */
+        const confirm = () => '\n\n_The picker is read back after the switch; '
+          + 'a line follows saying what it reads._';
 
         let browserLine;
         if (plan.action === 'switch') {
           loop.switchModelTo(plan.model.label);
-          browserLine = `🔀 Switching the browser to **${plan.model.label}**.${confirm(plan.model.label)}`;
+          browserLine = `· Switching the browser to **${plan.model.label}**.${confirm()}`;
         } else if (plan.action === 'none') {
           // Nothing was asked for, so there is nothing to confirm.
           browserLine = `✓ The browser is already on **${plan.model.label}**.`;
         } else {
           loop._pendingEffortSwitch = chosen.id;
           loop.requestModelOptions?.();
-          browserLine = `🔀 Asking the browser to switch to **${chosen.browser}**.${confirm(chosen.browser)}`;
+          browserLine = `· Asking the browser to switch to **${chosen.browser}**.${confirm()}`;
         }
 
         return {
@@ -393,110 +463,6 @@ export async function handleSlashCommand(loop, command, args) {
           + `${rules.allow.length} allowed · ${rules.block.length} blocked\n\n`
           + '_`/allowlist` on its own opens the picker — view, add, or remove there._',
       };
-    }
-
-    case 'github': {
-      const subCommand = args?.[0]?.toLowerCase();
-
-      if (subCommand === 'remove-token') {
-        delete process.env.GITHUB_TOKEN;
-        loop.modelConfig.githubToken = '';
-        loop._saveConfig();
-        if (loop.githubHandler) {
-          loop.githubHandler.stop();
-          loop.githubHandler = null;
-        }
-        return { message: '🗑️ GitHub token removed. Set GITHUB_TOKEN and restart to reconnect.' };
-      }
-
-      if (!loop.githubHandler) {
-        return { message: '⚠️ GitHub Agent not initialized. Set GITHUB_TOKEN env var and restart.' };
-      }
-
-      switch (subCommand) {
-        // `reviews`, because `/plans` already meant something else. These are
-        // what the agent worked out about somebody's comment; `/plans` reads
-        // `.agent/artifacts/plans/`, a different format written by a different
-        // path. `plans` still answers, because someone who learned the old word
-        // should get their list rather than "unknown subcommand".
-        case 'reviews':
-        case 'plans': {
-          const reviews = loop.githubHandler.listPlans();
-          if (reviews.length === 0) {
-            return { message: '📋 No reviews written yet. Waiting for PR comments...' };
-          }
-          const list = reviews.map(p =>
-            `  📄 ${p.fileName} (modified: ${p.lastModified.toLocaleString()})`
-          ).join('\n');
-          return { message: `📋 PR reviews (${reviews.length}) — \`.agent/github-reviews/\`:\n${list}` };
-        }
-
-        case 'refresh': {
-          loop.githubHandler.refresh().catch(err => {
-            logError(loop.workspace, {
-              flow: 'github', op: 'refresh',
-              message: `Refresh error: ${err.message}`, detail: err.stack,
-            });
-          });
-          // `⟳`, not 🔄. The GitHub tab draws in monochrome text and the
-          // one emoji on the screen reads as a different product's output.
-          return { message: '⟳ Polling GitHub now…' };
-        }
-
-        case 'ci-watch': {
-          const toggle = args?.[1]?.toLowerCase();
-          if (toggle === 'on') {
-            loop.githubHandler.setCIWatch(true);
-            return { message: '✔ CI failure watching enabled.' };
-          } else if (toggle === 'off') {
-            loop.githubHandler.setCIWatch(false);
-            return { message: '⛔ CI failure watching disabled. Only comments will be tracked.' };
-          }
-          const ciStatus = loop.githubHandler.config.enableCIWatch;
-          return { message: `🔧 CI Watch is currently: **${ciStatus ? 'ON' : 'OFF'}**\nUsage: \`/github ci-watch <on|off>\`` };
-        }
-
-        case 'clear-state': {
-          const stateFile = paths.githubStatePath(loop.workspace);
-          if (fs.existsSync(stateFile)) {
-            fs.unlinkSync(stateFile);
-          }
-          if (loop.githubHandler && loop.githubHandler.poller) {
-             loop.githubHandler.poller.state = { commentWatermarks: {}, seenCIRuns: {} };
-             loop.githubHandler.refresh();
-          }
-          return { message: '🗑️ GitHub Poller state cleared! Rescanning...' };
-        }
-
-        case 'stats': {
-          if (!loop.githubHandler) {
-            return { message: 'GitHub integration is currently disabled. Please setup your token first.' };
-          }
-          // Show status
-          const status = loop.githubHandler.getStatus();
-          const statusLines = [
-            `📊 GitHub Agent Status:`,
-            `  PRs Watched: ${status.prsWatched}`,
-            `  Total Polls: ${status.totalPolls}`,
-            `  Comments Processed: ${status.totalCommentsProcessed}`,
-            `  CI Failures Processed: ${status.totalCIFailuresProcessed}`,
-            `  Plans Generated: ${status.totalPlansGenerated}`,
-            `  CI Watch: ${status.ciWatchEnabled ? '✔ ON' : '⛔ OFF'}`,
-            `  Poll Interval: ${status.pollInterval}`,
-            `  Last Poll: ${status.lastPollTime || 'Never'}`,
-            `  Plan Directory: ${status.planDir}`,
-            ``,
-            `  Commands: /github reviews | /github refresh | /github ci-watch <on|off> | /github clear-state | /github remove-token | /github stats`,
-          ];
-          return { message: statusLines.join('\n') };
-        }
-        default: {
-          if (!subCommand) {
-            return { message: 'Usage: /github <plans|refresh|ci-watch|clear-state|remove-token|stats>' };
-          }
-          return { message: `❌ Unknown github command: '${subCommand}'\nUsage: /github <plans|refresh|ci-watch|clear-state|remove-token|stats>` };
-        }
-      }
     }
 
     default:

@@ -10,7 +10,7 @@
  *
  * `marked` stands in for the site's renderer. It is not the same renderer —
  * that is what `extract-text-content.test.js` is for, with fixtures of the DOM
- * Gemini and ChatGPT actually emit. The split is deliberate: those fixtures
+ * Gemini actually emits. The split is deliberate: those fixtures
  * pin the shapes we have seen, and this pins the general property, which is
  * the half that catches a construct nobody thought to write a fixture for.
  *
@@ -26,9 +26,22 @@ import { dirname, resolve } from 'path';
 import { loadFunction } from '../load-content-script.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
+/*
+ * One bridge, and the loop stays.
+ *
+ * These cases used to run against `gemini-bridge.js` and `chatgpt-bridge.js`
+ * both, so a divergence between two near-identical scrapes failed the build —
+ * which was the whole argument for keeping ~600 duplicated lines rather than
+ * collapsing them. ChatGPT was removed on 2026-09-19 and that argument went
+ * with it. The cases still earn their place: they pin the scrape itself, which
+ * is the thing that breaks when the site changes its DOM.
+ *
+ * **Do not restore a second bridge to make this loop mean something again.**
+ * The comparison was a side-effect of having two targets, never the reason to
+ * have them.
+ */
 const BRIDGES = {
   gemini: resolve(here, '../../content-scripts/gemini-bridge.js'),
-  chatgpt: resolve(here, '../../content-scripts/chatgpt-bridge.js'),
 };
 
 function scrape(file, html) {

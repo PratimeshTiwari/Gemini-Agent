@@ -139,30 +139,30 @@ describe('PromptBuilder — instructions the model can actually act on', () => {
 describe('PromptBuilder — the advertised tool set matches the dispatchable one', () => {
   const names = (text) => [...text.matchAll(/^## ([a-z_]+)/gm)].map((m) => m[1]);
 
-  test('ask_researcher is advertised in every tier', () => {
+  test('ask_subagent is advertised in every tier when subagents are on', () => {
     for (const effort of ['flash', 'flash-thinking', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
-      const defs = pb._buildToolDefinitions('single', { effort });
-      assert.ok(names(defs).includes('ask_researcher'),
-        `${effort} omits ask_researcher, which agent-loop dispatches`);
+      const defs = pb._buildToolDefinitions(true, { effort });
+      assert.ok(names(defs).includes('ask_subagent'),
+        `${effort} omits ask_subagent, which agent-loop dispatches`);
     }
   });
 
   test('the reminder index cannot drift from the definitions', () => {
-    for (const topology of ['single', 'duo']) {
+    for (const subagents of [true, false]) {
       const pb = new PromptBuilder(ws, ws);
-      const defs = names(pb._buildToolDefinitions(topology, {}));
-      const index = pb._buildToolIndex(topology, {});
+      const defs = names(pb._buildToolDefinitions(subagents, {}));
+      const index = pb._buildToolIndex(subagents, {});
       for (const n of defs) {
-        assert.ok(index.includes(n), `${topology}: ${n} missing from the reminder index`);
+        assert.ok(index.includes(n), `subagents=${subagents}: ${n} missing from the index`);
       }
     }
   });
 
-  test('subagent tools appear only where that topology can route them', () => {
+  test('ask_subagent appears only when it can actually be routed', () => {
     const pb = new PromptBuilder(ws, ws);
-    assert.ok(!names(pb._buildToolDefinitions('single', {})).includes('ask_reviewer'));
-    assert.ok(names(pb._buildToolDefinitions('duo', {})).includes('ask_reviewer'));
+    assert.ok(!names(pb._buildToolDefinitions(false, {})).includes('ask_subagent'));
+    assert.ok(names(pb._buildToolDefinitions(true, {})).includes('ask_subagent'));
   });
 
   test('ask_reasoner is gone, in every topology', () => {
@@ -220,10 +220,15 @@ describe('PromptBuilder — pro reasoning levels', () => {
     assert.match(proPrompt('deep'), /RESTATE AND DECOMPOSE/);
   });
 
+  /*
+   * `Adversarial self-review` is now the *fallback*: with subagents on, deep
+   * sends the diff to one instead. `proPrompt` builds with them on, so the
+   * self-review line only appears where there is nobody to send it to.
+   */
   test('deep adds approach enumeration and an adversarial pass', () => {
     assert.match(proPrompt('deep'), /Approach enumeration/);
-    assert.match(proPrompt('deep'), /Adversarial self-review/);
-    assert.doesNotMatch(proPrompt('standard'), /Adversarial self-review/);
+    assert.match(proPrompt('deep'), /Send the diff to `ask_subagent`/);
+    assert.doesNotMatch(proPrompt('standard'), /Send the diff to `ask_subagent`/);
   });
 
   test('the levels are ordered by how much prompt they spend', () => {
@@ -265,15 +270,25 @@ describe('PromptBuilder — pro reasoning levels', () => {
   });
 });
 
-describe('PromptBuilder — the solo topology tells the truth about delegation', () => {
-  test('single no longer claims there is nothing to delegate to while listing subagent tools', () => {
+describe('PromptBuilder — the prompt tells the truth about delegation', () => {
+  test('with subagents on it says they exist and what they are for', () => {
     const pb = new PromptBuilder(ws, ws);
-    const p = build(pb, { topology: 'single' });
+    const p = build(pb, { subagents: true });
     assert.doesNotMatch(p, /There are no other models to delegate to/);
-    // Both of these dispatch fine in single topology (agent-loop.js), so the
-    // prompt has to admit they exist.
-    assert.match(p, /ask_researcher/);
     assert.match(p, /ask_subagent/);
+    assert.match(p, /role: "research"/);
+  });
+
+  /*
+   * The half that used to be wrong in the other direction: a prompt that lists
+   * subagent tools while telling the model it has nobody to delegate to. With
+   * the toggle off it must do neither — no tool, and no claim that one exists.
+   */
+  test('with subagents off it says so, and names no subagent tool', () => {
+    const pb = new PromptBuilder(ws, ws);
+    const p = build(pb, { subagents: false });
+    assert.match(p, /no subagents available in this session/);
+    assert.doesNotMatch(p, /ask_subagent/);
   });
 });
 
@@ -539,7 +554,24 @@ describe('PromptBuilder — a dispatchable tool the prompt never mentions is unr
 
 describe('every rung asks for a list, checks it, and reviews before finishing', () => {
   const pro = (effort) => build(new PromptBuilder(ws, ws), { modelConfig: { effort } });
+  const pb = () => new PromptBuilder(ws, ws);
   const LADDER = ['flash', 'flash-thinking', 'brief', 'standard', 'deep'];
+
+  /*
+   * Where the handover lives depends on the rung now.
+   *
+   * The two flash rungs carry a few lines inside their own reasoning prompt —
+   * small enough that moving them would cost more machinery than it saves. The
+   * pro rungs get the full block on the **tool-result round that first changes
+   * something**, because it is an instruction for the end of a turn and was
+   * being delivered before the turn had done anything.
+   *
+   * So "every rung is asked" is still the property; it is just answered from
+   * two places, and this checks both rather than only the one it used to.
+   */
+  // `pb()` is a fresh builder each call, deliberately: the block is full once
+  // per chat and a pointer after.
+  const handoverFor = (effort) => pro(effort) + pb().buildHandoverBlock(effort);
 
   // The point of scaling rather than excluding: Flash is the *weakest* model on
   // the ladder, so it is the most likely to report a thing as done without
@@ -547,13 +579,13 @@ describe('every rung asks for a list, checks it, and reviews before finishing', 
   // needs it most.
   test('no rung is left without a handover check', () => {
     for (const effort of LADDER) {
-      assert.match(pro(effort), /BEFORE YOU FINISH|THE HANDOVER REVIEW/, effort);
+      assert.match(handoverFor(effort), /BEFORE YOU FINISH|THE HANDOVER REVIEW/, effort);
     }
   });
 
   test('every rung is told to keep a checklist, and to check it at the end', () => {
     for (const effort of LADDER) {
-      const p = pro(effort);
+      const p = handoverFor(effort);
       assert.match(p, /proactively create/, `${effort}: never asked for a list`);
       assert.match(p, /Checklist:|<task_checklist>/, `${effort}: never checks it`);
     }
@@ -563,23 +595,46 @@ describe('every rung asks for a list, checks it, and reviews before finishing', 
     // Silence here reads as "all of it is finished", which is how a partial job
     // gets handed over as a complete one.
     for (const effort of LADDER) {
-      assert.match(pro(effort), /Not done|not \*done\*|did \*not\* do/i, effort);
+      assert.match(handoverFor(effort), /Not done|not \*done\*|did \*not\* do/i, effort);
+    }
+  });
+
+  /*
+   * And the pro rungs must NOT carry it up front any more — that is the change,
+   * and without this the move could silently revert to "in both places", which
+   * costs the characters twice and looks like it works.
+   */
+  test('the pro rungs no longer carry it in the opening prompt', () => {
+    for (const effort of ['brief', 'standard', 'deep']) {
+      assert.doesNotMatch(pro(effort), /THE HANDOVER REVIEW|Read back:/, effort);
+    }
+  });
+
+  test('and the flash rungs still do, because theirs is small', () => {
+    for (const effort of ['flash', 'flash-thinking']) {
+      assert.match(pro(effort), /BEFORE YOU FINISH/, effort);
+      assert.equal(pb().buildHandoverBlock(effort), '', `${effort} should not get a second one`);
     }
   });
 
   // Three sizes, because one size is either ceremony on a one-line fix or too
   // thin for work where being wrong is expensive.
   test('the depth scales with the rung', () => {
+    // A fresh builder each time: the block is full once per chat and a pointer
+    // after, so reusing one here would ask the same chat for it repeatedly and
+    // assert against the reminder.
+    const blockFresh = (effort) => new PromptBuilder(ws, ws).buildHandoverBlock(effort);
+
     assert.match(pro('flash'), /BEFORE YOU FINISH/);
     assert.doesNotMatch(pro('flash'), /THE HANDOVER REVIEW/, 'the full review on a 5.6k prompt is +33%');
 
-    for (const mid of ['flash-thinking', 'brief']) {
-      assert.match(pro(mid), /Read back:/, `${mid} should get the four-point version`);
-      assert.doesNotMatch(pro(mid), /THE HANDOVER REVIEW/, mid);
-    }
+    // `brief` promises "straight to work", so it gets the four-point version.
+    assert.match(pro('flash-thinking'), /Read back:/);
+    assert.match(blockFresh('brief'), /Read back:/);
+    assert.doesNotMatch(blockFresh('brief'), /THE HANDOVER REVIEW/);
 
     for (const deep of ['standard', 'deep']) {
-      assert.match(pro(deep), /THE HANDOVER REVIEW/, deep);
+      assert.match(blockFresh(deep), /THE HANDOVER REVIEW/, deep);
     }
   });
 
@@ -597,10 +652,11 @@ describe('every rung asks for a list, checks it, and reviews before finishing', 
 describe('the handover review — asked for, so pin where it appears', () => {
   const pro = (effort, over = {}) =>
     build(new PromptBuilder(ws, ws), { modelConfig: { effort }, ...over });
+  const block = (effort) => new PromptBuilder(ws, ws).buildHandoverBlock(effort);
 
   test('standard and deep get it', () => {
     for (const effort of ['standard', 'deep']) {
-      assert.match(pro(effort), /THE HANDOVER REVIEW/, effort);
+      assert.match(block(effort), /THE HANDOVER REVIEW/, effort);
     }
   });
 
@@ -608,8 +664,8 @@ describe('the handover review — asked for, so pin where it appears', () => {
   // four-point version rather than the seven-point one — but not nothing.
   // "Did you run it" and "what did you not do" are worth asking at any size.
   test('brief gets the shorter one instead', () => {
-    assert.doesNotMatch(pro('brief'), /THE HANDOVER REVIEW/);
-    assert.match(pro('brief'), /BEFORE YOU FINISH/);
+    assert.doesNotMatch(block('brief'), /THE HANDOVER REVIEW/);
+    assert.match(block('brief'), /BEFORE YOU FINISH/);
   });
 
   test('the flash tiers never see the pro prompt, so they get their own', () => {
@@ -619,13 +675,19 @@ describe('the handover review — asked for, so pin where it appears', () => {
     assert.match(pro('flash-thinking'), /BEFORE YOU FINISH/);
   });
 
-  // The whole prompt strategy exists to avoid large repeated payloads, and
-  // this is ~1.8k characters retyped into a browser tab.
-  test('it rides turn 0, not every turn', () => {
+  /*
+   * It no longer rides turn 0 at all — the point of moving it.
+   *
+   * 1,879 characters of "check your work before you finish", delivered before
+   * the turn had done anything and then thousands of tokens behind the model by
+   * the time it mattered. It rides the tool-result round that first changes
+   * something instead.
+   */
+  test('it is not in the opening prompt on any turn', () => {
     const pb = new PromptBuilder(ws, ws);
     const first = build(pb, { modelConfig: { effort: 'deep' } });
     const second = build(pb, { modelConfig: { effort: 'deep' } });
-    assert.match(first, /THE HANDOVER REVIEW/);
+    assert.doesNotMatch(first, /THE HANDOVER REVIEW/);
     assert.doesNotMatch(second, /THE HANDOVER REVIEW/);
   });
 
@@ -633,11 +695,11 @@ describe('the handover review — asked for, so pin where it appears', () => {
     // It asks the model to audit `<task_checklist>`, which rides every turn.
     // Auditing a list it cannot see is the write-only trap that made the
     // original task.md useless.
-    assert.match(pro('deep'), /<task_checklist>/);
+    assert.match(block('deep'), /<task_checklist>/);
   });
 
   test('it demands evidence rather than reassurance', () => {
-    const p = pro('deep');
+    const p = block('deep');
     assert.match(p, /not a verdict|not checked/i);
     assert.match(p, /Paste what it\s+printed|Paste what it printed/);
   });

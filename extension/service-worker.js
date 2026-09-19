@@ -59,12 +59,10 @@
 
   // src/background/content.js
   var MODEL_URLS = {
-    "gemini": "https://gemini.google.com/*",
-    "chatgpt": "https://chatgpt.com/*"
+    "gemini": "https://gemini.google.com/*"
   };
   var MODEL_SCRIPTS = {
-    "gemini": "content-scripts/gemini-bridge.js",
-    "chatgpt": "content-scripts/chatgpt-bridge.js"
+    "gemini": "content-scripts/gemini-bridge.js"
   };
   async function reinjectModelTabs() {
     for (const [model, targetUrl] of Object.entries(MODEL_URLS)) {
@@ -176,6 +174,7 @@
     }
   }
   function forgetTab(tabId) {
+    stopCompletionTicks(tabId);
     subagentTabs.delete(tabId);
     focusTakenFrom.delete(tabId);
     for (const [session, id] of sessionTabs) {
@@ -214,7 +213,127 @@
     const host = pattern.replace(/^https?:\/\//, "").replace(/\/\*$/, "").replace(/\*$/, "");
     return url.includes(host);
   }
+  var BRIDGE_PING_START_MS = 50;
+  var BRIDGE_PING_MAX_MS = 400;
+  var BRIDGE_CAN_TYPE_SHARE = 0.6;
+  async function waitForBridge(tabId, budgetMs) {
+    const start = Date.now();
+    const deadline = start + budgetMs;
+    const canTypeDeadline = start + budgetMs * BRIDGE_CAN_TYPE_SHARE;
+    let delay = BRIDGE_PING_START_MS;
+    let sawAlive = false;
+    while (Date.now() < deadline) {
+      try {
+        const res = await chrome.tabs.sendMessage(tabId, { type: "ping" });
+        if (res?.canType) return true;
+        if (res?.ready) {
+          sawAlive = true;
+          if (Date.now() > canTypeDeadline) return true;
+        }
+      } catch {
+      }
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(Math.round(delay * 1.5), BRIDGE_PING_MAX_MS);
+    }
+    return sawAlive;
+  }
+  var COMPLETION_TICK_MS = 2e3;
+  var COMPLETION_CONFIRM_MS = 250;
+  var completionTickers = /* @__PURE__ */ new Map();
+  var completionConfirms = /* @__PURE__ */ new Map();
+  function startCompletionTicks(tabId, everyMs = COMPLETION_TICK_MS) {
+    stopCompletionTicks(tabId);
+    const tick = async () => {
+      try {
+        const res = await chrome.tabs.sendMessage(tabId, { type: "tick_completion" });
+        if (res && res.watching === false) {
+          stopCompletionTicks(tabId);
+          return;
+        }
+        if (res && res.confirmSoon && completionTickers.has(tabId)) {
+          const soon = setTimeout(tick, Math.min(COMPLETION_CONFIRM_MS, everyMs / 4));
+          soon.unref?.();
+          completionConfirms.set(tabId, soon);
+        }
+      } catch {
+        stopCompletionTicks(tabId);
+      }
+    };
+    const timer = setInterval(tick, everyMs);
+    timer.unref?.();
+    completionTickers.set(tabId, timer);
+  }
+  function stopCompletionTicks(tabId) {
+    const soon = completionConfirms.get(tabId);
+    if (soon !== void 0) {
+      clearTimeout(soon);
+      completionConfirms.delete(tabId);
+    }
+    const timer = completionTickers.get(tabId);
+    if (timer === void 0) return;
+    clearInterval(timer);
+    completionTickers.delete(tabId);
+  }
+  async function prepareTabForTurn(tabId) {
+    let info = null;
+    try {
+      info = await chrome.tabs.get(tabId);
+    } catch {
+      return;
+    }
+    try {
+      if (info.autoDiscardable !== false) {
+        await chrome.tabs.update(tabId, { autoDiscardable: false });
+      }
+    } catch {
+    }
+    if (!info.discarded) return;
+    try {
+      await chrome.tabs.reload(tabId);
+      await waitForBridge(tabId, 1e4);
+    } catch {
+    }
+  }
+  async function sendWithRepairs(tabId, message, targetModel) {
+    const scriptPath = MODEL_SCRIPTS[targetModel];
+    const attempt2 = async () => {
+      const response = await chrome.tabs.sendMessage(tabId, message);
+      if (response && response.success === false) {
+        throw new Error(response.error || "Content script reported failure");
+      }
+      return true;
+    };
+    const repairs = [
+      { stage: "send", before: null },
+      {
+        stage: "reinject",
+        before: scriptPath ? async () => {
+          await chrome.scripting.executeScript({ target: { tabId }, files: [scriptPath] });
+          await waitForBridge(tabId, 3e3);
+        } : null
+      },
+      {
+        stage: "reload",
+        before: async () => {
+          await chrome.tabs.reload(tabId);
+          await waitForBridge(tabId, 15e3);
+        }
+      }
+    ];
+    for (const { stage, before } of repairs) {
+      if (stage !== "send" && !before) continue;
+      try {
+        if (before) await before();
+        return await attempt2();
+      } catch (err) {
+        console.warn(`[Service Worker] ${stage} attempt failed for ${targetModel} tab ${tabId}:`, err.message);
+        lastTabFailure = { stage, message: err.message };
+      }
+    }
+    return false;
+  }
   async function trySendToTab(tab, message, targetModel) {
+    await prepareTabForTurn(tab.id);
     let originalActiveTabId = null;
     try {
       const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -227,27 +346,10 @@
     } catch (e) {
       console.warn("Failed to execute Tab Wakeup:", e);
     }
-    let success = false;
-    try {
-      const response = await chrome.tabs.sendMessage(tab.id, message);
-      if (response && response.success === false) throw new Error(response.error || "Content script reported failure");
-      success = true;
-    } catch (firstErr) {
-      console.warn(`[Service Worker] First attempt failed for ${targetModel} tab ${tab.id}:`, firstErr.message);
-      lastTabFailure = { stage: "send", message: firstErr.message };
-      const scriptPath = MODEL_SCRIPTS[targetModel];
-      if (scriptPath) {
-        try {
-          await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [scriptPath] });
-          await new Promise((r) => setTimeout(r, 1e3));
-          const response = await chrome.tabs.sendMessage(tab.id, message);
-          if (response && response.success === false) throw new Error(response.error || "Content script reported failure");
-          success = true;
-        } catch (secondErr) {
-          console.warn(`[Service Worker] Second attempt failed for ${targetModel} tab ${tab.id}:`, secondErr.message);
-          lastTabFailure = { stage: "reinject", message: secondErr.message };
-        }
-      }
+    const success = await sendWithRepairs(tab.id, message, targetModel);
+    if (success) {
+      startCompletionTicks(tab.id);
+      await restoreFocusFrom(tab.id);
     }
     return success;
   }
@@ -257,7 +359,7 @@
     const existing = await pickMainTab(targetModel);
     if (existing) return existing;
     console.log(`[Agent CLI] No ${targetModel} tab found. Auto-reopening in a new tab...`);
-    const openUrl = targetModel === "gemini" ? "https://gemini.google.com/app" : targetModel === "chatgpt" ? "https://chatgpt.com" : targetUrl.replace("/*", "");
+    const openUrl = targetModel === "gemini" ? "https://gemini.google.com/app" : targetUrl.replace("/*", "");
     const newTab = await chrome.tabs.create({ url: openUrl, active: true });
     await new Promise((resolve) => {
       let resolved = false;
@@ -280,7 +382,7 @@
       }
       chrome.tabs.onUpdated.addListener(listener);
     });
-    await new Promise((r) => setTimeout(r, 1500));
+    await waitForBridge(newTab.id, 5e3);
     mainTabs.set(targetModel, newTab.id);
     await claimOwnedTab(newTab.id);
     broadcastTabStatus();
@@ -323,7 +425,7 @@
       } else {
         const newTab = await chrome.tabs.create({ url: targetUrl.replace("/*", ""), active: false });
         claimSubagentTab(newTab.id, payload.sessionId);
-        await new Promise((r) => setTimeout(r, 4e3));
+        await waitForBridge(newTab.id, 1e4);
         success = await trySendToTab(newTab, message, targetModel);
       }
     } else {
@@ -374,11 +476,25 @@
       sendToServer(errorMsg);
     }
   }
+  async function focusModelTab(targetModel = "gemini") {
+    const tab = await pickMainTab(targetModel);
+    if (!tab) return false;
+    try {
+      await chrome.tabs.update(tab.id, { active: true });
+      if (tab.windowId != null) {
+        await chrome.windows.update(tab.windowId, { focused: true, state: "normal" });
+      }
+      return true;
+    } catch (err) {
+      console.warn("[Agent CLI] Could not focus the model tab:", err);
+      return false;
+    }
+  }
   async function openThread(thread) {
     const model = thread?.model || "gemini";
     const id = thread?.id;
     if (!id || !MODEL_URLS[model]) return false;
-    const url = model === "chatgpt" ? `https://chatgpt.com/c/${id}` : `https://gemini.google.com/app/${id}`;
+    const url = `https://gemini.google.com/app/${id}`;
     try {
       const existing = await pickMainTab(model);
       const tab = existing ? await chrome.tabs.update(existing.id, { url, active: true }) : await chrome.tabs.create({ url, active: true });
@@ -418,19 +534,22 @@
   async function triggerNewChatInModel(payload) {
     const targetModel = payload.targetModel || "gemini";
     const targetUrl = MODEL_URLS[targetModel];
-    if (!targetUrl) return;
+    if (!targetUrl) return false;
     const tab = await pickMainTab(targetModel) || await ensureModelTab(targetModel);
-    if (!tab) return;
+    if (!tab) return false;
     try {
       await chrome.tabs.sendMessage(tab.id, { type: "new_chat", payload });
+      return true;
     } catch (err) {
       console.warn(`[Agent CLI] Failed to send new_chat to ${targetModel} tab ${tab.id}:`, err);
+      return false;
     }
   }
 
   // src/background/socket.js
   var KEEPALIVE_MS = 2e4;
   var ALARM_FALLBACK_MINUTES = 0.5;
+  var WATCHDOG_ALARM = "reconnect";
   var HEARTBEAT_INTERVAL = 1e4;
   var ws = null;
   var isSocketOpen = () => Boolean(ws) && ws.readyState === WebSocket.OPEN;
@@ -467,6 +586,7 @@
     ws.onopen = async () => {
       attempt = 0;
       stopKeepAlive();
+      ensureWatchdogAlarm();
       await setState({ connected: true, reconnectAttempts: 0, lastError: null });
       ws.send(JSON.stringify({
         id: crypto.randomUUID(),
@@ -502,7 +622,7 @@
     clearTimeout(retryTimer);
     retryTimer = setTimeout(() => connectWebSocket(), delay);
     startKeepAlive();
-    chrome.alarms.create("reconnect", { delayInMinutes: ALARM_FALLBACK_MINUTES });
+    ensureWatchdogAlarm();
     setState({ reconnectAttempts: attempt }).catch(() => {
     });
   }
@@ -520,8 +640,17 @@
       clearInterval(keepAliveTimer);
       keepAliveTimer = null;
     }
-    chrome.alarms.clear("reconnect").catch(() => {
-    });
+  }
+  async function ensureWatchdogAlarm() {
+    try {
+      const existing = await chrome.alarms.get(WATCHDOG_ALARM);
+      if (existing) return;
+      chrome.alarms.create(WATCHDOG_ALARM, {
+        delayInMinutes: ALARM_FALLBACK_MINUTES,
+        periodInMinutes: ALARM_FALLBACK_MINUTES
+      });
+    } catch {
+    }
   }
   function startHeartbeat() {
     stopHeartbeat();
@@ -555,16 +684,16 @@
       case "diff_auto_applied":
       case "error":
       case "command_result":
-      case "github_notification":
-      case "github_plan_generated":
         broadcastToSidePanel(message);
         break;
       case "inject_prompt":
         await injectPromptIntoModel(payload);
         break;
-      case "new_chat":
-        await triggerNewChatInModel(payload);
+      case "new_chat": {
+        const started = await triggerNewChatInModel(payload || {});
+        sendToServer({ type: "chat_started", payload: { ok: started, requestId: payload?.requestId } });
         break;
+      }
       // Resuming a past conversation: point the tab at it, so the model has the
       // history itself rather than a paraphrase of it.
       case "open_thread": {
@@ -574,6 +703,9 @@
       }
       case "end_session":
         await endSession(payload?.sessionId);
+        break;
+      case "focus_tab":
+        await focusModelTab(payload?.targetModel);
         break;
       case "discover_models":
       case "switch_model":
@@ -592,7 +724,7 @@
     broadcastTabStatus();
   });
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.status === "complete" && tab.url && (tab.url.includes("gemini.google.com") || tab.url.includes("chatgpt.com"))) {
+    if (changeInfo.status === "complete" && tab.url && tab.url.includes("gemini.google.com")) {
       broadcastTabStatus();
     }
   });
@@ -609,6 +741,7 @@
             payload.tabUrl = sender.tab.url;
             const finished = payload.complete || payload.timedOut;
             if (finished) {
+              stopCompletionTicks(sender.tab.id);
               await restoreFocusFrom(sender.tab.id);
             }
             if (finished && payload.isSubagent) {
@@ -632,8 +765,6 @@
         case "question_response":
         case "command_approval_response":
         case "turn_trace":
-        case "github_pr_comment":
-        case "github_pr_viewing":
           sendToServer({ type, payload });
           sendResponse({ success: true });
           break;
@@ -643,8 +774,8 @@
           break;
         }
         case "connect":
+          sendResponse({ success: true, connected: isSocketOpen() });
           connectWebSocket();
-          sendResponse({ success: true });
           break;
         default:
           sendResponse({ success: false, error: "Unknown message type" });
@@ -653,13 +784,17 @@
     return true;
   });
   chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === "reconnect") connectWebSocket();
+    if (alarm.name !== "reconnect") return;
+    if (isSocketOpen()) return;
+    connectWebSocket();
   });
   chrome.runtime.onInstalled.addListener(() => {
     console.log("\u{1F916} Agent CLI extension installed");
+    ensureWatchdogAlarm();
     connectWebSocket();
   });
   chrome.runtime.onStartup.addListener(() => {
+    ensureWatchdogAlarm();
     connectWebSocket();
   });
   chrome.runtime.onConnect.addListener((port) => {
@@ -668,6 +803,7 @@
       });
     }
   });
+  ensureWatchdogAlarm();
   connectWebSocket();
   reinjectModelTabs();
 })();

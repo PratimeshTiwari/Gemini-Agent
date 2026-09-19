@@ -40,12 +40,6 @@ describe('describeDestructive — ask before destroying what was never named', (
     assert.match(d.detail, /new chat is started in the browser/);
   });
 
-  test('/github clear-state warns that the cost is browser turns', () => {
-    const d = describeDestructive('github', ['clear-state'], {});
-    assert.ok(d);
-    assert.match(d.detail, /browser turn/);
-  });
-
   test('/compact is deliberately not gated', () => {
     assert.equal(describeDestructive('compact', [], { turnCount: 50 }), null);
   });

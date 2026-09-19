@@ -4,8 +4,7 @@ import os from 'os';
 
 /**
  * The header: the wordmark, the attribution, and the one line that says where
- * you are — workspace, the models actually in play, and the GitHub account the
- * PR agent is polling as.
+ * you are — the workspace and the models actually in play.
  *
  * It is committed to <Static>, so its height and its node count cost scrollback
  * rather than the live frame. That is why it is allowed to be six rows of
@@ -64,13 +63,11 @@ function Wordmark({ text }) {
 
 export function Banner({ agentLoop, agentNameAscii }) {
   const models = (() => {
-    const topology = agentLoop.topology || 'single';
-    const roles = topology === 'duo' ? ['main', 'reviewer'] : ['main'];
+    const roles = ['main'];
     const named = roles.map((r) => agentLoop.modelConfig?.[r]).filter(Boolean);
     return [...new Set(named)].join(', ') || 'gemini';
   })();
 
-  const account = agentLoop.githubHandler?.poller?.username;
 
   // `~/Documents/Gemini-Agent`, not the absolute path. The banner is committed
   // to <Static> so a wrap here costs scrollback rather than the frame, but it
@@ -88,7 +85,6 @@ export function Banner({ agentLoop, agentNameAscii }) {
         {where}
         {'  ·  '}
         {models}
-        {account ? `  ·  @${account}` : ''}
       </Text>
     </Box>
   );

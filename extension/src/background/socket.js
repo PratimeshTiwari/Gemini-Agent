@@ -1,7 +1,7 @@
 import { getState, setState } from './state.js';
 import { retryDelay, resolvePort, socketUrlFor } from './policy.js';
 import { broadcastToSidePanel, sendToServer } from './messaging.js';
-import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab, endSession, openThread } from './content.js';
+import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab, endSession, openThread, focusModelTab } from './content.js';
 
 /**
  * The socket to the local agent, and the retry policy around it.
@@ -44,8 +44,29 @@ import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendT
  */
 const KEEPALIVE_MS = 20000;
 
-/** The backstop for the case this file cannot cover: the worker dies anyway. */
+/**
+ * The backstop for the case this file cannot cover: the worker dies anyway.
+ *
+ * **It is armed while connected too, and that is the whole point.** It used to
+ * be created in `scheduleRetry` and cleared in `stopKeepAlive`, which runs on
+ * `onopen` — so a healthy bridge had no alarm at all. Chrome can still evict a
+ * service worker that believes it is connected, and when it does the socket
+ * dies with it, `onclose` never runs inside a worker that is already gone, and
+ * there is no timer and no alarm left to notice. Nothing can push at a dead
+ * worker from outside: the agent cannot wake it.
+ *
+ * What actually revived it was incidental — `chrome.tabs.onUpdated` firing
+ * because the user came back and focused a tab. That is exactly the reported
+ * symptom: "the prompt only sends once I open Chrome or the Gemini tab". The
+ * prompt was not slow, the extension was not running, and the thing that
+ * brought it back was the user's own navigation.
+ *
+ * So the alarm is periodic and permanent. While connected it costs nothing —
+ * the worker is already resident on the heartbeat — and it is the only thing
+ * that can resurrect a worker Chrome has silently collected.
+ */
 const ALARM_FALLBACK_MINUTES = 0.5; // the clamp floor; asking for less is ignored
+const WATCHDOG_ALARM = 'reconnect';
 
 const HEARTBEAT_INTERVAL = 10000;
 
@@ -108,6 +129,7 @@ export async function connectWebSocket() {
   ws.onopen = async () => {
     attempt = 0;
     stopKeepAlive();              // connected: the heartbeat keeps the worker up
+    ensureWatchdogAlarm();        // but the worker can still be evicted; see above
     await setState({ connected: true, reconnectAttempts: 0, lastError: null });
 
     ws.send(JSON.stringify({
@@ -162,7 +184,7 @@ function scheduleRetry() {
   retryTimer = setTimeout(() => connectWebSocket(), delay);
 
   startKeepAlive();
-  chrome.alarms.create('reconnect', { delayInMinutes: ALARM_FALLBACK_MINUTES });
+  ensureWatchdogAlarm();
   setState({ reconnectAttempts: attempt }).catch(() => {});
 }
 
@@ -182,7 +204,29 @@ function stopKeepAlive() {
     clearInterval(keepAliveTimer);
     keepAliveTimer = null;
   }
-  chrome.alarms.clear('reconnect').catch(() => {});
+  // The watchdog alarm is deliberately *not* cleared here. Being connected is
+  // not evidence the worker will stay alive, and this function runs on `onopen`
+  // — clearing it here is what left a healthy bridge with no way back.
+}
+
+/**
+ * Arm the periodic watchdog, if it is not already armed.
+ *
+ * `chrome.alarms.create` with an existing name replaces the alarm and restarts
+ * its period, so re-arming on every retry would push the backstop further away
+ * each time it is needed most. Checking first keeps the cadence honest.
+ */
+export async function ensureWatchdogAlarm() {
+  try {
+    const existing = await chrome.alarms.get(WATCHDOG_ALARM);
+    if (existing) return;
+    chrome.alarms.create(WATCHDOG_ALARM, {
+      delayInMinutes: ALARM_FALLBACK_MINUTES,
+      periodInMinutes: ALARM_FALLBACK_MINUTES,
+    });
+  } catch {
+    // Alarms unavailable is not a reason to fail a connection attempt.
+  }
 }
 
 function startHeartbeat() {
@@ -220,16 +264,18 @@ async function handleServerMessage(message) {
     case 'diff_auto_applied':
     case 'error':
     case 'command_result':
-    case 'github_notification':
-    case 'github_plan_generated':
       broadcastToSidePanel(message);
       break;
     case 'inject_prompt':
       await injectPromptIntoModel(payload);
       break;
-    case 'new_chat':
-      await triggerNewChatInModel(payload);
+    case 'new_chat': {
+      // Acked, like `open_thread` below. `/compact` is a handover and cannot
+      // send the summary until it knows there is somewhere new to send it to.
+      const started = await triggerNewChatInModel(payload || {});
+      sendToServer({ type: 'chat_started', payload: { ok: started, requestId: payload?.requestId } });
       break;
+    }
 
     // Resuming a past conversation: point the tab at it, so the model has the
     // history itself rather than a paraphrase of it.
@@ -244,6 +290,10 @@ async function handleServerMessage(message) {
       // next turn has to find the thread still there.
       await endSession(payload?.sessionId);
       break;
+    case 'focus_tab':
+      await focusModelTab(payload?.targetModel);
+      break;
+
     case 'discover_models':
     case 'switch_model':
       // Straight to the model tab. Neither injects a prompt, so neither goes

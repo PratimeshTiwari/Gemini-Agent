@@ -56,6 +56,11 @@ export async function findSymbol(args, context) {
     filesIndexed: index.indexed,
     definitions: hits.slice(0, MAX_HITS),
     ...(hits.length > MAX_HITS ? { truncated: hits.length - MAX_HITS } : {}),
+    ...(isMethod ? {
+      methodNote: `"${name}" is a method here, so \`x.${name}\` uses are included and marked `
+        + '`viaMember`. Those could be a same-named method on another object — check the line '
+        + 'before treating one as a call to this definition.',
+    } : {}),
     ...(coverage(index) ? { note: coverage(index) } : {}),
   };
 }
@@ -63,10 +68,53 @@ export async function findSymbol(args, context) {
 export async function findReferences(args, context) {
   const { name, includeDefinition = true } = args;
   const index = symbolIndex(context.workspace);
-  const defs = new Set(index.find(name).map((d) => `${d.file}:${d.line}`));
+  const definitions = index.find(name);
+  const defs = new Set(definitions.map((d) => `${d.file}:${d.line}`));
 
-  let hits = index.references(name);
-  if (!includeDefinition) hits = hits.filter((h) => !defs.has(`${h.file}:${h.line}`));
+  /**
+   * A method is only ever called as `x.name()`, so for one of those the member
+   * uses are not noise — they are the entire answer.
+   *
+   * Without this, `find_references` returned **0** for every method in the
+   * repo: `buildToolResultBatch` 0 against 2 real call sites, `acceptDiff` 0
+   * against 3 — under a message reading "It may be dead code", which is an
+   * invitation to delete something called everywhere.
+   *
+   * Gated on the name being *defined* as a method here, rather than always on,
+   * because `obj.name` is ambiguous by nature. Measured on this repo: turning
+   * it on unconditionally makes `find_references("map")` 165 rows of `.map(`
+   * and `join` 180 — a wall of text about `Array.prototype`, every character
+   * of which is retyped into a browser next turn. `map` and `join` are not
+   * defined here, so the gate excludes them and keeps the names people
+   * actually ask about.
+   */
+  const isMethod = definitions.some((d) => d.kind === 'method');
+
+  let hits = index.references(name, { includeMembers: isMethod });
+  if (!includeDefinition) {
+    hits = hits.filter((h) => !defs.has(`${h.file}:${h.line}`));
+  } else {
+    /**
+     * A method's definition is not a *use* of it, so `referencesIn` never
+     * emitted one — `class X { foo() {} }` has `foo` as a non-computed
+     * `MethodDefinition` key, which is deliberately not visited.
+     *
+     * The prompt says otherwise: "list the definition too (default true)" and
+     * "the definition is marked". So for a function, whose `id` really is an
+     * Identifier, the definition appeared; for a method it never did, and the
+     * tool quietly did not do the thing its own description promised. Adding
+     * it here rather than in `referencesIn` keeps that function answering the
+     * one question it is good at.
+     */
+    const have = new Set(hits.map((h) => `${h.file}:${h.line}`));
+    for (const d of definitions) {
+      const at = `${d.file}:${d.line}`;
+      if (have.has(at)) continue;
+      have.add(at);
+      hits.push({ file: d.file, line: d.line, column: 1, text: index.sourceLine(d.file, d.line) });
+    }
+    hits.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+  }
 
   if (hits.length === 0) {
     return {
@@ -87,6 +135,10 @@ export async function findReferences(args, context) {
       line: hit.line,
       text: hit.text.slice(0, 160),
       ...(defs.has(`${hit.file}:${hit.line}`) ? { isDefinition: true } : {}),
+      // `x.name` rather than a bare `name`. Marked because a same-named method
+      // on a different object is indistinguishable from here, and an answer
+      // that hides that ambiguity is worse than one that states it.
+      ...(hit.member ? { viaMember: true } : {}),
     });
   }
 
@@ -98,6 +150,11 @@ export async function findReferences(args, context) {
       .map(([file, lines]) => ({ file, count: lines.length, lines }))
       .sort((a, b) => b.count - a.count || a.file.localeCompare(b.file)),
     ...(hits.length > MAX_HITS ? { truncated: hits.length - MAX_HITS } : {}),
+    ...(isMethod ? {
+      methodNote: `"${name}" is a method here, so \`x.${name}\` uses are included and marked `
+        + '`viaMember`. Those could be a same-named method on another object — check the line '
+        + 'before treating one as a call to this definition.',
+    } : {}),
     ...(coverage(index) ? { note: coverage(index) } : {}),
   };
 }

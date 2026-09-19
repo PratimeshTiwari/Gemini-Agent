@@ -22,9 +22,9 @@ Before writing code:
 4. If you must assume something, say: "⚠️ ASSUMPTION: [what]"
 
 ### Phase 3: VERIFY
-1. Re-read the edited file to confirm the edit applied.
-2. Run tests if they exist.
-3. Check callers for regressions.
+1. Re-read the edited file to confirm the edit applied EXACTLY as intended.
+2. Run tests if they exist. If they fail, analyze the error and fix it; do not just report the failure.
+3. Check callers for regressions using `find_references`.
 
 ## Key Rules
 - NEVER say "I think" or "probably" — cite file:line or say "unverified assumption"

@@ -23,9 +23,10 @@ describe('threadFromUrl', () => {
     assert.deepEqual(threadFromUrl(GEM), { model: 'gemini', id: 'bfaf9b2dad21f688' });
   });
 
-  test('a ChatGPT conversation', () => {
-    assert.deepEqual(threadFromUrl('https://chatgpt.com/c/abc-123'),
-      { model: 'chatgpt', id: 'abc-123' });
+  // ChatGPT was removed. A URL we no longer bridge is not a thread, and
+  // saying so is what keeps `planResume` honest about the sessions below.
+  test('a ChatGPT conversation is no longer a thread', () => {
+    assert.equal(threadFromUrl('https://chatgpt.com/c/abc-123'), null);
   });
 
   // Not a failure. A chat only gets an id once it has something to identify,
@@ -72,6 +73,19 @@ describe('planResume — three outcomes, because they are three promises', () =>
 
   test('a session that never had a thread can only be viewed', () => {
     assert.equal(planResume(null, threadFromUrl(GEM)).action, 'view');
+  });
+
+  /*
+   * Sessions filed before ChatGPT was removed still carry a ChatGPT thread.
+   * They need no migration: the models differ, so this resolves to `replay`,
+   * which is the truth — the conversation exists, and nothing here can reopen
+   * it. Pinned because "no migration needed" is a claim, not an observation.
+   */
+  test('a stored ChatGPT session degrades to replay, not continue', () => {
+    const old = { model: 'chatgpt', id: 'abc-123' };
+    assert.equal(planResume(old, threadFromUrl(GEM)).action, 'replay');
+    assert.equal(planResume(old, null).action, 'replay');
+    assert.equal(sameThread(old, threadFromUrl(GEM)), false);
   });
 
   // "We cannot tell" is handled as "no". Telling the model what happened when

@@ -236,9 +236,16 @@ test('an unknown session does not reach the main lane either', async () => {
 
 test('matchesModelUrl knows a site from a lookalike', () => {
   assert.equal(content.matchesModelUrl(GEMINI, 'gemini'), true);
-  assert.equal(content.matchesModelUrl('https://chatgpt.com/c/1', 'chatgpt'), true);
   assert.equal(content.matchesModelUrl('https://example.com/', 'gemini'), false);
   assert.equal(content.matchesModelUrl(undefined, 'gemini'), false);
+});
+
+// A model with no entry in MODEL_URLS matches nothing, whatever the URL says.
+// ChatGPT was removed; a stale tab or a stored config naming it must not be
+// mistaken for a tab this extension can drive.
+test('a model that no longer exists matches nothing', () => {
+  assert.equal(content.matchesModelUrl('https://chatgpt.com/c/1', 'chatgpt'), false);
+  assert.equal(content.matchesModelUrl(GEMINI, 'chatgpt'), false);
 });
 
 /**

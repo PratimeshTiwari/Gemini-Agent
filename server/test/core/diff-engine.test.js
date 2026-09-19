@@ -235,3 +235,117 @@ test('per-hunk approval', async (t) => {
     assert.throws(() => engine.respondToHunk(diff.id, 'nope', true), /not found/i);
   });
 });
+
+/**
+ * The brittleness that is real, and the two that are not.
+ *
+ * Claimed: "string replacement breaks whenever whitespace, line endings, or
+ * context shifts slightly". Probed against the code, whitespace and line
+ * endings already matched — `_findMatch`'s second tier rewrites each
+ * whitespace run as `\s+`, which survives a reindent and a CRLF file, and
+ * cannot cross non-whitespace so it can never weld two fragments together.
+ *
+ * What was actually broken is the opposite of a matching problem: both tiers
+ * took the **first** match and neither counted. A file with two identical
+ * blocks and an edit meant for the second rewrote the first, silently, with a
+ * diff that looks plausible because the change is real and in a real place.
+ */
+const scratch = () => fs.mkdtempSync(path.join(os.tmpdir(), 'dfm-'));
+
+test('_findMatch refuses an exact target that appears twice', () => {
+  const two = 'function a() {\n  return null;\n}\n\nfunction b() {\n  return null;\n}\n';
+  assert.deepEqual(new DiffEngine(scratch())._findMatch(two, '  return null;'), { ambiguous: 2 });
+});
+
+test('_findMatch accepts a unique exact target', () => {
+  const two = 'function a() {\n  return null;\n}\n\nfunction b() {\n  return null;\n}\n';
+  const m = new DiffEngine(scratch())._findMatch(two, 'function b() {');
+  assert.equal(typeof m.index, 'number');
+  assert.equal(m.length, 'function b() {'.length);
+});
+
+test('_findMatch refuses a target two places match only fuzzily', () => {
+  const c = 'a(  1  );\nother\na(   1   );\n';
+  assert.deepEqual(new DiffEngine(scratch())._findMatch(c, 'a( 1 );'), { ambiguous: 2 });
+});
+
+test('a unique exact match wins where the fuzzy pattern would be ambiguous', () => {
+  // Unambiguous by construction. Counting what the looser pattern would also
+  // have hit would refuse an edit that has exactly one right answer.
+  const c = 'a(  1  );\nother\na( 1 );\n';
+  assert.equal(new DiffEngine(scratch())._findMatch(c, 'a( 1 );').index, 16);
+});
+
+test('_findMatch counts positions, not non-overlapping occurrences', () => {
+  // `aa` in `aaa` is one occurrence and two positions. Counting one way and
+  // testing the other produced `ambiguous: 1` — nonsense, and it refused
+  // nothing consistently.
+  assert.deepEqual(new DiffEngine(scratch())._findMatch('aaa', 'aa'), { ambiguous: 2 });
+});
+
+test('_findMatch still matches across a reindent', () => {
+  const m = new DiffEngine(scratch())._findMatch(
+    'function f() {\n    return 1;\n}\n', 'function f() {\n  return 1;\n}',
+  );
+  assert.equal(m.index, 0);
+});
+
+test('_findMatch still matches an LF target in a CRLF file', () => {
+  const m = new DiffEngine(scratch())._findMatch(
+    'function a() {\r\n  return 1;\r\n}\r\n', 'function a() {\n  return 1;\n}',
+  );
+  assert.equal(m.index, 0);
+});
+
+test('_findMatch does not reach across code to join two fragments', () => {
+  // `\s+` only collapses runs that were already whitespace. That property is
+  // what makes the fuzzy tier safe to have at all.
+  const c = 'const a = 1;\n\n// fifty lines later\n\nconst b = 2;\n';
+  assert.equal(new DiffEngine(scratch())._findMatch(c, 'const a = 1;\nconst b = 2;'), null);
+});
+
+test('a missing target is still null, not ambiguous', () => {
+  const two = 'function a() {\n  return null;\n}\n';
+  assert.equal(new DiffEngine(scratch())._findMatch(two, 'nope'), null);
+});
+
+test('a CRLF file is still CRLF after a multi-line edit', () => {
+  // The fuzzy tier matches the CRLF span with an LF oldText — the point of it
+  // — and newText carries LF, so the region came back converted while the
+  // rest of the file did not. Single-line edits never showed it: they match
+  // exactly and contain no newline.
+  const ws = scratch();
+  const de = new DiffEngine(ws);
+  fs.writeFileSync(path.join(ws, 'a.js'), 'function f() {\r\n  return 1;\r\n}\r\n');
+  const d = de.generateDiff('a.js', [{
+    oldText: 'function f() {\n  return 1;\n}',
+    newText: 'function f() {\n  return 2;\n}',
+  }]);
+  de.acceptDiff(d.id);
+  const after = fs.readFileSync(path.join(ws, 'a.js'), 'utf8');
+  assert.equal(after, 'function f() {\r\n  return 2;\r\n}\r\n');
+  assert.equal(/(?<!\r)\n/.test(after), false, 'a bare LF leaked into a CRLF file');
+});
+
+test('an LF file is left alone', () => {
+  const ws = scratch();
+  const de = new DiffEngine(ws);
+  fs.writeFileSync(path.join(ws, 'b.js'), 'function f() {\n  return 1;\n}\n');
+  const d = de.generateDiff('b.js', [{
+    oldText: 'function f() {\n  return 1;\n}',
+    newText: 'function f() {\n  return 2;\n}',
+  }]);
+  de.acceptDiff(d.id);
+  assert.equal(fs.readFileSync(path.join(ws, 'b.js'), 'utf8'), 'function f() {\n  return 2;\n}\n');
+});
+
+test('an ambiguous edit says how many places, not "not found"', () => {
+  // "Not found" would send the model looking for text it can plainly see.
+  const ws = scratch();
+  const de = new DiffEngine(ws);
+  fs.writeFileSync(path.join(ws, 'c.js'), 'x = 1;\ny = 2;\nx = 1;\n');
+  assert.throws(
+    () => de.generateDiff('c.js', [{ oldText: 'x = 1;', newText: 'x = 3;' }]),
+    /ambiguous.*matches 2 places/s,
+  );
+});

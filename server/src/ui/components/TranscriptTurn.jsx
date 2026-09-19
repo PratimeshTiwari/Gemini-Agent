@@ -3,8 +3,8 @@ import { Box, Text } from 'ink';
 import { DiffRows } from './DiffRows.jsx';
 import { rowsFromPatch } from '../diff-preview.js';
 import { Dots } from './RunningLine.jsx';
-import { renderMarkdown, oneLine, summarizeResult, clampForDisplay, formatCommandResult, blockLines } from '../format.js';
-import { parseTurnActions } from '../transcript.js';
+import { renderMarkdown, oneLine, summarizeResult, subjectOf, clampForDisplay, formatCommandResult, blockLines, liveMessageText } from '../format.js';
+import { parseTurnActions, describeArtifactWrite } from '../transcript.js';
 
 /**
  * The user's own message, shortened to fit.
@@ -53,6 +53,17 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
   // Two rows of the budget go to the user's message and the "Worked for" line.
   const shown = isLive ? actions.slice(-Math.max(1, liveBudget - 2)) : actions;
   const hidden = actions.length - shown.length;
+
+  /**
+   * What the agent did, counted separately from what happened to it.
+   *
+   * A file changing on disk is not work: a turn where the watcher fired three
+   * times and the agent ran nothing used to read `Worked for 8.1s · 3
+   * actions`. The files are still worth a row — you want to know the tree
+   * moved under the answer you are reading — they are just not the agent's.
+   */
+  const worked = actions.filter((a) => a.type !== 'fs_event').length;
+  const touched = actions.reduce((n, a) => (a.type === 'fs_event' ? n + a.paths.length : n), 0);
 
   return (
     <Box flexDirection="column" marginBottom={1} width="100%">
@@ -106,7 +117,12 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
             ) : (
               <>{'  '}{duration === null ? 'Worked' : `Worked for ${duration}s`}</>
             )}
-            <Text dimColor> · {actions.length} action{actions.length === 1 ? '' : 's'}</Text>
+            {worked > 0 && (
+              <Text dimColor> · {worked} action{worked === 1 ? '' : 's'}</Text>
+            )}
+            {touched > 0 && (
+              <Text dimColor> · {touched} file{touched === 1 ? '' : 's'} changed on disk</Text>
+            )}
           </Text>
 
           {hidden > 0 && (
@@ -114,7 +130,9 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
           )}
 
           <Box flexDirection="column" marginLeft={2} width="100%">
-            {shown.map((act) => <ActionRow key={act.id} act={act} verbose={verbose} isLive={isLive} />)}
+            {shown.map((act) => (
+              <ActionRow key={act.id} act={act} verbose={verbose} isLive={isLive} width={terminalWidth} />
+            ))}
           </Box>
         </Box>
       )}
@@ -123,7 +141,11 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
         <Box key={idx} flexDirection="row" marginTop={actions.length > 0 ? 1 : 0} width="100%">
           {!fm.msg.isLocal && <Text color="green">● </Text>}
           <Box flexGrow={1} flexShrink={1}>
-            <Text wrap="wrap">{renderMarkdown(fm.content)}</Text>
+            <Text wrap="wrap">
+              {isLive
+                ? liveMessageText(renderMarkdown(fm.content, terminalWidth), liveBudget, terminalWidth)
+                : renderMarkdown(fm.content, terminalWidth)}
+            </Text>
           </Box>
         </Box>
       ))}
@@ -172,15 +194,55 @@ const limitsFor = (isLive, verbose) => {
 };
 
 /** One step inside a turn. Collapsed to a line unless `verbose`. */
-function ActionRow({ act, verbose, isLive }) {
+function ActionRow({ act, verbose, isLive, width = 80 }) {
   const limit = limitsFor(isLive, verbose);
+  /*
+   * The subject is budgeted against the real terminal width, not a constant.
+   *
+   * This row had no `wrap` at all, so it could already wrap — and a row that
+   * wraps is charged as one and drawn as two, which is the bug this frame has
+   * had twice. Naming the file makes it longer, so the width has to come in.
+   *
+   * Two columns for the glyph, the tool name, the separator and the summary;
+   * whatever is left over is the subject's, and `wrap="truncate"` is the
+   * backstop for the summary, which is not bounded here.
+   */
+  const subjectRoom = Math.max(12, width - String(act.toolName || '').length - 28);
   if (act.type === 'tool') {
+    /**
+     * A write to the agent's own artifacts is drawn as what it means.
+     *
+     * `⏺ edit_file` on `.agent/artifacts/task.md` is the agent ticking a box —
+     * which the system prompt tells it to do every turn — and it is exempt
+     * from approval for that reason. Drawn with the same row as a source edit
+     * it reads as an unapproved write to the user's code, which is exactly how
+     * it was reported: two `edit_file` rows on a turn that had said "don't
+     * implement", both of them the checklist.
+     */
+    const artifact = act.success !== false && describeArtifactWrite(act.toolName, act.args);
+    if (artifact) {
+      return (
+        <Text wrap="truncate">
+          <Text color="green">{'✓ '}</Text>
+          <Text color="gray">{artifact.verb}</Text>
+          {artifact.detail ? <Text dimColor> · {artifact.detail}</Text> : null}
+        </Text>
+      );
+    }
     return (
       <Box flexDirection="column" width="100%">
         <Box flexDirection="row">
           <Text color={act.success === false ? 'red' : 'green'}>{(act.success === false ? '✗' : '⏺') + ' '}</Text>
           <Text bold color="gray">{act.toolName}</Text>
-          <Text dimColor> · {summarizeResult(act.toolName, act.result)}</Text>
+          {/* Which file, which pattern, which command. Without it two reads in
+              one turn are the same row twice, which is how a turn reading four
+              files reads as a turn that did nothing in particular. */}
+          {subjectOf(act.toolName, act.args, subjectRoom) ? (
+            <Text color="gray" wrap="truncate">
+              {' '}{subjectOf(act.toolName, act.args, subjectRoom)}
+            </Text>
+          ) : null}
+          <Text dimColor wrap="truncate"> · {summarizeResult(act.toolName, act.result)}</Text>
         </Box>
         {verbose && act.result !== null && act.result !== undefined && (
           <Box paddingLeft={2} width="100%">
@@ -236,6 +298,24 @@ function ActionRow({ act, verbose, isLive }) {
       <Box width="100%">
         <Text dimColor wrap="wrap">{clampForDisplay(act.content, limit.lines, limit.chars)}</Text>
       </Box>
+    );
+  }
+
+  if (act.type === 'fs_event') {
+    /**
+     * One row, however many files, and never prose.
+     *
+     * The watcher's own sentence is 70 characters for one path; three of them
+     * filled a quarter of a short terminal to say the same thing three times.
+     * `wrap="truncate"` because this is drawn in the live frame and a row
+     * that wraps is charged as one and drawn as two.
+     */
+    const n = act.paths.length;
+    return (
+      <Text dimColor wrap="truncate">
+        ∙ {n || '?'} file{n === 1 ? '' : 's'} changed on disk
+        {n > 0 ? ` — ${act.paths.join(', ')}` : ''}
+      </Text>
     );
   }
 

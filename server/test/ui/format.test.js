@@ -4,7 +4,7 @@
 
 import { describe, it, test } from 'node:test';
 import assert from 'node:assert';
-import { oneLine, summarizeResult, clampForDisplay, formatCommandResult, formatTokenExpiry, renderMarkdown, extractCodeBlocks } from '../../src/ui/format.js';
+import { oneLine, summarizeResult, subjectOf, clampForDisplay, formatCommandResult, formatTokenExpiry, renderMarkdown, extractCodeBlocks } from '../../src/ui/format.js';
 
 describe('oneLine', () => {
   it('collapses whitespace to a single line', () => {
@@ -214,5 +214,110 @@ describe('extractCodeBlocks', () => {
     const [block] = extractCodeBlocks('```js\nconst x = 1;\n```\n');
     assert.equal(block.lang, 'js');
     assert.equal(block.code, 'const x = 1;');
+  });
+});
+
+/**
+ * A tool row has to say what it was about.
+ *
+ * Reported from use, looking at a turn that read a 134-line file and a
+ * 1,155-line file: `⏺ read_file · 134 lines · 4.9 KB` names neither, and two
+ * identical rows in one turn are indistinguishable. A turn that read four files
+ * reads as a turn that did nothing in particular.
+ */
+describe('subjectOf', () => {
+  test('a file tool names its file', () => {
+    assert.equal(subjectOf('read_file', { path: 'server/src/ui/transcript.js' }),
+      'server/src/ui/transcript.js');
+    assert.equal(subjectOf('edit_file', { path: 'a.js' }), 'a.js');
+    assert.equal(subjectOf('list_directory', { path: '.' }), '.');
+  });
+
+  test('a search names what it searched for', () => {
+    assert.equal(subjectOf('grep_search', { pattern: 'TODO' }), 'TODO');
+    assert.equal(subjectOf('grep_search', { patterns: ['rate limit', 'throttle'] }),
+      'rate limit, throttle');
+    assert.equal(subjectOf('find_references', { symbol: '_findMatch' }), '_findMatch');
+  });
+
+  test('a command names the command', () => {
+    assert.equal(subjectOf('run_command', { command: 'npm test' }), 'npm test');
+  });
+
+  // The role, not the prompt. The prompt is a paragraph; the role is the thing
+  // that tells two otherwise identical subagent rows apart.
+  test('a subagent names its role', () => {
+    assert.equal(subjectOf('ask_subagent', { role: 'review', prompt: 'x'.repeat(400) }), 'review');
+  });
+
+  /*
+   * Paths keep their tail, everything else keeps its head. The live frame cuts
+   * a row from the right, so what must survive goes left — but *within* a path
+   * the end is the informative half, and `…/ui/transcript.js` beats
+   * `server/src/main/java/com/…`.
+   */
+  test('a long path is truncated from the left', () => {
+    const long = 'server/src/main/java/com/example/deeply/nested/Thing.java';
+    const out = subjectOf('read_file', { path: long }, 24);
+
+    assert.ok(out.length <= 24, `${out.length} characters`);
+    assert.ok(out.startsWith('…'));
+    assert.match(out, /Thing\.java$/, 'the basename is what identifies it');
+  });
+
+  test('a long command is truncated from the right', () => {
+    const out = subjectOf('run_command', { command: 'npm test -- --reporter=tap --concurrency=1 --timeout=99' }, 20);
+    assert.ok(out.length <= 20);
+    assert.ok(out.startsWith('npm test'), 'a command is read left to right');
+    assert.ok(out.endsWith('…'));
+  });
+
+  // Silence rather than noise. A tool with nothing worth naming must add
+  // nothing to the row — an empty gap reads as a bug.
+  test('nothing to name is an empty string, not a placeholder', () => {
+    assert.equal(subjectOf('ask_question', { question: 'which?' }), '');
+    assert.equal(subjectOf('read_file', {}), '');
+    assert.equal(subjectOf('read_file', null), '');
+    assert.equal(subjectOf('read_file', { path: '   ' }), '');
+    assert.equal(subjectOf(undefined, undefined), '');
+  });
+
+  test('newlines never reach the row', () => {
+    assert.doesNotMatch(subjectOf('run_command', { command: 'a\nb\nc' }), /\n/);
+  });
+});
+
+/*
+ * The row is drawn in the live frame, where a row that wraps is charged as one
+ * and drawn as two — the bug this frame has had twice. Naming the file makes
+ * the row longer, so the subject is budgeted against the real width. This pins
+ * the arithmetic the component does.
+ */
+describe('subjectOf fits the row it is drawn in', () => {
+  const room = (width, toolName) => Math.max(12, width - toolName.length - 28);
+
+  for (const width of [60, 72, 80, 100]) {
+    test(`a long path still leaves room for the rest at ${width} columns`, () => {
+      const tool = 'read_file';
+      const subject = subjectOf(tool, { path: 'a/'.repeat(60) + 'Thing.java' }, room(width, tool));
+      // glyph + tool + space + subject, against the width less the summary's share
+      const drawn = 2 + tool.length + 1 + subject.length;
+      assert.ok(drawn <= width, `row head was ${drawn} wide in ${width} columns`);
+    });
+  }
+
+  /*
+   * The floor. A narrow terminal must still say *something*, and whatever
+   * survives must be the **end** of the path — at 12 characters even
+   * `transcript.js` does not fit whole, so "keeps the basename" is not the
+   * invariant. "Keeps the tail" is, and it holds at every width.
+   */
+  test('whatever survives is the end of the path, at any width', () => {
+    const path = 'server/src/ui/transcript.js';
+    for (const width of [40, 60, 80, 120]) {
+      const out = subjectOf('read_file', { path }, room(width, 'read_file'));
+      assert.ok(out.length > 0, `nothing at ${width}`);
+      assert.ok(path.endsWith(out.replace(/^…/, '')), `${out} is not the tail of the path`);
+    }
   });
 });

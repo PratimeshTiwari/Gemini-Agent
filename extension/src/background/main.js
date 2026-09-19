@@ -1,7 +1,7 @@
-import { connectWebSocket, isSocketOpen } from './socket.js';
+import { connectWebSocket, isSocketOpen, ensureWatchdogAlarm } from './socket.js';
 import { sendToServer } from './messaging.js';
 import { getState } from './state.js';
-import { broadcastTabStatus, reinjectModelTabs, restoreFocusFrom, forgetTab, endSession } from './content.js';
+import { broadcastTabStatus, reinjectModelTabs, restoreFocusFrom, forgetTab, endSession, stopCompletionTicks } from './content.js';
 
 // The toolbar icon opens the popup declared in the manifest, so the
 // open-on-click behaviour this used to set is now ignored by Chrome — a popup
@@ -23,7 +23,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' && tab.url && (tab.url.includes('gemini.google.com') || tab.url.includes('chatgpt.com'))) {
+  if (changeInfo.status === 'complete' && tab.url && tab.url.includes('gemini.google.com')) {
     broadcastTabStatus();
   }
 });
@@ -53,6 +53,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const finished = payload.complete || payload.timedOut;
 
           if (finished) {
+            // Nothing left to check in that tab.
+            stopCompletionTicks(sender.tab.id);
             // Before the close, not after: once the tab is gone Chrome has
             // already picked a new active tab, and the "do we still hold focus"
             // check can no longer tell whether the user had moved on.
@@ -85,8 +87,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'question_response':
       case 'command_approval_response':
       case 'turn_trace':
-      case 'github_pr_comment':
-      case 'github_pr_viewing':
         sendToServer({ type, payload });
         sendResponse({ success: true });
         break;
@@ -103,8 +103,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       case 'connect':
+        // The reply carries the state so a model tab can back its nudge off.
+        // Reported before the attempt, not after: `connectWebSocket` resolves
+        // long before a socket is open, and answering "connected" here would
+        // slow the nudge down at exactly the moment it is doing its job.
+        sendResponse({ success: true, connected: isSocketOpen() });
         connectWebSocket();
-        sendResponse({ success: true });
         break;
 
       default:
@@ -114,18 +118,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-// Handle alarms (for reconnection)
+/**
+ * The periodic watchdog firing.
+ *
+ * This listener is registered at the top level, which is what lets Chrome
+ * *start a terminated worker* to deliver the alarm. That is the only reason
+ * the alarm exists: a worker Chrome has evicted cannot reconnect itself, and
+ * nothing outside the browser can reach in and wake it.
+ *
+ * `connectWebSocket` early-returns when the socket is already OPEN or
+ * CONNECTING, so firing every 30s on a healthy bridge costs one function call.
+ */
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'reconnect') connectWebSocket();
+  if (alarm.name !== 'reconnect') return;
+  if (isSocketOpen()) return;
+  connectWebSocket();
 });
 
 // Connect on install/startup
 chrome.runtime.onInstalled.addListener(() => {
   console.log('🤖 Agent CLI extension installed');
+  ensureWatchdogAlarm();
   connectWebSocket();
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  ensureWatchdogAlarm();
   connectWebSocket();
 });
 
@@ -136,7 +154,10 @@ chrome.runtime.onConnect.addListener((port) => {
   }
 });
 
-// Try to connect immediately
+// Try to connect immediately, and make sure the backstop is armed. Both run on
+// every worker start, including the ones Chrome performs to deliver an event —
+// so a worker that was evicted mid-session re-arms itself on the way back up.
+ensureWatchdogAlarm();
 connectWebSocket();
 
 // And repair any tab whose content script this worker's start just orphaned.

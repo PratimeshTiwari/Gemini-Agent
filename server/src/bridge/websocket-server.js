@@ -29,6 +29,18 @@ import { logError } from '../core/error-log.js';
 const LOOPBACK = '127.0.0.1';
 
 /**
+ * How long a prompt held for an absent extension is still worth delivering.
+ *
+ * Tied to `EXTENSION_RESPONSE_TIMEOUT` in `core/agent-loop.js`: that is when
+ * the lane's watchdog gives up on the turn, and a prompt delivered after it
+ * would be typed into Gemini for a turn the loop has already abandoned.
+ */
+const INJECT_BUFFER_TTL_MS = 7 * 60 * 1000;
+
+/** Enough for a stalled lane per model plus a subagent fan-out, not a backlog. */
+const MAX_PENDING_INJECTS = 8;
+
+/**
  * Who may open a socket here.
  *
  * A Chrome extension sends `chrome-extension://<id>`; Firefox sends
@@ -45,20 +57,27 @@ export function isAllowedOrigin(origin) {
 }
 
 export class WebSocketServer {
-  constructor({ port, agentLoop, githubHandler }) {
+  constructor({ port, agentLoop }) {
     this.port = port;
     this.agentLoop = agentLoop;
-    this.githubHandler = githubHandler;
     this.wss = null;
     this.clients = new Map(); // id -> { ws, type, connectedAt }
-    this.pendingGitHubNotifications = []; // Buffer for CLI
+    /**
+     * Prompts that had nowhere to go, waiting for the extension to come back.
+     *
+     * `broadcast` returns whether it reached anyone and every caller ignored
+     * it, so a prompt dispatched while the extension was away was written to
+     * no sockets and dropped on the floor — the loop then sat on a busy lane
+     * until the seven-minute watchdog. That is the other half of "the prompt
+     * only sends when I open Chrome": the extension is evicted, the prompt is
+     * discarded, and the turn is already lost by the time anyone notices.
+     *
+     * Held here rather than in `ExtensionLock` because the lock's job is
+     * ordering turns, and this is about the transport being absent.
+     */
+    this.pendingInjects = [];
 
-    // Wire GitHub events to broadcast
-    if (this.githubHandler) {
-      this._wireGitHubEvents();
-    }
-
-    // Always provide background callbacks so headless tasks (e.g. GitHub agent)
+    // Always provide background callbacks so headless tasks
     // can use the extension bridge even when no user message is being processed.
     this._wireBackgroundCallbacks();
   }
@@ -66,12 +85,7 @@ export class WebSocketServer {
   _wireBackgroundCallbacks() {
     const backgroundCallbacks = {
       sendToPanel: (msg) => this.broadcast('extension', msg),
-      injectPrompt: (msg) => this.broadcast('extension', {
-        id: randomUUID(),
-        type: 'inject_prompt',
-        payload: msg,
-        timestamp: Date.now(),
-      }),
+      injectPrompt: (msg) => this.sendInjectPrompt(msg),
       // Background tasks have no one to ask. Reject rather than hang the loop
       // (the agent now awaits this decision) and rather than write unapproved edits.
       requestDiffApproval: (diff) =>
@@ -247,6 +261,20 @@ export class WebSocketServer {
     if (payload?.clientType && client.type === 'unknown') {
       client.type = payload.clientType;
 
+      // An extension arriving is the only thing that can drain prompts held
+      // while it was gone. Done before the timing bookkeeping below so a
+      // resumed turn is not waiting on it.
+      if (client.type === 'extension') {
+        const resumed = this.flushPendingInjects();
+        if (resumed > 0) {
+          logError(this.agentLoop?.workspace, {
+            flow: 'bridge',
+            op: 'inject_resumed',
+            message: `Extension reconnected; re-sent ${resumed} prompt(s) held while it was away`,
+          });
+        }
+      }
+
       /**
        * How long the extension took to notice this server, in milliseconds.
        *
@@ -308,7 +336,7 @@ export class WebSocketServer {
         // What the browser's mode picker is offering. Stored, not acted on:
         // `core/model-match.js` decides which one an effort rung wants, and the
         // names differ by subscription so they cannot be assumed.
-        this.agentLoop.noteModelOptions(payload?.models, payload?.switchedTo);
+        this.agentLoop.noteModelOptions(payload?.models, payload?.switchedTo, payload?.requested);
         break;
 
       /**
@@ -425,52 +453,22 @@ export class WebSocketServer {
       }
 
       case 'resume_session': {
-        const store = this.agentLoop?.sessionStore;
-        const id = payload?.id;
-        const record = (store?.listSessions?.() || []).find((r) => r.id === id);
-
-        // File what is on screen now, or resuming destroys it — the mistake
-        // that made `--sessions` useless in the first place.
-        store?.rollover?.();
-        const turns = store?.resumeSession?.(id);
-        if (!turns) {
+        // The whole of this — file the current conversation, restore the old
+        // one, and point the tab back at its thread — lives on the loop, so
+        // the CLI's `/history` cannot drift from the panel's picker.
+        const outcome = this.agentLoop.resumeSessionById(payload?.id);
+        if (!outcome.ok) {
           this.broadcast('extension', {
             id: randomUUID(), type: 'error',
-            payload: { op: 'resume_session', message: `No session ${id}.` },
+            payload: { op: 'resume_session', message: outcome.message },
             timestamp: Date.now(),
           });
           break;
         }
 
-        this.agentLoop.conversationHistory = turns;
-        this.agentLoop.promptBuilder?.resetPromptState?.();
-        this.agentLoop.chatThread = record?.thread || null;
-
-        /**
-         * Reopen the conversation rather than describe it.
-         *
-         * A recap is a paraphrase; the thread *is* the memory. Gemini puts it
-         * in the URL, so the tab can simply be pointed back at it — and then
-         * the model has the real history, including everything a twelve-turn
-         * summary would have dropped.
-         *
-         * The recap survives as the fallback for a session that never reached a
-         * thread, or a browser that could not open one.
-         */
-        let message;
-        if (record?.thread?.id) {
-          this.agentLoop._toExtension('open_thread', { thread: record.thread });
-          this.agentLoop.promptBuilder.pendingRecap = null;
-          message = 'Resumed — pointing the tab back at that conversation.';
-        } else {
-          this.agentLoop.promptBuilder.pendingRecap = turns;
-          message = 'Resumed. That conversation never reached a browser thread, '
-            + 'so the next message carries a recap instead.';
-        }
-
         this.broadcast('extension', {
           id: randomUUID(), type: 'session_reset',
-          payload: { message },
+          payload: { message: outcome.message },
           timestamp: Date.now(),
         });
         for (const client of this.clients.values()) this._sendHistory(client.ws);
@@ -484,6 +482,18 @@ export class WebSocketServer {
        * is handed a restored transcript it has no knowledge of and asked to
        * carry on, which is the exact failure the thread id exists to prevent.
        */
+      /**
+       * The browser answering `new_chat`.
+       *
+       * `/compact` is a handover: it summarises the old thread and sends the
+       * summary into a new one. Without this the send is blind, and a new chat
+       * that never happened means a full turn-0 payload plus a summary of
+       * turns going into the thread that already holds them.
+       */
+      case 'chat_started':
+        this.agentLoop.handleChatStarted?.(payload);
+        break;
+
       case 'thread_opened':
         if (!payload?.ok) {
           this.agentLoop.promptBuilder.pendingRecap = this.agentLoop.conversationHistory;
@@ -600,134 +610,12 @@ export class WebSocketServer {
         }
         break;
 
-      case 'github_pr_comment':
-        // Real-time comment from GitHub content script
-        if (this.githubHandler) {
-          // Emit as if it came from the poller — the classifier/plan generator will handle it
-          this.githubHandler.poller.emit('new_comment', {
-            pr: {
-              number: payload.pr.number,
-              title: payload.pr.title || `PR #${payload.pr.number}`,
-              html_url: payload.pr.url || `https://github.com/${payload.pr.full_name}/pull/${payload.pr.number}`,
-              head_ref: payload.pr.head_ref || 'unknown',
-              head_sha: null,
-              repo: {
-                owner: payload.pr.owner,
-                name: payload.pr.repo,
-                full_name: payload.pr.full_name,
-              },
-              key: `${payload.pr.full_name}#${payload.pr.number}`,
-            },
-            comment: payload.comment,
-          });
-        }
-        break;
-
-      case 'github_pr_viewing':
-        // Which PR the browser is looking at. Recorded on the client, not
-        // printed: this is routine traffic on a MutationObserver, and a
-        // console.log here writes straight into the frame Ink is repainting —
-        // three copies of "User viewing PR #13" in the transcript was exactly
-        // that. The GitHub tab is where this belongs if it is ever surfaced.
-        if (payload?.pr) {
-          this.viewingPR = { number: payload.pr.number, repo: payload.pr.full_name };
-        }
-        break;
-
       default:
         logError(this.agentLoop?.workspace, {
           flow: 'bridge', op: 'unknown_message',
           message: `Unknown message type: ${type}`,
         });
     }
-  }
-
-  // ── GitHub Event Wiring ─────────────────────────────────────────
-
-  _wireGitHubEvents() {
-    // Errors reach the UI through the same queue as everything else. They used
-    // to be console.error'd from main.js, which writes straight into the frame
-    // Ink is repainting: the message corrupts the layout and is gone on the
-    // next render.
-    const pushError = (data, fatal) => {
-      this.pendingGitHubNotifications.push({
-        id: randomUUID(),
-        type: fatal ? 'github_auth_rejected' : 'github_error',
-        payload: data,
-        timestamp: Date.now(),
-      });
-      if (this.pendingGitHubNotifications.length > 200) this.pendingGitHubNotifications.shift();
-    };
-    this.githubHandler.on('error', (data) => pushError(data, false));
-    this.githubHandler.on('auth_rejected', (data) => pushError(data, true));
-
-    this.githubHandler.on('notification', (data) => {
-      const msg = {
-        id: randomUUID(),
-        type: 'github_notification',
-        payload: data,
-        timestamp: Date.now(),
-      };
-      this.pendingGitHubNotifications.push(msg);
-      if (this.pendingGitHubNotifications.length > 200) this.pendingGitHubNotifications.shift();
-    });
-
-    this.githubHandler.on('processing_started', (data) => {
-      this.pendingGitHubNotifications.push({
-        id: randomUUID(),
-        type: 'github_processing_started',
-        payload: data,
-        timestamp: Date.now(),
-      });
-      if (this.pendingGitHubNotifications.length > 200) this.pendingGitHubNotifications.shift();
-    });
-
-    this.githubHandler.on('processing_finished', (data) => {
-      this.pendingGitHubNotifications.push({
-        id: randomUUID(),
-        type: 'github_processing_finished',
-        payload: data,
-        timestamp: Date.now(),
-      });
-      if (this.pendingGitHubNotifications.length > 200) this.pendingGitHubNotifications.shift();
-    });
-
-    this.githubHandler.on('plan_generated', (data) => {
-      const payload = {
-        type: data.type,
-        prNumber: data.pr.number,
-        prTitle: data.pr.title,
-        filePath: data.filePath,
-        isNew: data.isNew,
-        category: data.classification?.category || data.type,
-        comment: data.comment,
-        // Whether there is an analysis in that file, and enough of the PR to
-        // run one if there is not. Without these, pressing enter could only
-        // ever open the file — including when the file is a placeholder saying
-        // no analysis ran.
-        analysed: data.analysed !== false,
-        pr: data.pr,
-      };
-      
-      const msg = {
-        id: randomUUID(),
-        type: 'github_plan_generated',
-        payload: payload,
-        timestamp: Date.now(),
-      };
-      
-      this.pendingGitHubNotifications.push(msg);
-      this.broadcast('extension', msg);
-    });
-  }
-
-  /**
-   * Get and clear pending GitHub notifications (for CLI display).
-   */
-  getGitHubNotifications() {
-    const notifications = [...this.pendingGitHubNotifications];
-    this.pendingGitHubNotifications = [];
-    return notifications;
   }
 
   async _handleUserMessage(clientId, messageId, payload) {
@@ -738,12 +626,7 @@ export class WebSocketServer {
     // Set up callbacks so the agent loop can send messages back
     const callbacks = {
       sendToPanel: (msg) => this.broadcast('extension', msg),
-      injectPrompt: (msg) => this.broadcast('extension', {
-        id: randomUUID(),
-        type: 'inject_prompt',
-        payload: msg,
-        timestamp: Date.now(),
-      }),
+      injectPrompt: (msg) => this.sendInjectPrompt(msg),
       requestDiffApproval: (diff) => this.broadcast('extension', {
         id: randomUUID(),
         type: 'diff_request',
@@ -788,6 +671,57 @@ export class WebSocketServer {
    * Broadcast a message to all clients of a given type.
    * Returns true if at least one client received the message.
    */
+  /**
+   * Send a prompt to the extension, or hold it until there is an extension.
+   *
+   * The delivery question is not "is a client connected" but "did anyone
+   * receive this", which is what `broadcast`'s return value answers and what
+   * every caller used to throw away.
+   *
+   * A held prompt is still owed an answer: the lane that dispatched it is busy
+   * and its watchdog is running, so flushing on reconnect resumes a turn that
+   * is genuinely still waiting. Past the watchdog it is not — the loop has
+   * already given up and typing it into Gemini would start a conversation
+   * nobody is listening to — so stale entries are dropped rather than sent.
+   */
+  sendInjectPrompt(msg) {
+    const message = {
+      id: randomUUID(),
+      type: 'inject_prompt',
+      payload: msg,
+      timestamp: Date.now(),
+    };
+    if (this.broadcast('extension', message)) return true;
+
+    this.pendingInjects.push({ message, queuedAt: Date.now() });
+    // Bounded so a long offline stretch cannot grow without limit. The oldest
+    // go first: they are the ones closest to their watchdog.
+    while (this.pendingInjects.length > MAX_PENDING_INJECTS) this.pendingInjects.shift();
+    return false;
+  }
+
+  /**
+   * The extension is back — send it what it missed.
+   *
+   * Called when a client identifies as an extension, not on socket open: the
+   * socket is open before we know what is on the other end of it, and the side
+   * panel connects over the same transport.
+   */
+  flushPendingInjects() {
+    if (this.pendingInjects.length === 0) return 0;
+
+    const now = Date.now();
+    const queued = this.pendingInjects;
+    this.pendingInjects = [];
+
+    let sent = 0;
+    for (const entry of queued) {
+      if (now - entry.queuedAt > INJECT_BUFFER_TTL_MS) continue;
+      if (this.broadcast('extension', entry.message)) sent++;
+    }
+    return sent;
+  }
+
   broadcast(clientType, message) {
     let sentCount = 0;
     for (const [id, client] of this.clients) {

@@ -54,6 +54,99 @@ export function looksLikeMultipleDrafts(text) {
 
 
 /**
+ * Two halves, and both are load-bearing — measured against a corpus.
+ *
+ * The old pattern asked for an inability phrase and then, loosely, for any of
+ * `execute|run|access|read|...` within 60 characters of any of
+ * `local|file|directory|command|...`. That window is wide enough to span two
+ * clauses, so **"I read the file and I can't see any problem with the parser
+ * — the local variable is fine"** matched: an ordinary finding, classified as
+ * a refusal. The cost is not a stray log line — the caller throws the reply
+ * away and re-asks, so a correct answer is destroyed.
+ *
+ * And it missed real ones. Two denials seen in use inside a single day:
+ *
+ *     "the local file system tools listed in your prompt ... are not actively
+ *      connected to my execution engine"
+ *     "The tools you listed are not available in my current environment."
+ *
+ * Both are passive. The model is not saying *it* cannot; it is saying the
+ * tools are not wired up — so the inability half has to include that voice.
+ *
+ * The cure for the false positives is the *subject*, not a narrower window: a
+ * genuine denial is about the agent's tooling or the box it runs in, while an
+ * ordinary answer saying "can't" is about code. `local scope`, `local
+ * variable` and `the test file` are no longer objects; `local disk`, `file
+ * system`, `execution environment` and `shell commands` are.
+ */
+const DENIAL_INABILITY = new RegExp(
+  '(?:'
+  // "I cannot", "I can't", "I am unable to" — with a short gap allowed, so
+  // "I am running in a sandbox and cannot reach..." is caught. Bounded to one
+  // sentence: no ., !, ? or newline may appear inside the gap.
+  + String.raw`\bI\b[^.!?\n]{0,40}?\b(?:cannot|can'?t|can\s+not|unable\s+to)\b`
+  + String.raw`|\bI\s*(?:'m|\s+am)?\s*(?:do\s+not|don'?t)\s+have\b`
+  // The passive voice, which is how both denials seen in use were phrased.
+  + String.raw`|\b(?:are|is|aren'?t|isn'?t)\s+not\s+(?:\w+\s+){0,2}(?:connected|available|enabled|accessible|wired|hooked)\b`
+  + String.raw`|\bas\s+an\s+AI(?:\s+language\s+model)?\b`
+  + ')',
+  'i',
+);
+
+/**
+ * What the denial has to be *about* — the agent's tools, or the box it runs in.
+ *
+ * Deliberately excludes a bare `file`, `files` and `command`: those are what
+ * an ordinary answer talks about, and they were the whole false-positive
+ * surface.
+ */
+const DENIAL_SUBJECT = new RegExp(
+  '(?:'
+  // Not `mcp/tools/`. A path is not a claim about tooling, and in this repo
+  // that directory is a thing an ordinary answer mentions by name.
+  + String.raw`(?<![\w/])tools?\b(?!/)`
+  + String.raw`|\bfile\s?system\b`
+  + String.raw`|\bexecution\s+(?:engine|environment|context)\b`
+  + String.raw`|\b(?:live\s+)?backend\b`
+  + String.raw`|\bsandbox\b`
+  + String.raw`|\bshell\s+commands?\b`
+  + String.raw`|\bterminal\b`
+  + String.raw`|\blocal\s+(?:machine|disk|terminal|runtime|file\s?system|files?|commands?|environment)\b`
+  + String.raw`|\byour\s+(?:local\s+)?(?:machine|computer|disk|files?|file\s?system)\b`
+  + ')',
+  'i',
+);
+
+/**
+ * The other shape a denial takes: "I can't *do* the thing the tools do."
+ *
+ * `"I can't read files in that directory."` names no environment, so the
+ * subject list above cannot see it — and it is a real denial.
+ *
+ * The discriminator is that the inability attaches **directly** to a verb the
+ * tools perform. The old pattern allowed 60 characters between any such verb
+ * and any such object, searched independently of the inability, which is how
+ * it read `"I read the file and I can't see any problem … the local
+ * variable"` as a refusal. Here the verb has to follow the negation almost
+ * immediately, so `can't **see**`, `can't **reproduce**`, `can't **find**`
+ * and `can't **make**` — the four ways an ordinary answer says it — do not
+ * qualify, because none of them is a tool's verb.
+ */
+const DENIAL_ACTION = new RegExp(
+  String.raw`\b(?:cannot|can'?t|can\s+not|unable\s+to|do\s+not|don'?t)\s+`
+  // Four, not two: "do not **have the ability to** read files" is the same
+  // denial with a politer run-up. Verified against the negatives — none of
+  // `can't see`, `can't reproduce`, `can't find`, `can't make` or `can't
+  // tell` reaches a tool verb inside that window.
+  + String.raw`(?:\w+\s+){0,4}`
+  + String.raw`\b(?:read|write|execute|run|access|open|list|browse|modify|create|delete)\b\s+`
+  + String.raw`(?:\w+\s+){0,3}`
+  + String.raw`\b(?:files?|directory|directories|folder|commands?|code|repo|repository)\b`,
+  'i',
+);
+
+
+/**
  * Has the model forgotten it has tools?
  *
  * The failure this catches, verbatim from a real turn:
@@ -80,24 +173,11 @@ export function looksLikeMultipleDrafts(text) {
  */
 export function looksLikeCapabilityDenial(text) {
   if (typeof text !== 'string' || text.length === 0) return false;
-  // A denial is short and up front. A long answer that happens to contain these
-  // words is answering the question, not refusing it.
+  // A denial is short and up front. A long answer that happens to contain
+  // these words is answering the question, not refusing it.
   const head = text.slice(0, 600);
-
-  const inability = new RegExp(
-    String.raw`\b(?:`
-      // "I cannot", "I can't", "I'm unable to", "I am unable to",
-      // "I don't have access", "I do not have the ability"
-      + String.raw`I\s*(?:'m|\s+am)?\s*(?:cannot|can'?t|can\s+not|unable\s+to`
-      + String.raw`|(?:do\s+not|don'?t)\s+have\s+(?:the\s+)?(?:ability|access|permission))`
-      + String.raw`|as\s+an\s+AI(?:\s+language\s+model)?,?\s+I\s+(?:cannot|can'?t|don'?t)`
-      + String.raw`)`,
-    'i',
-  );
-  if (!inability.test(head)) return false;
-
-  const capability = /\b(?:execute|run|access|read|write|browse|list|open)\b[^.!?\n]{0,60}\b(?:local|file\s*system|filesystem|files?|directory|directories|folder|command|terminal|shell|your\s+(?:machine|computer|disk))\b/i;
-  return capability.test(head);
+  if (!DENIAL_INABILITY.test(head)) return false;
+  return DENIAL_SUBJECT.test(head) || DENIAL_ACTION.test(head);
 }
 
 

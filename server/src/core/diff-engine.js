@@ -12,6 +12,29 @@ import { resolve, dirname, relative, isAbsolute, join } from 'path';
 import { createPatch, applyPatch, structuredPatch } from 'diff';
 import { randomUUID } from 'crypto';
 
+/**
+ * How many **positions** `needle` occupies in `haystack`, overlaps included.
+ *
+ * Positions, not non-overlapping occurrences, and the two disagree: `aa` in
+ * `aaa` is one occurrence and two positions. The number is the answer to
+ * "how many places could the model have meant", and it is also the gate on
+ * whether the edit is refused — so counting it one way and testing it
+ * another produced `ambiguous: 1`, which reads as nonsense and refused
+ * nothing consistently.
+ *
+ * `split().length - 1` is the one-liner and is the non-overlapping answer.
+ */
+function countOccurrences(haystack, needle) {
+  if (!needle) return 0;
+  let n = 0;
+  let at = haystack.indexOf(needle);
+  while (at !== -1) {
+    n += 1;
+    at = haystack.indexOf(needle, at + 1);
+  }
+  return n;
+}
+
 export class DiffEngine {
   constructor(workspace) {
     this.workspace = workspace;
@@ -44,19 +67,54 @@ export class DiffEngine {
       // For new files, edits contain the full content
       newContent = edits[0]?.newText || edits[0]?.content || '';
     } else {
+      /**
+       * Write back the endings the file already had.
+       *
+       * The fuzzy tier matches a CRLF span with an LF `oldText` — that is the
+       * point of it — and then `newText` carries LF, so the edited region
+       * comes back converted while the rest of the file does not. Measured:
+       * `function f() {\r\n  return 1;\r\n}\r\n` became
+       * `function f() {\n  return 2;\n}\r\n`.
+       *
+       * Single-line edits never showed it, because they match exactly and
+       * contain no newline. Multi-line edits are most real edits, so on a
+       * CRLF repo every touched block became a whole-block diff and the file
+       * ended up mixed.
+       *
+       * Decided from the *original* content, once, rather than per edit: a
+       * file's endings are a property of the file, and reading them from
+       * `newContent` would let the first edit's answer decide the rest.
+       */
+      const crlf = /\r\n/.test(originalContent)
+        && (originalContent.match(/\r\n/g) || []).length
+           >= (originalContent.match(/(?<!\r)\n/g) || []).length;
+
       // Apply search-and-replace edits
       for (const edit of edits) {
         if (edit.oldText && edit.newText !== undefined) {
           const match = this._findMatch(newContent, edit.oldText);
+          if (match && match.ambiguous) {
+            // Named, with the count and what to do about it — the standard
+            // the rest of the tool errors hold themselves to. "Not found"
+            // would send the model looking for the text it can plainly see.
+            throw new Error(
+              `Edit target is ambiguous in ${relPath}: it matches ${match.ambiguous} places. `
+              + 'Include more surrounding context in oldText so it identifies exactly one.\n'
+              + `  Looking for: ${edit.oldText.substring(0, 80)}...`
+            );
+          }
           if (!match) {
             throw new Error(
               `Edit target not found in ${relPath} (even with fuzzy matching):\n` +
               `  Looking for: ${edit.oldText.substring(0, 80)}...`
             );
           }
+          const replacement = crlf
+            ? edit.newText.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n')
+            : edit.newText;
           newContent =
             newContent.substring(0, match.index) +
-            edit.newText +
+            replacement +
             newContent.substring(match.index + match.length);
         }
       }
@@ -232,27 +290,53 @@ export class DiffEngine {
 
   // ── Private Methods ──────────────────────────────────────────────
 
+  /**
+   * Where `targetText` is in `content` — and only if there is one answer.
+   *
+   * Two tiers: exact, then whitespace-insensitive. The second escapes every
+   * regex special *except* whitespace and rewrites each whitespace run as
+   * `\s+`, which is what makes it survive a reindent and a CRLF file. It is
+   * deliberately not looser than that: `\s+` cannot cross non-whitespace, so
+   * it can never weld together two fragments that had code between them.
+   *
+   * **The tiers count their matches, and more than one is a refusal.** Both
+   * used to take the first and say nothing. Measured end to end: a file with
+   * two identical `return null;` blocks, an edit meant for the second, and
+   * the first is rewritten — silently, with a diff that looks entirely
+   * plausible because the change is real and in a real place.
+   *
+   * That is the brittleness that actually bites, and it is the opposite of
+   * the usual diagnosis. A *fuzzier* matcher makes it strictly worse: it
+   * creates more candidates for the same first-wins rule. The cure is to
+   * refuse and say how many, which is something the model can act on.
+   *
+   * @returns {{index: number, length: number} | {ambiguous: number} | null}
+   */
   _findMatch(content, targetText) {
-    // 1. Try exact match first
+    // 1. Exact. A unique exact hit is unambiguous by construction, and must
+    //    not be spoiled by what the looser pattern would also have matched.
     const exactIdx = content.indexOf(targetText);
-    if (exactIdx !== -1) return { index: exactIdx, length: targetText.length };
+    if (exactIdx !== -1) {
+      const places = countOccurrences(content, targetText);
+      if (places > 1) return { ambiguous: places };
+      return { index: exactIdx, length: targetText.length };
+    }
 
-    // 2. Try fuzzy whitespace matching
-    // Escape all regex specials EXCEPT whitespace
+    // 2. Whitespace-insensitive.
     const escaped = targetText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Replace sequences of literal whitespace with a flexible whitespace matcher
     const regexStr = escaped.replace(/\s+/g, '\\s+');
-    
+
     try {
-      const regex = new RegExp(regexStr);
-      const match = content.match(regex);
-      if (match) {
-        return { index: match.index, length: match[0].length };
+      const regex = new RegExp(regexStr, 'g');
+      const matches = [...content.matchAll(regex)];
+      if (matches.length > 1) return { ambiguous: matches.length };
+      if (matches.length === 1) {
+        return { index: matches[0].index, length: matches[0][0].length };
       }
     } catch (e) {
       // Fallback if regex compilation fails due to size or weird characters
     }
-    
+
     return null;
   }
 

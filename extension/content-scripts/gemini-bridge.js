@@ -1,4 +1,29 @@
 /**
+ * Wrapped in an IIFE so this file can be injected twice.
+ *
+ * Every `const` below used to be at the top level of the content-script world,
+ * and that world **survives** the script that created it. So re-injecting into
+ * a tab that already had a copy threw
+ * `Uncaught SyntaxError: Identifier 'RESPONSE_IDLE_TIMEOUT' has already been
+ * declared` on line one, and the fresh copy never evaluated at all.
+ *
+ * Which quietly disabled the repair that needed it most. `sendWithRepairs`'s
+ * `reinject` stage exists for exactly one case — a content script orphaned by
+ * an extension reload, "the commonest cause by far" — and that is precisely
+ * the case where a copy is already there to collide with. The stage did
+ * nothing, `waitForBridge` then burned its 3s budget waiting for a script that
+ * had failed to load, and the only sign was an entry on
+ * `chrome://extensions`. Seen twice.
+ *
+ * Function scope fixes the collision. The handover beside `invalidate()` fixes
+ * the other half: skipping is not enough, because the goal is to *replace* an
+ * orphan, and an orphan still owns live MutationObservers and timers in this
+ * page. It already knows how to stop — `onInvalidated` — it was just never
+ * told, because nothing tells it until its next `safeSend` notices.
+ */
+(() => {
+
+/**
  * Gemini Bridge — Content Script
  *
  * Injected into gemini.google.com pages. Handles:
@@ -138,7 +163,28 @@ const traceMark = (stage) => {
   turnTrace.last = now;
 };
 let lastActivityTime = 0;
+/**
+ * How long the reply must stop growing before it counts as settled, and how
+ * many consecutive checks must agree. See `quietStreak` for what went wrong
+ * with one check and one second.
+ */
+const RESPONSE_SETTLE_MS = 1500;
+const RESPONSE_SETTLE_CHECKS = 2;
+/**
+ * How many times a reply that ends mid-construct may hold the turn open.
+ *
+ * Bounded so a reply that genuinely ends on an unclosed backtick is still
+ * delivered rather than waiting out the five-minute cap. At the confirming
+ * cadence this is a few seconds, which is the length of a code-block render and
+ * far short of the model actually stopping.
+ */
+const UNFINISHED_GRACE_CHECKS = 6;
+
 let activityCheckTimer = null;
+/** The in-flight turn's completion check, or null between turns. */
+let completionCheck = null;
+/** Whether the in-flight turn is one observation short of settled. */
+let quietPending = () => false;
 let currentRequestData = null;
 let sawGenerating = false;
 
@@ -198,6 +244,22 @@ function invalidate() {
     try { stop(); } catch {}
   }
 }
+
+/*
+ * Take over from a copy already in this page.
+ *
+ * The isolated world persists across injections, so a previous bridge may
+ * still be observing the DOM and running timers. Its `chrome.runtime.id` is
+ * already gone — `bridgeAlive()` knows — but nothing had told it to stop, so
+ * it kept ticking until something happened to call `safeSend`.
+ *
+ * Calling the previous `invalidate` here runs its `onInvalidated` hooks
+ * immediately: observers disconnected, timers cleared. Then we register ours
+ * for whoever replaces us. Order matters — stop the old one before overwriting
+ * the handle, or it can never be reached again.
+ */
+try { window.__agentBridgeStop?.(); } catch { /* an orphan that cannot stop is still stopped */ }
+window.__agentBridgeStop = invalidate;
 
 /** Send, or quietly give up. Never throws, never rejects. */
 function safeSend(message) {
@@ -569,12 +631,31 @@ function startResponseObserver() {
   stopResponseObserver();
   lastResponseText = '';
   responseStartTime = Date.now();
-  traceMark('first_token');
   lastActivityTime = Date.now();
   sawGenerating = false;
 
   let lastStreamedText = '';
   let streamingUpdateTimer = null;
+  /**
+   * Consecutive checks that saw no Stop button.
+   *
+   * One sample was enough to end the turn, and that was only safe while the
+   * check was being throttled to roughly once a minute in a hidden tab — a
+   * transient gap was almost never *sampled*. Now the service worker drives
+   * this on a reliable 2s cadence, so those gaps get caught, and a reply was
+   * truncated mid-token ("output a single `") while Gemini was still writing.
+   *
+   * Gemini pauses longer than a second between sections, and the Stop button
+   * is absent for a moment while the composer re-renders. Either alone looks
+   * exactly like "finished". Requiring the condition to hold across two
+   * consecutive checks costs a couple of seconds at the end of a turn and
+   * makes both transients unrepresentable.
+   */
+  let quietStreak = 0;
+  let unfinishedHolds = 0;
+  // Read by the `tick_completion` reply so the worker can come back quickly
+  // for the confirming observation instead of waiting out a whole interval.
+  quietPending = () => quietStreak > 0 && quietStreak < RESPONSE_SETTLE_CHECKS;
 
   responseObserver = new MutationObserver((mutations) => {
     // Only process if a NEW response element has appeared
@@ -586,6 +667,16 @@ function startResponseObserver() {
     const currentResponse = extractLatestResponse();
 
     if (currentResponse && currentResponse !== lastResponseText) {
+      /**
+       * The first text Gemini actually produced.
+       *
+       * This was marked in `startResponseObserver`, one line after the send —
+       * so it measured the gap between two adjacent statements and read 0ms
+       * or 1ms on all 74 recorded turns. The number it was named for, and the
+       * only one that separates *Gemini thinking* from *our overhead*, was
+       * never captured: everything went into `complete`.
+       */
+      if (!lastResponseText) traceMark('first_token');
       lastResponseText = currentResponse;
       lastActivityTime = Date.now(); // Reset activity timer
 
@@ -620,7 +711,25 @@ function startResponseObserver() {
   // Activity checker: runs every 2s to dynamically detect completion
   // We add an initial delay of 3 seconds before checking for the stop button,
   // because the stop button takes a moment to appear after clicking send.
-  activityCheckTimer = setInterval(() => {
+/**
+ * The completion check, callable by whoever still has a working clock.
+ *
+ * Measured in a genuinely hidden tab (example.com, 30s window, Chrome 152):
+ * a page `setInterval(100ms)` delivered **0.98/s**, and by 90s hidden it was
+ * down to **0.03/s** — roughly one tick per half-minute. Over the same window
+ * a `MutationObserver` delivered **9.97/s** and `getBoundingClientRect()`
+ * returned a real box 296 times out of 296.
+ *
+ * So the evidence is fine and the predicate is fine. The *clock* is the only
+ * thing Chrome throttles, and it is the whole reason this bridge activates
+ * the model tab and holds your focus for the length of a turn.
+ *
+ * The service worker is not a tab and is not throttled, so it drives this at
+ * full rate over `tick_completion`. The local interval stays as a backstop
+ * for the case the worker has been evicted mid-turn — throttled to uselessness
+ * while hidden, correct when the tab is in front, and free either way.
+ */
+  const runCompletionCheck = () => {
     const now = Date.now();
     const totalElapsed = now - responseStartTime;
     const silenceDuration = now - lastActivityTime;
@@ -628,24 +737,9 @@ function startResponseObserver() {
     // Do not check for completion in the first 3 seconds to allow the DOM to update
     if (totalElapsed < 3000) return;
 
-    // Detect and dismiss Gemini A/B test dialog ("Which response is more helpful?")
-    // These dialogs block the UI and prevent completion
-    const abTestTitle = document.querySelector('h2, .title');
-    if (abTestTitle && abTestTitle.textContent.toLowerCase().includes('which response is more helpful')) {
-      // `:has-text()` is Playwright syntax, not CSS. querySelector threw a
-      // SyntaxError on it, which aborted this whole block before the text search
-      // below could run — so the dialog was never actually dismissed.
-      let btnToClick = document.querySelector('.choice-a, [aria-label*="Choice A" i], [aria-label*="Choice 1" i]');
-      if (!btnToClick) {
-        const buttons = Array.from(document.querySelectorAll('button'));
-        btnToClick = buttons.find(b => b.textContent.includes('Choice A') || b.textContent.includes('Choice 1'));
-      }
-
-      if (btnToClick) {
-        console.warn('[Gemini Bridge] Detected A/B test dialog! Auto-selecting Choice A to dismiss it.');
-        btnToClick.click();
-        lastActivityTime = Date.now(); // reset timeout to allow extraction
-      }
+    // Gemini's A/B modal blocks the turn until something is chosen.
+    if (dismissChoiceDialog()) {
+      lastActivityTime = Date.now(); // reset timeout to allow extraction
     }
 
     // Check if the "Stop Generating" button exists in the DOM and is visible
@@ -661,10 +755,33 @@ function startResponseObserver() {
     }
     if (isGenerating) sawGenerating = true;
 
-    // If Gemini has stopped generating (no stop button) AND we have some text, it's done!
-    // We add a tiny 1-second silence buffer to ensure the DOM is fully settled.
-    if (!isGenerating && lastResponseText && silenceDuration >= 1000) {
-      console.log('[Gemini Bridge] Generation finished (Stop button disappeared + 1s settled)');
+    // Finished means: no Stop button, the text has stopped growing, and both
+    // were still true on the next check. `silenceDuration` is time since the
+    // observer last saw the response change, so it is already "the text
+    // stopped growing" — it was just far too short on its own.
+    quietStreak = nextQuietStreak(quietStreak, {
+      isGenerating,
+      hasText: Boolean(lastResponseText),
+      silenceMs: silenceDuration,
+    });
+
+    /*
+     * A reply that stops mid-construct is a pause, not an ending — but only
+     * for so long. `UNFINISHED_GRACE_CHECKS` bounds it, because a reply that
+     * genuinely ends on an unclosed backtick must still be delivered rather
+     * than waiting out the five-minute cap. Past the grace it is accepted as
+     * it stands, which is what happened before this existed.
+     */
+    if (quietStreak >= RESPONSE_SETTLE_CHECKS && looksUnfinished(lastResponseText)) {
+      unfinishedHolds += 1;
+      if (unfinishedHolds <= UNFINISHED_GRACE_CHECKS) {
+        console.log(`[Gemini Bridge] Quiet, but the reply ends mid-construct — waiting (${unfinishedHolds}/${UNFINISHED_GRACE_CHECKS})`);
+        quietStreak = 0;
+      }
+    }
+
+    if (quietStreak >= RESPONSE_SETTLE_CHECKS) {
+      console.log(`[Gemini Bridge] Generation finished (quiet for ${quietStreak} checks)`);
       clearInterval(streamingUpdateTimer);
       onResponseComplete(lastResponseText);
       return;
@@ -679,7 +796,22 @@ function startResponseObserver() {
       stopResponseObserver();
       safeSend({
         type: 'gemini_response',
-        payload: { content: diagnosis, complete: false, timedOut: true },
+        payload: {
+          content: diagnosis,
+          complete: false,
+          timedOut: true,
+          /**
+           * Did the model ever see this turn?
+           *
+           * `sawGenerating` is the honest answer, and it decides whether the
+           * agent may retry. Generation started and we failed to read it ->
+           * the model HAS an answer, and resending would ask it twice into a
+           * thread that already holds the first reply. Generation never
+           * started and nothing was scraped -> the submit did not happen, so
+           * sending again is the first attempt landing, not a repeat.
+           */
+          neverSubmitted: !isGenerating && !sawGenerating,
+        },
       });
       return;
     }
@@ -706,7 +838,112 @@ function startResponseObserver() {
       clearInterval(streamingUpdateTimer);
       onResponseComplete(lastResponseText);
     }
-  }, 2000);
+  };
+
+  completionCheck = runCompletionCheck;
+  activityCheckTimer = setInterval(runCompletionCheck, 2000);
+}
+
+/**
+ * How many consecutive checks have now seen a finished reply.
+ *
+ * Pulled out as a function because it is the whole of the fix and the
+ * regression is invisible in review: setting `RESPONSE_SETTLE_CHECKS` back to
+ * 1 reads like a harmless tightening and silently restores truncated replies.
+ *
+ * @param {number} streak  the count so far
+ * @param {{isGenerating: boolean, hasText: boolean, silenceMs: number}} now
+ * @returns {number} the new count; 0 means "still going"
+ */
+function nextQuietStreak(streak, now) {
+  const settled = !now.isGenerating && now.hasText && now.silenceMs >= RESPONSE_SETTLE_MS;
+  return settled ? streak + 1 : 0;
+}
+
+/**
+ * Does this reply stop in the middle of something?
+ *
+ * The quiet rule watches the *page*: no Stop button, and text that has not
+ * changed for 1.5s, twice over. A code block starting to render looks exactly
+ * like that — the Stop button flickers while the composer re-renders and the
+ * text pauses while the fence is built. Observed three times in one turn, each
+ * reply ending at a backtick, each followed by the model carrying on into a
+ * `stale_response`.
+ *
+ * So the *content* gets a veto the page cannot give: an odd number of code
+ * fences, or a trailing unclosed inline backtick, means Gemini was mid-construct
+ * and the silence was a pause rather than an ending.
+ *
+ * Deliberately narrow. Prose that merely stops abruptly is not detectable and
+ * is not claimed to be — this only catches the case where the markup itself
+ * says the text is incomplete, which is the case that was happening.
+ */
+function looksUnfinished(text) {
+  const t = String(text || '');
+  if (!t) return false;
+  if ((t.match(/```/g) || []).length % 2 === 1) return true;
+  // A lone backtick on the final line, with nothing closing it.
+  const lastLine = t.slice(t.lastIndexOf('\n') + 1);
+  return (lastLine.match(/`/g) || []).length % 2 === 1;
+}
+
+/**
+ * Gemini's "Which response is more helpful?" modal, answered so the turn ends.
+ *
+ * The modal holds two complete replies and will not resolve to one until a
+ * button is pressed, so a turn that meets it simply never finishes. It shows
+ * up most on large prompts — which is why `PromptBuilder` tiers them at all.
+ *
+ * **Choosing beats retrying.** Re-sending the prompt costs a whole turn, can
+ * raise the same modal again, and leaves two half-answers in the thread. One
+ * click resolves it to a single reply that the existing scrape then reads
+ * normally — and "one answer per turn" is a standing product decision, so
+ * surfacing both to the user was never an option either.
+ *
+ * It takes the **first** choice, deliberately: there is no signal available
+ * here that would make a quality judgement anything but a coin toss dressed
+ * up as one, and a deterministic pick is at least reproducible.
+ *
+ * Two faults this had, both of which meant it never fired:
+ *
+ *  - `document.querySelector('h2, .title')` returns the FIRST such node in the
+ *    document, not the dialog's. Any other heading above it and the check was
+ *    answered by the wrong element.
+ *  - It hunted for a button reading `Choice A`. The real control is labelled
+ *    **"This response is more helpful"**, with the text down in a nested
+ *    `<span>`. No selector matched, so nothing was ever clicked.
+ *
+ * The earlier repair here fixed a `:has-text()` SyntaxError and stopped there,
+ * because the actual DOM had not been seen. It has now.
+ *
+ * @returns {boolean} whether a choice was made
+ */
+function dismissChoiceDialog() {
+  const asks = (el) => (el.textContent || '').toLowerCase().includes('which response is more helpful');
+  const heading = Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"], .title'))
+    .find(asks);
+  if (!heading) return false;
+
+  const buttons = Array.from(document.querySelectorAll('button'));
+  const labelled = (b) => (b.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+  // DOM order is left-to-right, so the first match is Choice A.
+  let pick = buttons.find((b) => labelled(b).includes('this response is more helpful'));
+
+  // Older or differently-bucketed variants, kept as fallbacks rather than
+  // removed: this modal is an experiment and its markup has changed before.
+  if (!pick) {
+    pick = buttons.find((b) => {
+      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+      return aria.includes('choice a') || aria.includes('choice 1');
+    });
+  }
+  if (!pick) pick = document.querySelector('.choice-a');
+  if (!pick) return false;
+
+  console.warn('[Gemini Bridge] A/B modal — taking the first choice to unblock the turn.');
+  pick.click();
+  return true;
 }
 
 /**
@@ -747,6 +984,8 @@ function stopResponseObserver() {
   }
   clearInterval(activityCheckTimer);
   activityCheckTimer = null;
+  completionCheck = null;
+  quietPending = () => false;
 }
 
 /**
@@ -1179,6 +1418,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const { type, payload } = message;
 
   switch (type) {
+    /**
+     * Readiness probe. The service worker polls this instead of sleeping a
+     * fixed number of milliseconds after opening or re-injecting into a tab.
+     *
+     * Two answers, because they fail differently. `ready` means this script is
+     * listening and not orphaned. `canType` means the composer is actually in
+     * the DOM — which is the real precondition for an inject, and the reason
+     * the old waits were seconds long rather than milliseconds.
+     */
+    /**
+     * The service worker driving the completion check on its own clock.
+     *
+     * `watching` tells it whether a turn is still in flight, so it can stop
+     * ticking the moment there is nothing to check rather than on a timer of
+     * its own. Message delivery is an event, not a timer, so this arrives at
+     * full rate in a hidden tab — which a `setInterval` in this page does not.
+     */
+    case 'tick_completion':
+      if (completionCheck) completionCheck();
+      sendResponse({
+        watching: !!completionCheck,
+        /**
+         * "I am one observation away from done — come back sooner."
+         *
+         * Measured over 74 real turns: every `complete` lands on a ~2000ms
+         * boundary (6004, 8966, 10001, 16002, 30064…), because the answer is
+         * only noticed on the next tick. A reply that truly finished at 4.2s
+         * is delivered at 6s, and the debounce that stopped replies being
+         * truncated added a second whole tick on top.
+         *
+         * The debounce is not the problem — two independent observations is
+         * the right rule. Waiting a *slow* interval for the second one is.
+         */
+        confirmSoon: quietPending(),
+      });
+      break;
+
+    case 'ping':
+      sendResponse({
+        ready: bridgeAlive(),
+        canType: bridgeAlive() && !!findElement(SELECTORS.inputField),
+      });
+      break;
+
     case 'inject_prompt':
       currentRequestData = {
         requestId: payload.requestId,
@@ -1228,9 +1511,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'switch_model':
       selectModelByLabel(payload?.label)
         .then(() => readModelOptions())
+        /*
+         * Report what the picker *reads*, not what we asked it to read.
+         *
+         * `switchedTo` used to echo `payload.label` straight back, so the CLI
+         * said "Browser mode switched to X" whenever the click did not throw —
+         * which is a claim, not an observation. That is why the CLI then told
+         * the user to go and check the picker themselves: the one thing that
+         * could have checked it was throwing the answer away.
+         *
+         * `readModelOptions()` already runs here and `describeModelOption`
+         * already reports `selected`, so the truth was in hand and unused.
+         */
         .then((models) => safeSend({
           type: 'model_options',
-          payload: { models, switchedTo: payload?.label },
+          payload: {
+            models,
+            switchedTo: (models.find((m) => m.selected) || {}).label || null,
+            requested: payload?.label ?? null,
+          },
         }))
         .catch((err) => safeSend({
           type: 'error',
@@ -1289,6 +1588,8 @@ safeSend({
  * message every few seconds.
  */
 const CONNECT_NUDGE_MS = 3000;
+/** Once connected there is nothing to nudge for; this is only a backstop. */
+const CONNECT_NUDGE_IDLE_MS = 30000;
 let keepAlivePort = null;
 
 function connectToServiceWorker() {
@@ -1304,7 +1605,32 @@ function connectToServiceWorker() {
 }
 connectToServiceWorker();
 
-const nudgeTimer = setInterval(() => {
-  safeSend({ type: 'connect' });
-}, CONNECT_NUDGE_MS);
-onInvalidated.push(() => clearInterval(nudgeTimer));
+/**
+ * Nudge hard while disconnected, barely at all once connected.
+ *
+ * This was a flat 3-second `setInterval` that ran for the life of the page, so
+ * an open Gemini tab woke the service worker twenty times a minute forever —
+ * a worker that is never allowed to go idle, to solve a problem that only
+ * exists while there is nothing to connect to. The fast cadence is worth
+ * paying when the agent has just started and the bridge is down; it buys
+ * nothing at all when the socket is already open.
+ *
+ * So the worker answers `connect` with whether it is connected, and the tab
+ * backs off to a slow heartbeat when the answer is yes. A `setTimeout` chain
+ * rather than an interval, because the delay changes between ticks.
+ */
+let nudgeTimer = null;
+
+function scheduleConnectNudge(delay) {
+  nudgeTimer = setTimeout(async () => {
+    const res = await safeSend({ type: 'connect' });
+    // No answer means the worker did not reply — treat that as disconnected
+    // and keep the fast cadence, which is the case this exists for.
+    scheduleConnectNudge(res?.connected ? CONNECT_NUDGE_IDLE_MS : CONNECT_NUDGE_MS);
+  }, delay);
+}
+
+scheduleConnectNudge(CONNECT_NUDGE_MS);
+onInvalidated.push(() => clearTimeout(nudgeTimer));
+
+})();

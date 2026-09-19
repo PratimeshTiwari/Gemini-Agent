@@ -28,9 +28,11 @@ test('extractHotkeys', async (t) => {
   });
 
   await t.test('reports several chords in order', () => {
-    const r = extractHotkeys(`${CTRL_O}x${CTRL_E}`);
+    // ctrl+o was the agent/GitHub tab switch and went with the GitHub agent.
+    // ctrl+t is the other two-chord case and exercises the same ordering.
+    const r = extractHotkeys(`\x14x${CTRL_E}`);
     assert.equal(r.text, 'x');
-    assert.deepEqual(r.hotkeys, ['tabs', 'expand']);
+    assert.deepEqual(r.hotkeys, ['terminal', 'expand']);
   });
 
   await t.test('leaves ctrl+c alone — Ink owns exiting', () => {
@@ -66,4 +68,24 @@ test('extractHotkeys', async (t) => {
       assert.ok(key.charCodeAt(0) < 32, `${JSON.stringify(key)} is not a control byte`);
     }
   });
+});
+
+/*
+ * ctrl+b brings the Gemini tab to the front.
+ *
+ * Three moments need that tab and all three meant hunting through windows: the
+ * model picker after `/effort`, a stalled turn, and the "make sure the Chrome
+ * tab is not minimised" case. A chord is the cheapest possible answer.
+ */
+test('ctrl+b is a hotkey and does not reach the prompt', () => {
+  const r = extractHotkeys('\x02');
+  assert.deepEqual(r.hotkeys, ['focus-browser']);
+  assert.equal(r.text, '', 'the chord would have been typed into the input');
+});
+
+// Every chord must be distinct, or one of them silently shadows another —
+// `ink-text-input` types anything this does not claim.
+test('no two hotkeys share a byte', () => {
+  const bytes = Object.keys(HOTKEYS);
+  assert.equal(new Set(bytes).size, bytes.length);
 });

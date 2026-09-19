@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { describeSettings, filterSettings, SETTING_GROUPS } from '../../src/core/settings.js';
+import { describeSettings, filterSettings, settingsChanged, SETTING_GROUPS } from '../../src/core/settings.js';
 
 /** Enough of an AgentLoop for the page to describe. */
 const loop = (over = {}) => ({
   workspace: '/work/repo',
   mode: 'plan',
-  modelConfig: { main: 'gemini', reviewer: null, effort: 'standard' },
+  modelConfig: { main: 'gemini', subagents: true, effort: 'standard' },
   commandRules: { enabled: true, allow: ['git status'], block: [] },
   memoryManager: { isMemoryEnabled: () => true, getAllMemories: () => ['a', 'b'] },
   skillFolders: [],
@@ -24,17 +24,21 @@ test('describeSettings', async (t) => {
     assert.equal(row(rows, 'Memory').value, 'on');
   });
 
-  await t.test('the reviewer row is where solo and duo become visible', () => {
-    assert.equal(row(describeSettings(loop()), 'Reviewer').value, 'none');
-    const duo = loop({ modelConfig: { main: 'gemini', reviewer: 'chatgpt', effort: 'brief' } });
-    assert.equal(row(describeSettings(duo), 'Reviewer').value, 'chatgpt');
-    assert.match(row(describeSettings(duo), 'Reviewer').hint, /duo/);
+  await t.test('the subagent row is where on and off become visible', () => {
+    assert.equal(row(describeSettings(loop()), 'Subagents').value, 'on');
+    const off = loop({ modelConfig: { main: 'gemini', subagents: false, effort: 'brief' } });
+    assert.equal(row(describeSettings(off), 'Subagents').value, 'off');
+    assert.match(row(describeSettings(off), 'Subagents').hint, /one tab/);
   });
 
-  // A reviewer set to the main model is not a duo — same blind spots.
-  await t.test('a reviewer equal to the main model reads as none', () => {
-    const same = loop({ modelConfig: { main: 'gemini', reviewer: 'gemini' } });
-    assert.equal(row(describeSettings(same), 'Reviewer').value, 'none');
+  /*
+   * Absent means on. A config written before the toggle existed had subagent
+   * tools available, so reading a missing key as "off" would silently take a
+   * capability away from every existing workspace.
+   */
+  await t.test('a config with no subagent key reads as on', () => {
+    const legacy = loop({ modelConfig: { main: 'gemini', effort: 'standard' } });
+    assert.equal(row(describeSettings(legacy), 'Subagents').value, 'on');
   });
 
   await t.test('each row that can be changed says what to run', () => {
@@ -61,7 +65,7 @@ test('describeSettings', async (t) => {
 
 test('filterSettings', async (t) => {
   const rows = describeSettings(loop({
-    modelConfig: { main: 'gemini', reviewer: 'chatgpt', effort: 'deep' },
+    modelConfig: { main: 'gemini', subagents: false, effort: 'deep' },
   }));
 
   await t.test('an empty query is everything', () => {
@@ -76,13 +80,15 @@ test('filterSettings', async (t) => {
   });
 
   await t.test('matches the value, so you can search for what it is set to', () => {
-    assert.ok(filterSettings(rows, 'chatgpt').some((r) => r.label === 'Reviewer'));
+    assert.ok(filterSettings(rows, 'deep').some((r) => r.label === 'Effort'));
   });
 
-  // "duo" appears in no label. It is exactly what someone types to find out
-  // whether a reviewer is on, so the hint has to be searchable too.
+  // "review" appears in no label. It is exactly what someone types to find out
+  // whether subagents are on, so the hint has to be searchable too.
   await t.test('matches the hint', () => {
-    assert.ok(filterSettings(rows, 'duo').some((r) => r.label === 'Reviewer'));
+    const on = describeSettings(loop({ modelConfig: { main: 'gemini', subagents: true } }));
+    assert.ok(filterSettings(on, 'review').some((r) => r.label === 'Subagents'));
+    assert.ok(filterSettings(rows, 'delegated').some((r) => r.label === 'Subagents'));
   });
 
   await t.test('case does not matter', () => {
@@ -120,8 +126,9 @@ test('tabs', async (t) => {
   // Making someone find the right tab before they can search for a setting is
   // asking them to know the answer first.
   await t.test('typing searches every tab, not just the one you are on', () => {
-    const found = filterSettings(rows, 'github', 'Settings');
-    assert.ok(found.some((r) => r.label === 'GitHub'), 'GitHub lives on the Status tab');
+    // 'Workspace' is a Status row, searched for from the Settings tab.
+    const found = filterSettings(rows, 'workspace', 'Settings');
+    assert.ok(found.some((r) => r.label === 'Workspace'), 'Workspace lives on the Status tab');
   });
 
   await t.test('an empty query returns to the tab you were on', () => {
@@ -150,5 +157,56 @@ test('the context tab reports the window', async (t) => {
   await t.test('a loop with no diff engine still renders', () => {
     const rows = describeSettings(loop({ diffEngine: undefined }));
     assert.equal(rows.find((r) => r.label === 'Diffs').value, '0 pending');
+  });
+});
+
+/**
+ * The exit screen reports what you did, not what happened while you were there.
+ *
+ * Reported from use: opening the page, changing nothing, and closing it
+ * announced "2 settings changed — Turns 18 → 19, Session 18 turns kept → 19
+ * turns kept". Both are Context rows, and everything in that group is a readout
+ * that moves on its own — so the screen fired on every exit during an active
+ * session, naming things the person had not done and could not undo. A warning
+ * that is always wrong teaches people to ignore the one that matters.
+ */
+test('settingsChanged only reports settings', async (t) => {
+  const before = describeSettings(loop());
+
+  await t.test('a readout moving on its own is not a change', () => {
+    // Exactly the reported case: the conversation advanced while the page was
+    // open. Nothing here was touched by the person.
+    const after = before.map((r) => (r.group === 'Context'
+      ? { ...r, value: String(Number(r.value) + 1 || `${r.value}!`) }
+      : r));
+    assert.deepEqual(settingsChanged(before, after), []);
+  });
+
+  await t.test('a Status row moving on its own is not a change either', () => {
+    const after = before.map((r) => (r.group === 'Status' ? { ...r, value: 'something else' } : r));
+    assert.deepEqual(settingsChanged(before, after), []);
+  });
+
+  // The control. Narrowing to one group must not stop it reporting a real one.
+  await t.test('an actual setting still reports, with a way back', () => {
+    const after = describeSettings(loop({
+      modelConfig: { main: 'gemini', subagents: false, effort: 'standard' },
+    }));
+    const changes = settingsChanged(before, after);
+
+    const row = changes.find((c) => c.label === 'Subagents');
+    assert.ok(row, `Subagents not reported; got ${JSON.stringify(changes.map((c) => c.label))}`);
+    assert.equal(row.from, 'on');
+    assert.equal(row.to, 'off');
+    assert.match(row.restore, /subagents on/);
+  });
+
+  // A genuine setting with no undo is still a change worth naming — which is
+  // why the group is the test rather than the presence of `restore`.
+  await t.test('a setting with no undo is reported without one', () => {
+    const after = before.map((r) => (r.label === 'Agent name' ? { ...r, value: 'DCX' } : r));
+    const row = settingsChanged(before, after).find((c) => c.label === 'Agent name');
+    assert.ok(row);
+    assert.equal(row.restore, undefined);
   });
 });

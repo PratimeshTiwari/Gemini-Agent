@@ -100,32 +100,6 @@ describe('startup order', () => {
     );
   });
 
-  test('GitHub watching starts after the UI, not in front of it', () => {
-    const start = at(main, 'githubHandler.start()', 'githubHandler.start()');
-    assert.ok(
-      uiStart < start,
-      'the GitHub poller authenticates and runs a full initial poll before it '
-        + 'resolves — all network. Awaited before the UI it measured 0.54s for '
-        + 'auth alone, plus a per-PR fan-out behind it.',
-    );
-  });
-
-  test('GitHub starts after the server, so its events have a listener', () => {
-    // Not a performance rule. `start()` emits `status` and `auth_rejected`,
-    // and the only listener for either is wired in the WebSocketServer
-    // constructor. Starting the poller first emitted the 401 message into an
-    // EventEmitter with nobody attached, so an expired token produced no
-    // GitHub activity and no explanation.
-    const server = at(main, 'new WebSocketServer(', 'the WebSocketServer construction');
-    const start = at(main, 'githubHandler.start()', 'githubHandler.start()');
-    assert.ok(
-      server < start,
-      'githubHandler.start() moved back in front of the WebSocketServer, which '
-        + 'is the only thing listening for auth_rejected — a rejected token '
-        + 'would go silent again',
-    );
-  });
-
   test('the greeting does not write to the terminal the UI owns', () => {
     // Up to the shutdown handler, whose console.log is fine: by then Ink has
     // been torn down and the terminal is the shell's again.

@@ -1,6 +1,5 @@
 import { useInput } from 'ink';
 import { FOCUS_INPUT, FOCUS_TERMINAL } from '../constants.js';
-import { handleGithubKey } from './use-github-keys.js';
 
 /**
  * Every keystroke the app answers outside a text field.
@@ -29,18 +28,18 @@ import { handleGithubKey } from './use-github-keys.js';
  */
 export function useKeyBindings({
   activeMenu,
-  activeTab,
   agentLoop,
   cycleMode,
   diffRequest,
   focus,
-  github,
   handleSubmit,
   historyIdx,
   inputHistory,
+  input,
   isProcessing,
   newlineRef,
-  setActiveTab,
+  queued = [],
+  setQueued,
   setFocus,
   setHistoryIdx,
   setInput,
@@ -70,11 +69,6 @@ export function useKeyBindings({
       return;
     }
 
-    if (activeTab === 'github') {
-      handleGithubKey(char, key, { github, agentLoop, handleSubmit, setActiveTab });
-      return;
-    }
-
     // Shift+Tab cycles plan <-> auto. Checked before the plain Tab handler,
     // which would otherwise swallow it.
     if (key.tab && key.shift) {
@@ -82,12 +76,34 @@ export function useKeyBindings({
       return;
     }
 
-    // Escape cancels processing if active, otherwise closes whatever is open
-    // and puts the caret back in the prompt.
+    /**
+     * Escape, cheapest thing first — and never the destructive one by default.
+     *
+     * The order used to be: close the palette, else **stop the turn**, else
+     * tidy up. So the fallback for "escape while a turn is running" was to
+     * kill it, and reaching that fallback took nothing more than having text
+     * in the box the palette did not recognise: `//effort` fails
+     * `/^\/[a-z-]*$/`, and `/efforttt` matches no command, so `slashOpen` is
+     * false for both. Reported twice, from both spellings — typed a command,
+     * changed their mind, pressed escape, and the answer the browser was in
+     * the middle of producing was thrown away.
+     *
+     * Clearing what you typed is what escape means in a text field, it is the
+     * only branch here that undoes something *you* just did, and it is free.
+     * The interrupt is still one key — it just needs the box to be empty
+     * first, which is exactly the state you are in when the thing you want to
+     * stop is the turn rather than the line.
+     */
     if (key.escape) {
       if (slashOpen) {
         setInput('');
         setSlashIdx(0);
+        return;
+      }
+      if (input) {
+        setInput('');
+        setSlashIdx(0);
+        setPaletteSuppressed(false);
         return;
       }
       if (isProcessing) {
@@ -129,6 +145,27 @@ export function useKeyBindings({
         setPaletteSuppressed(true);
         return;
       }
+      /**
+       * A queued prompt has not been sent yet, so up takes it back.
+       *
+       * Prompts typed during a turn now wait rather than being discarded —
+       * and the thing you want next is almost always to change one you have
+       * not sent, not to scroll through ones you have. So while the queue has
+       * something in it and the box is empty, up pulls the most recent queued
+       * prompt back into the field and drops it from the queue. Press enter
+       * and it goes to the back again; press nothing and it is simply gone,
+       * which is the "cancel" nobody had to invent a key for.
+       *
+       * Only when the box is empty: half a typed sentence must not be
+       * replaced by something you queued a minute ago.
+       */
+      if (queued.length > 0 && input === '') {
+        setQueued((q) => q.slice(0, -1));
+        setInputAtEnd(queued[queued.length - 1]);
+        setPaletteSuppressed(true);
+        return;
+      }
+
       if (inputHistory.length > 0) {
         const nextIdx = historyIdx === -1 ? inputHistory.length - 1 : Math.max(0, historyIdx - 1);
         setHistoryIdx(nextIdx);

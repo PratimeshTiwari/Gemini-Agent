@@ -92,8 +92,12 @@ export class RiskClassifier {
       case 'open_in_editor':
         return { level: 'safe', reason: 'Opens file in editor (no modifications)' };
 
-      // Conditional — shell commands
+      // Conditional — shell commands. `run_background` runs the same shell, and
+      // its effects outlive the turn, so it is classified the same way — it used
+      // to fall through to "Unknown tool", which is `risky` by luck rather than
+      // by analysis of what the command actually does.
       case 'run_command':
+      case 'run_background':
         return this._classifyCommand(args);
 
       // Conditional — file creation
@@ -268,8 +272,27 @@ export class RiskClassifier {
    * nothing is, so it is `critical` unless the user has said otherwise.
    */
   _scopedMutation(segment, cwd, reason) {
-    const execCwd = cwd || this.workspacePath;
-    const inside = this.workspacePath && String(execCwd).startsWith(this.workspacePath);
+    /*
+     * A relative `cwd` means "inside the workspace", not "somewhere else".
+     *
+     * This compared the raw string with `startsWith`, so `cwd: "."` — which is
+     * the workspace — did not start with `/Users/...` and was judged *outside*
+     * it, making an ordinary command `critical` and blocking it outright.
+     * Observed in real use: `run_command npm test` refused with "Command
+     * blocked by Security Constraints", which is the agent being unable to run
+     * the tests it is told in several places to run before claiming anything
+     * works. Nothing in `run_command`'s description says `cwd` must be
+     * absolute, and `"."` or `"server"` is what a model naturally sends.
+     *
+     * Resolved against the workspace first, the way `_insideWorkspace` already
+     * does for redirect targets. `..` still escapes, and containment is checked
+     * on a separator boundary so a sibling directory whose name merely starts
+     * with the workspace's — `/work/project-old` beside `/work/project` — is
+     * outside, which raw `startsWith` called inside.
+     */
+    const ws = this.workspacePath;
+    const execCwd = ws ? path.resolve(ws, String(cwd ?? '.')) : String(cwd ?? '.');
+    const inside = Boolean(ws) && (execCwd === ws || execCwd.startsWith(ws + path.sep));
 
     if (!inside) {
       if (this._isAllowedGlobal(segment)) {
