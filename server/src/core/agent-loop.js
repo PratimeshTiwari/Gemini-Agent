@@ -69,6 +69,7 @@ function oneLineError(result) {
 import * as paths from './paths.js';
 import { threadFromUrl } from './chat-thread.js';
 import { auditHandover, describeFindings, countChecklist } from './handover-audit.js';
+import { MUTATING_TOOLS, SHELL_TOOLS } from './tool-catalog.js';
 import { resolveEffort, effortFromConfig } from './effort.js';
 import { normalizeQuestionSet } from './question.js';
 import { planModelSwitch } from './model-match.js';
@@ -1407,8 +1408,9 @@ export class AgentLoop {
    */
   _dueHandover() {
     if (this._handoverSent) return '';
-    const changed = ['edit_file', 'create_file', 'run_command']
-      .some((t) => (this._turnEvidence?.get(t) || 0) > 0);
+    // The same set plan mode gates on: a turn that started a background
+    // process has changed something, whatever it does next.
+    const changed = [...MUTATING_TOOLS].some((t) => (this._turnEvidence?.get(t) || 0) > 0);
     if (!changed) return '';
 
     const block = this.promptBuilder.buildHandoverBlock?.(this.modelConfig?.effort) || '';
@@ -1639,7 +1641,17 @@ export class AgentLoop {
       let needsApproval = false;
       
       if (this.mode === 'plan') {
-        if (call.name === 'edit_file' || call.name === 'create_file' || call.name === 'run_command') {
+        /*
+         * Every tool that changes the machine, read from the catalog — not a
+         * list repeated here, because the list repeated here drifted.
+         *
+         * `run_background` was missing from it. `needsApproval` starts false
+         * and nothing in this branch set it, so plan mode spawned a shell
+         * process that outlives the turn without asking, while auto mode asked
+         * through the classifier's "Unknown tool" default. The mode that
+         * promises "every edit needs approval" was the permissive one.
+         */
+        if (MUTATING_TOOLS.has(call.name)) {
           needsApproval = true;
           /**
            * The agent's own artifacts are exempt. Nothing else is.
@@ -1665,7 +1677,7 @@ export class AgentLoop {
             if (isAgentArtifact(this.workspace, call.args.path)) needsApproval = false;
           }
           // Exception: Safe, read-only commands should not block
-          if (call.name === 'run_command' && risk.level === 'safe') {
+          if (SHELL_TOOLS.has(call.name) && risk.level === 'safe') {
             needsApproval = false;
           }
         }
@@ -1676,7 +1688,7 @@ export class AgentLoop {
       // Execute the tool
       let result;
       
-      if (call.name === 'run_command' && risk.level === 'critical') {
+      if (SHELL_TOOLS.has(call.name) && risk.level === 'critical') {
         result = { success: false, error: `❌ Command blocked by Security Constraints: ${risk.reason}` };
         // Blocked commands are the most worth recording, not the least: what the
         // agent *tried* to do is the interesting half of an audit log.
@@ -1684,7 +1696,7 @@ export class AgentLoop {
           command: call.args.command, cwd: call.args.cwd || this.workspace,
           outcome: 'blocked', reason: risk.reason, risk: risk.level,
         });
-      } else if (call.name === 'run_command') {
+      } else if (SHELL_TOOLS.has(call.name)) {
         const commandToRun = call.args.command;
         let isApproved = false;
 

@@ -29,7 +29,10 @@
  * `prompt-builder.js` byte-for-byte; `tool-catalog.test.js` pins that.
  */
 
-/** @typedef {{name: string, dispatch: 'mcp'|'loop', when?: 'subagents', lead?: string, flash: string|Function, pro: string|Function}} ToolDoc */
+/**
+ * @typedef {{name: string, dispatch: 'mcp'|'loop', when?: 'subagents', mutates?: boolean,
+ *   shell?: boolean, lead?: string, flash: string|Function, pro: string|Function}} ToolDoc
+ */
 
 /** In prompt order, which is the order the model sees. */
 export const TOOL_CATALOG = [
@@ -169,6 +172,7 @@ Parameters:
   {
     name: 'edit_file',
     dispatch: 'mcp',
+    mutates: true,
     flash: ` — Edit a file. Args: path (string), edits ([{oldText, newText}])
 `,
     pro: `
@@ -183,6 +187,7 @@ Parameters:
   {
     name: 'create_file',
     dispatch: 'mcp',
+    mutates: true,
     flash: ` — Create a file. Args: path (string), content (string)
 `,
     pro: `
@@ -210,6 +215,8 @@ Parameters:
   {
     name: 'run_command',
     dispatch: 'mcp',
+    mutates: true,
+    shell: true,
     flash: ` — Run shell command (needs approval). Args: command (string), cwd? (string), timeout? (number, ms)
 `,
     pro: `
@@ -260,6 +267,8 @@ Parameters:
   {
     name: 'run_background',
     dispatch: 'mcp',
+    mutates: true,
+    shell: true,
     flash: ` — Spawn background process. Args: command (string), cwd? (string)
 `,
     pro: `
@@ -377,6 +386,38 @@ Parameters:
 `,
   },
 ];
+
+/**
+ * Tools that change the machine, and therefore need approval in plan mode.
+ *
+ * A named set rather than a literal list at the call site, because the literal
+ * list drifted. Plan mode gated `edit_file`, `create_file` and `run_command`
+ * and **not** `run_background`, which spawns a shell process that outlives the
+ * turn: `needsApproval` starts false, nothing in the plan branch set it, so
+ * plan mode ran it immediately — while auto mode, through the classifier's
+ * "Unknown tool" default, asked. The careful mode was the permissive one, for
+ * the tool whose effects last longest.
+ *
+ * Declared on the catalog entry, so adding a tool that writes means saying so
+ * once beside its description rather than remembering a list in another file.
+ */
+export const MUTATING_TOOLS = new Set(
+  TOOL_CATALOG.filter((t) => t.mutates).map((t) => t.name),
+);
+
+/**
+ * Tools that hand a string to a shell.
+ *
+ * Separate from `MUTATING_TOOLS` because they need more than an approval
+ * prompt: risk classification of the command text, the `critical` block, and a
+ * line in the command log. All three were gated on `call.name === 'run_command'`
+ * literally, so `run_background` reached none of them — it was never risk
+ * classified, never blocked however destructive the command, and never audited,
+ * for a process that outlives the turn.
+ */
+export const SHELL_TOOLS = new Set(
+  TOOL_CATALOG.filter((t) => t.shell).map((t) => t.name),
+);
 
 /**
  * The tools offered, in prompt order.
