@@ -1587,6 +1587,10 @@ export class AgentLoop {
         toolName: call.name,
         result: truncatedResult,
         success: result.success,
+        // A subagent that answered in prose rather than calling `return_result`.
+        // The answer is used either way; this keeps the record of which ones
+        // arrived that way, so the row can eventually say so.
+        ...(result.unstructured ? { unstructured: true } : {}),
         timestamp: Date.now(),
       };
       this.conversationHistory.push(resultTurn);
@@ -1951,8 +1955,11 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
       }
 
       if (cleanContent.trim()) lastCleanContent = cleanContent.trim();
-      
-      if (toolCalls.length === 0) break; // Finished
+
+      // No tool call means the subagent stopped talking. Either it called
+      // `return_result` below on an earlier pass, or it answered in prose —
+      // which is what the fall-through after this loop is for.
+      if (toolCalls.length === 0) break;
 
       const toolResults = [];
       let returned = false;
@@ -1974,7 +1981,38 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
       localHistory.push({ role: 'system', content: `Tool Results:\n${JSON.stringify(toolResults, null, 2)}` });
     }
     
-    return { success: false, error: "Subagent failed to use the return_result tool. Raw output: " + (lastCleanContent || "No output provided.") };
+    /**
+     * A missing `return_result` is not a missing answer.
+     *
+     * Observed on `deep` + `duo`: `ask_reviewer` produced a full, well-formed
+     * adversarial review, ended it in prose rather than a tool call, and the
+     * turn reported `✗ ask_reviewer · Subagent failed to use the return_result
+     * tool` — discarding the review on a protocol technicality with the answer
+     * sitting in the payload. That is the one step whose whole purpose is
+     * catching what the author's own assumptions hide, and a long adversarial
+     * review is exactly the shape that drifts out of format.
+     *
+     * So: fail open, the same trade as `looksLikeCapabilityDenial`. Losing the
+     * answer is the expensive failure; using it unstructured is the cheap one.
+     * `unstructured` rides on the result so the caller can say so and
+     * `/logs agent` can answer how often the format is being missed — a silent
+     * fallback would just move the invisibility somewhere else.
+     *
+     * Only a genuinely empty run still fails. There is nothing to fall back to
+     * there, and calling it a success would hand the caller an empty review to
+     * reason from.
+     */
+    if (lastCleanContent) {
+      logError(this.workspace, {
+        flow: 'agent',
+        op: 'subagent_unstructured',
+        message: `${role} answered in prose instead of calling return_result`,
+        detail: lastCleanContent.slice(0, 500),
+      });
+      return { success: true, result: lastCleanContent, unstructured: true };
+    }
+
+    return { success: false, error: `The ${role} subagent returned no output at all.` };
   }
 
   /**

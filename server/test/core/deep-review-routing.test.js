@@ -1,16 +1,18 @@
 /**
- * On `deep`, the hostile reviewer is a different model when there is one.
+ * On `deep`, the hostile reviewer is a second tab when there is one.
  *
  * `deep` already ended with "read the diff as a hostile reviewer" — and the
- * model reviewing its own diff is the weakest reviewer available: it shares
- * every assumption that produced the code.
+ * model reviewing its own diff **in its own thread** is the weakest reviewer
+ * available: it shares every assumption that produced the code. A second tab
+ * shares the weights and not the conversation, which is the half that matters
+ * here: it has nothing to reason from but the code it is sent.
  *
  * The current reading of the multi-agent literature is that extra agents earn
  * their place when they contribute **intelligence rather than actions**, and
  * writes stay single-threaded. This is exactly that shape: one reviewer, no
  * write access, the main lane still owns every edit. It is also the one case
- * that genuinely runs in parallel here — `extension-lock` gives each model its
- * own lane, while two same-model requests would serialise behind one tab.
+ * that genuinely runs in parallel here — `extension-lock` gives each *tab* a
+ * lane, so a subagent turn overlaps the main one whatever model it is on.
  *
  * Scoped to `deep` **and** a configured reviewer. Asking for `ask_reviewer`
  * where the tool is not offered would instruct the model to call something it
@@ -24,10 +26,10 @@ const WS = process.cwd();
 const build = (topology, modelConfig) => new PromptBuilder(WS, `${WS}/server`)
   .buildPrompt({ userMessage: 'x', mode: 'auto', topology, modelConfig, objective: 'x' });
 
-const DUO = { effort: 'deep', main: 'gemini', reviewer: 'chatgpt' };
+const DUO = { effort: 'deep', main: 'gemini', reviewer: 'gemini' };
 const SOLO = { effort: 'deep', main: 'gemini' };
 
-test('with a reviewer, deep sends the diff to the other model', () => {
+test('with a reviewer, deep sends the diff out rather than reviewing itself', () => {
   const p = build('duo', DUO);
   assert.match(p, /Send the diff to `ask_reviewer`/);
   assert.ok(!/Adversarial self-review/.test(p), 'and stops asking it to review itself');
