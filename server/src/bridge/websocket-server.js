@@ -526,6 +526,29 @@ export class WebSocketServer {
         break;
       }
 
+      /**
+       * The extension telling the user what it is doing to the browser.
+       *
+       * `content.js` sends this when it cannot find your model tab and is
+       * reopening one — the moment you most want a line on screen, because the
+       * CLI otherwise just sits there. The bridge had no case for it, so it was
+       * logged as `unknown_message` and dropped: **21 times in this workspace's
+       * error log, the largest single entry in it.**
+       *
+       * `status` already exists in the other direction — the loop sends it and
+       * `use-agent-callbacks` renders it into the status line — so relaying is
+       * the whole fix. It is a notification, not a request: nothing waits on
+       * it, and dropping one costs a missing line rather than a dead turn.
+       */
+      case 'status':
+        this.agentLoop.callbacks?.sendToPanel?.({
+          id: randomUUID(),
+          type: 'status',
+          payload: { message: payload?.message || '' },
+          timestamp: Date.now(),
+        });
+        break;
+
       case 'question_response':
         if (payload?.cancelled) this.agentLoop.cancelQuestion();
         else this.agentLoop.answerQuestion(payload?.answer);

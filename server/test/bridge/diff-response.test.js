@@ -151,3 +151,58 @@ describe('it cannot be left hanging', () => {
     b.cleanup();
   });
 });
+
+/**
+ * The extension's own status line, which was dropped 21 times.
+ *
+ * `content.js` sends `{type:'status'}` when it cannot find your model tab and
+ * is reopening one — the moment you most want a line on screen, because the CLI
+ * otherwise just sits there. The bridge had no case for it, so it went to
+ * `unknown_message`: **the largest single entry in this workspace's error log**,
+ * found by reading the log rather than by anyone reporting it.
+ *
+ * `status` already existed in the other direction, which is why this is a relay
+ * rather than a feature. It is a notification and nothing waits on it, so the
+ * cost was a missing line — but `CLAUDE.md`'s rule is that dropping an unknown
+ * type is not equally harmless for every type, and the way to find out which
+ * kind you have is to handle it.
+ */
+describe('the extension can say what it is doing', () => {
+  test('an inbound status reaches the screen', async () => {
+    const seen = [];
+    const loop = Object.create(AgentLoop.prototype);
+    Object.assign(loop, {
+      conversationHistory: [],
+      callbacks: { sendToPanel: (m) => seen.push(m) },
+      setBackgroundCallbacks() {},
+    });
+    const { WebSocketServer } = await import('../../src/bridge/websocket-server.js');
+    const server = new WebSocketServer({ port: 0, agentLoop: loop });
+    // `_handleMessage` returns at once for a client it does not know, so the
+    // fixture registers one the way `_handleConnection` does.
+    server.clients.set('client-1', { ws: null, type: 'extension', connectedAt: Date.now() });
+
+    await server._handleMessage('client-1', {
+      type: 'status', id: 'm1', payload: { message: '🌐 Reopening gemini in a new tab...' },
+    });
+
+    const row = seen.find((m) => m.type === 'status');
+    assert.ok(row, 'the extension said something and nothing carried it to the screen');
+    assert.match(row.payload.message, /Reopening/);
+  });
+
+  // The control: an actually-unknown type must still be reported as one, or the
+  // relay has simply widened the hole rather than closed it.
+  test('a genuinely unknown type is still reported', async () => {
+    const loop = Object.create(AgentLoop.prototype);
+    Object.assign(loop, {
+      conversationHistory: [], callbacks: { sendToPanel() {} }, setBackgroundCallbacks() {},
+    });
+    const { WebSocketServer } = await import('../../src/bridge/websocket-server.js');
+    const server = new WebSocketServer({ port: 0, agentLoop: loop });
+    server.clients.set('client-1', { ws: null, type: 'extension', connectedAt: Date.now() });
+
+    await assert.doesNotReject(() =>
+      server._handleMessage('client-1', { type: 'not_a_real_type', id: 'm2', payload: {} }));
+  });
+});
