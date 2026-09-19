@@ -512,11 +512,14 @@ outside the conditional.
 fabricated `87` reads as evidence. The instruction is behavioural instead — if you would not
 bet on it, ask — which is the part that changes what the agent *does*.
 
-**And the rungs were not as thin as they looked.** An earlier note here claimed the three pro
-rungs "differ only by `isBrief`". Measured: 21,907 / 25,436 / 26,343 characters, differing by
-plan-first, a phase-2 analysis, adversarial self-review and an assumption ledger. What is
-genuinely thin is `standard` → `deep`, at **+3.6%** — that is the rung worth revisiting, not
-the set.
+**And the rungs were not as thin as they looked — then they were revisited and there is one.**
+An earlier note here claimed the three pro rungs "differ only by `isBrief`". Measured:
+21,907 / 25,436 / 26,343 characters, differing by plan-first, a phase-2 analysis, adversarial
+self-review and an assumption ledger. What was genuinely thin was `standard` → `deep` at
+**+3.6%**, and that is the one that was acted on: **since 2026-09-20 there is a single pro
+rung.** `pro` is the old `standard` plus `deep`'s review step; the critical-analysis phase and
+the assumption ledger are declined because they are paid in **output** tokens on every pro
+turn, which a prompt character count does not show.
 
 **On `deep`, the hostile reviewer is a different model.** `deep` ended with "read the diff as
 a hostile reviewer", and a model reviewing its own diff is the weakest reviewer available: it
@@ -1287,7 +1290,10 @@ was a third name for the first — written on every change, read only as a fallb
 apologised for the impossible combinations at the point of use ("you are on the FLASH tier,
 where reasoning levels do nothing") instead of preventing them.
 
-`core/effort.js` is now the one ladder: `flash`, `flash-thinking`, `brief`, `standard`, `deep`.
+`core/effort.js` is now the one ladder — `flash`, `flash-thinking`, `brief`, `standard`,
+`deep` as of phase 4, and **three rungs since 2026-09-20**: `flash`, `flash-thinking`, `pro`.
+A stored `brief` / `standard` / `deep` folds to `pro` on read, *before* the `modelTier`
+branch, so a disagreeing legacy tier cannot drop a pro user onto the terse profile.
 `modelTier` and `reasoningLevel` survive as *derived* values because the prompt builder really
 does branch on both, but nothing stores them separately, so they cannot disagree. Each rung also
 names the browser tab it is written for — a pro-tier prompt in a Flash tab is a long prompt to
