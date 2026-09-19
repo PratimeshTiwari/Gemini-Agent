@@ -223,8 +223,23 @@ export class MCPServer {
     if (!checked.ok) {
       logError(this.workspace, {
         flow: 'tool',
+        // The diagnosis has to be *on* the first line, because that is all any
+        // reader keeps: `logError` slices `message` at the newline, and `/logs`
+        // does the same to `detail` when it draws it. This used to log
+        // `checked.message.split('\n')[0]` — the headline, which is the
+        // identical sentence for every bad call to every tool. Six
+        // `grep_search:bad_args` records accumulated in this repo's own log
+        // and not one of them said which argument was wrong, so the cause had
+        // to be recovered from commit timestamps instead of from the log
+        // written to answer exactly that.
+        //
+        // It also un-collapses them: `logError` keys its 60s repeat window on
+        // the message, so two different mistakes a minute apart used to count
+        // as one failure twice.
         op: `${name}:bad_args`,
-        message: checked.message.split('\n')[0],
+        message: checked.problems?.length
+          ? checked.problems.join('; ')
+          : checked.message.split('\n')[0],
         meta: { args: Object.keys(args || {}) },
       });
       return { success: false, error: checked.message };

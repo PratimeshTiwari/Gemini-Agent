@@ -104,7 +104,8 @@ function describeValue(value) {
 /**
  * Validate and coerce one tool call.
  *
- * @returns {{ ok: true, value: object } | { ok: false, message: string }}
+ * @returns {{ ok: true, value: object }
+ *   | { ok: false, message: string, problems: string[] }}
  */
 export function validateArgs(toolName, parameters, args) {
   const spec = parameters || {};
@@ -130,8 +131,23 @@ export function validateArgs(toolName, parameters, args) {
   const known = Object.entries(spec).map(([n, s]) => describe(n, s)).join(', ');
   const given = Object.keys(input);
 
+  /*
+   * `problems` is returned as well as rendered into `message` because the two
+   * readers want different things and only one of them can re-parse prose.
+   *
+   * The model gets `message`: the whole multi-line contract, headline first.
+   * The error log gets one line and keeps only the first — `logError` slices
+   * at the newline, and `/logs` does it again when it draws `detail` — so a
+   * caller logging `message` stores the headline, which is the same sentence
+   * for every failure of every tool. This repo's own log holds six
+   * `grep_search:bad_args` records saying nothing but that; the diagnosis that
+   * would have identified the cause in one read was built here and discarded
+   * at the call site. Handing back the list means the log can carry it without
+   * splitting formatted output back apart.
+   */
   return {
     ok: false,
+    problems,
     message: `${toolName} was called with arguments that do not match its schema.\n`
       + `  ${problems.join('\n  ')}\n`
       + `Parameters: ${known || '(none)'}\n`

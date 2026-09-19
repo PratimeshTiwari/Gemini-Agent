@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validateArgs, schemaFor } from '../../src/mcp/validate-args.js';
 import { MCPServer } from '../../src/mcp/mcp-server.js';
+import { readErrors } from '../../src/core/error-log.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const SPEC = {
   path: { type: 'string', required: true },
@@ -130,5 +134,92 @@ test('executeTool refuses a bad call before the handler sees it', async (t) => {
     const r = await server.executeTool('nope', {}, {});
     assert.match(r.error, /Unknown tool: nope/);
     assert.match(r.error, /grep_search/);
+  });
+});
+
+/*
+ * What the *log* gets, which is not what the model gets.
+ *
+ * `logError` keeps only the first line of `message`, and `/logs` truncates
+ * `detail` the same way — so the per-field diagnosis has to be on line one or
+ * it reaches no reader at all. It was not: the call site logged
+ * `checked.message.split('\n')[0]`, the generic headline, and six
+ * `grep_search:bad_args` records piled up in this repo's own log without one
+ * of them naming an argument. The cause had to be recovered from commit
+ * timestamps.
+ *
+ * Every assertion below is written so that restoring that line fails it.
+ */
+test('a bad call is logged with the diagnosis, not the headline', async (t) => {
+  const HEADLINE = /do not match its schema/;
+
+  await t.test('validateArgs hands back the problems as a list', () => {
+    const r = check({});
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.problems, ['`path` (string, required) is required but was not given']);
+    // The prose still contains it; the list is the half a logger can use.
+    assert.match(r.message, /is required but was not given/);
+  });
+
+  await t.test('one problem per failing parameter, not one per call', () => {
+    const r = check({ startLine: 'abc' });
+    assert.equal(r.problems.length, 2);
+    assert.ok(r.problems.some((p) => p.startsWith('`path`')), r.problems.join(' | '));
+    assert.ok(r.problems.some((p) => p.startsWith('`startLine`')), r.problems.join(' | '));
+  });
+
+  await t.test('the record names the argument that was wrong', async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'badargs-'));
+    try {
+      const server = new MCPServer(ws, null);
+      const r = await server.executeTool('read_file', {}, {});
+      assert.equal(r.success, false);
+
+      const [record] = readErrors(ws, { flow: 'tool' });
+      assert.equal(record.op, 'read_file:bad_args');
+      assert.match(record.message, /`path`.*is required but was not given/);
+      // The negative control: this is exactly what used to be written.
+      assert.doesNotMatch(record.message, HEADLINE);
+      // The model's own error is unchanged — it still gets the full contract.
+      assert.match(r.error, HEADLINE);
+      assert.match(r.error, /Parameters: /);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('several problems reach the log on one line', async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'badargs-'));
+    try {
+      const server = new MCPServer(ws, null);
+      await server.executeTool('read_file', { startLine: 'abc' }, {});
+
+      const [record] = readErrors(ws, { flow: 'tool' });
+      assert.doesNotMatch(record.message, /\n/);
+      assert.match(record.message, /`path`.*;.*`startLine`|`startLine`.*;.*`path`/);
+      assert.deepEqual(record.meta.args, ['startLine']);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  /*
+   * `logError` keys its 60s collapse window on the message, so while every
+   * failure shared the headline two unrelated mistakes counted as one failure
+   * repeated — the log actively merged the evidence it was keeping.
+   */
+  await t.test('two different mistakes are two records, not one repeated', async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'badargs-'));
+    try {
+      const server = new MCPServer(ws, null);
+      await server.executeTool('read_file', {}, {});
+      await server.executeTool('read_file', { path: 'a.js', startLine: 'abc' }, {});
+
+      const records = readErrors(ws, { flow: 'tool' });
+      assert.equal(records.length, 2);
+      assert.notEqual(records[0].message, records[1].message);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
   });
 });
