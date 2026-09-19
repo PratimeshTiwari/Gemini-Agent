@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.23.0**
+## Current version: **1.24.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -57,16 +57,26 @@ src/background/            the sources it is built from
   state.js  policy.js
 content-scripts/
   gemini-bridge.js         type into Gemini, scrape the reply
-  chatgpt-bridge.js        the same for ChatGPT (subagents)
   github-bridge.js         PR comments
 side-panel/                panel.html / panel.js / panel.css
 test/                      jsdom tests, run by `npm test` from the repo root
 ```
 
-**The two bridges are deliberately not merged.** ~600 duplicated lines, and
-collapsing them was considered and declined: the jsdom tests run against *both*
-files, so a scraping divergence fails the build — most of the value, none of the
-risk of breaking both at once.
+**There is one bridge.** This used to say the two were deliberately not merged
+— ~600 duplicated lines kept apart because the jsdom tests ran against *both*
+files, so a scraping divergence failed the build. `chatgpt-bridge.js` was
+deleted on 2026-09-19 and took that argument with it. The tests still run,
+against the one bridge, and say in a comment **not** to restore a second target
+to make the comparison mean something again: it was a side-effect of having two,
+never a reason to have two.
+
+**Every bridge is wrapped in an IIFE, and that is load-bearing.** The
+content-script world outlives the script that created it, so a top-level `const`
+makes a second injection throw `Identifier … has already been declared` before
+a single statement runs. That is not a rare case: `sendWithRepairs` re-injects
+precisely when a copy is already in the page. A new copy also calls
+`window.__agentBridgeStop` first, so the orphan it replaces disconnects its
+observers and clears its timers instead of ticking on.
 
 ---
 
@@ -74,6 +84,26 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.24.0 — 2026-09-19
+
+- **One bridge.** `chatgpt-bridge.js` is gone, with its host permissions and its
+  content-script registration. A second Gemini tab is what *duo* means now.
+- **The bridge survives a second injection, and replaces what it finds.** Its
+  constants sat at the top level of a world that outlives the script, so
+  re-injecting threw `Identifier 'RESPONSE_IDLE_TIMEOUT' has already been
+  declared` on line one and the fresh copy never evaluated. That silently
+  disabled `sendWithRepairs`'s `reinject` rung — written for an orphaned script,
+  which is exactly the case where a copy is already there to collide with. The
+  rung did nothing and `waitForBridge` then spent its whole budget waiting for a
+  script that had failed to load; the only evidence was an entry on
+  `chrome://extensions`. Wrapped in an IIFE, plus a `window.__agentBridgeStop`
+  handover so the orphan's observers and timers stop at once rather than when
+  something next happens to call `safeSend`.
+- **`new_chat` is acknowledged.** `/compact` is a handover — it summarises the
+  old thread and sends the summary into a new one — and it cannot do that
+  blindly. Without an ack, a new chat that never happened means the summary goes
+  into the thread that already holds every turn it summarises.
 
 ### 1.23.0 — 2026-09-17
 
@@ -471,8 +501,8 @@ The side panel stopped being a half-finished surface.
 
 ### 1.1.0 — the browser half made reliable
 
-- **Per-model tab lanes** (`main:<model>` / `sub:<requestId>`), so a ChatGPT
-  review and a Gemini prompt genuinely overlap instead of racing for one tab.
+- **Per-tab lanes** (`main:<model>` / `sub:<requestId>`), so a subagent review
+  and your own prompt genuinely overlap instead of racing for one tab.
 - **Batch sessions hold one tab across a task's turns.** Every turn used to open
   a fresh tab that closed when it ended, so turn 2 had never seen turn 1 —
   measured at **81% of characters resent** over ten turns.

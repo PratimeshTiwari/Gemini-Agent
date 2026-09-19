@@ -2398,11 +2398,20 @@ ${compactedSummary}`;
       // is a subagent's own, and read by everyone as the one they are looking
       // at. When the handover fails, the honest thing is to say the old thread
       // is still in front of them, because it is.
+      /*
+       * Do not send them to `/new`. It clears `conversationHistory`, which is
+       * where the summary that was just made now lives — so the one command
+       * that looks like the fix is the one that destroys the work. Ask for the
+       * thing only they can do: start a chat in the tab itself.
+       */
       const where = handedOver
         ? 'The tab has been handed over to a fresh conversation, and the summary goes into it '
           + 'with your next message.'
-        : '⚠️ The browser did not confirm a new conversation, so the tab is still on the old '
-          + 'one — which already remembers these turns. `/new` starts one by hand.';
+        : '⚠️ **The browser did not start a new conversation**, so the tab is still on the old '
+          + 'one — which already remembers every turn just summarised.\n\n'
+          + '**Please open a new chat in the Gemini tab yourself** (the ✚ / *New chat* button). '
+          + 'The next message will pick it up automatically.\n\n'
+          + '_Not `/new` — that clears the conversation here, and this summary with it._';
 
       return {
         message: `✅ Compacted ${toCompact.length} turn${toCompact.length === 1 ? '' : 's'} into one summary, `

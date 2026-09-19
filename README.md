@@ -2,16 +2,18 @@
 
 A local, Claude Code-style coding agent with **no LLM API client**. Inference happens by
 driving a real browser tab: the agent sends your prompt over a WebSocket to a Chrome
-extension, which types it into gemini.google.com or chatgpt.com and streams the reply back.
+extension, which types it into gemini.google.com and streams the reply back.
 It reads and edits files in your workspace and runs commands, using your own logged-in chat
 session. No API key, no hosted backend, no telemetry.
 
 ## ✨ What it does
 
-- **Two topologies.** *Solo* — one agent plans, implements and reviews. *Duo* — a primary
-  agent implements and a reviewer subagent on the **other** model audits it. Same-model
-  review is not offered on purpose: two tabs of one model buy far less than one tab of a
-  second, and cross-model disagreement is the signal worth paying for.
+- **Two topologies.** *Solo* — one tab plans, implements and reviews. *Duo* — a reviewer
+  subagent audits the work from **a second Gemini tab that has never seen the
+  conversation**. What it contributes is not different weights, it is missing context: it
+  has nothing to check against but the code it is sent, so it reads the file instead of
+  reasoning from a citation. Each subagent turn gets its own tab and its own lane, so it
+  genuinely runs alongside your turn rather than queueing behind it.
 - **Every write is a diff you approve.** Per-hunk accept/reject, backups, atomic writes, and
   `/undo`. Commands are risk-classified before they run, and `/allowlist` remembers the
   answers you have already given.
@@ -171,13 +173,12 @@ agent-cli --help
 <summary>If the command isn't found</summary>
 
 - Your shell may be caching an old lookup. Run `hash -r` (zsh/bash) or open a new terminal.
-- `npm link` installs into your **current Node version's** bin directory. If you switch Node
-  versions with `nvm`, re-run `npm link --workspace=server` on the new version.
-- **`npm link` refused, on a managed or work machine?** It writes into npm's *global* prefix,
-  which you often cannot write to there. `sudo npm link` is the wrong answer — it leaves
-  root-owned files in a tree npm later tries to modify as you. `./setup.sh` detects this and
-  installs a two-line shim into `~/.local/bin` instead, which needs no privileges and, unlike a
-  link, keeps working when you switch Node versions. If that directory is not on your `PATH` it
+- **There is no `npm link` step, deliberately.** It writes into npm's *global* prefix, which
+  on a managed or work machine you often cannot write to — and `sudo npm link` is the wrong
+  answer, because it leaves root-owned files in a tree npm later tries to modify as you.
+  `./setup.sh` installs a two-line shim into `~/.local/bin` instead, which needs no
+  privileges and, unlike a link, keeps working when you switch Node versions with `nvm`. If
+  that directory is not on your `PATH` it
   prints the one line to add. To do it by hand:
 
   ```bash
@@ -461,7 +462,7 @@ model. The list says which is which.
 
 Once the agent is running, you can use built-in slash commands to manage your session:
 - Type `/help` in the CLI to see all available commands.
-- Type `/config` to choose which web model (Gemini, ChatGPT) implements and which one reviews it. Setting a reviewer on the *other* model is what Duo means, and it is the only kind of review worth a second tab — there is no separate `/mode` screen any more, though the name still answers.
+- Type `/config` to turn the reviewer on or off. With one on, a second Gemini tab audits the work without having seen the conversation that produced it — which is the point of it, and why the tab is worth opening. There is no separate `/mode` screen any more, though the name still answers.
 - Type `/effort` to pick how hard the agent works — one ladder from `flash` to `deep`. It sets
   the prompt profile **and switches the browser's mode picker to match**, so a prompt written
   for Pro is not typed into a Flash tab. It tells you which model it chose. Nothing is
@@ -682,6 +683,35 @@ about a day, during which it was wrong roughly forty times — a count in prose
 is stale the moment the next commit lands, and the command is both shorter and
 always right.
 
+#### One model, and five things that were silently wrong (2026-09-19)
+- **ChatGPT removed.** One bridge, one model. *Duo* now means a second Gemini
+  tab that has not seen your conversation — which is the half of a reviewer
+  that was ever doing the work. A config naming ChatGPT is folded to Gemini on
+  read, because config saving preserves keys it does not own and a stored
+  `main: 'chatgpt'` would otherwise point the agent at a site with no bridge.
+- **A review that ends in prose is kept.** `ask_reviewer` produced a complete
+  adversarial review, failed to wrap it in `return_result`, and the whole thing
+  was discarded as a failure with the answer sitting in the payload.
+- **`/compact` actually hands the conversation over.** It summarised, reset the
+  prompt state and reset the context counter — and never told the browser, so
+  the tab stayed on the thread that still held every turn it had just
+  summarised. The counter then described a conversation that did not exist, in
+  the status bar, in `/context` and in the auto-compaction threshold at once.
+  The new chat is acknowledged now, and the counter only resets if it happened.
+- **`/clear` stops zeroing the context counter.** It clears the CLI's record and
+  deliberately leaves the tab alone, so the model still remembers — and the bar
+  should say so.
+- **The tool-call repair loop is capped at two.** Every other retry here was
+  capped; a model stuck on a formatting habit could re-ask forever, a full
+  browser turn each round. When it stops it hands you the raw reply, which
+  usually contains the answer in prose.
+- **The bridge can be injected twice.** Its constants were declared at the top
+  level of a world that outlives the script, so re-injecting threw
+  `Identifier … has already been declared` on line one. That silently disabled
+  the repair rung written for exactly the case that guarantees a copy is already
+  there. It also stops the copy it replaces, rather than leaving its observers
+  running.
+
 #### The engine
 - **Prompt economics.** The full system prompt goes out on turn 0 and every Nth
   turn, never every turn — resending a large payload each time trips Gemini's
@@ -826,10 +856,12 @@ always right.
   which is how a markdown file opened in RStudio.
 
 #### Not done, on purpose
-- **The two bridges were not collapsed** (~600 duplicated lines). The cost it
-  removes is "fix it twice", and fixing the scrape twice took one commit — the
-  jsdom tests now run against both files, so a divergence fails the build. Most
-  of the value, none of the risk of breaking both bridges at once.
+- **The two bridges were not collapsed** — and then one of them was deleted,
+  on 2026-09-19, which settled the argument by removing its subject. Keeping
+  ~600 duplicated lines was defensible while both shipped: the cost it removed
+  was "fix it twice", and fixing the scrape twice took one commit. The jsdom
+  tests still run, against the one bridge, and say in a comment not to restore
+  a second target just to make the comparison mean something again.
 - **An optional API backend** stays a fork rather than a plan. It would remove
   the ceiling — structured tool calls, real parallelism, caching — and it
   contradicts the standing "no API keys" decision that is the identity of the

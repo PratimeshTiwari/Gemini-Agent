@@ -98,7 +98,12 @@ describe('compaction hands the thread over', () => {
     const out = await l._compactHistory();
 
     assert.equal(l.contextChars, 250000, 'the tab still holds every one of those characters');
-    assert.match(out.message, /did not confirm/);
+    assert.match(out.message, /did not start a new conversation/);
+    assert.match(out.message, /open a new chat in the Gemini tab yourself/,
+      'it has to ask for the one thing only the person can do');
+    // `/new` clears `conversationHistory`, which is where the summary just
+    // landed. Recommending it would destroy the work this command did.
+    assert.match(out.message, /Not `\/new`/, 'the obvious wrong fix must be named as wrong');
     rmSync(ws, { recursive: true, force: true });
   });
 
