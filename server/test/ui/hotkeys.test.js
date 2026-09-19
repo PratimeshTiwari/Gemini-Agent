@@ -28,9 +28,11 @@ test('extractHotkeys', async (t) => {
   });
 
   await t.test('reports several chords in order', () => {
-    const r = extractHotkeys(`${CTRL_O}x${CTRL_E}`);
+    // ctrl+o was the agent/GitHub tab switch and went with the GitHub agent.
+    // ctrl+t is the other two-chord case and exercises the same ordering.
+    const r = extractHotkeys(`\x14x${CTRL_E}`);
     assert.equal(r.text, 'x');
-    assert.deepEqual(r.hotkeys, ['tabs', 'expand']);
+    assert.deepEqual(r.hotkeys, ['terminal', 'expand']);
   });
 
   await t.test('leaves ctrl+c alone — Ink owns exiting', () => {

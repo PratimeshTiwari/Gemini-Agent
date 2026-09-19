@@ -22,7 +22,6 @@ import { rememberWorkspace } from './core/workspaces.js';
 import { existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from './bridge/websocket-server.js';
-import { GitHubEventHandler } from './github/github-event-handler.js';
 import { MCPServer } from './mcp/mcp-server.js';
 import { AgentLoop } from './core/agent-loop.js';
 import { PromptBuilder } from './core/prompt-builder.js';
@@ -53,7 +52,6 @@ function parseArgs() {
      * is hosting this terminal answers that properly; see core/host-editor.js.
      */
     editor: process.env.EDITOR || hostEditor() || 'code',
-    github: true,
     ciWatch: true,
   };
 
@@ -84,9 +82,6 @@ function parseArgs() {
       case '--editor':
         config.editor = args[++i];
         break;
-      case '--no-github':
-        config.github = false;
-        break;
       case '--no-ci-watch':
         config.ciWatch = false;
         break;
@@ -116,14 +111,12 @@ Options:
   --resume <session-id>    Resume a specific session
   --sessions               List past sessions
   --editor <command>       Editor command (default: $EDITOR or 'code')
-  --no-github              Disable GitHub PR comment watching
   --no-ci-watch            Disable CI failure watching (comments only)
   --help, -h               Show this help message
 
 Environment:
   EDITOR                   Default editor command (fallback: 'code')
   AGENT_CLI_HOME           Agent home directory (default: ~/.agent)
-  GITHUB_TOKEN             GitHub PAT for PR comment watching (required for --github)
 `);
 }
 
@@ -253,38 +246,9 @@ async function main() {
   const fileWatcher = new FileWatcher(codeDir(config.workspace), agentLoop);
   fileWatcher.start();
 
-  // ── GitHub PR Comment Agent ──────────────────────────────────────
-  let githubHandler = null;
-  const githubToken = agentLoop.modelConfig?.githubToken || process.env.GITHUB_TOKEN;
-
-  if (config.github && githubToken) {
-    githubHandler = new GitHubEventHandler({
-      token: githubToken,
-      workspace: config.workspace,
-      configOverrides: {
-        enableCIWatch: config.ciWatch,
-      },
-      agentLoop,
-    });
-
-    // Nothing is printed here on purpose. These events arrive while the Ink UI
-    // owns the terminal, and console output lands inside the frame Ink is
-    // repainting — it breaks the layout and vanishes on the next render. The
-    // WebSocket server forwards them to the GitHub tab instead
-    // (`_wireGitHubEvents`), which is the surface that can actually show them.
-
-    // Connect to agent loop for /github slash commands
-    agentLoop.githubHandler = githubHandler;
-
-    // Watching starts after the UI does, at the bottom of main().
-  } else if (config.github && !githubToken) {
-    console.log('  ℹ️  Set GITHUB_TOKEN env var to enable PR comment watching');
-  }
-
   const wsServer = new WebSocketServer({
     port: config.port,
     agentLoop,
-    githubHandler,
   });
 
   // Start listening
@@ -409,40 +373,9 @@ async function main() {
     });
   });
 
-  /**
-   * Start watching GitHub, after the UI and without blocking it.
-   *
-   * `poller.start()` authenticates against api.github.com and then runs a full
-   * initial poll, fanning out per PR for comments, reviews and CI runs. It is
-   * all network, and none of it is something the first frame depends on — the
-   * GitHub screen is event-driven and fills in whenever the answers arrive.
-   * Awaited before the UI, the auth call alone measured 0.54s against a warm
-   * connection, with the first poll behind it; on a slow link, or an account
-   * with many open PRs, that is seconds of blank terminal.
-   *
-   * **Moving it here also fixes a silence.** `start()` emits `status` and
-   * `auth_rejected`, and the only listener for either is wired in the
-   * WebSocketServer constructor — which used to run *after* this call. So the
-   * 401 message in `github-poller.js` ("GitHub rejected the stored token…
-   * clear it with `/github remove-token`") was emitted into an EventEmitter
-   * with nobody attached, and a user with an expired token got no GitHub
-   * activity and no reason why. Starting after the server means the listeners
-   * exist before the events fire.
-   */
-  if (githubHandler) {
-    githubHandler.start().catch((err) => {
-      logError(config.workspace, {
-        flow: 'github',
-        op: 'start',
-        message: `GitHub watching failed to start: ${err.message}`,
-      });
-    });
-  }
-
   // Graceful shutdown
   const shutdown = async () => {
     console.log('\n🛑 Shutting down...');
-    if (githubHandler) githubHandler.stop();
     fileWatcher.stop();
     taskManager.cleanup();
     await wsServer.stop();

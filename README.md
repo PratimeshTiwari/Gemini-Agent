@@ -31,8 +31,6 @@ session. No API key, no hosted backend, no telemetry.
   (3-phase) to `🏃 brief` / `🪜 standard` / `🔭 deep` on Pro, which add a checklist, then
   approach enumeration and an adversarial self-review. Each rung names the browser tab its
   prompt is written for — that pairing is the whole point, so there is one setting, not two.
-- **GitHub PR agent.** Polls your open PRs, classifies review comments, reads CI logs, and
-  writes a plan per comment. `ctrl+o` opens the dashboard.
 - **A terminal UI that behaves like one.** Real streaming, no mouse tracking, so scroll,
   drag-select and copy stay your terminal's. Settled turns are committed to scrollback and
   only the in-flight turn repaints.
@@ -261,7 +259,7 @@ Type a request and press Enter. In **plan mode** (the default) every file edit i
 as a diff you approve; `shift+tab` switches to **auto mode**, which applies safe edits
 on its own.
 
-Handy keys: `ctrl+e` expand/collapse all steps · `ctrl+t` shell · `ctrl+o` GitHub tab ·
+Handy keys: `ctrl+e` expand/collapse all steps · `ctrl+t` shell · `ctrl+b` Gemini tab ·
 `esc` stop the run · `/help` for everything else.
 
 ## 📄 Project instructions
@@ -424,7 +422,7 @@ pushing the transcript off screen, and shows `… N more lines` when it does.
 ### When it asks before acting
 
 Commands that destroy more than they name stop and ask first, showing what is at
-stake — `/clear`, `/new`, `/allowlist clear`, `/github clear-state`. Cancel is
+stake — `/clear`, `/new`, `/allowlist clear`. Cancel is
 always the default, so a reflex `enter` changes nothing. Commands that name their
 target (`/memory forget 3`, `/allowlist remove <cmd>`) just do it.
 
@@ -603,7 +601,6 @@ Everything the agent writes into a workspace lives in one directory, `.agent/`:
 ├── artifacts/         # task.md, plan.md, walkthrough.md — written for you to read
 ├── state/             # editor.json, github.json, plan-approval.json
 ├── backups/           # file backups powering /undo
-├── github-reviews/    # what the PR agent worked out about a comment
 ├── sessions/          # conversation history, and archive.jsonl — turns a
 │                     #   summary replaced, kept so the agent can look them up
 └── logs/
@@ -683,6 +680,19 @@ about a day, during which it was wrong roughly forty times — a count in prose
 is stale the moment the next commit lands, and the command is both shorter and
 always right.
 
+#### The GitHub PR agent is gone (2026-09-19)
+- **Removed**, and documented in `CLAUDE.md` in enough detail to rebuild from:
+  what each of the nine files did, the interface decisions worth keeping, and
+  the two things that were still broken. 2,009 lines plus a tab, two hooks, a
+  content script and eight test files.
+- *Why:* every `flow: 'github'` entry in the error log was `poll: fetch failed`,
+  three review directories were ever written, and the tab left comments reading
+  `⚠ not analysed` after being sent for analysis. It was a second product inside
+  the first, and the first still had bugs that stopped it doing its job.
+- The migrations stay: an older `.agent/github-pr-plans/` is still renamed on
+  startup, and the `github` flow label in the error log still exists so old logs
+  stay readable.
+
 #### One model, and five things that were silently wrong (2026-09-19)
 - **ChatGPT removed.** One bridge, one model. *Duo* now means a second Gemini
   tab that has not seen your conversation — which is the half of a reviewer
@@ -722,7 +732,7 @@ always right.
   which tools exist and nothing checked any pair, which is how `recall_history`
   and `get_diagnostics` shipped registered, implemented and **unreachable**.
 - **One lane per tab** — `main:<model>` and `sub:<requestId>` — so a background
-  GitHub turn and your own prompt genuinely overlap instead of queueing.
+  background turn and your own prompt genuinely overlap instead of queueing.
 - **The extension addresses tabs by identity.** It used to take whatever tab was
   last, so your prompt could land in the middle of a subagent's conversation.
 - **Removed: `semantic_search` and the whole retrieval subsystem** (~290 lines,

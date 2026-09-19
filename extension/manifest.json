@@ -11,8 +11,7 @@
     "alarms"
   ],
   "host_permissions": [
-    "https://gemini.google.com/*",
-    "https://github.com/*"
+    "https://gemini.google.com/*"
   ],
   "side_panel": {
     "default_path": "side-panel/panel.html"
@@ -27,15 +26,6 @@
       ],
       "js": [
         "content-scripts/gemini-bridge.js"
-      ],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": [
-        "https://github.com/*"
-      ],
-      "js": [
-        "content-scripts/github-bridge.js"
       ],
       "run_at": "document_idle"
     }

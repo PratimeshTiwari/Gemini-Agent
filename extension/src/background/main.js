@@ -87,8 +87,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'question_response':
       case 'command_approval_response':
       case 'turn_trace':
-      case 'github_pr_comment':
-      case 'github_pr_viewing':
         sendToServer({ type, payload });
         sendResponse({ success: true });
         break;

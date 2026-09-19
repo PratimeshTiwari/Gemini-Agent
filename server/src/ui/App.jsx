@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useStdout, Static } from 'ink';
-import { GithubTab } from './components/GithubTab.jsx';
 import { Menus, DiffApproval } from './components/Menus.jsx';
 import { Banner } from './components/Banner.jsx';
 import { TranscriptTurn } from './components/TranscriptTurn.jsx';
@@ -18,7 +17,6 @@ import { useKeyBindings } from './hooks/use-key-bindings.js';
 import { useHotkeys } from './hooks/use-hotkeys.js';
 import { canCopy, copyToClipboard } from './clipboard.js';
 import { checkForUpdate, readPendingReload } from '../core/update.js';
-import { useGithubTab } from './hooks/use-github-tab.js';
 import { handleSlashCommand } from './hooks/use-slash-commands.js';
 import { buildAgentCallbacks } from './hooks/use-agent-callbacks.js';
 import fs from 'fs';
@@ -223,10 +221,6 @@ export function App({ agentLoop, wsServer }) {
   // Set by the key bindings when Enter carried a modifier, read by InputBar's
   // deferred submit. A ref because the two run in the same event dispatch.
   const newlineRef = useRef(false);
-  const [activeTab, setActiveTab] = useState('agent'); // 'agent' | 'github'
-  // The whole GitHub screen — state, polling and actions — lives in its own
-  // hook. See hooks/use-github-tab.js for why.
-  const github = useGithubTab({ agentLoop, wsServer, activeTab, setHistory });
 
   const { stdout } = useStdout();
 
@@ -744,9 +738,6 @@ export function App({ agentLoop, wsServer }) {
         setHistory,
         setIsProcessing: turnInFlight ? () => {} : setIsProcessing,
         setPendingImage,
-        // So `/github …` can answer on the GitHub screen instead of filling
-        // the agent's transcript with polling notices.
-        github,
       });
       return;
     }
@@ -849,11 +840,6 @@ export function App({ agentLoop, wsServer }) {
   useHotkeys({
     expand: toggleVerbose,
     artifacts: () => setArtifactsOpen((open) => !open),
-    tabs: () => setActiveTab((prev) => {
-      const next = prev === 'agent' ? 'github' : 'agent';
-      if (next === 'github') github.clearNewEvent();
-      return next;
-    }),
     terminal: () => setTerminalOpen((prev) => {
       setFocus(prev ? FOCUS_INPUT : FOCUS_TERMINAL);
       return !prev;
@@ -935,18 +921,15 @@ export function App({ agentLoop, wsServer }) {
     queued,
     setQueued,
     activeMenu,
-    activeTab,
     agentLoop,
     cycleMode,
     diffRequest,
     focus,
-    github,
     handleSubmit,
     historyIdx,
     inputHistory,
     isProcessing,
     newlineRef,
-    setActiveTab,
     setHistoryIdx,
     setInput,
     setInputAtEnd,
@@ -1036,8 +1019,8 @@ export function App({ agentLoop, wsServer }) {
         Mounted unconditionally, *outside* the tab switch. <Static> only writes
         the items it has not written before, and it tracks that in component
         state — so unmounting it and mounting it again reprints the entire
-        transcript, banner included. Putting it inside the `activeTab` branch
-        meant a trip to the GitHub tab and back reprinted everything, which is
+        transcript, banner included. Putting it inside a tab branch meant a
+        trip away and back reprinted everything, which is
         where the second banner came from.
       */}
       <Static key={staticEpoch} items={staticItems}>
@@ -1055,43 +1038,6 @@ export function App({ agentLoop, wsServer }) {
             />
           ))}
       </Static>
-
-      {activeTab === 'github' ? (
-        /*
-          The GitHub screen gets everything the status bar does not.
-
-          `RESERVED_ROWS` is the *agent* tab's furniture — the thinking line,
-          the prompt box, the palette, the notices. None of it is drawn here:
-          on this tab the frame is the screen and the status bar, and nothing
-          else. Budgeting it at `terminalHeight - 8` left four rows at the top
-          still showing the tail of the figlet banner, which is scrollback and
-          can never be repainted away — the screen has to be tall enough to
-          push it off instead.
-
-          `GithubTab` sets `height` with `overflow="hidden"`, so its height is
-          exactly what this says and cannot grow — the usual reason to keep a
-          spare row, a line that wraps and is charged one but drawn as two,
-          cannot happen inside a box that clips. The status bar below is one
-          row plus a margin that `compact` drops.
-
-          So the arithmetic looks like it should be `- 2`, and `- 2` is wrong:
-          measured, it costs exactly one `ESC[2J` + `ESC[3J` on the way *back*
-          to the agent tab, because Ink's frame carries a trailing newline that
-          the row count does not. `- 3` is zero clears at every size tested
-          (40x100, 24x90, 24x72, 13x80, 13x72, 10x80, 9x72, 40x60), and the row
-          it gives up is the one the banner's last line sits on — a visible
-          cost, where a clear-and-repaint is an invisible one that eats the
-          scrollback.
-        */
-        <GithubTab
-          agentLoop={agentLoop}
-          wsServer={wsServer}
-          github={github}
-          maxRows={Math.max(6, terminalHeight - (compact ? 2 : 3))}
-          width={terminalWidth}
-        />
-      ) : (
-        <>
 
           {/*
             Notices, at the top of everything Ink can repaint.
@@ -1213,7 +1159,6 @@ export function App({ agentLoop, wsServer }) {
             terminalWidth={terminalWidth}
             handleSubmit={handleSubmit}
             mode={mode}
-            setActiveTab={setActiveTab}
             setFocus={setFocus}
             setHistory={setHistory}
             setInput={setInput}
@@ -1230,8 +1175,6 @@ export function App({ agentLoop, wsServer }) {
             focus={focus}
             agentLoop={agentLoop}
           />
-        </>
-      )}
 
       {/*
         The status bar: one row, fixed columns.
@@ -1254,21 +1197,11 @@ export function App({ agentLoop, wsServer }) {
       <Box marginTop={compact ? 0 : 1} paddingX={1} flexDirection="row" justifyContent="space-between" width="100%">
         <Box flexShrink={1} overflow="hidden">
         <Text wrap="truncate">
-          {activeTab === 'agent' ? (
-            <>
-              {isProcessing
-                ? <Text color="cyan"><Dots tick={animTick} /> agent</Text>
-                : <Text color={extensionConnected ? 'cyan' : 'yellow'} bold>
-                    {extensionConnected ? '●' : '○'} agent
-                  </Text>}
-              <Text dimColor>{'  ·  '}github{github.hasNewEvent ? '*' : ''} ^o</Text>
-            </>
-          ) : (
-            <>
-              <Text color="cyan" bold>● github</Text>
-              <Text dimColor>{'  ·  '}agent ^o</Text>
-            </>
-          )}
+          {isProcessing
+            ? <Text color="cyan"><Dots tick={animTick} /> agent</Text>
+            : <Text color={extensionConnected ? 'cyan' : 'yellow'} bold>
+                {extensionConnected ? '●' : '○'} agent
+              </Text>}
           {activeScope ? <Text dimColor>{'  ·  '}{activeScope}</Text> : null}
           <Text dimColor>{'  ·  '}/help</Text>
         </Text>

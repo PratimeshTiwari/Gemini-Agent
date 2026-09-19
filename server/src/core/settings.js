@@ -63,7 +63,6 @@ export function describeSettings(agentLoop) {
   const memoryOn = agentLoop?.memoryManager?.isMemoryEnabled?.() !== false;
   const facts = memoryOn ? (agentLoop?.memoryManager?.getAllMemories?.() || []).length : 0;
   const scope = safe(() => paths.getActiveScope(agentLoop.workspace), '');
-  const github = agentLoop?.githubHandler?.getStatus?.() || {};
   const commandsToday = safe(() => countToday(agentLoop.workspace), 0);
 
   const history = agentLoop?.conversationHistory || [];
@@ -133,13 +132,6 @@ export function describeSettings(agentLoop) {
       value: String((agentLoop?.skillFolders || []).length + 2),
       hint: 'this project, yours, plus any added by hand',
       run: '/skills',
-    },
-    {
-      group: 'Status',
-      label: 'GitHub',
-      value: github.username ? `@${github.username}` : 'not connected',
-      hint: github.username ? 'PR dashboard on ctrl+o' : 'ctrl+o to add a token',
-      run: '/github',
     },
     {
       group: 'Status',

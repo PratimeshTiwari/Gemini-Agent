@@ -596,113 +596,89 @@ it wants `acorn-walk` plus `acorn-jsx`, not that file.
 `watcher/file-watcher.js` (chokidar) invalidates context on external edits. `semantic_search`
 is backed by a local TF-IDF index.
 
-### GitHub agent
+### GitHub agent — removed 2026-09-19, documented to be rebuilt
 
-`github/` polls PRs (`github-poller`), classifies comments (`comment-classifier`), parses CI
-logs (`ci-log-parser`), decides what to analyse and when (`work-queue`), builds the prompt
-(`review-task`) and writes the result via `review-writer` into `.agent/github-reviews/`.
+Deleted on the owner's call: *"delete github for now, maybe we will have it
+later so document the things as they are today."* 2,009 lines in
+`server/src/github/`, plus a tab, two hooks, a content script and eight test
+files — 8% of the server source for a second product living inside the first.
 
-That directory used to be `github-pr-plans/`, and `/plans` still means something else —
-`.agent/artifacts/plans/`, a different format written by a different path. One word, two
-answers. `migrateGitHubReviews` renames it on startup and refuses to clobber.
+**Why it went.** Every `flow: 'github'` entry in the error log was `poll: fetch
+failed`. Three review directories were ever written. The tab showed comments
+stuck at `⚠ not analysed` after being sent for analysis, with no way to tell
+"still working" from "silently failed" from "done, and the row is stale". And
+it was competing for attention with a core loop that produced six separate
+"the prompt promises what the code refuses" bugs in a single day.
 
-**The tab is for browsing; the stream is for noticing.** Decided 2026-09-16, after the
-screen was cut from 11 rows to 5 (the border and heading, a ranked status line, a one-line
-empty state, hints on one row, and `@who commented` in place of `requires_review` — which
-was a constant, because it is the only non-noise value the classifier can return and
-anything it calls noise never reaches a row).
+Not deleted because it was bad. Deleted because a half-working second product
+costs more than it returns while the first one is still being made to work.
 
-The open question was whether it should be a tab at all. Everything else in this app is a
-stream and nothing else is a page, and this is a stream of events. Resolved as a middle
-path rather than either extreme: the tab keeps the browsing — PRs, plans, comment bodies,
-all of which want a screen — and every new event *also* arrives in the transcript as one
-dim row (`githubNoticeRow`, `ui/hooks/use-github-tab.js`), where you are already reading.
-`^o` still opens the detail. Nothing interrupts and nothing is inserted into the prompt,
-which is the same contract a failed VS Code terminal command already has.
+#### What it did
 
-Three constraints that shaped the row, none obvious:
+| file | lines | job |
+| --- | --- | --- |
+| `github-poller.js` | 476 | polled the REST API for PRs, comments and workflow runs |
+| `github-event-handler.js` | 380 | orchestrator wiring the poller to everything below |
+| `review-writer.js` | 376 | wrote one `.md` per comment into `.agent/github-reviews/PR-<n>/` |
+| `ci-log-parser.js` | 198 | pulled the actionable failure out of an Actions log |
+| `github-review-prompt.js` | 166 | the system prompt for investigating a comment |
+| `review-task.js` | 162 | turned one comment into one prompt |
+| `work-queue.js` | 119 | what to analyse and when — knew nothing about GitHub |
+| `comment-classifier.js` | 70 | which comments were worth a pass |
+| `github-config.js` | 62 | token, repo, intervals |
 
-- It is a `system` message, because `groupTurns` and `TranscriptTurn` already draw those
-  dim and wrapped. A new role would mean teaching both, for one line.
-- It is a *notification*, not the record — the tab's `activity` is the record. `groupTurns`
-  keeps a system message only inside a turn, so an event arriving before the session's
-  first prompt is not drawn, and the alternative is inventing an orphan turn to hang it
-  from.
-- **The author is capped at 20 characters.** The row is drawn in the *live* frame while a
-  turn is in flight, and a GitHub username runs to 39 — which put the worst case at 78
-  columns: one row at 80, two at 72. A row that wraps is charged as one and drawn as two,
-  which is a bug this frame has had twice. The test pins it at 60 columns.
+Surfaces: `ui/components/GithubTab.jsx`, `ui/hooks/use-github-tab.js`,
+`ui/hooks/use-github-keys.js`, `^o` to open the tab, `/github` and its
+subcommands, `extension/content-scripts/github-bridge.js` for reading comment
+bodies off the page.
 
-Only `github_plan_generated` earns a row; `processing_started` and `processing_finished`
-bracket the same event and would draw three lines for one comment.
+#### The decisions worth keeping, if it is rebuilt
 
-**The tab is one list, three levels, and it fills the terminal.** Reworked
-2026-09-17 after three screenshots and "this github one is a mess". It had
-*two* lists — an activity feed you landed on, and a PR explorer behind an
-unadvertised `p` — which showed overlapping things, and `⏎` meant something
-different on each of the three screens (open the plan / open comments / send to
-the agent). The feed was also empty on a fresh session with open PRs sitting
-right there, because it only ever held events from *this* process.
+- **The tab is for browsing; the stream is for noticing.** Every new event also
+  arrived in the transcript as one dim row (`githubNoticeRow`), because that is
+  where you are already reading. Nothing interrupted, nothing was inserted into
+  the prompt. The author was capped at 20 characters: a GitHub username runs to
+  39, and the row is drawn in the *live* frame, where 78 columns is one row at
+  80 and two at 72 — and a row that wraps is charged as one and drawn as two.
+- **One list, three levels.** PRs → that PR's comments → the analysis in your
+  editor, where `⏎` means "go deeper" at every level and `esc` comes back. It
+  had been *two* lists — an activity feed you landed on and a PR explorer behind
+  an unadvertised `p` — showing overlapping things, with `⏎` meaning something
+  different on each of three screens. The feed was also empty on a fresh session
+  with open PRs sitting right there, because it only ever held events from that
+  process. `summarisePrs` folded the feed into "what does the agent know about
+  each PR", which is what the rows counted.
+- **`height={rows}` with `overflow="hidden"`, budgeted at `terminalHeight - 3`.**
+  The banner is a `<Static>` item and cannot be cleared, so the screen has to
+  push it off; remounting `<Static>` to lose it reprints the whole transcript,
+  which is where a second banner came from. `- 2` looks exact and costs one
+  `ESC[2J` on the way back, because Ink's frame carries a trailing newline the
+  row count does not.
+- **No box and no inner scrolling.** The only box-drawn frame in this product is
+  the input field, where the border *means* the mode. The list was windowed
+  against the budget and said what it trimmed (`… N more`).
+- **The agent had no shell.** `runHeadlessTask` offered only `grep_search`,
+  `read_file`, `list_directory`, `search_files` and `ask_subagent`, so it could
+  not run `git checkout` whatever it was asked — a structural guarantee, not a
+  prompt rule. Rebuild it that way.
 
-So the feed stopped being a view and became the evidence: `summarisePrs`
-(exported and tested) folds it into "what does the agent know about each PR",
-which is what the PR rows count and what the comment rows join against. What is
-left is a drill-down — **PRs → that PR's comments → the analysis in your
-editor** — where `⏎` means go deeper at every level and `esc` comes back. Level
-two lists *every* comment on the PR with the agent's work marked on it, rather
-than only the ones it happened to process.
+#### What was still broken when it went
 
-Two rules came out of making it a screen rather than a paragraph:
+- **Comments sent for analysis never updated their row.** Unknown whether the
+  analysis ran, and unknown whether a plan file was written. Start by comparing
+  the tab's `activity` against what is on disk in `.agent/github-reviews/`.
+- **The reviewer could not see git.** The prompt handed it a title, a number, a
+  branch *name*, the comment and a diff snippet — no current branch, no
+  divergence, no merge base. So "why is there a merge conflict", which is what
+  people actually asked it, was unanswerable. The fix is two parts: put the git
+  facts in the prompt (the server computes them; `rev-list --left-right --count`
+  is the diagnostic), and only then consider an allowlisted read-only `git`
+  tool. An allowlisted `git` is still a shell unless `-c`, `-C` and
+  `--exec-path` are refused: `git -c core.pager=sh` runs `sh`.
+- **`.agent/github-reviews/` and `/plans` meant two different things.**
+  `migrateGitHubReviews` in `core/migrate.js` renamed the older
+  `github-pr-plans/` and refused to clobber; that migration is kept.
 
-- **The banner cannot be cleared, so the screen has to push it off.** It is a
-  `<Static>` item, committed to the terminal permanently, and remounting
-  `<Static>` to lose it reprints the entire transcript — that is where the
-  second banner came from. `height={rows}` with `overflow="hidden"` scrolls it
-  away instead, and the fixed height is also what lets the hint row be *pinned*
-  to the last line instead of trailing however much content there was.
-- **`terminalHeight - 2` is one row too tall, and the arithmetic does not say
-  so.** The tab draws only itself and the status bar (one row plus a margin
-  `compact` drops), so `- 2` looks exact — and measured, it costs one `ESC[2J`
-  + `ESC[3J` on the way *back* to the agent tab, because Ink's frame carries a
-  trailing newline the row count does not. `- 3` is zero clears at 40x100,
-  24x90, 24x72, 13x80, 13x72, 10x80, 9x72 and 40x60. `RESERVED_ROWS` is the
-  agent tab's furniture and does not apply here; budgeting this screen at
-  `- 8` was what left four rows of figlet on top of it.
-
-**Two things about that screen were argued against and are not oversights.**
-There is **no box** — the only box-drawn frame in this product is the input
-field, where the border *means* the mode, so a second one devalues it and costs
-four rows. And there is **no scrolling inside the screen**: the list is windowed
-against the budget and says what it trimmed (`… N more`), because a second
-scroll model in an app whose whole scroll story is "the terminal's, and we never
-take it" is a worse answer than a list that admits its own limit.
-
-**The one thing still missing there is the analysis's own Gemini thread id.**
-`subagentUrl` is available where the analysis runs and is not recorded on the
-`plan_generated` payload, so there is no way to reopen the conversation that
-produced a review. It needs threading through `core/turn-runner.js`.
-
-**The question that decided the shape, and the answer that was not the lean.**
-The working document asked whether the activity feed and the PR explorer should
-be one screen, and leaned towards keeping them separate — they answer different
-questions ("what happened?" vs "what is open?"), and merging means a mode switch
-inside one list. That was wrong, and the giveaway was inside the question: *"the
-second is the one people go looking for when the first is empty."* That is not
-two questions, it is one question with the wrong list in front of it — and the
-feed was empty on a fresh session **by construction**, because it only ever held
-events from this process. The lean came from reasoning about the two screens
-rather than opening them; one screenshot settled it.
-
-The batch loop is `core/turn-runner.js`, not `agent-loop.js`: `runHeadlessTask` is a caller
-now. **Its flat re-serialisation is necessary, not an oversight** — every batch send opens a
-fresh browser tab that is closed when the turn ends, so turn 2 has never seen turn 1. Removing
-it needs one tab held across a task, which is a bridge change.
-
-## State and config
-
-**All workspace state lives under `.agent/`. Never hardcode that path — import
-`server/src/core/paths.js`,** which is the single source of truth and the reason the layout
-can't drift again.
 
 ### Where `.agent/` actually is
 

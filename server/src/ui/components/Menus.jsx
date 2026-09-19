@@ -924,34 +924,6 @@ export function Menus({
           </Box>
         )}
 
-        {activeMenu?.type === 'github' && (
-          <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-            <Text bold color="cyan">GitHub integration</Text>
-            <SelectInput
-              items={[
-                { label: 'Refresh PR Activity Now', value: 'refresh' },
-                { label: `CI Failure Watch [Currently: ${agentLoop.githubHandler?.config?.enableCIWatch ? 'ON' : 'OFF'}]`, value: 'ci-watch' },
-                { label: 'Clear Poller State & Rescan', value: 'clear-state' },
-                { label: 'Open PR Dashboard (Ctrl+O)', value: 'dashboard' },
-                { label: 'Remove/Update GitHub Token', value: 'remove-token' },
-              ]}
-              onSelect={(item) => {
-                setActiveMenu(null);
-                if (item.value === 'dashboard') {
-                  setActiveTab('github');
-                  setFocus(FOCUS_INPUT);
-                } else if (item.value === 'ci-watch') {
-                  const current = agentLoop.githubHandler?.config?.enableCIWatch;
-                  handleSubmit(`/github ci-watch ${current ? 'off' : 'on'}`);
-                } else if (item.value === 'remove-token') {
-                  handleSubmit('/github remove-token');
-                } else {
-                  handleSubmit(`/github ${item.value}`);
-                }
-              }}
-            />
-          </Box>
-        )}
     </>
   );
 }

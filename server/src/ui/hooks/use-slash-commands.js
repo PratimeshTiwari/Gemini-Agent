@@ -89,7 +89,6 @@ export async function handleSlashCommand(query, {
   setHistory,
   setIsProcessing,
   setPendingImage,
-  github,
   confirmed = false,
 }) {
     const parts = query.slice(1).split(/\s+/);
@@ -135,7 +134,6 @@ export async function handleSlashCommand(query, {
           '  shift+tab   plan ⇄ auto',
           '  ctrl+e      expand or collapse every step',
           '  ctrl+t      shell',
-          '  ctrl+o      GitHub dashboard',
           '  ctrl+b      bring the Gemini tab to the front',
           '  ctrl+u      clear the input   ·   ctrl+w   delete the last word',
           '  ctrl+j      newline, without sending   ·   ↑ ↓   move a line, or recall',
@@ -838,12 +836,6 @@ export async function handleSlashCommand(query, {
       return;
     }
 
-    if (command === 'github' && args.length === 0) {
-      setActiveMenu({ type: 'github' });
-      setIsProcessing(false);
-      return;
-    }
-
     if (command === 'image' || command === 'paste-image') {
       let finalFilePath = '';
       let ext = '';
@@ -930,24 +922,7 @@ export async function handleSlashCommand(query, {
           setHistory(newHistory);
           resetScreen();
         } else if (result && result.message) {
-          /**
-           * A GitHub command answers on the GitHub screen.
-           *
-           * `/github refresh` was writing "Polling GitHub now…" into the
-           * *agent's* transcript — twice in the screenshot, above a
-           * conversation that had nothing to do with it. The two surfaces
-           * exist because the events are different kinds of thing; sending one
-           * surface's output to the other is the same mistake in reverse.
-           *
-           * It still goes somewhere visible: the GitHub tab's activity feed,
-           * which is where the result of a GitHub command belongs and where
-           * the poll it triggered will report back.
-           */
-          if (command === 'github' && github?.notify) {
-            github.notify(result.message);
-          } else {
-            setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: result.message, isLocal: true }]);
-          }
+          setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: result.message, isLocal: true }]);
         }
       } catch (err) {
         setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {

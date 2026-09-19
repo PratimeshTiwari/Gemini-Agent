@@ -57,13 +57,11 @@ export function isAllowedOrigin(origin) {
 }
 
 export class WebSocketServer {
-  constructor({ port, agentLoop, githubHandler }) {
+  constructor({ port, agentLoop }) {
     this.port = port;
     this.agentLoop = agentLoop;
-    this.githubHandler = githubHandler;
     this.wss = null;
     this.clients = new Map(); // id -> { ws, type, connectedAt }
-    this.pendingGitHubNotifications = []; // Buffer for CLI
     /**
      * Prompts that had nowhere to go, waiting for the extension to come back.
      *
@@ -79,12 +77,7 @@ export class WebSocketServer {
      */
     this.pendingInjects = [];
 
-    // Wire GitHub events to broadcast
-    if (this.githubHandler) {
-      this._wireGitHubEvents();
-    }
-
-    // Always provide background callbacks so headless tasks (e.g. GitHub agent)
+    // Always provide background callbacks so headless tasks
     // can use the extension bridge even when no user message is being processed.
     this._wireBackgroundCallbacks();
   }
@@ -617,134 +610,12 @@ export class WebSocketServer {
         }
         break;
 
-      case 'github_pr_comment':
-        // Real-time comment from GitHub content script
-        if (this.githubHandler) {
-          // Emit as if it came from the poller — the classifier/plan generator will handle it
-          this.githubHandler.poller.emit('new_comment', {
-            pr: {
-              number: payload.pr.number,
-              title: payload.pr.title || `PR #${payload.pr.number}`,
-              html_url: payload.pr.url || `https://github.com/${payload.pr.full_name}/pull/${payload.pr.number}`,
-              head_ref: payload.pr.head_ref || 'unknown',
-              head_sha: null,
-              repo: {
-                owner: payload.pr.owner,
-                name: payload.pr.repo,
-                full_name: payload.pr.full_name,
-              },
-              key: `${payload.pr.full_name}#${payload.pr.number}`,
-            },
-            comment: payload.comment,
-          });
-        }
-        break;
-
-      case 'github_pr_viewing':
-        // Which PR the browser is looking at. Recorded on the client, not
-        // printed: this is routine traffic on a MutationObserver, and a
-        // console.log here writes straight into the frame Ink is repainting —
-        // three copies of "User viewing PR #13" in the transcript was exactly
-        // that. The GitHub tab is where this belongs if it is ever surfaced.
-        if (payload?.pr) {
-          this.viewingPR = { number: payload.pr.number, repo: payload.pr.full_name };
-        }
-        break;
-
       default:
         logError(this.agentLoop?.workspace, {
           flow: 'bridge', op: 'unknown_message',
           message: `Unknown message type: ${type}`,
         });
     }
-  }
-
-  // ── GitHub Event Wiring ─────────────────────────────────────────
-
-  _wireGitHubEvents() {
-    // Errors reach the UI through the same queue as everything else. They used
-    // to be console.error'd from main.js, which writes straight into the frame
-    // Ink is repainting: the message corrupts the layout and is gone on the
-    // next render.
-    const pushError = (data, fatal) => {
-      this.pendingGitHubNotifications.push({
-        id: randomUUID(),
-        type: fatal ? 'github_auth_rejected' : 'github_error',
-        payload: data,
-        timestamp: Date.now(),
-      });
-      if (this.pendingGitHubNotifications.length > 200) this.pendingGitHubNotifications.shift();
-    };
-    this.githubHandler.on('error', (data) => pushError(data, false));
-    this.githubHandler.on('auth_rejected', (data) => pushError(data, true));
-
-    this.githubHandler.on('notification', (data) => {
-      const msg = {
-        id: randomUUID(),
-        type: 'github_notification',
-        payload: data,
-        timestamp: Date.now(),
-      };
-      this.pendingGitHubNotifications.push(msg);
-      if (this.pendingGitHubNotifications.length > 200) this.pendingGitHubNotifications.shift();
-    });
-
-    this.githubHandler.on('processing_started', (data) => {
-      this.pendingGitHubNotifications.push({
-        id: randomUUID(),
-        type: 'github_processing_started',
-        payload: data,
-        timestamp: Date.now(),
-      });
-      if (this.pendingGitHubNotifications.length > 200) this.pendingGitHubNotifications.shift();
-    });
-
-    this.githubHandler.on('processing_finished', (data) => {
-      this.pendingGitHubNotifications.push({
-        id: randomUUID(),
-        type: 'github_processing_finished',
-        payload: data,
-        timestamp: Date.now(),
-      });
-      if (this.pendingGitHubNotifications.length > 200) this.pendingGitHubNotifications.shift();
-    });
-
-    this.githubHandler.on('plan_generated', (data) => {
-      const payload = {
-        type: data.type,
-        prNumber: data.pr.number,
-        prTitle: data.pr.title,
-        filePath: data.filePath,
-        isNew: data.isNew,
-        category: data.classification?.category || data.type,
-        comment: data.comment,
-        // Whether there is an analysis in that file, and enough of the PR to
-        // run one if there is not. Without these, pressing enter could only
-        // ever open the file — including when the file is a placeholder saying
-        // no analysis ran.
-        analysed: data.analysed !== false,
-        pr: data.pr,
-      };
-      
-      const msg = {
-        id: randomUUID(),
-        type: 'github_plan_generated',
-        payload: payload,
-        timestamp: Date.now(),
-      };
-      
-      this.pendingGitHubNotifications.push(msg);
-      this.broadcast('extension', msg);
-    });
-  }
-
-  /**
-   * Get and clear pending GitHub notifications (for CLI display).
-   */
-  getGitHubNotifications() {
-    const notifications = [...this.pendingGitHubNotifications];
-    this.pendingGitHubNotifications = [];
-    return notifications;
   }
 
   async _handleUserMessage(clientId, messageId, payload) {

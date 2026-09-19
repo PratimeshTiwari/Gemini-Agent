@@ -20,7 +20,6 @@ const SLASH_COMMANDS = [
   { name: 'new', desc: 'Fresh session, and a fresh chat in the browser too' },
   { name: 'undo', desc: 'Undo the last step/action' },
   { name: 'skills', desc: 'List, create and open skills the agent can load' },
-  { name: 'github', desc: 'Run GitHub commands (e.g. /github refresh)' },
   { name: 'image', desc: 'Attach an image — a path, or bare for the clipboard' },
   { name: 'plans', desc: 'Past plans, newest first' },
   { name: 'history', desc: 'Past conversations — pick one to reopen it' },

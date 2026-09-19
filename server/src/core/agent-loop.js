@@ -255,7 +255,6 @@ export class AgentLoop {
     // twenty thousand. Counted where it crosses the bridge, which is the only
     // place that cannot be wrong about it.
     this.contextChars = 0;
-    this.githubHandler = null; // Set externally after initialization
 
     // Workspace summary (generated dynamically by context manager)
     // Workspace summary removed to save context window.

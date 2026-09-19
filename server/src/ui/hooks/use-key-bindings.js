@@ -1,6 +1,5 @@
 import { useInput } from 'ink';
 import { FOCUS_INPUT, FOCUS_TERMINAL } from '../constants.js';
-import { handleGithubKey } from './use-github-keys.js';
 
 /**
  * Every keystroke the app answers outside a text field.
@@ -29,12 +28,10 @@ import { handleGithubKey } from './use-github-keys.js';
  */
 export function useKeyBindings({
   activeMenu,
-  activeTab,
   agentLoop,
   cycleMode,
   diffRequest,
   focus,
-  github,
   handleSubmit,
   historyIdx,
   inputHistory,
@@ -43,7 +40,6 @@ export function useKeyBindings({
   newlineRef,
   queued = [],
   setQueued,
-  setActiveTab,
   setFocus,
   setHistoryIdx,
   setInput,
@@ -70,11 +66,6 @@ export function useKeyBindings({
     if (key.return && (key.shift || key.meta)) {
       newlineRef.current = true;
       setInput((value) => `${value}\n`);
-      return;
-    }
-
-    if (activeTab === 'github') {
-      handleGithubKey(char, key, { github, agentLoop, handleSubmit, setActiveTab });
       return;
     }
 

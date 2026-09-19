@@ -47,7 +47,7 @@ import { planModelSwitch } from './model-match.js';
 export const AGENT_COMMANDS = new Set([
   'plan', 'auto', 'memory', 'mode', 'config', 'name', 'clear', 'context', 'new',
   'compact', 'undo', 'agent-dir', 'model', 'reasoning', 'effort', 'allowlist',
-  'github', 'workspace',
+  'workspace',
 ]);
 
 export async function handleSlashCommand(loop, command, args) {
@@ -442,110 +442,6 @@ export async function handleSlashCommand(loop, command, args) {
           + `${rules.allow.length} allowed · ${rules.block.length} blocked\n\n`
           + '_`/allowlist` on its own opens the picker — view, add, or remove there._',
       };
-    }
-
-    case 'github': {
-      const subCommand = args?.[0]?.toLowerCase();
-
-      if (subCommand === 'remove-token') {
-        delete process.env.GITHUB_TOKEN;
-        loop.modelConfig.githubToken = '';
-        loop._saveConfig();
-        if (loop.githubHandler) {
-          loop.githubHandler.stop();
-          loop.githubHandler = null;
-        }
-        return { message: '🗑️ GitHub token removed. Set GITHUB_TOKEN and restart to reconnect.' };
-      }
-
-      if (!loop.githubHandler) {
-        return { message: '⚠️ GitHub Agent not initialized. Set GITHUB_TOKEN env var and restart.' };
-      }
-
-      switch (subCommand) {
-        // `reviews`, because `/plans` already meant something else. These are
-        // what the agent worked out about somebody's comment; `/plans` reads
-        // `.agent/artifacts/plans/`, a different format written by a different
-        // path. `plans` still answers, because someone who learned the old word
-        // should get their list rather than "unknown subcommand".
-        case 'reviews':
-        case 'plans': {
-          const reviews = loop.githubHandler.listPlans();
-          if (reviews.length === 0) {
-            return { message: '📋 No reviews written yet. Waiting for PR comments...' };
-          }
-          const list = reviews.map(p =>
-            `  📄 ${p.fileName} (modified: ${p.lastModified.toLocaleString()})`
-          ).join('\n');
-          return { message: `📋 PR reviews (${reviews.length}) — \`.agent/github-reviews/\`:\n${list}` };
-        }
-
-        case 'refresh': {
-          loop.githubHandler.refresh().catch(err => {
-            logError(loop.workspace, {
-              flow: 'github', op: 'refresh',
-              message: `Refresh error: ${err.message}`, detail: err.stack,
-            });
-          });
-          // `⟳`, not 🔄. The GitHub tab draws in monochrome text and the
-          // one emoji on the screen reads as a different product's output.
-          return { message: '⟳ Polling GitHub now…' };
-        }
-
-        case 'ci-watch': {
-          const toggle = args?.[1]?.toLowerCase();
-          if (toggle === 'on') {
-            loop.githubHandler.setCIWatch(true);
-            return { message: '✔ CI failure watching enabled.' };
-          } else if (toggle === 'off') {
-            loop.githubHandler.setCIWatch(false);
-            return { message: '⛔ CI failure watching disabled. Only comments will be tracked.' };
-          }
-          const ciStatus = loop.githubHandler.config.enableCIWatch;
-          return { message: `🔧 CI Watch is currently: **${ciStatus ? 'ON' : 'OFF'}**\nUsage: \`/github ci-watch <on|off>\`` };
-        }
-
-        case 'clear-state': {
-          const stateFile = paths.githubStatePath(loop.workspace);
-          if (fs.existsSync(stateFile)) {
-            fs.unlinkSync(stateFile);
-          }
-          if (loop.githubHandler && loop.githubHandler.poller) {
-             loop.githubHandler.poller.state = { commentWatermarks: {}, seenCIRuns: {} };
-             loop.githubHandler.refresh();
-          }
-          return { message: '🗑️ GitHub Poller state cleared! Rescanning...' };
-        }
-
-        case 'stats': {
-          if (!loop.githubHandler) {
-            return { message: 'GitHub integration is currently disabled. Please setup your token first.' };
-          }
-          // Show status
-          const status = loop.githubHandler.getStatus();
-          const statusLines = [
-            `📊 GitHub Agent Status:`,
-            `  PRs Watched: ${status.prsWatched}`,
-            `  Total Polls: ${status.totalPolls}`,
-            `  Comments Processed: ${status.totalCommentsProcessed}`,
-            `  CI Failures Processed: ${status.totalCIFailuresProcessed}`,
-            `  Plans Generated: ${status.totalPlansGenerated}`,
-            `  CI Watch: ${status.ciWatchEnabled ? '✔ ON' : '⛔ OFF'}`,
-            `  Poll Interval: ${status.pollInterval}`,
-            `  Last Poll: ${status.lastPollTime || 'Never'}`,
-            `  Plan Directory: ${status.planDir}`,
-            ``,
-            `  Commands: /github reviews | /github refresh | /github ci-watch <on|off> | /github clear-state | /github remove-token | /github stats`,
-          ];
-          return { message: statusLines.join('\n') };
-        }
-        default: {
-          if (!subCommand) {
-            return { message: 'Usage: /github <plans|refresh|ci-watch|clear-state|remove-token|stats>' };
-          }
-          return { message: `❌ Unknown github command: '${subCommand}'\nUsage: /github <plans|refresh|ci-watch|clear-state|remove-token|stats>` };
-        }
-      }
     }
 
     default:

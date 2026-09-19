@@ -126,8 +126,9 @@ test('tabs', async (t) => {
   // Making someone find the right tab before they can search for a setting is
   // asking them to know the answer first.
   await t.test('typing searches every tab, not just the one you are on', () => {
-    const found = filterSettings(rows, 'github', 'Settings');
-    assert.ok(found.some((r) => r.label === 'GitHub'), 'GitHub lives on the Status tab');
+    // 'Workspace' is a Status row, searched for from the Settings tab.
+    const found = filterSettings(rows, 'workspace', 'Settings');
+    assert.ok(found.some((r) => r.label === 'Workspace'), 'Workspace lives on the Status tab');
   });
 
   await t.test('an empty query returns to the tab you were on', () => {
