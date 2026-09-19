@@ -668,65 +668,58 @@ missing one**, since the model reaches for it and concludes the code is not ther
 
 ---
 
-### Unreleased — heading for v1.0
+### Unreleased — `fix/bridge-speed-and-stability`
 
-Everything on `v1-stable` that has not been through a PR — several sessions of
-work, and the largest release by far, so it is grouped by area rather than
-listed flat.
-
-**How far ahead it is, as of now:**
+82 commits, not yet through a PR. **43 of them are `fix`** — this release is
+mostly the product being made to do what it already said it did.
 
 ```bash
-git rev-list --left-right --count main...v1-stable   # "0  <n>" — a clean fast-forward
+git rev-list --left-right --count main...fix/bridge-speed-and-stability
 ```
 
-Deliberately not written out here. This paragraph said "113 commits ahead" for
-about a day, during which it was wrong roughly forty times — a count in prose
-is stale the moment the next commit lands, and the command is both shorter and
-always right.
+The count is deliberately not written out in prose. It said "113 commits ahead"
+for about a day, during which it was wrong roughly forty times.
 
-#### At a glance
+#### What this branch is
 
-The detail is grouped by area below. This is the shape of it.
+Three things, and the first is most of it.
+
+**Nine bugs of one shape: the model was told the truth and the code did
+something else** — see *Told the truth, enforced something else* below. Plan
+mode exempting every `.md` file anywhere, `run_background` reaching none of the
+safety machinery, `find_references` answering **0** for every method under a
+message reading "It may be dead code". Every one was found by *using* the agent.
+
+**The bridge stopped losing turns.** The reconnect alarm was being cleared on
+connect, so a healthy bridge had none; prompts dispatched while Chrome was away
+were written to no sockets and dropped; and the turn's clock lived in a tab
+Chrome throttles to roughly one tick a minute, which is the whole of "it hangs
+while I'm not looking at Chrome".
+
+**Two subsystems removed**, and `agent-loop.js` taken apart: the GitHub PR agent
+(2,009 lines, documented first for a possible rebuild) and ChatGPT (one bridge,
+one model). `agent-loop.js` 2,669 → 2,193 lines.
 
 **Added**
-- `find_symbol` / `find_references` — structural code search, on acorn.
-- `grep_search` takes several patterns at once, with context lines and ranking.
-- `run_background` + `manage_task` — dev servers and watchers that outlive a turn.
-- `recall_history` — the model can look into its own compacted history.
-- A **second Gemini tab as a reviewer** (`/config`), with no memory of the
-  conversation that produced the work.
-- `/history`, `/plans`, `/commands`, `/logs`, `/update`, `/name`, `/restart`.
-- A **command audit trail** — every shell command run, blocked or refused.
-- Prompts typed during a turn are **queued**, not dropped; `↑` takes one back.
+- `/history` — reopen a past conversation from inside the session.
 - `/image <path>` and `/image remove`, with `1 image` in the status bar.
-- A VS Code companion that forwards failed terminal commands and the Problems panel.
-
-**Changed**
-- **One instruction surface**: `AGENT.md`, walked up from the code.
-- **One effort ladder**: `/effort` — flash · flash-thinking · brief · standard · deep.
-- **One lane per browser tab**, so subagents genuinely run at once.
-- The turn's clock moved **out of the tab**, so a turn survives you looking away.
-- Approval is decided in one place from the tool catalog's own flags.
-- `node_modules` **98.5 MB → 72.7 MB** (figlet and `@inquirer/prompts` gone).
-- Startup **2.46 s → 0.53 s** to the prompt box.
+- `d` on a diff opens the rest of it before you approve.
+- `ctrl+b` brings the Gemini tab forward.
+- The task panel gets its own key, state and row budget.
+- Prompts typed during a turn are queued; `↑` takes one back.
+- A handover review that arrives when there is something to hand over, checked
+  against what the turn actually did.
+- One ceiling for a batch of tool results, divided fairly rather than
+  first-come.
+- `setup.sh` asks where to install.
 
 **Removed**
-- The **GitHub PR agent** (2,009 lines) — documented first, for a possible rebuild.
-- **ChatGPT**, and with it the second bridge. One model, one bridge.
-- `semantic_search` and the retrieval subsystem; `ast-chunker`; the skills registry.
-- `rules.md`, `mistakes.md`, `contextFolders`, `memory.json`.
-- `topology`, `reasoningEffort`, `modelTier`/`reasoningLevel` as stored settings.
-- Mouse tracking, permanently — scroll, drag-select and copy are the terminal's.
-- The runtime scope switcher, and `/agent-dir`.
-
-**Fixed** — the ones worth naming are in *Told the truth, enforced something
-else* below: nine cases where the model was handed an accurate description and
-the code did something different. Plus the flicker that was deleting your
-scrollback seven times a second, prompts lost while Chrome was in the
-background, and a rejected edit that drew in green as though it had applied.
+- The GitHub PR agent — `github/`, the tab, two hooks, a content script.
+- ChatGPT, the second bridge, and `topology` as a stored setting.
+- `figlet` and `@inquirer/prompts`; `node_modules` 98.5 MB → 72.7 MB.
 
 **Quality**: 1,710 tests, **92.5% line coverage** (90.8% branch, 94.3% function).
+
 
 #### The GitHub PR agent is gone (2026-09-19)
 - **Removed**, and documented in `CLAUDE.md` in enough detail to rebuild from:
@@ -866,6 +859,45 @@ badly they would fail, not how interesting they were.
 - **`server/README.md` is gone.** It had drifted for nine days advertising two
   subsystems deleted in September, and everything in it was already in this file
   or `CLAUDE.md`. A third document is a third place to drift.
+
+### v1.0 — 2026-09-16 · PR #13 · `v1-stable`
+
+The largest release by far, so it is grouped by area rather than listed flat.
+`v1.1-bug-fixes` (PR #14) and `v1.2-github` (PR #16) followed it on 2026-09-17;
+their changes are folded into the areas below rather than split out, because
+they were fixes to this work rather than a release of their own.
+
+#### At a glance
+
+The detail is grouped by area below. This is the shape of it.
+
+**Added**
+- `find_symbol` / `find_references` — structural code search, on acorn.
+- `run_background` + `manage_task` — dev servers and watchers that outlive a turn.
+- `recall_history` — the model can look into its own compacted history.
+- A **reviewer** (`/config`) with no memory of the conversation that produced
+  the work.
+- `/plans`, `/commands`, `/logs`, `/update`, `/name`, `/restart`.
+- A **command audit trail** — every shell command run, blocked or refused.
+- `/image` — attach a screenshot from the clipboard.
+- A VS Code companion that forwards failed terminal commands and the Problems panel.
+
+**Changed**
+- **One instruction surface**: `AGENT.md`, walked up from the code.
+- **One effort ladder**: `/effort` — flash · flash-thinking · brief · standard · deep.
+- Startup **2.46 s → 0.53 s** to the prompt box.
+
+**Removed**
+- `semantic_search` and the retrieval subsystem; `ast-chunker`; the skills registry.
+- `rules.md`, `mistakes.md`, `contextFolders`, `memory.json`.
+- `topology`, `reasoningEffort`, `modelTier`/`reasoningLevel` as stored settings.
+- Mouse tracking, permanently — scroll, drag-select and copy are the terminal's.
+- The runtime scope switcher, and `/agent-dir`.
+
+**Fixed** — the flicker that was deleting your scrollback seven times a second,
+the auto-mode command classifier that could be walked past with a `;`, a bridge
+that bound to every interface with no auth, and `diff-engine` writing backups
+outside the backup directory.
 
 #### The engine
 - **Prompt economics.** The full system prompt goes out on turn 0 and every Nth
