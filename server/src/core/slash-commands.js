@@ -366,14 +366,14 @@ export async function handleSlashCommand(loop, command, args) {
         let browserLine;
         if (plan.action === 'switch') {
           loop.switchModelTo(plan.model.label);
-          browserLine = `🔀 Switching the browser to **${plan.model.label}**.${confirm()}`;
+          browserLine = `· Switching the browser to **${plan.model.label}**.${confirm()}`;
         } else if (plan.action === 'none') {
           // Nothing was asked for, so there is nothing to confirm.
           browserLine = `✓ The browser is already on **${plan.model.label}**.`;
         } else {
           loop._pendingEffortSwitch = chosen.id;
           loop.requestModelOptions?.();
-          browserLine = `🔀 Asking the browser to switch to **${chosen.browser}**.${confirm()}`;
+          browserLine = `· Asking the browser to switch to **${chosen.browser}**.${confirm()}`;
         }
 
         return {

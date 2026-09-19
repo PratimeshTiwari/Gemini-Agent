@@ -1243,7 +1243,7 @@ export class AgentLoop {
     }
 
     if (switchedTo) {
-      this._notify(`🔀 Browser mode switched to ${switchedTo}.`);
+      this._notify(`✓ Browser model switched to ${switchedTo}.`);
       return;
     }
 
