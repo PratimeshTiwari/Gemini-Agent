@@ -89,6 +89,7 @@ export async function handleSlashCommand(query, {
   setHistory,
   setIsProcessing,
   setPendingImage,
+  pendingImage,
   confirmed = false,
 }) {
     const parts = query.slice(1).split(/\s+/);
@@ -837,6 +838,33 @@ export async function handleSlashCommand(query, {
     }
 
     if (command === 'image' || command === 'paste-image') {
+      /**
+       * Taking it back off.
+       *
+       * Reported from use: *"there is no option to remove image? how to do
+       * that?"* — and there was not. `setPendingImage(null)` ran in exactly one
+       * place, on submit, so once an image was attached the only ways to get
+       * rid of it were to send it or to restart the CLI. Attaching by accident
+       * meant your next prompt carried a base64 payload you did not want, into
+       * a browser composer, on a turn you had not budgeted for it.
+       *
+       * `remove` shadows a file of that name in the workspace, which is a
+       * trade worth making: `/image remove` is what people type, and the
+       * file-not-found path was the only thing it displaced.
+       */
+      if (args.length === 1 && ['remove', 'clear', 'off', 'none'].includes(args[0].toLowerCase())) {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+          role: 'assistant',
+          isLocal: true,
+          content: pendingImage
+            ? `🖼️ Image detached — ${pendingImage.path} will not be sent.`
+            : 'No image is attached.',
+        }]);
+        setPendingImage(null);
+        setIsProcessing(false);
+        return;
+      }
+
       let finalFilePath = '';
       let ext = '';
       // `/image` with a path attaches that file; with nothing after it, the
@@ -888,7 +916,7 @@ export async function handleSlashCommand(query, {
           path: finalFilePath,
           sizeKB: Math.round(imageBuffer.length / 1024)
         });
-        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `🖼️ Image attached: ${finalFilePath} (${Math.round(imageBuffer.length / 1024)}KB)\nType your prompt and the image will be included.` }]);
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `🖼️ Image attached: ${finalFilePath} (${Math.round(imageBuffer.length / 1024)}KB)\nType your prompt and the image will be included, or \`/image remove\` to drop it.` }]);
       } catch (e) {
         setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `❌ Error reading image: ${e.message}` }]);
       }

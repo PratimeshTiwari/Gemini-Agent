@@ -50,6 +50,27 @@ export const AGENT_COMMANDS = new Set([
   'workspace',
 ]);
 
+/**
+ * The local commands that are worth a spinner.
+ *
+ * Every local command used to get one. `handleSubmit` set `isProcessing(true)`
+ * and `'Thinking...'` for anything starting with `/`, and each handler ends by
+ * setting it false — so an instant command drew a `Thinking…` row and erased it
+ * milliseconds later, having in between committed its own output to `<Static>`.
+ * The live row is stranded above the static write and becomes permanent
+ * scrollback: reported from use as a `Thinking… (0s · ↑ 29.4k tokens · esc to
+ * stop)` sitting above `❯ /image` forever, one per command, frozen at 0s.
+ * Above, because it was drawn before the rows it now sits on top of.
+ *
+ * `/compact` is the only one that genuinely waits — it asks the model for a
+ * summary. `/new` fires `startNewChat` without awaiting it, and the rest are
+ * arithmetic on state already in memory.
+ *
+ * A set beside the commands rather than a literal at the call site, for the
+ * same reason `MUTATING_TOOLS` is: the literal is what drifts.
+ */
+export const SLOW_COMMANDS = new Set(['compact']);
+
 export async function handleSlashCommand(loop, command, args) {
   switch (command) {
     case 'plan':

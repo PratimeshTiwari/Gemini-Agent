@@ -18,6 +18,7 @@ import { useHotkeys } from './hooks/use-hotkeys.js';
 import { canCopy, copyToClipboard } from './clipboard.js';
 import { checkForUpdate, readPendingReload } from '../core/update.js';
 import { handleSlashCommand } from './hooks/use-slash-commands.js';
+import { SLOW_COMMANDS } from '../core/slash-commands.js';
 import { buildAgentCallbacks } from './hooks/use-agent-callbacks.js';
 import fs from 'fs';
 import { exec } from 'child_process';
@@ -725,7 +726,10 @@ export function App({ agentLoop, wsServer }) {
     const turnInFlight = Boolean(agentLoop.isProcessing);
 
     if (query.startsWith('/')) {
-      if (!turnInFlight) {
+      // Only the ones that actually wait. A spinner for a command that answers
+      // in the same tick is drawn and erased around a `<Static>` write, and the
+      // row it leaves behind is permanent — see `SLOW_COMMANDS`.
+      if (!turnInFlight && SLOW_COMMANDS.has(query.slice(1).split(/\s+/)[0].toLowerCase())) {
         setIsProcessing(true);
         setStatus('Thinking...');
         setActiveToolCalls([]);
@@ -738,6 +742,7 @@ export function App({ agentLoop, wsServer }) {
         setHistory,
         setIsProcessing: turnInFlight ? () => {} : setIsProcessing,
         setPendingImage,
+        pendingImage,
       });
       return;
     }
@@ -1219,6 +1224,15 @@ export function App({ agentLoop, wsServer }) {
             </Text>
           ) : ''}
           {attachedCount > 0 ? `${attachedCount} paste${attachedCount === 1 ? '' : 's'}  ·  ` : ''}
+          {/*
+            An attached image had no representation anywhere. The transcript
+            said so once and scrolled away, so the only way to know one was
+            armed was to remember attaching it — and the only way to find out
+            was to send it. Same shape as the pastes beside it: one field in a
+            row that is already drawn and already budgeted, costing nothing
+            when there is no image.
+          */}
+          {pendingImage ? <Text color="yellow">{'1 image  ·  '}</Text> : ''}
           {runningTasks > 0 ? <Text color="yellow">{runningTasks} bg{'  ·  '}</Text> : ''}
           <Text color={mode === 'plan' ? 'yellow' : 'cyan'}>{mode}</Text>
           <Text dimColor> ⇥{'  ·  '}</Text>

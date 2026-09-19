@@ -1571,6 +1571,31 @@ ago.
   the case: the live tool rows are the only sign of progress during those
   rounds, which is precisely what the bug above was wiping.
 
+- **An instant local command must not raise a spinner it takes down again.**
+  Reported with a screenshot: a `Thinking… (0s · ↑ 29.4k tokens · esc to stop)`
+  row sitting above `❯ /paste-image` and another above `❯ /image`, both frozen
+  at 0s, permanently in the scrollback. `handleSubmit` set `isProcessing(true)`
+  for *anything* starting with `/`, and every handler ends by setting it false —
+  so an instant command drew the live row, committed its own output to
+  `<Static>` in between, then shrank the live frame, stranding the row above the
+  static write where Ink can never repaint it. **Above** the command, because it
+  was drawn before the rows it ends up sitting on. `SLOW_COMMANDS`
+  (`core/slash-commands.js`) is the gate, and `/compact` is its only member:
+  it asks the model for a summary, `/new` fires `startNewChat` without awaiting
+  it, and the rest is arithmetic on state already in memory. A set beside the
+  commands rather than a literal at the call site, because the literal is what
+  drifts.
+
+- **An attached image can be taken off again, and says that it is on.**
+  Reported from use: *"there is no option to remove image? how to do that?"* —
+  and there was not. `setPendingImage(null)` ran in exactly one place, on
+  submit, so once attached the only ways to be rid of it were to send it or
+  restart. It had no representation either: the transcript said so once and
+  scrolled away, so the only way to find out an image was armed was to send it.
+  `/image remove` detaches, and the status row carries `1 image` beside the
+  paste count — the same field pattern, in a row that is already drawn and
+  already budgeted, costing nothing when there is no image.
+
 - **A menu opened from `/settings` must not answer in the transcript.** `returnTo` is the
   settings page, so setting it back reopens that page *on top of* whatever the command just
   said. Four screens did this — `/effort`, `/config`, and two on the allowlist — and the
