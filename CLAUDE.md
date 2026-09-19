@@ -540,6 +540,29 @@ handler) with handlers in `mcp/tools/`. To add a tool: write the handler, add on
 array, **and one to `core/tool-catalog.js`** — that is what the prompt is rendered from, and
 `toolCatalogDrift()` fails the build if the two disagree. The description *is* the contract.
 
+**`find_references` answered 0 for every method in the repo, and said "It may be dead code".**
+A method is only ever called as `x.name()`, and `referencesIn` excluded member properties —
+correctly, for a *binding*: `fs.readFile` does not use a `readFile` variable. Nothing
+distinguished that question from "who calls this method?", so the second one always answered
+nothing. Measured through the real tool before the fix: `buildToolResultBatch` **0** against 17
+real call sites, `acceptDiff` **0** against 17, `classify` 4 (the standalone function only)
+against 14. This is the `semantic_search` failure exactly — the model reaches for the tool, is
+told the code is not there, and acts on it — except that here the action it invites is deletion.
+
+`includeMembers` is the second question, and the caller has to say which one it is asking.
+Hits found that way are tagged `viaMember`, because `x.name` genuinely cannot be told from a
+same-named method on another object; an answer that hides its own ambiguity is the one that
+gets acted on wrongly. **It is gated on the name being defined as a method in this repo**, not
+on always: measured unconditionally, `find_references("map")` is 165 rows of `Array.prototype`
+and `join` 180 — a wall of text about the standard library, every character of which is retyped
+into a browser next turn. Neither is defined here, so the gate excludes both.
+
+**And the definition was missing from the answer that promises to list it.** The prompt says
+"list the definition too (default true)" and "the definition is marked". For a function, whose
+`id` is a real Identifier, that was true; for a method, whose non-computed `MethodDefinition`
+key is deliberately never visited, it never was. Added in the handler rather than in
+`referencesIn`, so that function goes on answering only the question it is good at.
+
 `find_symbol` / `find_references` (`context/symbol-index.js`) are the structural half of code
 search, on acorn + acorn-jsx + acorn-walk. Two traps, either of which reproduces the failure
 that got `ast-chunker` deleted: `acorn-jsx` teaches the *parser* and not the walker, so a `.jsx`
