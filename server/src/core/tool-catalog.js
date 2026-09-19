@@ -406,7 +406,20 @@ export function toolNames(ctx) {
  * to.
  */
 export function renderToolDefinitions(tier, ctx, modelConfig = {}) {
-  const isFlash = tier === 'flash';
+  /*
+   * Both cheap tiers get the terse list, not just the one called `flash`.
+   *
+   * This read `tier === 'flash'`, which is false for `flash-thinking` — so the
+   * rung whose own description says "still a short prompt" was handed the full
+   * 9,786-character block instead of the 2,048 one. Measured: 22,538 characters
+   * against the 14,800 it should be, with 7,738 of the difference being a tool
+   * list it was never meant to carry, on the rung written for a model that
+   * follows short prompts and ignores long ones.
+   *
+   * A typo of intent rather than of syntax: "flash" meant the cheap tiers, and
+   * there turned out to be two of them.
+   */
+  const isFlash = tier === 'flash' || tier === 'flash-thinking';
   let out = '<available_tools>\n';
   for (const tool of toolsFor(ctx)) {
     const text = (isFlash ? tool.flash : (tool.pro ?? tool.flash));

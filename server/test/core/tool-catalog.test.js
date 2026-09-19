@@ -142,3 +142,37 @@ describe('the rendered block keeps its shape', () => {
       `flash ${flash.length} vs pro ${pro.length} — flash stopped being compact`);
   });
 });
+
+/**
+ * Which tiers get the terse tool list.
+ *
+ * `isFlash` read `tier === 'flash'`, which is false for `flash-thinking` — so
+ * the rung whose own description says "still a short prompt" was handed the
+ * full 9,786-character block instead of the 2,048 one. 22,538 characters
+ * against the 14,800 it should be, on the rung written for a model that
+ * follows short prompts and ignores long ones.
+ *
+ * Nothing caught it, because nothing pinned it: the property held by accident
+ * of what that one line said. A typo of intent rather than syntax — "flash"
+ * meant the cheap tiers and there turned out to be two of them.
+ */
+describe('the terse tool list goes to the cheap tiers', () => {
+  const size = (tier) => renderToolDefinitions(tier, true).length;
+
+  test('both flash tiers get the same terse block', () => {
+    assert.equal(size('flash'), size('flash-thinking'),
+      'flash-thinking is paying for a tool list it was never meant to carry');
+  });
+
+  // The control: it must still be genuinely terse, not "both got the long one".
+  test('and pro gets the full one, which is much larger', () => {
+    assert.ok(size('pro') > size('flash') * 3,
+      `pro is ${size('pro')} against flash's ${size('flash')} — the split has collapsed`);
+  });
+
+  test('an unknown tier falls back to the full block, not the terse one', () => {
+    // Safer direction to be wrong in: too much guidance costs characters, too
+    // little costs a misused tool.
+    assert.equal(size('something-new'), size('pro'));
+  });
+});
