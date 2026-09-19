@@ -781,9 +781,31 @@ export function App({ agentLoop, wsServer }) {
     handleSubmit(next);
   }, [queued, isProcessing, diffRequest, activeMenu]);
 
+  /**
+   * Answer the diff prompt — and, on one of the three answers, stop asking.
+   *
+   * The mode switch belongs here rather than on a banner of its own. In plan
+   * mode the model can already call `edit_file`; it just gets a diff first.
+   * So "let me write without asking" is not a question that needs its own
+   * screen — it is a third answer to the question already on screen, offered
+   * at the one moment the user has the evidence to answer it: they are
+   * looking at the change.
+   *
+   * Deliberately not a timed prompt. A countdown is right for a notice with a
+   * safe default; this is a decision about whether later edits apply
+   * unreviewed, and expiring it either picks silently or makes the user race
+   * a clock while reading the diff it is about. It would also re-render the
+   * live frame once a second forever, which is the one thing this UI is built
+   * not to do — App's existing tick runs only while a turn does.
+   */
   const handleDiffResponse = (action) => {
     if (!diffRequest) return;
-    agentLoop.handleDiffResponse(Date.now().toString(), { diffId: diffRequest.diffId, action });
+    if (action === 'accept-auto') {
+      agentLoop.mode = 'auto';
+      setMode('auto');
+    }
+    const resolved = action === 'accept-auto' ? 'accept' : action;
+    agentLoop.handleDiffResponse(Date.now().toString(), { diffId: diffRequest.diffId, action: resolved });
     setDiffRequest(null);
   };
 
@@ -1103,6 +1125,7 @@ export function App({ agentLoop, wsServer }) {
             diffRequest={diffRequest}
             handleDiffResponse={handleDiffResponse}
             setFocus={setFocus}
+            mode={mode}
             terminalHeight={terminalHeight}
           />
 

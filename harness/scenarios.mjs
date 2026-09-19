@@ -170,4 +170,29 @@ export const SCENARIOS = [
     rows: 24, cols: 90,
     maxClears: 0,
   },
+  {
+    name: 'plan mode offers the mode switch on the diff, not as a banner',
+    // The model asked in prose — "Ready to exit PLAN MODE?" — which spends a
+    // turn on a question no keypress can answer. The same question belongs on
+    // the screen that enforces the mode, where the user can see the change.
+    replies: [
+      'Working.\n\n```json\n' + JSON.stringify({
+        name: 'create_file',
+        args: { path: 'switch.js', content: 'const a = 1;\n' },
+      }) + '\n```',
+      'WRITTEN after the switch.',
+    ],
+    steps: [
+      { send: 'make a file\r' },
+      { wait: 'stop asking', timeout: 40 },
+      { key: 'down' },
+      { key: 'down' },
+      { send: '\r' },
+      { wait: 'WRITTEN', timeout: 40 },
+    ],
+    expect: ['Approve, and stop asking', 'WRITTEN'],
+    wrote: 'switch.js',
+    rows: 24, cols: 90,
+    maxClears: 0,
+  },
 ];

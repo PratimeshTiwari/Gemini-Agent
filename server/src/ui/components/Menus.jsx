@@ -977,15 +977,22 @@ const DIFF_ROWS_COLLAPSED = 16;
 
 /**
  * Furniture around the diff rows: the box border, the heading, the risk line,
- * the margin, the two choices and the hint. Subtracted so an expanded diff
- * grows into the room that is actually there and no further.
+ * the margin, the choices and the hint. Subtracted so an expanded diff grows
+ * into the room that is actually there and no further.
+ *
+ * Counted from the choices rather than fixed at 12, because plan mode has a
+ * third one ("Approve, and stop asking"). A row you draw is a row you budget
+ * — a constant that silently stopped matching the rows underneath it is how
+ * an expanded diff would push the buttons off the screen it exists to show.
  */
-const DIFF_BOX_FURNITURE = 12;
+const DIFF_BOX_FURNITURE_BASE = 10;
+const diffBoxFurniture = (choices) => DIFF_BOX_FURNITURE_BASE + choices;
 
 export function DiffApproval({
   diffRequest,
   handleDiffResponse,
   setFocus,
+  mode = 'plan',
   terminalHeight = 24,
 }) {
   const [expanded, setExpanded] = React.useState(false);
@@ -1038,8 +1045,44 @@ export function DiffApproval({
    * So expanding grows into the room the terminal actually has, and the
    * `… N more lines` row keeps saying what is still hidden.
    */
+  const choices = [
+    { label: `Approve — write ${(diffRequest.hunks ?? []).length === 1 ? 'it' : 'all of it'} to disk`, value: 'accept' },
+    /**
+     * The mode switch, offered where the evidence is.
+     *
+     * The model asks for it in prose — "Ready to exit PLAN MODE?" — which the
+     * tool catalog already forbids ("do NOT ask for permission to continue;
+     * that is what plan mode and the approval prompts are for") and which
+     * spends a whole turn on a question the user cannot answer with a
+     * keypress. This is the same question, asked by the thing that actually
+     * enforces the mode, at the one moment the user is looking at a change
+     * and can judge whether they want to keep seeing them.
+     *
+     * Not a timed prompt. A countdown suits a notice with a safe default;
+     * this decides whether later edits apply unreviewed, and expiring it
+     * either picks silently or makes the user race a clock while reading the
+     * diff it is about. It would also re-render the live frame once a second
+     * for as long as it was up.
+     */
+    { label: 'Reject — discard the change', value: 'reject' },
+    /**
+     * Last, and that position is the whole of it.
+     *
+     * Putting it between Approve and Reject moved Reject down one, so
+     * `↓ enter` — which every existing habit and the harness both mean as
+     * "reject" — approved the write *and* turned approval off for the rest of
+     * the session. The harness caught it as `nope.js WAS written`.
+     *
+     * A choice that widens permissions never sits between the two people
+     * press without looking.
+     */
+    ...(mode === 'plan'
+      ? [{ label: 'Approve, and stop asking — switch to auto mode', value: 'accept-auto' }]
+      : []),
+  ];
+
   const maxLines = expanded
-    ? Math.max(DIFF_ROWS_COLLAPSED, terminalHeight - DIFF_BOX_FURNITURE)
+    ? Math.max(DIFF_ROWS_COLLAPSED, terminalHeight - diffBoxFurniture(choices.length))
     : DIFF_ROWS_COLLAPSED;
   const rows = rowsFromPatch(diffRequest.patch, { maxLines });
   const hidden = rows.some((r) => r.type === 'more');
@@ -1081,10 +1124,7 @@ export function DiffApproval({
       )}
 
       <SelectInput
-        items={[
-          { label: `Approve — write ${hunks.length === 1 ? 'it' : 'all of it'} to disk`, value: 'accept' },
-          { label: 'Reject — discard the change', value: 'reject' },
-        ]}
+        items={choices}
         onSelect={(item) => {
           handleDiffResponse(item.value);
           setFocus(FOCUS_INPUT);
