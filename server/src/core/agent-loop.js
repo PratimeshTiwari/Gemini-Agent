@@ -1216,9 +1216,29 @@ export class AgentLoop {
    * and "a list with nothing suitable in it" call for different things to be
    * said, and `planModelSwitch` tells them apart.
    */
-  noteModelOptions(models, switchedTo) {
+  noteModelOptions(models, switchedTo, requested = null) {
     if (!Array.isArray(models)) return;
     this.modelOptions = models;
+
+    /*
+     * `switchedTo` is what the picker *reads* after the click, not what was
+     * asked for — so this can say whether it landed instead of assuming.
+     *
+     * It used to echo the request, which is why the CLI followed every switch
+     * with "check the Gemini tab's picker before you send anything — the picker
+     * is the only proof it landed". The proof was already coming back and was
+     * being discarded, so the user was asked to do a job the system had the
+     * answer to.
+     */
+    if (requested) {
+      const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+      this._notify(same(switchedTo, requested)
+        ? `🔀 Browser mode is now ${switchedTo}.`
+        : `⚠️ Asked the browser for ${requested}, but the picker reads `
+          + `${switchedTo || 'nothing recognisable'}. The prompt profile changed here either way.`);
+      return;
+    }
+
     if (switchedTo) {
       this._notify(`🔀 Browser mode switched to ${switchedTo}.`);
       return;

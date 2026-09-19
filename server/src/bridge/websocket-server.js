@@ -343,7 +343,7 @@ export class WebSocketServer {
         // What the browser's mode picker is offering. Stored, not acted on:
         // `core/model-match.js` decides which one an effort rung wants, and the
         // names differ by subscription so they cannot be assumed.
-        this.agentLoop.noteModelOptions(payload?.models, payload?.switchedTo);
+        this.agentLoop.noteModelOptions(payload?.models, payload?.switchedTo, payload?.requested);
         break;
 
       /**

@@ -351,22 +351,29 @@ export async function handleSlashCommand(loop, command, args) {
          * The picker is the only place that is visible.
          */
         const plan = planModelSwitch(chosen.id, loop.modelOptions || []);
-        const confirm = (name) =>
-          `\n\n_Check the Gemini tab's model picker now reads **${name}** before you send `
-          + 'anything — the switch is a request to the page, and the picker is the only '
-          + 'proof it landed._';
+        /*
+         * This used to end with "check the Gemini tab's picker before you send
+         * anything — the picker is the only proof it landed". It was not: the
+         * extension re-reads the picker after the click and now reports what it
+         * actually says, so a line follows on its own confirming or
+         * contradicting. Asking someone to go and look was asking them to do a
+         * job the system had the answer to — and finding that tab is the whole
+         * friction being complained about.
+         */
+        const confirm = () => '\n\n_The picker is read back after the switch; '
+          + 'a line follows saying what it reads._';
 
         let browserLine;
         if (plan.action === 'switch') {
           loop.switchModelTo(plan.model.label);
-          browserLine = `🔀 Switching the browser to **${plan.model.label}**.${confirm(plan.model.label)}`;
+          browserLine = `🔀 Switching the browser to **${plan.model.label}**.${confirm()}`;
         } else if (plan.action === 'none') {
           // Nothing was asked for, so there is nothing to confirm.
           browserLine = `✓ The browser is already on **${plan.model.label}**.`;
         } else {
           loop._pendingEffortSwitch = chosen.id;
           loop.requestModelOptions?.();
-          browserLine = `🔀 Asking the browser to switch to **${chosen.browser}**.${confirm(chosen.browser)}`;
+          browserLine = `🔀 Asking the browser to switch to **${chosen.browser}**.${confirm()}`;
         }
 
         return {

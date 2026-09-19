@@ -1459,9 +1459,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'switch_model':
       selectModelByLabel(payload?.label)
         .then(() => readModelOptions())
+        /*
+         * Report what the picker *reads*, not what we asked it to read.
+         *
+         * `switchedTo` used to echo `payload.label` straight back, so the CLI
+         * said "Browser mode switched to X" whenever the click did not throw —
+         * which is a claim, not an observation. That is why the CLI then told
+         * the user to go and check the picker themselves: the one thing that
+         * could have checked it was throwing the answer away.
+         *
+         * `readModelOptions()` already runs here and `describeModelOption`
+         * already reports `selected`, so the truth was in hand and unused.
+         */
         .then((models) => safeSend({
           type: 'model_options',
-          payload: { models, switchedTo: payload?.label },
+          payload: {
+            models,
+            switchedTo: (models.find((m) => m.selected) || {}).label || null,
+            requested: payload?.label ?? null,
+          },
         }))
         .catch((err) => safeSend({
           type: 'error',

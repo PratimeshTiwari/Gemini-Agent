@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { pickModelFor, planModelSwitch } from '../../src/core/model-match.js';
+import { AgentLoop } from '../../src/core/agent-loop.js';
 
 /** Exactly what the picker showed on the owner's plan, labels and blurbs. */
 const OWNER_PLAN = [
@@ -139,17 +140,25 @@ describe('the message after an effort switch', () => {
     return (await handleSlashCommand(loop, 'effort', [effort])).message;
   };
 
-  test('a known switch asks you to confirm the picker moved', async () => {
+  /*
+   * It used to say "check the Gemini tab's picker now reads X before you send
+   * anything — the picker is the only proof it landed". It was not the only
+   * proof: the extension re-reads the picker after the click, and now reports
+   * what it *says* rather than echoing what was asked for. So the message
+   * promises a line, instead of sending the user to go and find a browser tab.
+   */
+  test('a known switch says the picker will be read back', async () => {
     const msg = await run('brief', [{ label: 'Gemini Pro' }, { label: '3.8 Flash' }]);
     assert.match(msg, /Switching the browser/);
-    assert.match(msg, /picker now reads/);
+    assert.match(msg, /read back after the switch/);
     assert.match(msg, /Gemini Pro/);
+    assert.doesNotMatch(msg, /Check the Gemini tab/i, 'it still sends the user looking');
   });
 
   test('so does an unknown one, while it goes looking', async () => {
     const msg = await run('brief', []);
     assert.match(msg, /Asking the browser/);
-    assert.match(msg, /picker now reads/);
+    assert.match(msg, /read back after the switch/);
   });
 
   // Nothing was asked for, so there is nothing to confirm. `none` needs the
@@ -162,7 +171,7 @@ describe('the message after an effort switch', () => {
       { label: '3.8 Flash' },
     ]);
     assert.match(msg, /already on/);
-    assert.doesNotMatch(msg, /picker now reads/);
+    assert.doesNotMatch(msg, /read back after the switch/);
   });
 
   test('it no longer leads with reload instructions', async () => {
@@ -172,5 +181,58 @@ describe('the message after an effort switch', () => {
         'a stale bridge is a different problem, and there is no sign of one yet');
       assert.doesNotMatch(msg, /If nothing happens/);
     }
+  });
+});
+
+/**
+ * The switch is reported from what the picker reads, not from what was asked.
+ *
+ * `switchedTo` used to echo the requested label straight back from the content
+ * script, so "Browser mode switched to X" was printed whenever the click did
+ * not throw — a claim rather than an observation. Which is exactly why the CLI
+ * then told the user to go and check the picker themselves: the one thing that
+ * could have checked it was throwing the answer away.
+ */
+describe('noteModelOptions reports what landed', () => {
+  const notes = () => {
+    const said = [];
+    const loop = Object.create(AgentLoop.prototype);
+    Object.assign(loop, { _notify: (m) => said.push(m), modelOptions: null });
+    return { loop, said };
+  };
+
+  test('a switch that landed says so', () => {
+    const { loop, said } = notes();
+    loop.noteModelOptions([{ label: 'Gemini Pro', selected: true }], 'Gemini Pro', 'Gemini Pro');
+    assert.match(said[0], /now Gemini Pro/);
+    assert.doesNotMatch(said[0], /⚠️/);
+  });
+
+  /*
+   * The case the old code could not report at all: the click succeeded, the
+   * picker did not move. Silence here is worse than a warning, because the
+   * prompt profile *did* change on this side — so the model is being sent
+   * deep-tier prompts while the tab is still on Flash.
+   */
+  test('a switch that did not land is a warning, not silence', () => {
+    const { loop, said } = notes();
+    loop.noteModelOptions([{ label: '3.8 Flash', selected: true }], '3.8 Flash', 'Gemini Pro');
+    assert.match(said[0], /Asked the browser for Gemini Pro/);
+    assert.match(said[0], /picker reads 3.8 Flash/);
+  });
+
+  test('a picker that reads nothing recognisable still says something', () => {
+    const { loop, said } = notes();
+    loop.noteModelOptions([{ label: 'x' }], null, 'Gemini Pro');
+    assert.match(said[0], /nothing recognisable/);
+  });
+
+  // Case matters to nobody but a string compare. "gemini pro" and "Gemini Pro"
+  // are the same picker entry, and warning about that would be noise on every
+  // single switch.
+  test('the comparison is not case-sensitive', () => {
+    const { loop, said } = notes();
+    loop.noteModelOptions([{ label: 'gemini pro', selected: true }], 'gemini pro', 'Gemini Pro');
+    assert.doesNotMatch(said[0], /⚠️/);
   });
 });
