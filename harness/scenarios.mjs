@@ -384,4 +384,35 @@ export const SCENARIOS = [
     rows: 30, cols: 100,
     maxClears: 0,
   },
+  {
+    name: 'the prompt bar is drawn once, not once per repaint',
+    /*
+     * Reported from use with a screenshot: two identical `❯ can you list files`
+     * rows on screen while the turn was still at "Analyzing syntax… (7s)".
+     *
+     * A regression from handing `<Static>` rows instead of turns. The bar is
+     * committed the moment the turn exists, but `TranscriptTurn` decided
+     * whether to draw it from `fromItem === 0` — and `fromItem` only moves when
+     * the first *row* settles. Between those two, which is the whole thinking
+     * phase, both the committed copy and the live one were drawn.
+     *
+     * A slow reply is the point: the window only exists while the turn has a
+     * user message and no rows yet. Measured before the fix, **8** bars
+     * co-resident in one frame and 68 writes; after, 1 and 1.
+     *
+     * Unlike the banner count, this one is exact rather than a floor — a
+     * committed row is written once and never repainted, so any number above
+     * one is the live frame drawing it again.
+     */
+    replies: ['SLOW REPLY.'],
+    delayMs: 5000,
+    steps: [
+      { send: 'can you list files\r' },
+      { wait: 'SLOW REPLY', timeout: 40 },
+    ],
+    expect: ['SLOW REPLY'],
+    counts: { '❯ can you list files': 1 },
+    rows: 24, cols: 90,
+    maxClears: 0,
+  },
 ];

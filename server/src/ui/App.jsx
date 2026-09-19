@@ -419,6 +419,17 @@ export function App({ agentLoop, wsServer }) {
   const tailSeen = tail ? emittedRef.current.get(tail.turn.id) : null;
   const liveTurns = tail && !tailSeen?.summary ? [tail.turn] : [];
   const liveFrom = tailSeen?.items || 0;
+  /*
+   * Whether the live turn still owes its prompt bar.
+   *
+   * `TranscriptTurn` used to decide this from `fromItem === 0`, and that is not
+   * the same question: the bar is committed to <Static> the moment the turn
+   * exists, while `fromItem` stays 0 until the first *row* settles. Between
+   * those two — which is the whole of the thinking phase — the bar was drawn
+   * twice, once committed and once live. Reported from use with both `❯ can you
+   * list files` rows on screen at `Analyzing syntax… (7s)`.
+   */
+  const liveNeedsBar = !!tail && !tailSeen?.user;
 
   /*
    * There is no "a committed turn grew" case any more, and the effect that
@@ -1139,6 +1150,7 @@ export function App({ agentLoop, wsServer }) {
               turn={turn}
               isLive
               fromItem={liveFrom}
+              showUserBar={liveNeedsBar}
               verbose={verbose}
               status={status}
               liveBudget={liveBudget}

@@ -40,7 +40,7 @@ function userMessageText(content, isLive) {
  * `verbose` (ctrl+e) opens every step's raw output. Because committed rows
  * cannot be repainted, App reprints the transcript when it changes.
  */
-export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick = 0, terminalWidth = 80, fromItem = 0 }) {
+export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick = 0, terminalWidth = 80, fromItem = 0, showUserBar = true }) {
   // Only shown when it can actually be worked out. A turn whose messages were
   // never stamped has no duration, and printing one anyway is how this shipped
   // reading `Worked for -6.2s`.
@@ -94,7 +94,12 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
      * live frame has three rows to spend and that margin was one of them.
      */
     <Box flexDirection="column" marginBottom={fromItem > 0 ? 0 : 1} width="100%">
-      {turn.userMsg && fromItem === 0 && (
+      {/*
+        `showUserBar`, not `fromItem === 0`. The bar commits to <Static> as soon
+        as the turn exists; `fromItem` only moves when the first row settles.
+        Deciding from `fromItem` drew it twice for the whole thinking phase.
+      */}
+      {turn.userMsg && showUserBar && (
         <UserBar content={turn.userMsg.content} isLive={isLive} terminalWidth={terminalWidth} />
       )}
 
