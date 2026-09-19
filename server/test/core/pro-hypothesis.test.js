@@ -43,7 +43,7 @@ test('the pro rung is asked what would prove it wrong', () => {
 test('the flash rungs are not', () => {
   // It costs output tokens, and output is generation time. `brief` promises
   // "straight to work"; the flash rungs follow short prompts and ignore long.
-  for (const effort of ['flash', 'flash-thinking']) {
+  for (const effort of ['lite', 'flash']) {
     const p = build(effort);
     assert.ok(!asksWhatWouldDisprove(p), `${effort} must stay as it was`);
   }
@@ -53,7 +53,7 @@ test('it stays small — under 5% of the prompt it is added to', () => {
   // The reason it is prose and not a protocol. Verified against the rungs it
   // is added to: +714 characters on ~25,000.
   const withIt = build('pro').length;
-  const without = build('flash-thinking').length;
+  const without = build('flash').length;
   assert.ok(withIt > without, 'pro is the larger prompt');
   const cost = 714;
   assert.ok(cost / withIt < 0.05, `the rule should cost under 5%, is ${(cost / withIt * 100).toFixed(1)}%`);

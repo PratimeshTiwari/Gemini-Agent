@@ -146,7 +146,7 @@ describe('arguments do not break anything', () => {
     '/name Ada', '/name',
     '/memory on', '/memory off',
     '/allowlist', '/allowlist add ls',
-    '/effort deep', '/effort nonsense',
+    '/effort pro', '/effort nonsense',
     '/help extra args', '/context', '/plans', '/history', '/commands', '/skills',
   ];
 
@@ -186,9 +186,9 @@ describe('a wrong word is rejected, not ignored', () => {
 
   test('a valid one still applies, silently on the rejection front', async () => {
     const h = harness();
-    await h.run('/effort flash');
+    await h.run('/effort lite');
 
-    assert.equal(h.loop.modelConfig.effort, 'flash');
+    assert.equal(h.loop.modelConfig.effort, 'lite');
     assert.doesNotMatch(h.lastMessage(), /not an effort level/);
     h.cleanup();
   });

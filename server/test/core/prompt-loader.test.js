@@ -24,9 +24,9 @@ test('prompt()', async (t) => {
   });
 
   await t.test('the same file comes back the same', () => {
-    assert.equal(prompt('core-flash'), prompt('core-flash'));
+    assert.equal(prompt('core-terse'), prompt('core-terse'));
     clearPromptCache();
-    assert.match(prompt('core-flash'), /^## Rules/);
+    assert.match(prompt('core-terse'), /^## Rules/);
   });
 });
 

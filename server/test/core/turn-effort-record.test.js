@@ -42,7 +42,7 @@ function loopAt(effort) {
 }
 
 describe('an agent reply records its rung', () => {
-  for (const effort of ['flash', 'standard', 'deep']) {
+  for (const effort of ['lite', 'standard', 'deep']) {
     test(`a ${effort} turn is filed as ${effort}`, async () => {
       const { l, filed, dir } = loopAt(effort);
       await l.handleGeminiResponse('m1', { content: 'Done.', complete: true });

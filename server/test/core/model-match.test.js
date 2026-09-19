@@ -20,7 +20,7 @@ const LEAN_PLAN = [
 
 describe('pickModelFor — decide by what an option is for, not what it is called', () => {
   test('the fast rung takes the fastest thing offered', () => {
-    assert.equal(pickModelFor('flash', OWNER_PLAN).model.label, '3.5 Flash-Lite');
+    assert.equal(pickModelFor('lite', OWNER_PLAN).model.label, '3.5 Flash-Lite');
   });
 
   test('the pro rung takes the reasoning model', () => {
@@ -48,7 +48,7 @@ describe('pickModelFor — decide by what an option is for, not what it is calle
   });
 
   test('a plan without a lite option still gives the fast rung something', () => {
-    assert.equal(pickModelFor('flash', LEAN_PLAN).model.label, '3.8 Flash');
+    assert.equal(pickModelFor('lite', LEAN_PLAN).model.label, '3.8 Flash');
   });
 
   /**
@@ -61,7 +61,7 @@ describe('pickModelFor — decide by what an option is for, not what it is calle
       { label: '4.9 Flash', description: 'All-around help' },
       { label: '4.0 Pro', description: 'Advanced reasoning' },
     ];
-    assert.equal(pickModelFor('flash', renamed).model.label, '4.2 Flash-Lite');
+    assert.equal(pickModelFor('lite', renamed).model.label, '4.2 Flash-Lite');
     assert.equal(pickModelFor('pro', renamed).model.label, '4.0 Pro');
   });
 
@@ -70,7 +70,7 @@ describe('pickModelFor — decide by what an option is for, not what it is calle
       { label: 'Model A', description: 'Fastest answers' },
       { label: 'Model B', description: 'Advanced reasoning' },
     ];
-    assert.equal(pickModelFor('flash', opaque).model.label, 'Model A');
+    assert.equal(pickModelFor('lite', opaque).model.label, 'Model A');
     assert.equal(pickModelFor('pro', opaque).model.label, 'Model B');
   });
 
@@ -79,12 +79,12 @@ describe('pickModelFor — decide by what an option is for, not what it is calle
       { label: 'Flash Extended', description: 'Complex problem solving' },
       { label: 'Flash', description: 'Fastest answers' },
     ];
-    assert.equal(pickModelFor('flash', tricky).model.label, 'Flash');
+    assert.equal(pickModelFor('lite', tricky).model.label, 'Flash');
   });
 
   test('nothing to pick from is null, not a guess', () => {
-    assert.equal(pickModelFor('flash', []), null);
-    assert.equal(pickModelFor('flash', undefined), null);
+    assert.equal(pickModelFor('lite', []), null);
+    assert.equal(pickModelFor('lite', undefined), null);
     assert.equal(pickModelFor('nonsense', OWNER_PLAN), null);
   });
 
@@ -96,7 +96,7 @@ describe('pickModelFor — decide by what an option is for, not what it is calle
 
 describe('planModelSwitch — the cheapest interaction is the one not performed', () => {
   test('already on the right model means no click', () => {
-    const plan = planModelSwitch('flash-thinking', OWNER_PLAN);
+    const plan = planModelSwitch('flash', OWNER_PLAN);
     assert.equal(plan.action, 'none');
     assert.match(plan.reason, /already on 3\.8 Flash/);
   });
@@ -205,7 +205,7 @@ describe('the message after an effort switch', () => {
    * and the line would be noise on every first command of every session.
    */
   test('mid-chat, it says the next message resends the whole prompt', async () => {
-    const msg = await run('flash', [{ label: '3.8 Flash' }], {
+    const msg = await run('lite', [{ label: '3.8 Flash' }], {
       conversationHistory: [{ role: 'user', content: 'hi' }],
     });
     assert.match(msg, /resends the full prompt/);
@@ -213,7 +213,7 @@ describe('the message after an effort switch', () => {
   });
 
   test('and says nothing of the sort in a fresh chat', async () => {
-    const msg = await run('flash', [{ label: '3.8 Flash' }], { conversationHistory: [] });
+    const msg = await run('lite', [{ label: '3.8 Flash' }], { conversationHistory: [] });
     assert.doesNotMatch(msg, /resends/);
   });
 
@@ -320,7 +320,7 @@ describe('modelMismatch — only when both halves are known', () => {
   // `unavailable` — nothing offered suits the rung — is a different problem and
   // not one the picker can fix, so it is not dressed up as one.
   test('a plan with nothing suitable is silence', () => {
-    assert.equal(modelMismatch('flash', [{ label: 'Extended thinking', selected: true }]), null);
+    assert.equal(modelMismatch('lite', [{ label: 'Extended thinking', selected: true }]), null);
   });
 
   test('every rung on the ladder can be checked without throwing', () => {

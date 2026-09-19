@@ -4,7 +4,7 @@ import { EFFORT_LEVELS, DEFAULT_EFFORT, resolveEffort, isEffort, effortFromConfi
 
 test('the ladder', async (t) => {
   await t.test('has exactly the three states that mean something', () => {
-    assert.deepEqual(EFFORT_LEVELS.map((e) => e.id), ['flash', 'flash-thinking', 'pro']);
+    assert.deepEqual(EFFORT_LEVELS.map((e) => e.id), ['lite', 'flash', 'pro']);
   });
 
   // The old shape was 3 tiers x 3 levels. Six of those nine combinations either
@@ -13,7 +13,7 @@ test('the ladder', async (t) => {
   // `standard` was already carrying nearly everything `deep` had.
   await t.test('every rung names a tier the prompt builder branches on', () => {
     for (const e of EFFORT_LEVELS) {
-      assert.ok(['flash', 'flash-thinking', 'pro'].includes(e.tier), e.id);
+      assert.ok(['lite', 'flash', 'pro'].includes(e.tier), e.id);
       assert.equal(e.level === null, e.tier !== 'pro',
         `${e.id}: a reasoning level only means something on pro`);
     }
@@ -42,7 +42,7 @@ test('resolveEffort never leaves you without a profile', async (t) => {
   await t.test('a real id comes back', () => {
     assert.equal(resolveEffort('pro').id, 'pro');
     assert.equal(resolveEffort('  PRO  ').id, 'pro');
-    assert.equal(resolveEffort('flash-thinking').id, 'flash-thinking');
+    assert.equal(resolveEffort('flash').id, 'flash');
   });
 
   await t.test('anything else falls back rather than returning nothing', () => {
@@ -77,29 +77,29 @@ test('reading a config written before the ladder shrank', async (t) => {
 
   // The negative control for the fold: it must be a decision, not a fallback.
   // Without `RETIRED_RUNGS` the lookup drops through to `modelTier`, and this
-  // config would answer 'flash' — quietly putting a pro user on the terse
+  // config would answer 'lite' — quietly putting a pro user on the terse
   // profile because of a key written by a version that no longer exists.
   await t.test('a retired rung outranks a stale modelTier', () => {
-    assert.equal(effortFromConfig({ effort: 'deep', modelTier: 'flash' }), 'pro');
+    assert.equal(effortFromConfig({ effort: 'deep', modelTier: 'lite' }), 'pro');
   });
 
   await t.test('the new key wins when it is there', () => {
-    assert.equal(effortFromConfig({ effort: 'flash', modelTier: 'pro' }), 'flash');
+    assert.equal(effortFromConfig({ effort: 'lite', modelTier: 'pro' }), 'lite');
   });
 
   await t.test('a nonsense new key does not shadow the old ones', () => {
-    assert.equal(effortFromConfig({ effort: 'turbo', modelTier: 'flash' }), 'flash');
+    assert.equal(effortFromConfig({ effort: 'turbo', modelTier: 'lite' }), 'lite');
   });
 
   await t.test('modelTier alone', () => {
+    assert.equal(effortFromConfig({ modelTier: 'lite' }), 'lite');
     assert.equal(effortFromConfig({ modelTier: 'flash' }), 'flash');
-    assert.equal(effortFromConfig({ modelTier: 'flash-thinking' }), 'flash-thinking');
     assert.equal(effortFromConfig({ modelTier: 'pro' }), 'pro');
   });
 
   await t.test('reasoningEffort, the legacy alias for the same thing', () => {
-    assert.equal(effortFromConfig({ reasoningEffort: 'low' }), 'flash');
-    assert.equal(effortFromConfig({ reasoningEffort: 'medium' }), 'flash-thinking');
+    assert.equal(effortFromConfig({ reasoningEffort: 'low' }), 'lite');
+    assert.equal(effortFromConfig({ reasoningEffort: 'medium' }), 'flash');
     assert.equal(effortFromConfig({ reasoningEffort: 'high' }), 'pro');
   });
 
@@ -111,8 +111,8 @@ test('reading a config written before the ladder shrank', async (t) => {
   // A level set while on a flash tier was a setting with no effect. The tier is
   // what the prompt actually branched on, so it is the half that survives.
   await t.test('a level that never applied is dropped, not promoted', () => {
-    assert.equal(effortFromConfig({ modelTier: 'flash', reasoningLevel: 'deep' }), 'flash');
-    assert.equal(effortFromConfig({ modelTier: 'flash-thinking', reasoningLevel: 'brief' }), 'flash-thinking');
+    assert.equal(effortFromConfig({ modelTier: 'lite', reasoningLevel: 'deep' }), 'lite');
+    assert.equal(effortFromConfig({ modelTier: 'flash', reasoningLevel: 'brief' }), 'flash');
   });
 
   await t.test('a bare reasoningLevel implies the pro tier it only ever applied to', () => {

@@ -483,7 +483,7 @@ export function renderToolDefinitions(tier, ctx, modelConfig = {}) {
    * A typo of intent rather than of syntax: "flash" meant the cheap tiers, and
    * there turned out to be two of them.
    */
-  const isFlash = tier === 'flash' || tier === 'flash-thinking';
+  const isFlash = tier === 'lite' || tier === 'flash';
   let out = '<available_tools>\n';
   for (const tool of toolsFor(ctx)) {
     const text = (isFlash ? tool.flash : (tool.pro ?? tool.flash));

@@ -27,11 +27,11 @@ session. No API key, no hosted backend, no telemetry.
 - **Editor awareness.** A VS Code companion hands over your active file, cursor position and
   the Problems panel, so `get_diagnostics` reads your real TypeScript and ESLint errors
   instead of running a build.
-- **One effort ladder, three rungs.** `/effort` runs from `⚡ flash` (terse) through
-  `🧠 flash-thinking` (3-phase) to `🪜 pro`, which plans first, then investigates,
-  implements, verifies, and sends the diff to a second tab reading it cold. Each rung names
-  the browser tab its prompt is written for — that pairing is the whole point, so there is
-  one setting, not two.
+- **One effort ladder, three rungs — named after the tabs they expect.** `/effort` runs
+  from `⚡ lite` (terse) through `🧠 flash` (3-phase) to `🪜 pro`, which plans first, then
+  investigates, implements, verifies, and sends the diff to a second tab reading it cold.
+  The names are the picker's own words, so "flash" means the same thing in both places —
+  and the CLI warns when the tab is on a different model from the rung.
 - **A terminal UI that behaves like one.** Real streaming, no mouse tracking, so scroll,
   drag-select and copy stay your terminal's. Settled turns are committed to scrollback and
   only the in-flight turn repaints.
@@ -467,8 +467,7 @@ model. The list says which is which.
 Once the agent is running, you can use built-in slash commands to manage your session:
 - Type `/help` in the CLI to see all available commands.
 - Type `/config` to turn the reviewer on or off. With one on, a second Gemini tab audits the work without having seen the conversation that produced it — which is the point of it, and why the tab is worth opening. There is no separate `/mode` screen any more, though the name still answers.
-- Type `/effort` to pick how hard the agent works — one ladder, `flash` · `flash-thinking` ·
-  `pro`. Changing it mid-chat says so: the next message resends the whole system prompt into
+- Type `/effort` to pick how hard the agent works — one ladder, `lite` · `flash` · `pro`. Changing it mid-chat says so: the next message resends the whole system prompt into
   the thread, and the row names `/compact` as the way to start a fresh one instead. It sets
   the prompt profile **and switches the browser's mode picker to match**, so a prompt written
   for Pro is not typed into a Flash tab. It tells you which model it chose. Nothing is

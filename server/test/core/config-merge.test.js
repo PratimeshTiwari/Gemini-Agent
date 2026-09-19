@@ -32,13 +32,13 @@ describe('AgentLoop._saveConfig', () => {
   // so every config written before /effort resolved to standard whatever it said.
   test('a pre-/effort config folds to the rung it actually asked for', () => {
     writeFileSync(paths.configPath(ws), JSON.stringify({
-      modelConfig: { modelTier: 'flash', reasoningLevel: 'deep', reasoningEffort: 'low' },
+      modelConfig: { modelTier: 'lite', reasoningLevel: 'deep', reasoningEffort: 'low' },
     }));
     const loop = loopFor(ws);
     loop.modelConfig = { main: 'gemini', effort: 'standard' };
     loop._loadConfig();
 
-    assert.equal(loop.modelConfig.effort, 'flash');
+    assert.equal(loop.modelConfig.effort, 'lite');
     assert.equal(loop.modelConfig.modelTier, undefined, 'the old keys are folded away');
     assert.equal(loop.modelConfig.reasoningLevel, undefined);
     assert.equal(loop.modelConfig.reasoningEffort, undefined);

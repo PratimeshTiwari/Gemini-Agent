@@ -1291,7 +1291,10 @@ apologised for the impossible combinations at the point of use ("you are on the 
 where reasoning levels do nothing") instead of preventing them.
 
 `core/effort.js` is now the one ladder — `flash`, `flash-thinking`, `brief`, `standard`,
-`deep` as of phase 4, and **three rungs since 2026-09-20**: `flash`, `flash-thinking`, `pro`.
+`deep` as of phase 4, then **three rungs**, then **renamed to the picker's own words**:
+`lite`, `flash`, `pro` (2026-09-20). The old `flash` is `lite` and the old `flash-thinking`
+is `flash`; the collision was the point, because "flash" named our terse rung while the
+browser uses it for the middle one.
 A stored `brief` / `standard` / `deep` folds to `pro` on read, *before* the `modelTier`
 branch, so a disagreeing legacy tier cannot drop a pro user onto the terse profile.
 `modelTier` and `reasoningLevel` survive as *derived* values because the prompt builder really

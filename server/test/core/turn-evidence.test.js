@@ -224,7 +224,7 @@ describe('the handover arrives when there is something to hand over', () => {
   // The flash rungs carry their own, inline and much smaller. Sending them this
   // one too would be the same text twice at the rung least able to afford it.
   test('the flash rungs are left alone', () => {
-    for (const effort of ['flash', 'flash-thinking']) {
+    for (const effort of ['lite', 'flash']) {
       const l = loop(effort);
       l._turnEvidence.set('edit_file', 1);
       assert.equal(l._dueHandover(), '', effort);
@@ -243,7 +243,7 @@ describe('the handover arrives when there is something to hand over', () => {
 
     // Not a gap: the flash rungs carry a few lines inside their own reasoning
     // prompt, so a second block here would be the same words twice.
-    for (const small of ['flash', 'flash-thinking']) {
+    for (const small of ['lite', 'flash']) {
       const f = loop(small); f._turnEvidence.set('edit_file', 1);
       assert.equal(f._dueHandover(), '', small);
     }

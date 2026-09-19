@@ -362,7 +362,7 @@ export class PromptBuilder {
      * `handover-lite` used to be `brief`'s four-point version. With one pro
      * rung there is no `brief`, so pro always gets the full review — and the
      * lite copy is not orphaned: `_getReasoningInstructions` still hands it to
-     * `flash-thinking`, which is the rung it now belongs to.
+     * `flash`, which is the rung it now belongs to.
      */
     return prompt('pro-handover-review');
   }
@@ -541,7 +541,7 @@ export class PromptBuilder {
     const reasoningLevel = effort.level || 'standard';
 
     // Tier-adaptive core instructions
-    const coreInstructions = modelTier === 'flash'
+    const coreInstructions = modelTier === 'lite'
       ? this._buildFlashCoreInstructions()
       : this._buildFullCoreInstructions(modelTier);
 
@@ -687,11 +687,11 @@ underspecified, say what you assumed rather than guessing silently.
    * Flash models struggle with long prompts — keep it minimal.
    */
   _buildFlashCoreInstructions() {
-    return prompt('core-flash');
+    return prompt('core-terse');
   }
 
   /**
-   * Full core instructions for flash-thinking and pro tiers.
+   * Full core instructions for the flash and pro tiers.
    */
   _buildFullCoreInstructions(modelTier) {
     return `## Core Principles
@@ -738,7 +738,7 @@ ${modelTier === 'pro' ? `## 4. Communication
    * does not need the tokens spent on showing it.
    */
   _buildToolCallFormat(tier) {
-    return prompt(tier === 'flash' ? 'tool-call-format-flash' : 'tool-call-format-full');
+    return prompt(tier === 'lite' ? 'tool-call-format-terse' : 'tool-call-format-full');
   }
 
   /**
@@ -747,9 +747,9 @@ ${modelTier === 'pro' ? `## 4. Communication
    */
   _getReasoningInstructions(tier, level = 'standard', subagents = true) {
     switch (tier) {
-      case 'flash':
+      case 'lite':
         return this._getFlashInstructions();
-      case 'flash-thinking':
+      case 'flash':
         return this._getFlashThinkingInstructions();
       case 'pro':
       default:
@@ -797,7 +797,7 @@ ${modelTier === 'pro' ? `## 4. Communication
    * tier is for is one the model follows worse, not better.
    */
   _getFlashInstructions() {
-    return `${prompt('reasoning-flash')}\n\n${prompt('handover-micro')}`;
+    return `${prompt('reasoning-lite')}\n\n${prompt('handover-micro')}`;
   }
 
   /**
@@ -812,7 +812,7 @@ ${modelTier === 'pro' ? `## 4. Communication
    * protocol and a context budget twice Flash's, so the check costs ~2% here.
    */
   _getFlashThinkingInstructions() {
-    return `${prompt('reasoning-flash-thinking')}\n\n${prompt('handover-lite')}`;
+    return `${prompt('reasoning-flash')}\n\n${prompt('handover-short')}`;
   }
 
   /**
@@ -1061,7 +1061,7 @@ Full parameter schemas were given earlier in this chat — scroll back to them r
     const modeStr = mode === 'auto' ? 'AUTO MODE (safe ops auto-applied)' : 'PLAN MODE (all edits need approval)';
     const tier = resolveEffort(modelConfig.effort).tier;
 
-    if (tier === 'flash') {
+    if (tier === 'lite') {
       // Ultra-short reminder for Flash
       return `<system_reminder>
 Mode: ${modeStr}. Workspace: \`${this.workspace}\`${objective ? ` | Goal: ${objective.substring(0, 80)}` : ''}

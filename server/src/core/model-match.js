@@ -31,11 +31,11 @@
  * reaching for.
  */
 const INTENT = {
-  flash: {
-    prefer: ['fastest', 'lite', 'flash'],
+  lite: {
+    prefer: ['lite', 'fastest', 'flash'],
     avoid: ['extended', 'complex', 'pro', 'advanced'],
   },
-  'flash-thinking': {
+  flash: {
     prefer: ['thinking', 'flash'],
     // A step up from flash, not a step into the heavyweight tier — and not back
     // down to the lite option either.
@@ -63,7 +63,7 @@ const INTENT = {
 const haystack = (m) => `${m.label || ''} ${m.description || ''}`.toLowerCase();
 
 /**
- * @param {string} effortId  a rung id: flash | flash-thinking | pro
+ * @param {string} effortId  a rung id: lite | flash | pro
  * @param {Array<{label: string, description?: string, selected?: boolean}>} models
  *        what the picker actually offers, in the order it offers it
  * @returns {{model: object, why: string}|null} null when there is nothing to pick

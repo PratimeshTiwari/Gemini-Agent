@@ -38,6 +38,21 @@
  * is what made the ladder look like five rungs of mush. That was a bug —
  * `flash-thinking` was handed the full tool block — not a design problem.)
  *
+ * **Renamed 2026-09-20 to the words the picker uses: `lite`, `flash`, `pro`.**
+ * They were `flash`, `flash-thinking`, `pro`, and the collision was the
+ * problem — "flash" named *our terse rung* while the browser's picker uses it
+ * for the middle one, so a mismatch warning naming both would have said "flash"
+ * about two different things. The measurements above are from before the
+ * rename: what they call `flash` is now `lite`, and `flash-thinking` is now
+ * `flash`. The prompts are byte-identical across the rename except for each
+ * rung's own name line — verified for all six shapes.
+ *
+ * `reasoning-*` and `handover-*` moved with them, and two files were renamed to
+ * stop meaning something else: `handover-lite.md` served what is now `flash`,
+ * so it is `handover-short.md`, and `core-flash.md` / `tool-call-format-flash.md`
+ * are used by *both* cheap rungs, so they are `core-terse.md` and
+ * `tool-call-format-terse.md`.
+ *
  * The browser tab matters as much as the profile: the prompt is typed into a
  * real chat, and a pro-tier prompt sent to a Flash tab is a long prompt to a
  * model that does worse with long prompts. Each rung names the tab it expects.
@@ -46,23 +61,23 @@
 /** The rungs, least effort first. Order is what the picker shows. */
 export const EFFORT_LEVELS = [
   {
-    id: 'flash',
+    id: 'lite',
     contextBudget: 24000,
-    name: 'Flash',
-    label: '⚡ Flash',
-    tier: 'flash',
+    name: 'Lite',
+    label: '⚡ Lite',
+    tier: 'lite',
     level: null,
-    browser: 'Gemini Flash',
+    browser: 'Gemini Flash-Lite',
     blurb: 'Terse prompt, no reasoning protocol. Small, well-understood edits.',
   },
   {
-    id: 'flash-thinking',
+    id: 'flash',
     contextBudget: 48000,
-    name: 'Flash Thinking',
-    label: '🧠 Flash Thinking',
-    tier: 'flash-thinking',
+    name: 'Flash',
+    label: '🧠 Flash',
+    tier: 'flash',
     level: null,
-    browser: 'Gemini Flash (Thinking)',
+    browser: 'Gemini Flash',
     blurb: 'Moderate depth — a three-phase protocol, still a short prompt.',
   },
   {
@@ -120,7 +135,18 @@ export function isEffort(id) {
  * reason, or on `flash` if an old `modelTier` disagreed. All three were the pro
  * tier; all three are `pro`.
  */
-const RETIRED_RUNGS = { brief: 'pro', standard: 'pro', deep: 'pro' };
+const RETIRED_RUNGS = {
+  brief: 'pro',
+  standard: 'pro',
+  deep: 'pro',
+  // Renamed 2026-09-20 to match what the browser's picker calls things: what
+  // was `flash` is `lite`, and what was `flash-thinking` is `flash`. A stored
+  // `flash` is therefore *ambiguous* — it meant the terse rung before the
+  // rename and the middle one after — and it is read as the middle one,
+  // because that is what the word means now and in the picker. The terse rung
+  // is reachable by its own name.
+  'flash-thinking': 'flash',
+};
 
 /**
  * Work out the rung from whatever an existing config.json holds.
@@ -138,12 +164,12 @@ export function effortFromConfig(config = {}) {
   if (retired) return retired;
 
   const tier = String(config.modelTier ?? '').toLowerCase()
-    || { low: 'flash', medium: 'flash-thinking', high: 'pro' }[
+    || { low: 'lite', medium: 'flash', high: 'pro' }[
       String(config.reasoningEffort ?? '').toLowerCase()
     ]
     || 'pro';
 
-  if (tier === 'flash' || tier === 'flash-thinking') return tier;
+  if (tier === 'lite' || tier === 'flash') return tier;
 
   // `reasoningLevel` only ever held brief/standard/deep, which are now one rung.
   const level = String(config.reasoningLevel ?? '').toLowerCase();
