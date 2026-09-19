@@ -2,14 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useStdout, Static } from 'ink';
 import { Menus, DiffApproval } from './components/Menus.jsx';
 import { Banner } from './components/Banner.jsx';
-import { TranscriptTurn } from './components/TranscriptTurn.jsx';
+import { TranscriptTurn, UserBar, TurnSummary, TurnRow } from './components/TranscriptTurn.jsx';
 import { AgentTerminal } from './components/AgentTerminal.jsx';
 import { Dots } from './components/RunningLine.jsx';
 import { InputBar } from './components/InputBar.jsx';
 import { clampForDisplay, extractCodeBlocks } from './format.js';
 import { SLASH_COMMANDS, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES, reservedRows, isCompactHeight } from './constants.js';
 import { resolveEffort } from '../core/effort.js';
-import { groupTurns } from './transcript.js';
+import { groupTurns, parseTurnActions } from './transcript.js';
 import { expandPastes, attachedPastes } from './paste.js';
 import { drainChatQueue } from './chat-queue.js';
 import { drainTerminalQueue } from './terminal-queue.js';
@@ -276,10 +276,6 @@ export function App({ agentLoop, wsServer }) {
     return () => clearInterval(id);
   }, [isProcessing]);
 
-  // How many turns <Static> has already been handed. Monotonic on purpose: a
-  // turn Ink has committed is on the screen for good, so moving it back into
-  // the live frame would draw it a second time.
-  const committedRef = useRef(0);
 
   const resetScreen = React.useCallback(() => {
     try {
@@ -288,7 +284,10 @@ export function App({ agentLoop, wsServer }) {
     } catch {
       /* non-TTY: nothing painted to discard */
     }
-    committedRef.current = 0;
+    // The rows have to be forgotten too: <Static> starts from index 0 again on
+    // remount, and rows we still believe are emitted would simply never print.
+    emittedRef.current = new Map();
+    staticRowsRef.current = [{ id: 'app-banner', isBanner: true }];
     setStaticEpoch((n) => n + 1);
   }, [stdout]);
 
@@ -349,48 +348,90 @@ export function App({ agentLoop, wsServer }) {
   // Only the turn that is still running stays in the live frame. Everything
   // else is committed to <Static>, where it becomes ordinary scrollback the
   // terminal can scroll and select like any other command's output.
-  const target = isProcessing ? Math.max(0, turns.length - 1) : turns.length;
-  if (target > committedRef.current) committedRef.current = target;
-  const staticCount = Math.min(committedRef.current, turns.length);
-  const staticTurns = turns.slice(0, staticCount);
-  const liveTurns = turns.slice(staticCount);
-
-  /**
-   * A committed turn that grew has to be reprinted, once.
+  /*
+   * Committed a **row** at a time, not a turn at a time.
    *
-   * A turn is committed when `isProcessing` goes false, and `agent_response`
-   * clears that even when the reply carried tool calls — so a turn is written
-   * to the scrollback while the loop is still working on it. The tool result,
-   * the diff approval and the closing reply then land in a group `<Static>`
-   * has already printed, and Ink never repaints Static. Reported as "file
-   * created, diff showed, then nothing in the CLI".
+   * `<Static>` advances on `items.length` and never redraws an item — its own
+   * doc says it is for "things that don't change after they're rendered". A
+   * turn does change: rows keep arriving for as long as the loop runs. Handing
+   * it one anyway left exactly one repair, remounting `<Static>` so the whole
+   * transcript prints again — and Ink cannot un-write what it already wrote, so
+   * the new copy lands *below* the old one. Reported at 210x64 as the banner
+   * and the turn drawn three times, once per tool round.
    *
-   * **Keeping the turn live instead was measured and is far worse.** Making
-   * `isProcessing` follow the loop restored the reply and took one run from
-   * 15KB and 0 full clears to **6.8MB and 1,228** — the flicker bug entire.
-   * Three attempts to bound the longer-lived turn made it worse still (45,
-   * then 89 clears).
+   * A row, by contrast, is final as soon as the next one exists. So rows are
+   * committed as they settle and the live frame holds only the unsettled tail —
+   * which is at most the newest row and the summary. That is why this also
+   * fixes short terminals instead of breaking them: the earlier attempt held
+   * the *whole turn* live to avoid the reprint, and a multi-round turn does not
+   * fit a 13-row viewport.
    *
-   * So the turn still commits early, and the rare case where it grows
-   * afterwards is paid for with the mechanism this file already has for
-   * exactly that: remount `<Static>` and print the transcript again. One
-   * clear, once, at the end of the turn — the same cost `ctrl+e` pays — and
-   * the live frame is never stretched at all.
+   * The last item is excluded while the loop runs because it is the one that
+   * can still change: a `tool` item is created by its call and rewritten when
+   * its result arrives, and nothing follows it in between.
    */
-  // `steps`, not `messages` — `groupTurns` returns `{id, userMsg, steps, …}`.
-  // The first version of this counted a field that does not exist, so the
-  // shape never changed, the epoch never bumped, and the fix did nothing
-  // while measuring a clean 0 clears.
-  const committedShape = staticTurns.reduce((n, t) => n + 1 + (t.steps?.length || 0), 0);
-  const lastShapeRef = useRef(committedShape);
-  const lastCountRef = useRef(staticCount);
-  useEffect(() => {
-    const grewInPlace = staticCount === lastCountRef.current
-      && committedShape > lastShapeRef.current;
-    lastCountRef.current = staticCount;
-    lastShapeRef.current = committedShape;
-    if (grewInPlace) setStaticEpoch((n) => n + 1);
-  }, [committedShape, staticCount]);
+  const turnInFlight = isProcessing || !!agentLoop?.isProcessing;
+  const emittedRef = useRef(new Map());
+  const staticRowsRef = useRef([{ id: 'app-banner', isBanner: true }]);
+
+  /*
+   * Appended into a **new array**, never pushed into the old one.
+   *
+   * `<Static>` memoises `items.slice(index)` on `[items, index]`, so an array
+   * mutated in place is an array it never looks at again: the first attempt
+   * here pushed onto `staticRowsRef.current` and the transcript rendered
+   * nothing at all — banner included, 2,284 bytes for a whole session.
+   */
+  const parsedTurns = turns.map((turn) => ({ turn, items: parseTurnActions(turn) }));
+  const fresh = [];
+  for (let i = 0; i < parsedTurns.length; i++) {
+    const { turn, items: parsed } = parsedTurns[i];
+    const settled = !(i === parsedTurns.length - 1 && turnInFlight);
+    const ready = settled ? parsed.items : parsed.items.slice(0, -1);
+    const seen = emittedRef.current.get(turn.id) || { user: false, items: 0, summary: false };
+
+    if (!seen.user && turn.userMsg) {
+      fresh.push({ id: `row_user_${turn.id}`, kind: 'user', content: turn.userMsg.content });
+      seen.user = true;
+    }
+    for (let n = seen.items; n < ready.length; n++) {
+      fresh.push({ id: `row_${ready[n].id}`, kind: 'item', item: ready[n], previous: ready[n - 1] });
+    }
+    if (ready.length > seen.items) seen.items = ready.length;
+    if (settled && !seen.summary && parsed.actions.length > 0) {
+      const timed = typeof turn.startTime === 'number' && typeof turn.endTime === 'number'
+        && turn.endTime >= turn.startTime;
+      fresh.push({
+        id: `row_sum_${turn.id}`,
+        kind: 'summary',
+        duration: timed ? ((turn.endTime - turn.startTime) / 1000).toFixed(1) : null,
+        worked: parsed.actions.filter((a) => a.type !== 'fs_event').length,
+        touched: parsed.actions.reduce((n, a) => (a.type === 'fs_event' ? n + a.paths.length : n), 0),
+      });
+      seen.summary = true;
+    }
+    emittedRef.current.set(turn.id, seen);
+  }
+  if (fresh.length > 0) staticRowsRef.current = [...staticRowsRef.current, ...fresh];
+
+  // What is left to draw live: the tail of the newest turn, if it has one.
+  const tail = parsedTurns[parsedTurns.length - 1];
+  const tailSeen = tail ? emittedRef.current.get(tail.turn.id) : null;
+  const liveTurns = tail && !tailSeen?.summary ? [tail.turn] : [];
+  const liveFrom = tailSeen?.items || 0;
+
+  /*
+   * There is no "a committed turn grew" case any more, and the effect that
+   * handled it is gone with it.
+   *
+   * It watched the committed turns for a change of shape and bumped
+   * `staticEpoch`, remounting `<Static>` so the whole transcript printed
+   * again. That was the only repair available while a Static item was a
+   * *turn*, and it is why the transcript duplicated on a terminal tall
+   * enough to show both copies. A row cannot grow, so nothing needs
+   * reprinting and the epoch now moves only for `resetScreen` — ctrl+e and
+   * the clears that deliberately start the screen over.
+   */
 
   // Rows the live frame may spend on the in-flight turn. Everything below it —
   // the spinner, the input box, the mode chip and the status bar — is fixed
@@ -1014,7 +1055,7 @@ export function App({ agentLoop, wsServer }) {
   // The banner is committed with the rest of the scrollback rather than living
   // in the live frame: it is ten rows of figlet that would otherwise be
   // repainted on every tick and eat the whole budget on a short terminal.
-  const staticItems = [{ id: 'app-banner', isBanner: true }, ...staticTurns];
+  const staticItems = staticRowsRef.current;
 
   return (
     <Box flexDirection="column" width="100%" overflow="hidden">
@@ -1029,19 +1070,38 @@ export function App({ agentLoop, wsServer }) {
         where the second banner came from.
       */}
       <Static key={staticEpoch} items={staticItems}>
-        {(item) => (item.isBanner
-          ? <Banner key={item.id} agentLoop={agentLoop} agentNameAscii={agentNameAscii} />
-          : (
-            <TranscriptTurn
-              key={item.id}
-              turn={item}
+        {(row) => {
+          if (row.isBanner) {
+            return <Banner key={row.id} agentLoop={agentLoop} agentNameAscii={agentNameAscii} />;
+          }
+          if (row.kind === 'user') {
+            return (
+              <UserBar key={row.id} content={row.content} isLive={false} terminalWidth={terminalWidth} />
+            );
+          }
+          if (row.kind === 'summary') {
+            return (
+              <Box key={row.id} flexDirection="column" marginBottom={1} width="100%">
+                <TurnSummary
+                  isLive={false}
+                  duration={row.duration}
+                  worked={row.worked}
+                  touched={row.touched}
+                />
+              </Box>
+            );
+          }
+          return (
+            <TurnRow
+              key={row.id}
+              item={row.item}
+              previous={row.previous}
               isLive={false}
               verbose={verbose}
-              status={status}
-              liveBudget={liveBudget}
               terminalWidth={terminalWidth}
             />
-          ))}
+          );
+        }}
       </Static>
 
           {/*
@@ -1078,6 +1138,7 @@ export function App({ agentLoop, wsServer }) {
               key={turn.id}
               turn={turn}
               isLive
+              fromItem={liveFrom}
               verbose={verbose}
               status={status}
               liveBudget={liveBudget}

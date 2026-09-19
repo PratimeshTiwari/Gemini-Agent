@@ -40,7 +40,7 @@ function userMessageText(content, isLive) {
  * `verbose` (ctrl+e) opens every step's raw output. Because committed rows
  * cannot be repainted, App reprints the transcript when it changes.
  */
-export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick = 0, terminalWidth = 80 }) {
+export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick = 0, terminalWidth = 80, fromItem = 0 }) {
   // Only shown when it can actually be worked out. A turn whose messages were
   // never stamped has no duration, and printing one anyway is how this shipped
   // reading `Worked for -6.2s`.
@@ -65,8 +65,15 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
   // Two rows of the budget go to the user's message and the "Worked for" line.
   // Over `items`, so the trim keeps the *last* things that happened rather
   // than the last non-prose ones.
-  const shown = isLive ? items.slice(-Math.max(1, liveBudget - 2)) : items;
-  const hidden = items.length - shown.length;
+  /*
+   * `fromItem` is how many of this turn's rows `<Static>` already holds. Only
+   * what is left is live, which since rows commit as they settle is at most the
+   * newest one — so the trim below almost never bites, where before it was the
+   * only thing standing between a long turn and an over-tall frame.
+   */
+  const pending = fromItem > 0 ? items.slice(fromItem) : items;
+  const shown = isLive ? pending.slice(-Math.max(1, liveBudget - 2)) : pending;
+  const hidden = pending.length - shown.length;
 
   /**
    * What the agent did, counted separately from what happened to it.
@@ -80,69 +87,21 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
   const touched = actions.reduce((n, a) => (a.type === 'fs_event' ? n + a.paths.length : n), 0);
 
   return (
-    <Box flexDirection="column" marginBottom={1} width="100%">
-      {/*
-        The user's own message, as a full-width bar.
-
-        Ink's `backgroundColor` paints the characters and not the line, so a
-        background on ordinary text stops where the words stop. `blockLines`
-        wraps and pads instead, which is the only way to get an even edge — and
-        it has to do the wrapping itself, because only the side that wraps can
-        pad what it produced.
-
-        The row count is unchanged: Ink was wrapping this text to the same
-        width anyway. What is new is that we know the count, rather than
-        inferring it.
-      */}
-      {turn.userMsg && (
-        <Box flexDirection="column" marginBottom={1} width="100%">
-          {blockLines(userMessageText(turn.userMsg.content, isLive), terminalWidth, 2)
-            .map((line, i) => (
-              // eslint-disable-next-line react/no-array-index-key
-              /*
-               * A hex grey, not `backgroundColor="gray"`.
-               *
-               * The named colour is ANSI bright-black, and what a terminal
-               * paints for that is entirely up to its theme — VS Code's renders
-               * it as a *light* grey, so the bar came out brighter than the text
-               * it was meant to sit behind and pulled the eye away from the
-               * reply. A hex value is the same grey everywhere and can be chosen
-               * to sit below the text rather than above it.
-               *
-               * Dark enough to be a background on a dark theme, and white text
-               * keeps it readable on a light one, where it reads as an inverted
-               * bar rather than a highlight.
-               */
-              <Text key={i} backgroundColor="#303030" color="white" bold>
-                {i === 0 ? ' ❯ ' : '   '}{line}
-              </Text>
-            ))}
-        </Box>
-      )}
-
-      {actions.length > 0 && (
-        <Text color="gray">
-          {isLive ? (
-            <>
-              {'  '}Worked for{' '}
-              <Text color="cyan"><Dots tick={tick} /> {status}</Text>
-            </>
-          ) : (
-            <>{'  '}{duration === null ? 'Worked' : `Worked for ${duration}s`}</>
-          )}
-          {worked > 0 && (
-            <Text dimColor> · {worked} action{worked === 1 ? '' : 's'}</Text>
-          )}
-          {touched > 0 && (
-            <Text dimColor> · {touched} file{touched === 1 ? '' : 's'} changed on disk</Text>
-          )}
-        </Text>
+    /*
+     * No bottom margin on a tail. The margin separates one turn from the next,
+     * and a tail whose head is already committed is not the start of anything —
+     * it is the bottom of a turn `<Static>` is already holding. At 9x72 the
+     * live frame has three rows to spend and that margin was one of them.
+     */
+    <Box flexDirection="column" marginBottom={fromItem > 0 ? 0 : 1} width="100%">
+      {turn.userMsg && fromItem === 0 && (
+        <UserBar content={turn.userMsg.content} isLive={isLive} terminalWidth={terminalWidth} />
       )}
 
       {/*
-        Outside the `actions` gate, unlike before. A turn that is only prose
-        has no summary line, and its trimmed items would otherwise be dropped
-        with nothing saying so.
+        Outside the `actions` gate. A turn that is only prose has no summary
+        line, and its trimmed items would otherwise be dropped with nothing
+        saying so.
       */}
       {hidden > 0 && (
         <Text dimColor>{'  '}… {hidden} earlier step{hidden === 1 ? '' : 's'} scrolled off</Text>
@@ -159,7 +118,92 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
           terminalWidth={terminalWidth}
         />
       ))}
+
+      {actions.length > 0 && (
+        <TurnSummary
+          isLive={isLive}
+          duration={duration}
+          worked={worked}
+          touched={touched}
+          status={status}
+          tick={tick}
+        />
+      )}
     </Box>
+  );
+}
+
+/**
+ * The user's own message, as a full-width bar.
+ *
+ * Ink's `backgroundColor` paints the characters and not the line, so a
+ * background on ordinary text stops where the words stop. `blockLines` wraps
+ * and pads instead, which is the only way to get an even edge — and it has to
+ * do the wrapping itself, because only the side that wraps can pad what it
+ * produced.
+ *
+ * Its own component because it is **final the moment it is drawn**, which is
+ * the property `<Static>` requires and the turn around it does not have.
+ */
+export function UserBar({ content, isLive, terminalWidth = 80 }) {
+  return (
+    <Box flexDirection="column" marginBottom={1} width="100%">
+      {blockLines(userMessageText(content, isLive), terminalWidth, 2)
+        .map((line, i) => (
+          // eslint-disable-next-line react/no-array-index-key
+          /*
+           * A hex grey, not `backgroundColor="gray"`.
+           *
+           * The named colour is ANSI bright-black, and what a terminal paints
+           * for that is entirely up to its theme — VS Code's renders it as a
+           * *light* grey, so the bar came out brighter than the text it was
+           * meant to sit behind and pulled the eye away from the reply. A hex
+           * value is the same grey everywhere and can be chosen to sit below
+           * the text rather than above it.
+           *
+           * Dark enough to be a background on a dark theme, and white text
+           * keeps it readable on a light one, where it reads as an inverted
+           * bar rather than a highlight.
+           */
+          <Text key={i} backgroundColor="#303030" color="white" bold>
+            {i === 0 ? ' ❯ ' : '   '}{line}
+          </Text>
+        ))}
+    </Box>
+  );
+}
+
+/**
+ * What the turn cost, drawn **after** the rows it is counting.
+ *
+ * It used to sit above them, and that is the one thing it could not do if the
+ * rows are ever to be committed as they finish. `<Static>` advances on
+ * `items.length` and never redraws an item, so anything handed to it has to be
+ * final when written — and a header that reads `2 actions` cannot be final
+ * before the second action exists. Above the rows and append-only are not both
+ * available; below, it is written last with the numbers it ended on.
+ *
+ * While the turn runs it is the spinner, which now sits directly above the
+ * input box rather than four rows up.
+ */
+export function TurnSummary({ isLive, duration, worked, touched, status, tick = 0 }) {
+  return (
+    <Text color="gray">
+      {isLive ? (
+        <>
+          {'  '}Worked for{' '}
+          <Text color="cyan"><Dots tick={tick} /> {status}</Text>
+        </>
+      ) : (
+        <>{'  '}{duration === null ? 'Worked' : `Worked for ${duration}s`}</>
+      )}
+      {worked > 0 && (
+        <Text dimColor> · {worked} action{worked === 1 ? '' : 's'}</Text>
+      )}
+      {touched > 0 && (
+        <Text dimColor> · {touched} file{touched === 1 ? '' : 's'} changed on disk</Text>
+      )}
+    </Text>
   );
 }
 
@@ -177,7 +221,7 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
  * live frame is charged for strictly fewer rows than before — never more,
  * which is the only direction that is safe here.
  */
-function TurnRow({ item, previous, isLive, verbose, liveBudget, terminalWidth }) {
+export function TurnRow({ item, previous, isLive, verbose, liveBudget, terminalWidth }) {
   if (item.type !== 'text') {
     return (
       <Box flexDirection="column" marginLeft={2} width="100%">

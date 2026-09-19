@@ -54,6 +54,15 @@ for (const s of SCENARIOS) {
     if (a < 0 || b < 0) problems.push(`cannot order ${JSON.stringify(a < 0 ? above : below)}: never drawn`);
     else if (a > b) problems.push(`${JSON.stringify(above)} drawn below ${JSON.stringify(below)}`);
   }
+  /*
+   * `counts` asserts how many times a string was *written*, which neither
+   * `expect` nor `absent` can say. The transcript duplicating is exactly a
+   * counting bug: every row was present, just drawn more than once.
+   */
+  for (const [needle, want] of Object.entries(s.counts ?? {})) {
+    const got = plain.split(needle).length - 1;
+    if (got !== want) problems.push(`${JSON.stringify(needle)} drawn ${got}x, expected ${want}x`);
+  }
   if (clears > (s.maxClears ?? 0)) problems.push(`${clears} full clears (max ${s.maxClears ?? 0})`);
   if (s.wrote && !existsSync(join(ws, s.wrote))) problems.push(`${s.wrote} was not written`);
   if (s.didNotWrite && existsSync(join(ws, s.didNotWrite))) problems.push(`${s.didNotWrite} WAS written`);

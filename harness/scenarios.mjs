@@ -303,4 +303,44 @@ export const SCENARIOS = [
     rows: 24, cols: 90,
     maxClears: 0,
   },
+  {
+    name: 'a tall terminal draws the transcript once, not once per tool round',
+    /*
+     * Reported from use at 210x64: the banner, the prompt and the whole turn
+     * printed three times, each copy further along than the last; resizing
+     * small and back fixed it. `<Static>` was handed a *turn*, a turn grows
+     * while the loop runs, and the only repair for a grown Static item is
+     * remounting it — which reprints everything *below* what is already on
+     * screen, because Ink cannot un-write. On a short terminal the old copies
+     * scroll away and it looks like it worked.
+     *
+     * 64 rows is the point of the scenario: nothing scrolls off, so every copy
+     * is counted. Two tool rounds, because it duplicated once per round.
+     */
+    replies: [
+      'First, the directory.\n\n```json\n' + JSON.stringify({
+        name: 'list_directory', args: { path: '.' },
+      }) + '\n```',
+      'Now the file.\n\n```json\n' + JSON.stringify({
+        name: 'read_file', args: { path: 'a.txt' },
+      }) + '\n```',
+      'DONE — one line, nothing else references it.',
+    ],
+    steps: [
+      { seed: { 'a.txt': 'hello\n' } },
+      { send: 'what is in a.txt\r' },
+      { wait: 'DONE', timeout: 90 },
+    ],
+    expect: ['DONE — one line'],
+    /*
+     * The banner, and only the banner. Everything else in a turn is drawn in
+     * the live frame before it commits, and a live row is rewritten on every
+     * repaint — the prompt bar counts 6x on a correct run. The banner is never
+     * live, so the only thing that can write it twice is `<Static>` printing
+     * the transcript again, which is the bug. It counted 3x here.
+     */
+    counts: { 'Developed by': 1 },
+    rows: 64, cols: 210,
+    maxClears: 0,
+  },
 ];
