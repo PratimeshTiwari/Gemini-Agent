@@ -32,14 +32,6 @@
     },
     {
       "matches": [
-      ],
-      "js": [
-        "content-scripts/chatgpt-bridge.js"
-      ],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": [
         "https://github.com/*"
       ],
       "js": [
