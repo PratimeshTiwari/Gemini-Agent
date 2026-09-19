@@ -275,4 +275,32 @@ export const SCENARIOS = [
     rows: 24, cols: 90,
     maxClears: 0,
   },
+  {
+    name: 'a turn draws its prose and its tools in the order they happened',
+    // Phase 4.1. `parseTurnActions` returned `actions` and `finalMessages`,
+    // and the renderer drew all of the first and then all of the second — so
+    // a reply that came *before* a tool call was drawn after it, and every
+    // voice added later inherited the same ordering. One reply, one tool, one
+    // reply is the smallest turn where that is visible at all.
+    replies: [
+      'Looking at it.\n\n```json\n' + JSON.stringify({
+        name: 'read_file', args: { path: 'a.txt' },
+      }) + '\n```',
+      'DONE — one line, and nothing else references it.',
+    ],
+    steps: [
+      { seed: { 'a.txt': 'hello\n' } },
+      { send: 'what is in a.txt\r' },
+      { wait: 'DONE', timeout: 40 },
+    ],
+    expect: ['Looking at it.', 'read_file a.txt', 'DONE — one line'],
+    // Both pairs flip under the old renderer, which drew the tool row first
+    // and then both replies.
+    order: [
+      ['Looking at it.', 'read_file a.txt'],
+      ['read_file a.txt', 'DONE — one line'],
+    ],
+    rows: 24, cols: 90,
+    maxClears: 0,
+  },
 ];

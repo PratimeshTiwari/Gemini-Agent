@@ -41,6 +41,19 @@ for (const s of SCENARIOS) {
   const problems = [];
   for (const e of s.expect ?? []) if (!plain.includes(e)) problems.push(`missing ${JSON.stringify(e)}`);
   for (const a of s.absent ?? []) if (plain.includes(a)) problems.push(`unexpected ${JSON.stringify(a)}`);
+  /*
+   * `order` asserts that one string is drawn above another, which substring
+   * checks cannot say on their own — and drawing order is the whole of phase
+   * 4.1. Compared on the *last* occurrence of each, because the live frame
+   * repaints the same rows many times and only the committed copy is final.
+   * A missing string is reported as missing rather than silently ordering.
+   */
+  for (const [above, below] of s.order ?? []) {
+    const a = plain.lastIndexOf(above);
+    const b = plain.lastIndexOf(below);
+    if (a < 0 || b < 0) problems.push(`cannot order ${JSON.stringify(a < 0 ? above : below)}: never drawn`);
+    else if (a > b) problems.push(`${JSON.stringify(above)} drawn below ${JSON.stringify(below)}`);
+  }
   if (clears > (s.maxClears ?? 0)) problems.push(`${clears} full clears (max ${s.maxClears ?? 0})`);
   if (s.wrote && !existsSync(join(ws, s.wrote))) problems.push(`${s.wrote} was not written`);
   if (s.didNotWrite && existsSync(join(ws, s.didNotWrite))) problems.push(`${s.didNotWrite} WAS written`);

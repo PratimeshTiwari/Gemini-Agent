@@ -47,12 +47,26 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
   const timed = typeof turn.startTime === 'number' && typeof turn.endTime === 'number'
     && turn.endTime >= turn.startTime;
   const duration = timed ? ((turn.endTime - turn.startTime) / 1000).toFixed(1) : null;
-  const { actions, finalMessages } = parseTurnActions(turn);
+  /*
+   * One list, drawn in the order the things happened.
+   *
+   * `actions` and `finalMessages` are derived views over `items`, and this
+   * drew all of the first and then all of the second — so a file that changed
+   * on disk *after* the reply appeared above it, and so would every voice
+   * added later. Measured before the change, at all five sizes: the `∙` row
+   * landed ahead of the reply that preceded it, every time.
+   *
+   * `actions` stays, for the summary line: it counts what the agent did, which
+   * is a property of the turn rather than a row in it.
+   */
+  const { items, actions } = parseTurnActions(turn);
 
   // A live turn shows its most recent steps; a committed one shows all of them.
   // Two rows of the budget go to the user's message and the "Worked for" line.
-  const shown = isLive ? actions.slice(-Math.max(1, liveBudget - 2)) : actions;
-  const hidden = actions.length - shown.length;
+  // Over `items`, so the trim keeps the *last* things that happened rather
+  // than the last non-prose ones.
+  const shown = isLive ? items.slice(-Math.max(1, liveBudget - 2)) : items;
+  const hidden = items.length - shown.length;
 
   /**
    * What the agent did, counted separately from what happened to it.
@@ -107,48 +121,90 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
       )}
 
       {actions.length > 0 && (
-        <Box flexDirection="column" width="100%">
-          <Text color="gray">
-            {isLive ? (
-              <>
-                {'  '}Worked for{' '}
-                <Text color="cyan"><Dots tick={tick} /> {status}</Text>
-              </>
-            ) : (
-              <>{'  '}{duration === null ? 'Worked' : `Worked for ${duration}s`}</>
-            )}
-            {worked > 0 && (
-              <Text dimColor> · {worked} action{worked === 1 ? '' : 's'}</Text>
-            )}
-            {touched > 0 && (
-              <Text dimColor> · {touched} file{touched === 1 ? '' : 's'} changed on disk</Text>
-            )}
-          </Text>
-
-          {hidden > 0 && (
-            <Text dimColor>{'  '}… {hidden} earlier step{hidden === 1 ? '' : 's'} scrolled off</Text>
+        <Text color="gray">
+          {isLive ? (
+            <>
+              {'  '}Worked for{' '}
+              <Text color="cyan"><Dots tick={tick} /> {status}</Text>
+            </>
+          ) : (
+            <>{'  '}{duration === null ? 'Worked' : `Worked for ${duration}s`}</>
           )}
-
-          <Box flexDirection="column" marginLeft={2} width="100%">
-            {shown.map((act) => (
-              <ActionRow key={act.id} act={act} verbose={verbose} isLive={isLive} width={terminalWidth} />
-            ))}
-          </Box>
-        </Box>
+          {worked > 0 && (
+            <Text dimColor> · {worked} action{worked === 1 ? '' : 's'}</Text>
+          )}
+          {touched > 0 && (
+            <Text dimColor> · {touched} file{touched === 1 ? '' : 's'} changed on disk</Text>
+          )}
+        </Text>
       )}
 
-      {finalMessages.map((fm, idx) => (
-        <Box key={idx} flexDirection="row" marginTop={actions.length > 0 ? 1 : 0} width="100%">
-          {!fm.msg.isLocal && <Text color="green">● </Text>}
-          <Box flexGrow={1} flexShrink={1}>
-            <Text wrap="wrap">
-              {isLive
-                ? liveMessageText(renderMarkdown(fm.content, terminalWidth), liveBudget, terminalWidth)
-                : renderMarkdown(fm.content, terminalWidth)}
-            </Text>
-          </Box>
-        </Box>
+      {/*
+        Outside the `actions` gate, unlike before. A turn that is only prose
+        has no summary line, and its trimmed items would otherwise be dropped
+        with nothing saying so.
+      */}
+      {hidden > 0 && (
+        <Text dimColor>{'  '}… {hidden} earlier step{hidden === 1 ? '' : 's'} scrolled off</Text>
+      )}
+
+      {shown.map((item, idx) => (
+        <TurnRow
+          key={item.id}
+          item={item}
+          previous={shown[idx - 1]}
+          isLive={isLive}
+          verbose={verbose}
+          liveBudget={liveBudget}
+          terminalWidth={terminalWidth}
+        />
       ))}
+    </Box>
+  );
+}
+
+/**
+ * One item of a turn, whichever kind it is.
+ *
+ * The two shapes differ in more than their content — prose sits at the margin
+ * behind a `●`, everything else is indented two — so the indent moved onto the
+ * row from the wrapper that used to hold all the action rows together. That
+ * wrapper is what made the order impossible: it could only be in one place.
+ *
+ * The gap above prose is `previous`-dependent rather than "always, when the
+ * turn has actions". Two consecutive replies used to get a blank row between
+ * them; now a gap marks the change of voice, which is what it was for, and the
+ * live frame is charged for strictly fewer rows than before — never more,
+ * which is the only direction that is safe here.
+ */
+function TurnRow({ item, previous, isLive, verbose, liveBudget, terminalWidth }) {
+  if (item.type !== 'text') {
+    return (
+      <Box flexDirection="column" marginLeft={2} width="100%">
+        <ActionRow act={item} verbose={verbose} isLive={isLive} width={terminalWidth} />
+      </Box>
+    );
+  }
+
+  return (
+    <Box
+      flexDirection="row"
+      marginTop={previous && previous.type !== 'text' ? 1 : 0}
+      width="100%"
+    >
+      {!item.msg.isLocal && <Text color="green">● </Text>}
+      <Box flexGrow={1} flexShrink={1}>
+        {/*
+          Clamped while live and whole once committed — the reply is the
+          tallest row there is, and `items.slice` above counts it as one.
+          See `liveMessageText`.
+        */}
+        <Text wrap="wrap">
+          {isLive
+            ? liveMessageText(renderMarkdown(item.content, terminalWidth), liveBudget, terminalWidth)
+            : renderMarkdown(item.content, terminalWidth)}
+        </Text>
+      </Box>
     </Box>
   );
 }
