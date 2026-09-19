@@ -271,9 +271,13 @@ async function handleServerMessage(message) {
     case 'inject_prompt':
       await injectPromptIntoModel(payload);
       break;
-    case 'new_chat':
-      await triggerNewChatInModel(payload);
+    case 'new_chat': {
+      // Acked, like `open_thread` below. `/compact` is a handover and cannot
+      // send the summary until it knows there is somewhere new to send it to.
+      const started = await triggerNewChatInModel(payload || {});
+      sendToServer({ type: 'chat_started', payload: { ok: started, requestId: payload?.requestId } });
       break;
+    }
 
     // Resuming a past conversation: point the tab at it, so the model has the
     // history itself rather than a paraphrase of it.

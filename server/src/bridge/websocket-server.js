@@ -489,6 +489,18 @@ export class WebSocketServer {
        * is handed a restored transcript it has no knowledge of and asked to
        * carry on, which is the exact failure the thread id exists to prevent.
        */
+      /**
+       * The browser answering `new_chat`.
+       *
+       * `/compact` is a handover: it summarises the old thread and sends the
+       * summary into a new one. Without this the send is blind, and a new chat
+       * that never happened means a full turn-0 payload plus a summary of
+       * turns going into the thread that already holds them.
+       */
+      case 'chat_started':
+        this.agentLoop.handleChatStarted?.(payload);
+        break;
+
       case 'thread_opened':
         if (!payload?.ok) {
           this.agentLoop.promptBuilder.pendingRecap = this.agentLoop.conversationHistory;

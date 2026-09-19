@@ -513,13 +513,15 @@
   async function triggerNewChatInModel(payload) {
     const targetModel = payload.targetModel || "gemini";
     const targetUrl = MODEL_URLS[targetModel];
-    if (!targetUrl) return;
+    if (!targetUrl) return false;
     const tab = await pickMainTab(targetModel) || await ensureModelTab(targetModel);
-    if (!tab) return;
+    if (!tab) return false;
     try {
       await chrome.tabs.sendMessage(tab.id, { type: "new_chat", payload });
+      return true;
     } catch (err) {
       console.warn(`[Agent CLI] Failed to send new_chat to ${targetModel} tab ${tab.id}:`, err);
+      return false;
     }
   }
 
@@ -668,9 +670,11 @@
       case "inject_prompt":
         await injectPromptIntoModel(payload);
         break;
-      case "new_chat":
-        await triggerNewChatInModel(payload);
+      case "new_chat": {
+        const started = await triggerNewChatInModel(payload || {});
+        sendToServer({ type: "chat_started", payload: { ok: started, requestId: payload?.requestId } });
         break;
+      }
       // Resuming a past conversation: point the tab at it, so the model has the
       // history itself rather than a paraphrase of it.
       case "open_thread": {

@@ -217,9 +217,10 @@ export async function handleSlashCommand(loop, command, args) {
       loop.conversationHistory = [];
       loop.promptBuilder.resetPromptState();
       loop.contextChars = 0;
-      loop.chatThread = null;
       // A fresh browser thread too, or the model keeps the old conversation's
-      // memory while everything else has moved on.
+      // memory while everything else has moved on. `startNewChat` clears
+      // `chatThread` itself and keeps the outgoing id as `previousThread` —
+      // clearing it here first threw that away before it could be recorded.
       loop.startNewChat?.();
       // Name it. "The previous one is kept" is only useful if you can say
       // which one, and the id is the thing `--resume` takes.
@@ -231,11 +232,22 @@ export async function handleSlashCommand(loop, command, args) {
       };
     }
 
+    /**
+     * `/clear` clears the CLI's record. `/new` starts a fresh conversation.
+     * Different commands, different jobs, and this one deliberately leaves the
+     * browser tab alone — the model still remembers.
+     *
+     * Which is why it must not zero `contextChars`. That counter is
+     * "everything ever typed into the browser tab" (`AgentLoop.contextTokens`),
+     * and the tab still holds it, so zeroing it made the status bar, `/context`
+     * and the auto-compaction threshold all describe a thread that does not
+     * exist. The bar reading 40% straight after a clear is not a glitch: it is
+     * the useful half of what just happened.
+     */
     case 'clear':
       loop.conversationHistory = [];
       loop.sessionStore.clear();
       loop.promptBuilder.resetPromptState();
-      loop.contextChars = 0;
       // `reset` so every front-end drops the transcript it is showing. Without
       // it the panel kept displaying a conversation the agent had forgotten.
       return { message: '🧹 Conversation history cleared.', reset: true };

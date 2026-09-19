@@ -285,6 +285,15 @@ describe('artifacts travel with the session', () => {
  * command implemented in the UI layer is invisible to every other surface.
  */
 describe('/new', () => {
+  /*
+   * `startNewChat` is the real one, not a stub that records the call.
+   *
+   * It used to be stubbed, and `/new` cleared `chatThread` itself — so the
+   * assertion below passed against the stub whatever the method did. Once the
+   * clearing moved into `startNewChat`, where the outgoing thread can be kept
+   * as `previousThread`, the stub was testing itself. Only `_toExtension` is
+   * faked now, standing in for the extension acking immediately.
+   */
   const loopFor = (store) => {
     const sent = [];
     return {
@@ -294,7 +303,12 @@ describe('/new', () => {
         promptBuilder: { resetPromptState() {} },
         contextChars: 999,
         chatThread: { model: 'gemini', id: 'old-thread' },
-        startNewChat() { sent.push('new_chat'); },
+        _toExtension(type) {
+          sent.push(type);
+          if (type === 'new_chat') setImmediate(() => this.handleChatStarted({ ok: true }));
+        },
+        handleChatStarted: AgentLoop.prototype.handleChatStarted,
+        startNewChat: AgentLoop.prototype.startNewChat,
       },
       sent,
     };
@@ -327,12 +341,15 @@ describe('/new', () => {
       'a finished checklist survived into the new conversation');
   });
 
-  test('it starts a fresh browser thread, and forgets the old one', async () => {
+  test('it starts a fresh browser thread, and keeps the address of the old one', async () => {
     const { handleSlashCommand } = await import('../../src/core/slash-commands.js');
     const { loop, sent } = loopFor(conversation(new SessionStore(dir)));
     await handleSlashCommand(loop, 'new', []);
     assert.deepEqual(sent, ['new_chat'], 'the model kept the old conversation in mind');
     assert.equal(loop.chatThread, null);
+    // Not forgotten, handed over. A conversation you cannot look back at is a
+    // reset with a nicer name, and the id is the only address it has.
+    assert.deepEqual(loop.previousThread, { model: 'gemini', id: 'old-thread' });
     assert.deepEqual(loop.conversationHistory, []);
   });
 

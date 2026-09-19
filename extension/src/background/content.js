@@ -922,19 +922,32 @@ export async function sendToModelTab(message, targetModel = 'gemini', sessionId 
   }
 }
 
+/**
+ * @returns {Promise<boolean>} whether the tab was actually told to start one.
+ *
+ * The answer matters now that `/compact` is a handover: it summarises the old
+ * thread and sends the summary into a new one. If the new chat never happened,
+ * that summary — plus a full turn-0 payload, because compaction resets the
+ * prompt state — goes into the thread that already holds every turn it
+ * summarises. The largest prompt in the system, into the worst possible place.
+ * Fire-and-forget was fine while this only backed `/new`, where the person can
+ * see whether the tab changed.
+ */
 export async function triggerNewChatInModel(payload) {
   const targetModel = payload.targetModel || 'gemini';
   const targetUrl = MODEL_URLS[targetModel];
-  if (!targetUrl) return;
+  if (!targetUrl) return false;
 
   // This lane's tab. Starting a new chat in a subagent's tab would clear a
   // conversation that is mid-turn, and leave the user's own thread untouched.
   const tab = (await pickMainTab(targetModel)) || (await ensureModelTab(targetModel));
-  if (!tab) return;
+  if (!tab) return false;
 
   try {
     await chrome.tabs.sendMessage(tab.id, { type: 'new_chat', payload });
+    return true;
   } catch (err) {
     console.warn(`[Agent CLI] Failed to send new_chat to ${targetModel} tab ${tab.id}:`, err);
+    return false;
   }
 }

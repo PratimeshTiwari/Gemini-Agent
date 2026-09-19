@@ -1164,15 +1164,55 @@ export class AgentLoop {
   }
 
   /**
-   * Ask the browser for a fresh conversation.
+   * Ask the browser for a fresh conversation, and wait to hear that it worked.
    *
    * The old `/new` broadcast `new_chat` straight from the UI hook, which is
    * why only the terminal could do it. Routed through the loop, both
    * front-ends reach the same thing.
+   *
+   * It resolves rather than rejects, and resolves `false` on a timeout, because
+   * both callers have to keep going either way — `/new` has already cleared the
+   * transcript, and `_compactHistory` has already summarised. What the answer
+   * changes is what they say and where they send the next prompt, which is
+   * exactly the decision a rejection would take away.
+   *
+   * @returns {Promise<boolean>} whether a tab was told to start one
    */
-  startNewChat() {
+  startNewChat({ timeoutMs = 5000 } = {}) {
+    const previous = this.chatThread;
     this.chatThread = null;
-    this._toExtension('new_chat');
+    // The thread we are leaving. `_recordThread` only ever overwrites, so
+    // without this the conversation that was just handed over has no address —
+    // and a handover you cannot look back from is a reset with a nicer name.
+    if (previous?.id) this.previousThread = previous;
+
+    // A second request supersedes the first, which is then answered `false`
+    // rather than left pending. A promise nobody ever settles is the hang this
+    // whole ack exists to remove, and adding one here would be a poor joke.
+    this._pendingNewChat?.done(false);
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (ok) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (this._pendingNewChat?.done === done) this._pendingNewChat = null;
+        resolve(ok);
+      };
+      // Deliberately NOT unref'd. This timer is the only thing that settles the
+      // promise when the browser never answers, so letting the process treat it
+      // as optional means the wait never ends — the hang the ack exists to
+      // remove, reintroduced by the ack. Caught by the test below.
+      const timer = setTimeout(() => done(false), timeoutMs);
+      this._pendingNewChat = { done };
+      this._toExtension('new_chat');
+    });
+  }
+
+  /** The extension answering `new_chat`. An unmatched ack is ignored, not thrown. */
+  handleChatStarted(payload) {
+    this._pendingNewChat?.done(Boolean(payload?.ok));
   }
 
   requestModelOptions() {
@@ -2309,12 +2349,37 @@ ${compactedSummary}`;
       this.conversationHistory = [compactedTurn, ...toKeep];
       this.sessionStore.saveHistory(this.conversationHistory);
       this.promptBuilder.resetPromptState();
-      // The thread starts again from the summary, so the count does too.
-      // Carrying the old total past this would leave the agent believing it was
-      // still full and compacting forever.
-      this._resetContextCount(
-        this.conversationHistory.reduce((n, t) => n + (t.content?.length || 0), 0),
-      );
+
+      /**
+       * Compaction is a **handover**, and it used not to hand anything over.
+       *
+       * It rewrote `conversationHistory`, reset the prompt state and reset the
+       * counter — and sent nothing to the browser. The tab stayed on the thread
+       * that still held every turn just summarised, so:
+       *
+       * - the model's memory was unchanged; it still had all of it;
+       * - `resetPromptState` then sent a full turn-0 payload **plus** a summary
+       *   of those turns *into the thread that contains them* — the largest
+       *   prompt in the system, at the moment a large repeated payload is most
+       *   likely to trip Gemini's repetition filter;
+       * - and `contextChars`, documented as "everything ever typed into the
+       *   browser tab", was reset to the summary's length while the tab kept
+       *   the lot. It feeds the auto-compaction threshold, the status bar and
+       *   `/context`, so after one compaction the agent believed it had room it
+       *   did not have, in all three at once.
+       *
+       * `_resetContextCount`'s own comment already said compaction "throws that
+       * thread away and starts a new one from the summary". That was the
+       * intent; nothing implemented it. It does now, and the count is only
+       * reset **if the new chat actually happened** — a counter reset against a
+       * thread that never changed is the bug above, written deliberately.
+       */
+      const handedOver = await this.startNewChat();
+      if (handedOver) {
+        this._resetContextCount(
+          this.conversationHistory.reduce((n, t) => n + (t.content?.length || 0), 0),
+        );
+      }
 
       // Say what actually happened. "✅ History compacted." told the user
       // nothing — not how much went, not whether the model summarised it or the
@@ -2328,14 +2393,24 @@ ${compactedSummary}`;
         ? 'summarised by the model'
         : 'condensed locally (the model did not answer, so the deterministic fallback ran)';
 
+      // Say which half happened. The old message claimed the tab was "scratch
+      // space; nothing is left there" — true of the *summariser's* tab, which
+      // is a subagent's own, and read by everyone as the one they are looking
+      // at. When the handover fails, the honest thing is to say the old thread
+      // is still in front of them, because it is.
+      const where = handedOver
+        ? 'The tab has been handed over to a fresh conversation, and the summary goes into it '
+          + 'with your next message.'
+        : '⚠️ The browser did not confirm a new conversation, so the tab is still on the old '
+          + 'one — which already remembers these turns. `/new` starts one by hand.';
+
       return {
         message: `✅ Compacted ${toCompact.length} turn${toCompact.length === 1 ? '' : 's'} into one summary, `
           + `${how}.\n\n`
           + `Kept the last ${toKeep.length} turns as they were. `
           + `Context is roughly ${before.toLocaleString()} → ${after.toLocaleString()} tokens.\n\n`
           + 'The summary is now the first turn of this conversation — it is in the transcript above '
-          + 'and saved to `.agent/sessions/history.jsonl`. The browser tab it was written in is '
-          + 'scratch space; nothing is left there.',
+          + `and saved to \`.agent/sessions/history.jsonl\`. ${where}`,
       };
     } finally {
       this.isCompacting = false;
