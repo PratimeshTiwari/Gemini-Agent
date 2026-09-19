@@ -489,3 +489,70 @@ describe('describeArtifactWrite', () => {
     );
   });
 });
+
+/**
+ * One list, in the order things happened.
+ *
+ * `parseTurnActions` returned two buckets and `TranscriptTurn` drew all of
+ * the first and then all of the second, so the order on screen was "tools and
+ * system rows, then prose" regardless of when each occurred. It was mostly
+ * invisible because local output and the model's reply are both prose and
+ * kept their relative order inside one bucket — and plainly wrong the moment
+ * a file changed on disk *after* the reply.
+ */
+describe('parseTurnActions — items are in source order', () => {
+  const fsEvent = (p) => ({
+    role: 'system', type: 'fs_event',
+    content: `[System Event] File ${p} was modified externally by the user.`,
+  });
+
+  const mixed = {
+    id: 1,
+    steps: [
+      { type: 'tool_call', toolName: 'read_file', args: {} },
+      { type: 'tool_result', result: 'ok', success: true },
+      { role: 'assistant', content: 'Here is the answer.' },
+      fsEvent('CLAUDE.md'),
+      { role: 'assistant', isLocal: true, content: 'effort standard' },
+    ],
+  };
+
+  it('keeps every step where it happened', () => {
+    const { items } = parseTurnActions(mixed);
+    assert.deepStrictEqual(items.map((i) => i.type), ['tool', 'text', 'fs_event', 'text']);
+  });
+
+  it('a file event after the reply is drawn after the reply', () => {
+    // The two-bucket render put every fs_event above every line of prose,
+    // whenever it happened. This is the case that made it visible.
+    const { items } = parseTurnActions(mixed);
+    assert.ok(items.findIndex((i) => i.type === 'fs_event')
+      > items.findIndex((i) => i.type === 'text'));
+  });
+
+  it('actions and finalMessages are views, not a second accumulation', () => {
+    // Two lists that are supposed to agree are two lists that will one day
+    // not. Every item belongs to exactly one view, and together they are the
+    // whole list.
+    const { items, actions, finalMessages } = parseTurnActions(mixed);
+    assert.strictEqual(actions.length + finalMessages.length, items.length);
+    for (const a of actions) assert.ok(items.includes(a));
+    for (const f of finalMessages) assert.ok(items.includes(f));
+    assert.strictEqual(actions.some((a) => finalMessages.includes(a)), false);
+  });
+
+  it('every item carries an id, so rows have stable keys', () => {
+    const { items } = parseTurnActions(mixed);
+    const ids = items.map((i) => i.id);
+    assert.strictEqual(ids.filter(Boolean).length, ids.length, JSON.stringify(ids));
+    assert.strictEqual(new Set(ids).size, ids.length, 'duplicate ids would collapse rows');
+  });
+
+  it('a thought is an item too, before the prose it preceded', () => {
+    const { items } = parseTurnActions({
+      id: 2,
+      steps: [{ role: 'assistant', content: '<thought>weighing it up</thought>The answer.' }],
+    });
+    assert.deepStrictEqual(items.map((i) => i.type), ['think', 'text']);
+  });
+});

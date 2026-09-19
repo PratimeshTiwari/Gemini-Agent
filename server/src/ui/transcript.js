@@ -110,8 +110,22 @@ export function describeArtifactWrite(toolName, args) {
 }
 
 export function parseTurnActions(turn) {
-  const actions = [];
-  const finalMessages = [];
+  /**
+   * One list, in the order the things happened.
+   *
+   * There used to be two — `actions` and `finalMessages` — and
+   * `TranscriptTurn` drew all of the first and then all of the second. So the
+   * order on screen was "tools and system rows, then prose", whichever way
+   * round they actually occurred. Mostly invisible, because local output and
+   * the model's reply are both prose and kept their relative order inside one
+   * bucket; visible the moment a file changed on disk *after* the reply, and
+   * inherited by every voice added later.
+   *
+   * `actions` and `finalMessages` are now derived views over this, so they
+   * cannot drift from it, and the renderer can stop using them one at a time.
+   */
+  const items = [];
+  const pushAction = (item) => { items.push(item); return item; };
   /** Which step produced the last file event, so a run can be told from a pair. */
   let lastFsStep = -2;
 
@@ -142,7 +156,7 @@ export function parseTurnActions(turn) {
 
       if (imgMatch) {
         cleanContent = cleanContent.replace(imgMatch[0], '').trim();
-        actions.push({
+        pushAction({
           type: 'image',
           id: `turn_${turn.id}_act_${sIdx}_image`,
           content: imgMatch[1],
@@ -151,7 +165,7 @@ export function parseTurnActions(turn) {
       }
 
       thoughts.forEach((content, i) => {
-        actions.push({
+        pushAction({
           type: 'think',
           id: `turn_${turn.id}_act_${sIdx}_think_${i}`,
           content,
@@ -160,10 +174,14 @@ export function parseTurnActions(turn) {
       });
 
       if (cleanContent) {
-        finalMessages.push({
+        // `text` is prose — the model's, or the CLI's when `isLocal` is set.
+        // It sits in `items` at the point it was produced, which is the whole
+        // reason this list exists.
+        items.push({
           type: 'text',
+          id: `turn_${turn.id}_act_${sIdx}_text`,
           content: cleanContent,
-          msg
+          msg,
         });
       }
     } else if (msg.type === 'tool_call') {
@@ -175,7 +193,7 @@ export function parseTurnActions(turn) {
         success = nextMsg.success;
         sIdx++; // Group tool_result with tool_call into one action
       }
-      actions.push({
+      pushAction({
         type: 'tool',
         id: `turn_${turn.id}_act_${sIdx}`,
         toolName: msg.toolName || msg.name,
@@ -185,7 +203,7 @@ export function parseTurnActions(turn) {
         msg
       });
     } else if (msg.type === 'tool_result') {
-      actions.push({
+      pushAction({
         type: 'tool_result',
         id: `turn_${turn.id}_act_${sIdx}`,
         result: msg.result,
@@ -208,7 +226,7 @@ export function parseTurnActions(turn) {
        * ordering is what makes them one event, and a window would need a
        * clock in a pure function.
        */
-      const prev = actions[actions.length - 1];
+      const prev = items[items.length - 1];
       const path = msg.path || parseFsEventPath(msg.content);
       // Adjacent in `steps`, which is not the same as adjacent in `actions`:
       // a reply between two runs goes to `finalMessages` and leaves no gap
@@ -217,7 +235,7 @@ export function parseTurnActions(turn) {
       if (prev && prev.type === 'fs_event' && lastFsStep === sIdx - 1) {
         if (path && !prev.paths.includes(path)) prev.paths.push(path);
       } else {
-        actions.push({
+        pushAction({
           type: 'fs_event',
           id: `turn_${turn.id}_act_${sIdx}_fs`,
           paths: path ? [path] : [],
@@ -227,14 +245,14 @@ export function parseTurnActions(turn) {
       lastFsStep = sIdx;
     } else if (msg.role === 'system') {
       if (msg.type === 'command_output') {
-        actions.push({
+        pushAction({
           type: 'command_output',
           id: `turn_${turn.id}_act_${sIdx}`,
           content: msg.content,
           msg
         });
       } else {
-        actions.push({
+        pushAction({
           type: 'system',
           id: `turn_${turn.id}_act_${sIdx}`,
           content: msg.content,
@@ -244,7 +262,11 @@ export function parseTurnActions(turn) {
     }
   }
 
-  return { actions, finalMessages };
+  // Derived, never accumulated in parallel: two lists that are supposed to
+  // agree are two lists that will one day not.
+  const actions = items.filter((i) => i.type !== 'text');
+  const finalMessages = items.filter((i) => i.type === 'text');
+  return { items, actions, finalMessages };
 }
 
 /**
