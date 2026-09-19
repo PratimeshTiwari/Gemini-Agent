@@ -141,7 +141,7 @@ describe('planModelSwitch — the cheapest interaction is the one not performed'
  * prompts worst — and the picker is the only place that is visible.
  */
 describe('the message after an effort switch', () => {
-  const run = async (effort, modelOptions) => {
+  const run = async (effort, modelOptions, over = {}) => {
     // Only what `/effort` reaches for. Growing this as it errors is how the
     // stub stays honest about the command's real dependencies.
     const loop = {
@@ -151,30 +151,35 @@ describe('the message after an effort switch', () => {
       switchModelTo() {},
       requestModelOptions() {},
       _saveConfig() {},
+      ...over,
     };
     const { handleSlashCommand } = await import('../../src/core/slash-commands.js');
     return (await handleSlashCommand(loop, 'effort', [effort])).message;
   };
 
   /*
-   * It used to say "check the Gemini tab's picker now reads X before you send
-   * anything — the picker is the only proof it landed". It was not the only
-   * proof: the extension re-reads the picker after the click, and now reports
-   * what it *says* rather than echoing what was asked for. So the message
-   * promises a line, instead of sending the user to go and find a browser tab.
+   * One row, not four. It used to answer with the rung's label, its blurb, the
+   * browser line and an italic paragraph about the picker being read back —
+   * and a menu pick pushes only the answer, so that landed in the transcript
+   * with nothing above it saying where it came from.
    */
-  test('a known switch says the picker will be read back', async () => {
+  test('a known switch names what changed and what the browser is doing', async () => {
     const msg = await run('pro', [{ label: 'Gemini Pro' }, { label: '3.8 Flash' }]);
-    assert.match(msg, /Switching the browser/);
-    assert.match(msg, /read back after the switch/);
-    assert.match(msg, /Gemini Pro/);
+    assert.match(msg, /switching the browser to \*\*Gemini Pro\*\*/);
+    assert.match(msg, /⚙ effort/);
     assert.doesNotMatch(msg, /Check the Gemini tab/i, 'it still sends the user looking');
+    // One row. The blurb belongs to bare `/effort`, which lists every rung.
+    assert.ok(msg.split('\n').length <= 2, `expected one row, got:\n${msg}`);
   });
 
-  test('so does an unknown one, while it goes looking', async () => {
+  /*
+   * The only branch that cannot confirm anything — there is no model list to
+   * match against — so it is the only one that offers the key showing the tab.
+   */
+  test('with no list it says so, and offers the tab', async () => {
     const msg = await run('pro', []);
-    assert.match(msg, /Asking the browser/);
-    assert.match(msg, /read back after the switch/);
+    assert.match(msg, /asking the browser/i);
+    assert.match(msg, /ctrl\+b/);
   });
 
   // Nothing was asked for, so there is nothing to confirm. `none` needs the
@@ -188,6 +193,28 @@ describe('the message after an effort switch', () => {
     ]);
     assert.match(msg, /already on/);
     assert.doesNotMatch(msg, /read back after the switch/);
+  });
+
+  /*
+   * `/effort` calls `resetPromptState()`, so the next message carries the whole
+   * system prompt — up to 26 KB — into a thread that already has one. That is
+   * the large-repeated-payload case Gemini's filters react to, and it is
+   * invisible: the command looks instant and the price lands on the next turn.
+   *
+   * Only when there *is* a chat to resend into. On a fresh one there is no cost
+   * and the line would be noise on every first command of every session.
+   */
+  test('mid-chat, it says the next message resends the whole prompt', async () => {
+    const msg = await run('flash', [{ label: '3.8 Flash' }], {
+      conversationHistory: [{ role: 'user', content: 'hi' }],
+    });
+    assert.match(msg, /resends the full prompt/);
+    assert.match(msg, /\/compact/);
+  });
+
+  test('and says nothing of the sort in a fresh chat', async () => {
+    const msg = await run('flash', [{ label: '3.8 Flash' }], { conversationHistory: [] });
+    assert.doesNotMatch(msg, /resends/);
   });
 
   test('it no longer leads with reload instructions', async () => {

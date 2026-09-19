@@ -352,6 +352,7 @@ export async function handleSlashCommand(loop, command, args) {
 
       if (wanted && isEffort(wanted)) {
         const chosen = resolveEffort(wanted);
+        const before = resolveEffort(loop.modelConfig.effort);
         loop.modelConfig.effort = chosen.id;
         loop._saveConfig();
         loop.promptBuilder.resetPromptState();
@@ -367,49 +368,60 @@ export async function handleSlashCommand(loop, command, args) {
         // offering, because the names move and the list differs by plan. If the
         // browser has not been asked yet, it is asked now and the hint stands
         // for this one time.
-        /**
-         * Every one of these is a *request* to a page nobody here controls.
+        /*
+         * One row, because that is what the change is.
          *
-         * So the follow-up is "check the picker", not a remedy for a failure
-         * that may not have happened. It used to lead with "if nothing
-         * happens, reload the extension" — advice for a stale bridge, which is
-         * a different problem, offered before there was any sign of one.
+         * This used to answer with four lines — the rung's label, its blurb,
+         * the browser line, and an italic paragraph explaining that the picker
+         * gets read back. Reported as confusing: picking from the menu pushes
+         * only the answer, so a four-line blurb appeared in the transcript with
+         * nothing above saying where it came from.
          *
-         * Asking for the confirmation is worth a line because of what silence
-         * costs: an unnoticed failure leaves a prompt written for Pro being
-         * typed into a Flash tab, which CLAUDE.md names as the worst case —
-         * the long prompt going to the model that handles long prompts worst.
-         * The picker is the only place that is visible.
+         * So the row *is* the record: what it was, what it is, and what the
+         * browser is being asked to do. The blurbs still exist — bare `/effort`
+         * lists every rung with one — they just are not the confirmation.
+         *
+         * `⚙` is phase 4.2's marker for "this program said it", scoped to this
+         * one call site rather than all 67.
          */
         const plan = planModelSwitch(chosen.id, loop.modelOptions || []);
-        /*
-         * This used to end with "check the Gemini tab's picker before you send
-         * anything — the picker is the only proof it landed". It was not: the
-         * extension re-reads the picker after the click and now reports what it
-         * actually says, so a line follows on its own confirming or
-         * contradicting. Asking someone to go and look was asking them to do a
-         * job the system had the answer to — and finding that tab is the whole
-         * friction being complained about.
-         */
-        const confirm = () => '\n\n_The picker is read back after the switch; '
-          + 'a line follows saying what it reads._';
 
-        let browserLine;
+        let browser;
         if (plan.action === 'switch') {
           loop.switchModelTo(plan.model.label);
-          browserLine = `· Switching the browser to **${plan.model.label}**.${confirm()}`;
+          browser = `switching the browser to **${plan.model.label}**`;
         } else if (plan.action === 'none') {
-          // Nothing was asked for, so there is nothing to confirm.
-          browserLine = `✓ The browser is already on **${plan.model.label}**.`;
+          browser = `browser already on **${plan.model.label}**`;
         } else {
           loop._pendingEffortSwitch = chosen.id;
           loop.requestModelOptions?.();
-          browserLine = `· Asking the browser to switch to **${chosen.browser}**.${confirm()}`;
+          // The one branch that cannot confirm anything: there is no model list
+          // to match against, so say so and offer the key that shows the tab.
+          browser = `asking the browser for **${chosen.browser}** — \`ctrl+b\` shows the tab`;
         }
 
-        return {
-          message: `${renamed}${chosen.label}\n\n${chosen.blurb}\n\n${browserLine}`,
-        };
+        /*
+         * What the change actually costs, said once and only when it applies.
+         *
+         * `resetPromptState()` above means the next message carries the whole
+         * system prompt — up to 26 KB — into a thread that already has one.
+         * That is precisely the large-repeated-payload case Gemini's repetition
+         * and A/B filters react to, and it is invisible: the command looks
+         * instant and the price arrives on the next turn.
+         *
+         * A line, not a confirmation dialog. `/effort` is used often enough
+         * that a prompt on every change is friction, and `/compact` already
+         * hands the thread over properly.
+         */
+        const midChat = (loop.conversationHistory?.length > 0)
+          ? '\n  _next message resends the full prompt into this chat — `/compact` starts a fresh one_'
+          : '';
+
+        const change = before.id === chosen.id
+          ? `already **${chosen.name}**`
+          : `**${before.name}** → **${chosen.name}**`;
+
+        return { message: `${renamed}⚙ effort  ${change} · ${browser}${midChat}` };
       }
 
       const now = resolveEffort(loop.modelConfig.effort);
