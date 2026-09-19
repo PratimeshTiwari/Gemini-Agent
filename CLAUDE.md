@@ -257,6 +257,22 @@ Every failure below used to end the turn, and the prompt with it.
   conversation, and an incremental prompt sent into one gets a confident answer
   to a question the model never saw. Losing a turn beats answering a different
   one. That is the same reasoning `session_lost` already encodes for batch tabs.
+
+  **That middle rung did nothing at all until 2026-09-19.** The bridge declared
+  its constants at the top level of the content-script world, and that world
+  outlives the script that created it — so re-injecting into a tab that already
+  had a copy threw `Identifier 'RESPONSE_IDLE_TIMEOUT' has already been
+  declared` on line one and the fresh copy never evaluated. The rung existed for
+  exactly the case that guarantees a copy is already there. It failed silently,
+  `waitForBridge` then burned its budget waiting for a script that had not
+  loaded, and the only evidence was an entry on `chrome://extensions`.
+
+  The file is an IIFE now, which makes a second injection legal, and a
+  `window.__agentBridgeStop` handover makes it a *replacement*: the new copy
+  calls the old one's `invalidate()` before taking the handle, so the orphan's
+  MutationObservers and timers stop immediately instead of running until
+  something happens to call `safeSend`. Skipping would not have done — the goal
+  is to replace an orphan, not to notice one.
 - **A prompt that never reached the composer is sent again, once.** The content
   script always knew the difference and discarded it. `sawGenerating` is the
   discriminator: generation started and we failed to read it means the model

@@ -1,4 +1,29 @@
 /**
+ * Wrapped in an IIFE so this file can be injected twice.
+ *
+ * Every `const` below used to be at the top level of the content-script world,
+ * and that world **survives** the script that created it. So re-injecting into
+ * a tab that already had a copy threw
+ * `Uncaught SyntaxError: Identifier 'RESPONSE_IDLE_TIMEOUT' has already been
+ * declared` on line one, and the fresh copy never evaluated at all.
+ *
+ * Which quietly disabled the repair that needed it most. `sendWithRepairs`'s
+ * `reinject` stage exists for exactly one case — a content script orphaned by
+ * an extension reload, "the commonest cause by far" — and that is precisely
+ * the case where a copy is already there to collide with. The stage did
+ * nothing, `waitForBridge` then burned its 3s budget waiting for a script that
+ * had failed to load, and the only sign was an entry on
+ * `chrome://extensions`. Seen twice.
+ *
+ * Function scope fixes the collision. The handover beside `invalidate()` fixes
+ * the other half: skipping is not enough, because the goal is to *replace* an
+ * orphan, and an orphan still owns live MutationObservers and timers in this
+ * page. It already knows how to stop — `onInvalidated` — it was just never
+ * told, because nothing tells it until its next `safeSend` notices.
+ */
+(() => {
+
+/**
  * Gemini Bridge — Content Script
  *
  * Injected into gemini.google.com pages. Handles:
@@ -210,6 +235,22 @@ function invalidate() {
     try { stop(); } catch {}
   }
 }
+
+/*
+ * Take over from a copy already in this page.
+ *
+ * The isolated world persists across injections, so a previous bridge may
+ * still be observing the DOM and running timers. Its `chrome.runtime.id` is
+ * already gone — `bridgeAlive()` knows — but nothing had told it to stop, so
+ * it kept ticking until something happened to call `safeSend`.
+ *
+ * Calling the previous `invalidate` here runs its `onInvalidated` hooks
+ * immediately: observers disconnected, timers cleared. Then we register ours
+ * for whoever replaces us. Order matters — stop the old one before overwriting
+ * the handle, or it can never be reached again.
+ */
+try { window.__agentBridgeStop?.(); } catch { /* an orphan that cannot stop is still stopped */ }
+window.__agentBridgeStop = invalidate;
 
 /** Send, or quietly give up. Never throws, never rejects. */
 function safeSend(message) {
@@ -1523,3 +1564,5 @@ function scheduleConnectNudge(delay) {
 
 scheduleConnectNudge(CONNECT_NUDGE_MS);
 onInvalidated.push(() => clearTimeout(nudgeTimer));
+
+})();
