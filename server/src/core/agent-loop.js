@@ -20,6 +20,15 @@ import { logCommand } from './command-log.js';
  * them; more than that and something is actually wrong with the tab.
  */
 const MAX_PROVIDER_RETRIES = 2;
+/**
+ * How many times to ask the model to fix its own tool-call JSON.
+ *
+ * Every other retry path here is capped — provider errors above, the
+ * unsubmitted-prompt resend and tool redeclaration at one shot each. This one
+ * was not, so a model stuck on a formatting habit re-asked forever, a full
+ * browser turn each round, and only the user could stop it.
+ */
+const MAX_PARSE_RETRIES = 2;
 
 /**
  * How many consecutive rounds may end with a failing tool call before the loop
@@ -494,6 +503,10 @@ export class AgentLoop {
       const extracted = this._extractToolCalls(content);
       toolCalls = extracted.toolCalls;
       cleanContent = extracted.cleanContent;
+      // Reset on a parse rather than per user turn: a model that formats one
+      // call correctly has not "used up" anything, and the failure this caps
+      // is a *run* of malformed replies, not a tally across the session.
+      this._parseRetries = 0;
 
       // The single-response rule no longer rides on every message; it is
       // re-asserted when the model actually breaks it.
@@ -509,11 +522,43 @@ export class AgentLoop {
         this.promptBuilder.noteDrift();
       }
     } catch (err) {
+      this._parseRetries = (this._parseRetries || 0) + 1;
       logError(this.workspace, {
         flow: 'agent', op: 'parse_tool_calls',
         message: `Malformed tool call: ${err.message}`,
         detail: content?.slice(0, 1500),
+        // The attempt number is what turns "this happens" into "this happens
+        // and the model never recovers", which are different problems.
+        meta: { attempt: this._parseRetries },
       });
+
+      /**
+       * Give up asking, and hand the reply over instead.
+       *
+       * The raw text almost always contains the answer in prose — the model
+       * knew what to do and could not wrap it in JSON. Re-asking a third time
+       * costs another full browser turn to get the same malformed reply, and
+       * the turn is already lost; showing the text is the only thing left that
+       * can still be useful to the person waiting.
+       */
+      if (this._parseRetries > MAX_PARSE_RETRIES) {
+        this._parseRetries = 0;
+        this.isProcessing = false;
+        this._releaseExtension();
+        const answer = (cleanContent || content || '').trim();
+        this.callbacks.sendToPanel({
+          id: randomUUID(),
+          type: 'agent_response',
+          payload: {
+            message: '⚠️ **The model could not format a tool call** after '
+              + `${MAX_PARSE_RETRIES + 1} attempts. Its reply is below, unchanged — `
+              + 'it usually contains the answer in prose.\n\n'
+              + (answer || '_It returned nothing readable._'),
+          },
+          timestamp: Date.now(),
+        });
+        return;
+      }
       // A tool call the model could not format is the clearest signal its grip
       // on the instructions has slipped. Bring the reminder forward.
       this.promptBuilder.noteDrift();
@@ -521,7 +566,9 @@ export class AgentLoop {
       this.callbacks.sendToPanel({
         id: randomUUID(),
         type: 'status',
-        payload: { message: '⚠️ Invalid JSON detected. Self-correcting...' },
+        payload: {
+          message: `⚠️ Invalid JSON detected. Self-correcting (${this._parseRetries}/${MAX_PARSE_RETRIES})…`,
+        },
         timestamp: Date.now(),
       });
 
