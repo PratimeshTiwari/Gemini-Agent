@@ -1877,7 +1877,7 @@ export class AgentLoop {
             payload: {
               diffId: diffResult.diffId,
               filePath: diffResult.filePath,
-              message: `✅ Auto-applied: ${diffResult.filePath}`,
+              message: `✓ Auto-applied: ${diffResult.filePath}`,
             },
             timestamp: Date.now(),
           });
