@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import * as paths from '../../core/paths.js';
 import { leave, leaveWhenIdle, prepareWorkspaceSwitch, RESTART_EXIT_CODE } from '../../core/restart.js';
 import { createSkill, listSkills, skillSearchPath } from '../../core/skills.js';
@@ -8,6 +9,38 @@ import { readErrors, summarizeErrors, clearErrors, FLOWS } from '../../core/erro
 import { listPlans } from '../../core/plan-archive.js';
 import { listCommandDays, readCommands } from '../../core/command-log.js';
 import { resolveWorkspaceInput, validateWorkspace } from '../../core/workspaces.js';
+
+/**
+ * Where `/open <target>` would actually open, and whether anything is there.
+ *
+ * The check is the point. `/open` ran the editor and reported
+ * `Opened <path> in <editor>` whenever the *editor process* exited 0 — and an
+ * editor handed a path that does not exist opens an empty buffer and exits 0.
+ * So `/open plna.md` reported success, and what you got was a new empty file
+ * named after your typo.
+ *
+ * That is the same fault the comment below the call site already describes one
+ * level up: "the report has to describe what happened, or it is worse than no
+ * report". There it was the editor that was not runnable; here it is the file
+ * that was not there.
+ *
+ * A directory counts as existing — opening one is a normal thing to want, and
+ * every editor here handles it.
+ *
+ * @param {string} workspace
+ * @param {string} target - what the user typed, absolute or workspace-relative
+ * @returns {{abs: string, exists: boolean}}
+ */
+export function resolveOpenTarget(workspace, target) {
+  const raw = String(target ?? '').trim();
+  // `~` is the shell's, not ours: nothing expands it before we get here, so a
+  // path starting with it would resolve to a literal directory called "~".
+  const expanded = raw === '~' || raw.startsWith('~/')
+    ? path.join(os.homedir(), raw.slice(1))
+    : raw;
+  const abs = path.resolve(expanded.startsWith('/') ? expanded : path.join(workspace, expanded));
+  return { abs, exists: fs.existsSync(abs) };
+}
 import { SLASH_COMMANDS } from '../constants.js';
 import { AGENT_COMMANDS } from '../../core/slash-commands.js';
 import { oneLine } from '../format.js';
@@ -267,7 +300,17 @@ export async function handleSlashCommand(query, {
         setIsProcessing(false);
         return;
       }
-      const abs = target.startsWith('/') ? target : `${agentLoop.workspace}/${target}`;
+      const resolved = resolveOpenTarget(agentLoop.workspace, target);
+      if (!resolved.exists) {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+          role: 'assistant', isLocal: true, timestamp: Date.now(),
+          content: `! \`${resolved.abs}\` does not exist.`
+            + '\n\n_`/open` opens what is there; it does not create._',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+      const abs = resolved.abs;
       const { exec } = await import('child_process');
       const editor = agentLoop.editor || 'code';
 
