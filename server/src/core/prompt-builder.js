@@ -317,7 +317,28 @@ export class PromptBuilder {
    *   `AgentLoop.turnEvidence`. Derived from dispatched calls, never from
    *   anything the model said.
    */
-  buildToolResultBatch(results = [], turnEvidence = '') {
+  /**
+   * The handover review, for the round that has earned it.
+   *
+   * `brief` gets the four-point version, not nothing and not the seven-point
+   * one. Its promise is "straight to work", and a long review on a one-line fix
+   * is ceremony people learn to skip — but "did you run it" and "what did you
+   * not do" are worth asking at any size.
+   *
+   * The flash rungs are unaffected: their handover is a few lines inside their
+   * own reasoning prompt, small enough that moving it would cost more in
+   * machinery than it saves in characters.
+   *
+   * @param {string} effort
+   * @returns {string} '' for a rung that carries its own
+   */
+  buildHandoverBlock(effort) {
+    const { tier, level } = resolveEffort(effort);
+    if (tier !== 'pro') return '';
+    return prompt(level === 'brief' ? 'handover-lite' : 'pro-handover-review');
+  }
+
+  buildToolResultBatch(results = [], turnEvidence = '', handover = '') {
     const failures = results.filter((r) => r.failed);
 
     /**
@@ -390,11 +411,17 @@ export class PromptBuilder {
         'Report only what is in that list. Anything else is "not checked".']
       : [];
 
+    // After the evidence and before the closing instruction. The model reads
+    // the last thing hardest, and the last thing must stay "what to do next" —
+    // the review is a condition on finishing, not the next action.
+    const review = handover ? ['', handover] : [];
+
     return [
       '<tool_results>',
       ...body,
       '</tool_results>',
       ...evidence,
+      ...review,
       '',
       instruction,
     ].join('\n');
@@ -853,11 +880,21 @@ and what could go wrong with it — empty inputs, concurrent access, scale, erro
      * would be asked to audit a list it cannot see, which is the write-only
      * trap that made the original task.md useless.
      */
-    // `brief` gets the four-point version, not nothing and not the seven-point
-    // one. Its promise is "straight to work", and a long review on a one-line
-    // fix is ceremony people learn to skip — but "did you run it" and "what did
-    // you not do" are worth asking at any size, and cost ~2% of this prompt.
-    const handover = `\n${prompt(isBrief ? 'handover-lite' : 'pro-handover-review')}`;
+    /*
+     * The handover review is **not** here any more — see `buildHandoverBlock`.
+     *
+     * It is instructions for the *end* of a turn, and this block is delivered at
+     * the *start* of one. By the time the model has run twenty tool calls and is
+     * writing its answer, 1,879 characters of "check your work" are thousands of
+     * tokens behind it. That is the same failure the tool anchor exists for: the
+     * model does not gradually forget, it forgets completely, and the cure was
+     * to put the thing where it is needed rather than to say it louder up front.
+     *
+     * It now rides the tool-result prompt of the round that first changes
+     * something, which is both nearer the point of use and free on the turns —
+     * most of them — that only answer a question.
+     */
+    const handover = '';
 
     const assumptions = isDeep ? `
 

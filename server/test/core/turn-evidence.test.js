@@ -166,3 +166,75 @@ describe('the loop counts what it dispatches', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+/**
+ * The handover review rides the round that earned it.
+ *
+ * It used to ride the opening prompt: 1,879 characters of "check your work
+ * before you say you are finished", delivered before the turn had done
+ * anything, and then thousands of tokens behind the model by the time it
+ * mattered. The same failure the tool anchor exists for, and the same cure —
+ * put the instruction where it applies rather than saying it louder up front.
+ */
+describe('the handover arrives when there is something to hand over', () => {
+  const loop = (effort = 'deep') => {
+    const l = Object.create(AgentLoop.prototype);
+    l.modelConfig = { main: 'gemini', effort };
+    l._turnEvidence = new Map();
+    l._handoverSent = false;
+    l.promptBuilder = new PromptBuilder(WS, `${WS}/server`);
+    return l;
+  };
+
+  test('a turn that changed something gets it', () => {
+    const l = loop();
+    l._turnEvidence.set('edit_file', 1);
+    assert.match(l._dueHandover(), /THE HANDOVER REVIEW/);
+  });
+
+  /*
+   * The control, and the reason the gate is on evidence rather than the rung.
+   * A turn that only read files has nothing to hand over, and asking it for a
+   * review produces the empty ceremony already seen in use — "Checklist: 0/0
+   * done (Resetting state) · Ran: N/A · Callers checked: 0".
+   */
+  test('a turn that only looked at things does not', () => {
+    const l = loop();
+    l._turnEvidence.set('read_file', 9);
+    l._turnEvidence.set('grep_search', 3);
+    assert.equal(l._dueHandover(), '');
+  });
+
+  test('running a command counts as having done something', () => {
+    const l = loop();
+    l._turnEvidence.set('run_command', 1);
+    assert.match(l._dueHandover(), /THE HANDOVER REVIEW/);
+  });
+
+  // Once per turn. Repeating it on every later round is the large repeated
+  // payload the whole prompt strategy exists to avoid.
+  test('it goes out once, not on every round after', () => {
+    const l = loop();
+    l._turnEvidence.set('edit_file', 1);
+    assert.ok(l._dueHandover().length > 0);
+    assert.equal(l._dueHandover(), '', 'sent twice in one turn');
+    assert.equal(l._dueHandover(), '');
+  });
+
+  // The flash rungs carry their own, inline and much smaller. Sending them this
+  // one too would be the same text twice at the rung least able to afford it.
+  test('the flash rungs are left alone', () => {
+    for (const effort of ['flash', 'flash-thinking']) {
+      const l = loop(effort);
+      l._turnEvidence.set('edit_file', 1);
+      assert.equal(l._dueHandover(), '', effort);
+    }
+  });
+
+  test('brief gets the short version, deep the long one', () => {
+    const b = loop('brief'); b._turnEvidence.set('edit_file', 1);
+    const d = loop('deep'); d._turnEvidence.set('edit_file', 1);
+    assert.match(b._dueHandover(), /BEFORE YOU FINISH/);
+    assert.match(d._dueHandover(), /THE HANDOVER REVIEW/);
+  });
+});

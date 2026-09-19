@@ -367,6 +367,9 @@ export class AgentLoop {
        * *before* it writes the claim rather than after.
        */
       this._turnEvidence = new Map();
+      // The handover rides the round that first changes something — see
+      // `_dueHandover`. One per user turn, not one per round.
+      this._handoverSent = false;
       this._resentUnsubmittedOnce = false;
       // Auto-heal budget, per user turn.
       this._failedRounds = 0;
@@ -680,9 +683,25 @@ export class AgentLoop {
 
     // Show the response text (without tool call blocks) in the side panel
     if (cleanContent.trim()) {
+      /**
+       * The rung this reply was produced at.
+       *
+       * Nothing recorded it, and that made a whole class of question
+       * unanswerable. "Does `deep`'s assumption ledger ever get written?" is
+       * the cheap way to tell an instruction that works from one the model
+       * ignores — and it needs to know which turns ran at `deep`. Measured
+       * across 412 stored replies: zero ledgers, zero approach enumerations,
+       * zero reviewer calls, against a working control of 8 handover blocks.
+       * Suggestive of nothing, because the rung was not on the record.
+       *
+       * One field, written where the reply is. `/logs` and the archive both
+       * carry it forward, so a week of ordinary use answers the question that
+       * is currently being argued from prompt sizes.
+       */
       const agentTurn = {
         role: 'agent',
         content: cleanContent.trim(),
+        effort: this.modelConfig?.effort || null,
         timestamp: Date.now(),
       };
       this.conversationHistory.push(agentTurn);
@@ -1368,6 +1387,35 @@ export class AgentLoop {
     this.contextChars = Math.max(0, Number(chars) || 0);
   }
 
+  /**
+   * The handover review, once, on the round that has earned it.
+   *
+   * It used to ride the opening prompt — 1,879 characters of "check your work
+   * before you say you are finished", delivered before the turn had done
+   * anything, and then thousands of tokens behind the model by the time it
+   * mattered. Same failure the tool anchor exists for, and the same cure: put
+   * the instruction where it applies rather than saying it louder up front.
+   *
+   * **Gated on evidence, not on the rung alone.** A turn that answered a
+   * question has nothing to review, and asking it to file a handover produces
+   * the empty ceremony already seen in use — `Checklist: 0/0 done (Resetting
+   * state)`, `Ran: N/A`, `Callers checked: 0`. So it goes out on the first
+   * round where the turn has actually changed something.
+   *
+   * Once per turn: repeating it on every later round is the large repeated
+   * payload this project's whole prompt strategy exists to avoid.
+   */
+  _dueHandover() {
+    if (this._handoverSent) return '';
+    const changed = ['edit_file', 'create_file', 'run_command']
+      .some((t) => (this._turnEvidence?.get(t) || 0) > 0);
+    if (!changed) return '';
+
+    const block = this.promptBuilder.buildHandoverBlock?.(this.modelConfig?.effort) || '';
+    if (block) this._handoverSent = true;
+    return block;
+  }
+
   /** The model the main conversation runs on. Subagents name their own. */
   get mainModel() {
     return this.modelConfig.main || 'gemini';
@@ -2032,7 +2080,7 @@ export class AgentLoop {
     // the tab, and a parallel fan-out is still one push.
     this.promptBuilder.noteMessageSent();
     this._sendToGemini(
-      this.promptBuilder.buildToolResultBatch(toolResults, this.turnEvidence),
+      this.promptBuilder.buildToolResultBatch(toolResults, this.turnEvidence, this._dueHandover()),
       this.callbacks,
     );
   }
