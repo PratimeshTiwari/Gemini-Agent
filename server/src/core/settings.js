@@ -243,12 +243,26 @@ export function describeSettings(agentLoop) {
  * Only rows that know how to restore themselves are offered; the rest are
  * reported and left alone, which is honest about what an undo can reach.
  *
+ * **Only the Settings group is compared.** Reported from use: opening the page,
+ * changing nothing and closing it announced "2 settings changed — Turns 18 → 19,
+ * Session 18 turns kept → 19 turns kept". Those are in the Context group, and
+ * everything there is a *readout* — turns, tokens, diffs — which moves on its
+ * own while the page is open. So the screen fired on every exit during an active
+ * session, reporting things the person had not done and could not undo, which is
+ * the fastest way to teach someone to ignore a screen that will one day have
+ * something real on it.
+ *
+ * The group is the honest test rather than `restore`: `Skill folders` and
+ * `Agent name` are genuine settings with no undo, and they should still be
+ * reported when they change.
+ *
  * @returns {Array<{label: string, from: string, to: string, restore?: string}>}
  */
 export function settingsChanged(before, after) {
   const was = new Map((before || []).map((row) => [row.label, row.value]));
   const changes = [];
   for (const row of after || []) {
+    if (row.group !== 'Settings') continue;
     const from = was.get(row.label);
     if (from === undefined || from === row.value) continue;
     changes.push({

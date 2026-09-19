@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { describeSettings, filterSettings, SETTING_GROUPS } from '../../src/core/settings.js';
+import { describeSettings, filterSettings, settingsChanged, SETTING_GROUPS } from '../../src/core/settings.js';
 
 /** Enough of an AgentLoop for the page to describe. */
 const loop = (over = {}) => ({
@@ -156,5 +156,56 @@ test('the context tab reports the window', async (t) => {
   await t.test('a loop with no diff engine still renders', () => {
     const rows = describeSettings(loop({ diffEngine: undefined }));
     assert.equal(rows.find((r) => r.label === 'Diffs').value, '0 pending');
+  });
+});
+
+/**
+ * The exit screen reports what you did, not what happened while you were there.
+ *
+ * Reported from use: opening the page, changing nothing, and closing it
+ * announced "2 settings changed — Turns 18 → 19, Session 18 turns kept → 19
+ * turns kept". Both are Context rows, and everything in that group is a readout
+ * that moves on its own — so the screen fired on every exit during an active
+ * session, naming things the person had not done and could not undo. A warning
+ * that is always wrong teaches people to ignore the one that matters.
+ */
+test('settingsChanged only reports settings', async (t) => {
+  const before = describeSettings(loop());
+
+  await t.test('a readout moving on its own is not a change', () => {
+    // Exactly the reported case: the conversation advanced while the page was
+    // open. Nothing here was touched by the person.
+    const after = before.map((r) => (r.group === 'Context'
+      ? { ...r, value: String(Number(r.value) + 1 || `${r.value}!`) }
+      : r));
+    assert.deepEqual(settingsChanged(before, after), []);
+  });
+
+  await t.test('a Status row moving on its own is not a change either', () => {
+    const after = before.map((r) => (r.group === 'Status' ? { ...r, value: 'something else' } : r));
+    assert.deepEqual(settingsChanged(before, after), []);
+  });
+
+  // The control. Narrowing to one group must not stop it reporting a real one.
+  await t.test('an actual setting still reports, with a way back', () => {
+    const after = describeSettings(loop({
+      modelConfig: { main: 'gemini', subagents: false, effort: 'standard' },
+    }));
+    const changes = settingsChanged(before, after);
+
+    const row = changes.find((c) => c.label === 'Subagents');
+    assert.ok(row, `Subagents not reported; got ${JSON.stringify(changes.map((c) => c.label))}`);
+    assert.equal(row.from, 'on');
+    assert.equal(row.to, 'off');
+    assert.match(row.restore, /subagents on/);
+  });
+
+  // A genuine setting with no undo is still a change worth naming — which is
+  // why the group is the test rather than the presence of `restore`.
+  await t.test('a setting with no undo is reported without one', () => {
+    const after = before.map((r) => (r.label === 'Agent name' ? { ...r, value: 'DCX' } : r));
+    const row = settingsChanged(before, after).find((c) => c.label === 'Agent name');
+    assert.ok(row);
+    assert.equal(row.restore, undefined);
   });
 });
