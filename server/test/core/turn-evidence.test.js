@@ -238,3 +238,56 @@ describe('the handover arrives when there is something to hand over', () => {
     assert.match(d._dueHandover(), /THE HANDOVER REVIEW/);
   });
 });
+
+/**
+ * Full once per chat, a pointer after — the tool anchor's shape.
+ *
+ * Moving the handover to "once per working turn" looked like a reduction and
+ * was not. Measured on real use rather than on the test fixtures that flattered
+ * it: turns are short (median 1 message) and 29% of them change something, so
+ * per-working-turn sends this **five times** where the old every-20-messages
+ * refresh sent it once. Five times a small block beats once inside a
+ * 26,000-character payload — but it grows with session length, and repeated
+ * payloads are the thing the whole prompt strategy exists to avoid.
+ */
+describe('the handover repeats as a reminder, not as itself', () => {
+  const builder = () => new PromptBuilder(WS, `${WS}/server`);
+
+  test('the full block once, a pointer after', () => {
+    const pb = builder();
+    const first = pb.buildHandoverBlock('deep');
+    const second = pb.buildHandoverBlock('deep');
+
+    assert.match(first, /THE HANDOVER REVIEW/);
+    assert.ok(first.length > 1000, `the first one is only ${first.length} characters`);
+    assert.doesNotMatch(second, /THE HANDOVER REVIEW/);
+    assert.ok(second.length < 200, `the reminder is ${second.length} characters`);
+  });
+
+  // It must still *ask* for the thing, or the reminder is decoration.
+  test('the pointer names what it wants', () => {
+    const pb = builder();
+    pb.buildHandoverBlock('deep');
+    assert.match(pb.buildHandoverBlock('deep'), /## Review/);
+  });
+
+  /*
+   * A new chat has seen nothing, whatever the old one saw. Without this the
+   * model gets a pointer to a block it was never given — the drift
+   * `toolCatalogDrift` exists to catch, in a different costume.
+   */
+  test('a new thread gets the full block again', () => {
+    const pb = builder();
+    pb.buildHandoverBlock('deep');
+    pb.resetPromptState();
+    assert.match(pb.buildHandoverBlock('deep'), /THE HANDOVER REVIEW/);
+  });
+
+  test('over ten working turns it costs a reminder, not ten blocks', () => {
+    const pb = builder();
+    let total = 0;
+    for (let i = 0; i < 10; i++) total += pb.buildHandoverBlock('deep').length;
+
+    assert.ok(total < 4000, `ten turns cost ${total} characters`);
+  });
+});

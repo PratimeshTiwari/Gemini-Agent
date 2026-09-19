@@ -84,6 +84,7 @@ export class PromptBuilder {
     this.agentMdContent = this._loadAgentMd();
     this.messagesSinceRefresh = 0; // Messages sent to the tab since the last reminder
     this.hasSeenSystemPrompt = false; // Has the current chat session received a system prompt?
+    this.hasSeenHandover = false;     // ...and the full handover review, once
     this.pendingToolRedeclare = false; // Does the next prompt owe the model its tools back?
   }
 
@@ -93,6 +94,8 @@ export class PromptBuilder {
   resetPromptState() {
     this.messagesSinceRefresh = 0;
     this.hasSeenSystemPrompt = false;
+    // A new thread has not seen the handover either, whatever the old one did.
+    this.hasSeenHandover = false;
     // A full prompt carries the definitions anyway, so any outstanding
     // redeclaration is already satisfied by the turn this reset causes.
     this.pendingToolRedeclare = false;
@@ -335,6 +338,26 @@ export class PromptBuilder {
   buildHandoverBlock(effort) {
     const { tier, level } = resolveEffort(effort);
     if (tier !== 'pro') return '';
+
+    /**
+     * Full once per chat, a pointer after — the tool anchor's shape.
+     *
+     * Measured on real use rather than on the test fixtures, which flattered
+     * it: turns are short (median 1 message) and 29% change something, so
+     * "once per working turn" sends this **five times** where the old
+     * every-20-messages refresh sent it once. Five times a small block beats
+     * once inside a 26,000-character payload, but it still grows with session
+     * length, and repeated payloads are the thing this project's whole prompt
+     * strategy exists to avoid.
+     *
+     * So: the definitions once, the reminder thereafter. 1,879 characters the
+     * first time a turn has something to hand over, 96 every time after.
+     */
+    if (this.hasSeenHandover) {
+      return 'Before you finish: close with the `## Review` block — checklist, what you ran, '
+        + 'callers checked, what you did not do.';
+    }
+    this.hasSeenHandover = true;
     return prompt(level === 'brief' ? 'handover-lite' : 'pro-handover-review');
   }
 

@@ -569,6 +569,8 @@ describe('every rung asks for a list, checks it, and reviews before finishing', 
    * So "every rung is asked" is still the property; it is just answered from
    * two places, and this checks both rather than only the one it used to.
    */
+  // `pb()` is a fresh builder each call, deliberately: the block is full once
+  // per chat and a pointer after.
   const handoverFor = (effort) => pro(effort) + pb().buildHandoverBlock(effort);
 
   // The point of scaling rather than excluding: Flash is the *weakest* model on
@@ -618,17 +620,21 @@ describe('every rung asks for a list, checks it, and reviews before finishing', 
   // Three sizes, because one size is either ceremony on a one-line fix or too
   // thin for work where being wrong is expensive.
   test('the depth scales with the rung', () => {
-    const pbx = new PromptBuilder(ws, ws);
+    // A fresh builder each time: the block is full once per chat and a pointer
+    // after, so reusing one here would ask the same chat for it repeatedly and
+    // assert against the reminder.
+    const blockFresh = (effort) => new PromptBuilder(ws, ws).buildHandoverBlock(effort);
+
     assert.match(pro('flash'), /BEFORE YOU FINISH/);
     assert.doesNotMatch(pro('flash'), /THE HANDOVER REVIEW/, 'the full review on a 5.6k prompt is +33%');
 
     // `brief` promises "straight to work", so it gets the four-point version.
     assert.match(pro('flash-thinking'), /Read back:/);
-    assert.match(pbx.buildHandoverBlock('brief'), /Read back:/);
-    assert.doesNotMatch(pbx.buildHandoverBlock('brief'), /THE HANDOVER REVIEW/);
+    assert.match(blockFresh('brief'), /Read back:/);
+    assert.doesNotMatch(blockFresh('brief'), /THE HANDOVER REVIEW/);
 
     for (const deep of ['standard', 'deep']) {
-      assert.match(pbx.buildHandoverBlock(deep), /THE HANDOVER REVIEW/, deep);
+      assert.match(blockFresh(deep), /THE HANDOVER REVIEW/, deep);
     }
   });
 

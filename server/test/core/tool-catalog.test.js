@@ -176,3 +176,60 @@ describe('the terse tool list goes to the cheap tiers', () => {
     assert.equal(size('something-new'), size('pro'));
   });
 });
+
+/**
+ * A parameter the model is never told about cannot be used.
+ *
+ * The drift check joined `flash` and `pro` and looked for the name in the pair,
+ * so a parameter documented in one and missing from the other passed. Five did
+ * — `maxResults` on `search_files` and `grep_search`, `maxDepth` on
+ * `list_directory`, `timeout` on `run_command`, `lines` on `manage_task` — all
+ * invisible to the two flash rungs, which could not reach a feature the tool
+ * had. And it only checked `required`, so `manage_task`'s `pattern`, a real
+ * implemented option on `watch`, was missing from **both** forms: a working
+ * feature nobody was ever told about.
+ */
+describe('every declared parameter is documented in both forms', () => {
+  test('nothing in the registry is undocumented', () => {
+    const problems = toolCatalogDrift(registry(), LOOP_DISPATCHED);
+    assert.deepEqual(problems, [], problems.join('\n'));
+  });
+
+  /*
+   * Negative controls, one per branch — without them this passes for a catalog
+   * that documents nothing, which is the shape of the bug this check already
+   * had once and CLAUDE.md records.
+   */
+  test('a parameter missing from only the terse form is caught', () => {
+    const fake = [{ name: 'read_file', parameters: { notInEitherForm: { required: false } } }];
+    const problems = toolCatalogDrift(fake, []);
+    assert.ok(problems.some((p) => /flash description/.test(p)), problems.join('\n'));
+    assert.ok(problems.some((p) => /pro description/.test(p)), problems.join('\n'));
+  });
+
+  test('an optional parameter counts, not only a required one', () => {
+    const fake = [{ name: 'read_file', parameters: { someOptional: { required: false } } }];
+    assert.ok(toolCatalogDrift(fake, []).length > 0,
+      'optional parameters slipping through is how manage_task.pattern stayed unreachable');
+  });
+
+  /*
+   * A tool whose text is computed used to be filtered out as "not a string",
+   * silently exempting it from the check entirely.
+   *
+   * Only the *parameter* findings are looked at: a one-tool fixture registry
+   * makes every other catalogued tool report as undispatched, which is true and
+   * has nothing to do with what this asserts.
+   */
+  test('a computed description is rendered, not skipped', () => {
+    const params = (out) => out.filter((p) => /parameter "/.test(p));
+    const fake = [{ name: 'ask_subagent', parameters: { role: { required: true } } }];
+    assert.deepEqual(params(toolCatalogDrift(fake, ['ask_subagent'])), [],
+      'ask_subagent documents `role`, so rendering its function form must find it');
+
+    // The control: a parameter it genuinely does not document must still be
+    // caught through the same function-rendering path.
+    const bad = [{ name: 'ask_subagent', parameters: { nosuchthing: { required: true } } }];
+    assert.ok(params(toolCatalogDrift(bad, ['ask_subagent'])).length > 0);
+  });
+});

@@ -78,7 +78,7 @@ Example:
   {
     name: 'search_files',
     dispatch: 'mcp',
-    flash: ` — Find files by name. Args: query (string)
+    flash: ` — Find files by name. Args: query (string), maxResults? (number)
 `,
     pro: `
 Search for files by name or path pattern using fuzzy matching.
@@ -91,7 +91,7 @@ Parameters:
   {
     name: 'grep_search',
     dispatch: 'mcp',
-    flash: ` — Search text across files, grouped by file. Args: pattern (string or string[] — pass several terms when unsure of the wording), isRegex? (bool), includes? (string[]), contextLines? (number)
+    flash: ` — Search text across files, grouped by file. Args: pattern (string or string[] — pass several terms when unsure of the wording), isRegex? (bool), includes? (string[]), contextLines? (number), maxResults? (number)
 `,
     pro: `
 Search file contents across the codebase, like ripgrep. Results come back grouped by file,
@@ -196,7 +196,7 @@ Parameters:
   {
     name: 'list_directory',
     dispatch: 'mcp',
-    flash: ` — List dir contents. Args: path? (string), recursive? (bool)
+    flash: ` — List dir contents. Args: path? (string), recursive? (bool), maxDepth? (number)
 `,
     pro: `
 List directory contents.
@@ -210,7 +210,7 @@ Parameters:
   {
     name: 'run_command',
     dispatch: 'mcp',
-    flash: ` — Run shell command (needs approval). Args: command (string), cwd? (string)
+    flash: ` — Run shell command (needs approval). Args: command (string), cwd? (string), timeout? (number, ms)
 `,
     pro: `
 Execute a shell command. Always requires user approval.
@@ -274,7 +274,7 @@ Parameters:
   {
     name: 'manage_task',
     dispatch: 'mcp',
-    flash: ` — Manage background tasks. Args: action ("status"|"read_logs"|"send_input"|"kill"|"list"), taskId? (string)
+    flash: ` — Manage background tasks. Args: action ("status"|"read_logs"|"send_input"|"kill"|"list"|"watch"|"unwatch"), taskId? (string), lines? (number), pattern? (string, for watch)
 `,
     pro: `
 Interact with background tasks spawned by run_background.
@@ -283,6 +283,8 @@ Parameters:
   - taskId (string, optional): Task ID (required for all actions except list)
   - lines (number, optional): Number of log lines to read (default: 50, for read_logs)
   - input (string, optional): Text to send to stdin (required for send_input)
+  - pattern (string, optional): for watch — a regex to look for in the output. Omit to use the
+    built-in failure patterns (error, failed, exception, traceback, EADDRINUSE, Cannot find module).
 
 `,
   },
@@ -454,13 +456,39 @@ export function toolCatalogDrift(registry, loopDispatched) {
   for (const name of described) {
     if (!runnable.has(name)) problems.push(`${name} is described but nothing dispatches it`);
   }
+  /**
+   * Every declared parameter, in **each** form separately.
+   *
+   * This used to join `flash` and `pro` and look for the name in the pair — so
+   * a parameter documented in one and missing from the other passed. Five did:
+   * `maxResults` on `search_files` and `grep_search`, `maxDepth` on
+   * `list_directory`, `timeout` on `run_command`, `lines` on `manage_task`.
+   * All five were invisible to the two flash rungs, which could not use a
+   * feature the tool had.
+   *
+   * It also only checked `required`, and `manage_task`'s `pattern` — a real,
+   * implemented option on `watch` — was in neither form. A working feature the
+   * model was never told about at any rung. Optional is not the same as
+   * unnecessary: a parameter nobody is told about cannot be used.
+   *
+   * Function-form descriptions are called rather than skipped. They used to be
+   * filtered out as "not a string", which silently exempted every tool whose
+   * text is computed.
+   */
+  const render = (v) => {
+    if (typeof v === 'function') { try { return v({}) ?? ''; } catch { return ''; } }
+    return typeof v === 'string' ? v : '';
+  };
+
   for (const tool of registry) {
     const doc = TOOL_CATALOG.find((t) => t.name === tool.name);
     if (!doc) continue;
-    const text = [doc.flash, doc.pro].filter((v) => typeof v === 'string').join('\n');
-    for (const [param, spec] of Object.entries(tool.parameters || {})) {
-      if (spec?.required && !text.includes(param)) {
-        problems.push(`${tool.name}: required parameter "${param}" is in no description`);
+    const forms = { flash: render(doc.flash), pro: render(doc.pro ?? doc.flash) };
+    for (const param of Object.keys(tool.parameters || {})) {
+      for (const [which, text] of Object.entries(forms)) {
+        if (!text.includes(param)) {
+          problems.push(`${tool.name}: parameter "${param}" is missing from the ${which} description`);
+        }
       }
     }
   }
