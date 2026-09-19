@@ -381,6 +381,28 @@ real multiplier is **round trips**: every tool call is another full
 inject → think → scrape cycle, so tail latency is paid once per round, not
 once per turn.
 
+**And the confirming look leaked, once per turn, compounding.** It was scheduled with a bare
+`setTimeout` nobody held, and `stopCompletionTicks` cleared only the interval. Stopping a turn
+from outside — the tab closing, the session ending, the next turn starting — therefore left a
+tick to fire into a tab whose turn was over, which costs one stray message and nothing else.
+
+The next turn is where it gets expensive. `startCompletionTicks` stops the old ticker and
+installs a new one, so an orphaned confirm firing afterwards finds `completionTickers.has(tabId)`
+**true again** — for the new turn — and schedules another. That is a second fast chain running
+beside the real one, holding the *previous* turn's `everyMs`, with no handle anywhere to stop
+it, and it compounds once per turn on a long session.
+
+`completionConfirms` holds the pending timeout so the stop can cancel it, and the cancel runs
+*before* the early return on a missing interval — returning early there is precisely how it got
+left running.
+
+**It was found by widening an unrelated timing window until the leak reached the next test.**
+Nothing else would have: a stray message is invisible and the doubling only shows if you count.
+That test had asserted `>= 3` ticks after `TICK * 1.6`, where the third tick and the deadline
+are 4ms apart — so it failed about one run in five, on the machine's load rather than the code.
+**A wall-clock assertion with no margin measures the machine**, which the frame-budget harness
+had already learned once.
+
 **`mergeLoopHistory` uses a recorded position, not a count.** It counted the screen's
 non-local rows and used that number to `slice()` the loop's history — valid only if the screen
 mirrors the loop one-for-one, in order. Two ordinary things break that: `file-watcher.js`
@@ -562,6 +584,37 @@ a verdict about the **command text**, while the process it spawns is still runni
 turn, the mode, and possibly the session have ended. The classifier reads a string; it cannot
 see that. `DETACHED_TOOLS` is the flag that lets the exemption ask. It was invisible while the
 policy was a branch inside dispatch and took one test to surface once it was a function.
+
+**The rest of the dispatch loop came apart the same way.** `_executeToolCalls` was 487
+lines; it is 240 now, and the two pieces that left are the two that were doing something other
+than dispatching.
+
+`core/loop-tools.js` holds the three the loop answers itself — `ask_question`,
+`ask_subagent`, `manage_memory`. The catalog has said `dispatch: 'loop'` about them since it
+was written, and the chain named them literally with an `else` sending everything else to
+`mcpServer.executeTool`: a fourth loop tool would have gone to a server with no handler and
+come back to the model as an unknown tool it had just been told it has. `LOOP_TOOLS` is derived
+from the catalog now, so the two cannot disagree.
+
+**The drift check caught the move, which is the point of it.** `LOOP_DISPATCHED` in
+`tool-catalog.test.js` scrapes the dispatching source rather than deriving from the catalog —
+derived, it would be comparing the catalog to itself. It went red the moment the arms left
+`agent-loop.js`, and it now reads `loop-tools.js`. **The file it reads must be the file with
+the implementation in it.**
+
+`core/diff-approval.js` holds what happens between building a diff and it being on disk. Three
+parties have to be told the same thing about that, and each has been the odd one out: the model
+(told `pending_approval` about a file already written), the screen (a rejected edit drawn in
+green), and the disk (the only one never wrong). Keeping them in one function is the reason it
+is one.
+
+**A mechanical extraction tried to drop a line and the comments are why it did not.**
+`manage_memory` computes its result and *then* calls `resetPromptState()` — the facts ride
+inside `<memory>` in the system prompt, so a changed set is invisible until that prompt is
+rebuilt. A regex turning `result = x` into `return x` deletes the call silently, and the tool
+goes on reporting "Remembered:" for facts the model will never see. Written by hand instead,
+and `loop-tools.test.js` asserts the reset on both paths and its *absence* on a rejected action,
+which would otherwise spend a full turn-0 payload to change nothing.
 
 **Plan mode exempts the agent's own artifacts, and nothing else.** The check was
 `path.endsWith('.md')`, beside a comment reading "Creating/Editing Markdown files (like plans)

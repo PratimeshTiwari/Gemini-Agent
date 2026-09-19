@@ -25,9 +25,8 @@ import { TOOL_CATALOG, toolsFor, toolNames, renderToolDefinitions, toolCatalogDr
 import { MCPServer } from '../../src/mcp/mcp-server.js';
 import { HEADLESS_SYSTEM_PROMPT } from '../../src/core/agent-loop.js';
 
-/** The five the agent loop dispatches itself; they have no MCP handler. */
 /**
- * The loop-dispatched tools, read out of `agent-loop.js` itself.
+ * The loop-dispatched tools, read out of the **source that dispatches them**.
  *
  * This used to be `TOOL_CATALOG.filter(dispatch === 'loop')` — derived from the
  * catalog and then checked against the catalog, so that half of the drift check
@@ -35,13 +34,18 @@ import { HEADLESS_SYSTEM_PROMPT } from '../../src/core/agent-loop.js';
  * bug already recorded in `CLAUDE.md`: an empty list compared to an empty list,
  * green forever.
  *
- * Reading the source is what makes it a check. When `ask_reviewer` and
- * `ask_researcher` were collapsed into one `ask_subagent`, the derived list
- * followed silently and only the hardcoded list below noticed.
+ * Reading the source is what makes it a check, and it has earned that twice.
+ * When `ask_reviewer` and `ask_researcher` were collapsed into one
+ * `ask_subagent` the derived list followed silently and only this one noticed;
+ * when the three arms moved out of `agent-loop.js`'s `else if` chain into
+ * `core/loop-tools.js`, this failed rather than quietly passing against a file
+ * that no longer dispatches anything. **The file it reads must be the file with
+ * the implementation in it** — point it at the catalog and it stops being a
+ * test.
  */
 const LOOP_DISPATCHED = [...new Set(
-  readFileSync(new URL('../../src/core/agent-loop.js', import.meta.url), 'utf8')
-    .matchAll(/else if \(call\.name === '([a-z_]+)'/g),
+  readFileSync(new URL('../../src/core/loop-tools.js', import.meta.url), 'utf8')
+    .matchAll(/case '([a-z_]+)': return \w+\(/g),
 )].map((m) => m[1]);
 
 /** The runnable registry, read the way the prompt builder would have to. */

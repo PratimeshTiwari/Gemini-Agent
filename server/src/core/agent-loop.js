@@ -73,7 +73,6 @@ import { compactHistory } from './compaction.js';
 import { runSubAgentSession } from './subagent-session.js';
 import { MUTATING_TOOLS, SHELL_TOOLS } from './tool-catalog.js';
 import { resolveEffort, effortFromConfig } from './effort.js';
-import { normalizeQuestionSet } from './question.js';
 import { planModelSwitch } from './model-match.js';
 import { archiveTurns } from './session-recall.js';
 import { handleSlashCommand as runSlashCommand } from './slash-commands.js';
@@ -86,6 +85,8 @@ import { MemoryManager } from '../context/memory-manager.js';
 import { ExtensionLock, mainLane, subLane } from '../bridge/extension-lock.js';
 import { runBatchTask } from './turn-runner.js';
 import { requiresApproval, isBlockedOutright } from './tool-policy.js';
+import { LOOP_TOOLS, dispatchLoopTool } from './loop-tools.js';
+import { resolveDiff } from './diff-approval.js';
 
 
 // Backstop for a prompt the extension never answers. Longer than the content
@@ -1693,102 +1694,10 @@ export class AgentLoop {
             outcome: 'rejected', reason: result?.error, risk: risk.level,
           });
         }
-      } else if (call.name === 'ask_question') {
-        result = await new Promise((resolve) => {
-          this.pendingQuestionResolve = resolve;
-          /**
-           * Normalised here, once, rather than by each front-end.
-           *
-           * These args are parsed out of model prose, so nothing in them is
-           * guaranteed: options arrive as strings, as `{label, description}`,
-           * as a single string instead of an array, or not at all. The
-           * terminal has cleaned that up on arrival since `question.js` was
-           * written — the side panel could not, because it cannot import
-           * server code, so it would have needed its own copy of the rules and
-           * they would have drifted.
-           *
-           * It matters more than tidiness: the loop is parked on
-           * `pendingQuestionResolve` until something is chosen, so a surface
-           * that renders a malformed payload as an unanswerable picker hangs
-           * the turn outright.
-           *
-           * `normalizeQuestionSet` is idempotent, so the terminal running it
-           * again on receipt costs nothing and needed no change.
-           */
-          const questions = normalizeQuestionSet({
-            question: call.args.question,
-            options: call.args.options,
-            header: call.args.header,
-            questions: call.args.questions,
-          });
-          this.callbacks.sendToPanel({
-            id: randomUUID(),
-            type: 'ask_question',
-            // The single-question fields ride along too: the terminal reads
-            // `questions` and anything older reads the flat shape.
-            payload: {
-              question: questions[0].question,
-              options: questions[0].options,
-              header: questions[0].header,
-              questions,
-            },
-            timestamp: Date.now(),
-          });
-        });
-      } else if (call.name === 'ask_subagent') {
-        const role = String(call.args.role || 'task').toLowerCase();
-        const task = call.args.prompt || call.args.query || '';
-        result = await this._runSubAgentSession(role, task, this.mainModel);
-
-        /**
-         * A subagent that could not run hands the work back, labelled.
-         *
-         * Returning a bare error loses the task: the model is told "that call
-         * failed, fix it yourself", which it reads as being about the call
-         * rather than about the work the call was carrying.
-         *
-         * **The label is the whole difficulty.** If a failed `review` quietly
-         * becomes the author reviewing their own diff, the one thing a
-         * reviewer was for — not sharing the assumptions that produced the
-         * code — is gone, and nothing on screen says so. So the fallback names
-         * what it is and requires the answer to name it too. Same rule as
-         * `unstructured` and "unsupported, never false": degrade, and say you
-         * degraded.
-         */
-        if (!result.success) {
-          const cold = role === 'review'
-            ? ' Because you are reviewing your own work, you share every assumption that '
-              + 'produced it — re-read the files rather than trusting your memory of them, '
-              + 'and **say in your answer that this review is your own**.'
-            : '';
-          result = {
-            success: true,
-            fellBack: true,
-            result: `The ${role} subagent could not run (${result.error}). Do it here instead, `
-              + `in this conversation.${cold}\n\n--- the task ---\n${task}`,
-          };
-        }
-      } else if (call.name === 'manage_memory') {
-        if (call.args.action === 'add') {
-          if (!this.memoryManager.isMemoryEnabled()) {
-            // Said plainly, because "failed" made the model retry the same
-            // call. Memory being off is a decision, not a transient error.
-            result = { result: 'Memory is turned off for this workspace (`/memory on` re-enables it). Nothing was stored.' };
-          } else {
-            const added = this.memoryManager.addMemory(call.args.fact);
-            result = { result: added ? `Remembered: ${call.args.fact}` : 'Already remembered — nothing to do.' };
-          }
-          this.promptBuilder?.resetPromptState?.();
-        } else if (call.args.action === 'remove') {
-          const which = call.args.index ?? call.args.position;
-          const removed = this.memoryManager.removeMemory(which);
-          result = removed
-            ? { result: `Forgot #${which}.` }
-            : { error: `No memory at #${which}. The numbers are the ones in <memory>; re-read them before removing.` };
-          this.promptBuilder?.resetPromptState?.();
-        } else {
-          result = { error: 'Invalid action. Use "add" or "remove".' };
-        }
+      } else if (LOOP_TOOLS.has(call.name)) {
+        // The three the loop answers itself — `core/loop-tools.js`. Which three
+        // is the catalog's `dispatch: 'loop'`, not a list repeated here.
+        result = await dispatchLoopTool(this, call);
       } else {
         result = await this.mcpServer.executeTool(call.name, call.args, {
           editor: this.editor,
@@ -1850,96 +1759,12 @@ export class AgentLoop {
         timestamp: Date.now(),
       });
 
-      // If it's an edit/create tool, handle diff approval
+      // The edit is still only a diff at this point — `core/diff-approval.js`
+      // is what decides, applies and corrects all three records of it.
       if (result.success && (call.name === 'edit_file' || call.name === 'create_file')) {
-        const diffResult = result.result;
-
-        if (!needsApproval) {
-          // Auto-apply safe edits
-          const applyResult = this.diffEngine.acceptDiff(diffResult.diffId);
-
-          // Tell the model what actually happened. create_file and edit_file
-          // both return `status: 'pending_approval'` because that is true at
-          // the moment they build the diff — but when the edit is auto-applied
-          // (a .md file in plan mode, a safe edit in auto mode) nobody ever
-          // asks, and the model faithfully reported "waiting for your approval"
-          // about a file that was already on disk. The user then goes looking
-          // for a prompt that does not exist.
-          toolResults[i] = {
-            call_id: call.id || randomUUID(),
-            name: call.name,
-            result: {
-              filePath: diffResult.filePath,
-              status: 'applied',
-              message: `Applied to ${diffResult.filePath}. No approval was needed — do not tell the user it is pending.`,
-            },
-          };
-
-          this.callbacks.sendToPanel({
-            id: randomUUID(),
-            type: 'diff_auto_applied',
-            payload: {
-              diffId: diffResult.diffId,
-              filePath: diffResult.filePath,
-              message: `✓ Auto-applied: ${diffResult.filePath}`,
-            },
-            timestamp: Date.now(),
-          });
-        } else {
-          // Request approval and WAIT. Without this the loop used to hand Gemini a
-          // "waiting for approval" result and immediately continue, so the model
-          // replied as if the edit were already under review while the prompt was
-          // still on screen — and the user's answer went to chat, not the diff.
-          const decision = typeof this.callbacks?.requestDiffApproval !== 'function'
-            ? { action: 'reject' } // no UI wired: never block forever
-            : await new Promise((resolve) => {
-            this.pendingDiffResolve = resolve;
-            this.callbacks.requestDiffApproval({
-              diffId: diffResult.diffId,
-              filePath: diffResult.filePath,
-              patch: diffResult.patch,
-              hunks: diffResult.hunks,
-              riskLevel: risk.level,
-              riskReason: risk.reason,
-            });
-          });
-
-          const outcome = decision.action === 'accept'
-            ? { success: true, result: `✅ User APPROVED the edit. ${diffResult.filePath} has been written to disk.` }
-            : { success: false, error: `User REJECTED the edit to ${diffResult.filePath}. Do not retry the same edit — ask what they want changed.` };
-
-          // Replace the "pending approval" payload so the model is told what
-          // actually happened, and is not fed the whole patch back.
-          toolResults[i] = {
-            name: call.name,
-            result: outcome.result || outcome.error,
-            failed: outcome.success === false,
-          };
-
-          /**
-           * And tell the screen, which used to be the only one left believing
-           * the edit had landed.
-           *
-           * `resultTurn` is recorded ~90 lines above this, when the diff was
-           * *generated* — which succeeds whether or not anyone approves it. The
-           * decision arrives here, and only `toolResults` was corrected. So a
-           * rejected edit drew `✓ edit_file · 1 hunk in AGENT.md`, in green, on
-           * a change that was never written: the model was told the truth and
-           * the person watching was not, which is the worse half of the two.
-           *
-           * Mutated rather than re-pushed: the transcript is built from these
-           * objects, so correcting the record corrects every later reading of
-           * it, and a second row would read as a second edit.
-           */
-          resultTurn.success = outcome.success === true;
-          resultTurn.result = outcome.result || outcome.error;
-          this.callbacks?.sendToPanel?.({
-            id: randomUUID(),
-            type: 'tool_result',
-            payload: { name: call.name, result: resultTurn.result, success: resultTurn.success },
-            timestamp: Date.now(),
-          });
-        }
+        toolResults[i] = await resolveDiff(this, {
+          call, diffResult: result.result, needsApproval, risk, resultTurn,
+        });
       }
       })();
 
