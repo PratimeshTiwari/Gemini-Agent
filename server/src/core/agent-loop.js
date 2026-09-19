@@ -350,6 +350,17 @@ export class AgentLoop {
       this.currentObjective = remembered;
       // One tool-amnesia retry per user turn; see handleGeminiResponse.
       this._deniedToolsOnce = false;
+      /**
+       * What this turn has actually done, for the model to read back.
+       *
+       * The handover block asks it to report what it ran and whose callers it
+       * checked, and nothing ever compared the answer to anything — so a model
+       * out of budget could satisfy the checklist with prose, which is cheaper
+       * than a tool call and indistinguishable on screen. This is the cheap
+       * half of the cure: derived, never declared, and in front of the model
+       * *before* it writes the claim rather than after.
+       */
+      this._turnEvidence = new Map();
       this._resentUnsubmittedOnce = false;
       // Auto-heal budget, per user turn.
       this._failedRounds = 0;
@@ -1106,6 +1117,20 @@ export class AgentLoop {
    * approximation `TokenCounter` uses; the point of this number is "am I near
    * the wall", and a better tokenizer would not change that answer.
    */
+  /**
+   * What has run this turn, as `name×n` pairs in call order.
+   *
+   * Tool names rather than categories like "3 reads". The handover block asks
+   * about specific acts — did you run it, did you check the callers — and a
+   * category mapping is one more place for the answer to drift from the
+   * question. `find_references×0` is not listed; absence is the claim.
+   */
+  get turnEvidence() {
+    const tally = this._turnEvidence;
+    if (!tally?.size) return '';
+    return [...tally].map(([name, n]) => (n === 1 ? name : `${name}×${n}`)).join(', ');
+  }
+
   get contextTokens() {
     return Math.round(this.contextChars / 4);
   }
@@ -1451,6 +1476,12 @@ export class AgentLoop {
     for (let i = 0; i < toolCalls.length; i++) {
       const call = toolCalls[i];
       const isParallel = ['ask_researcher', 'ask_reviewer', 'ask_subagent'].includes(call.name);
+
+      // Counted where they are dispatched, not where they succeed: "I ran the
+      // tests and they failed" is a true claim, and a tally that only counted
+      // successes would call it unsupported.
+      if (!this._turnEvidence) this._turnEvidence = new Map();
+      this._turnEvidence.set(call.name, (this._turnEvidence.get(call.name) || 0) + 1);
 
       const executePromise = (async () => {
         // Notify side panel about tool call
@@ -1853,7 +1884,10 @@ export class AgentLoop {
     // many results it carries — the refresh cadence counts messages pushed to
     // the tab, and a parallel fan-out is still one push.
     this.promptBuilder.noteMessageSent();
-    this._sendToGemini(this.promptBuilder.buildToolResultBatch(toolResults), this.callbacks);
+    this._sendToGemini(
+      this.promptBuilder.buildToolResultBatch(toolResults, this.turnEvidence),
+      this.callbacks,
+    );
   }
 
   _extractToolCalls(content) {

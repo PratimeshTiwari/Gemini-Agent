@@ -289,7 +289,13 @@ export class PromptBuilder {
    *
    * @param {Array<{name: string, result: any}>} results
    */
-  buildToolResultBatch(results = []) {
+  /**
+   * @param {object[]} results
+   * @param {string} [turnEvidence] - what has actually run this turn, from
+   *   `AgentLoop.turnEvidence`. Derived from dispatched calls, never from
+   *   anything the model said.
+   */
+  buildToolResultBatch(results = [], turnEvidence = '') {
     const failures = results.filter((r) => r.failed);
 
     const body = results.map(({ name, result, failed }) => [
@@ -317,10 +323,34 @@ export class PromptBuilder {
       : 'Reply once, with exactly one of: the next tool call, or your final answer to the '
         + 'user. To change a file, use edit_file or create_file — do not paste code at them.';
 
+    /**
+     * The turn's own record, handed back before it reports on itself.
+     *
+     * `pro-handover-review.md` asks it to say what it ran and whose callers it
+     * checked, and nothing ever checked the answer — so prose was always
+     * cheaper than a tool call and looked identical on screen. One observed
+     * review claimed `Ran: adversarial analysis` having run nothing, and
+     * `Callers checked: …` having called `find_references` zero times.
+     *
+     * This is the prevention half, and it rides here rather than on
+     * `buildPrompt` for a simple reason: `buildPrompt` runs once, at the top of
+     * the turn, when nothing has happened yet. The place where the tally is
+     * both non-empty and about to matter is the round where the model decides
+     * whether to tick a box, claim a check, or answer.
+     *
+     * A dozen characters, derived, and it cannot be wrong about itself the way
+     * the model's own account can.
+     */
+    const evidence = turnEvidence
+      ? ['', `<turn_so_far>${turnEvidence}</turn_so_far>`,
+        'Report only what is in that list. Anything else is "not checked".']
+      : [];
+
     return [
       '<tool_results>',
       ...body,
       '</tool_results>',
+      ...evidence,
       '',
       instruction,
     ].join('\n');
