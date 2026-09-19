@@ -36,16 +36,12 @@ done
 
 # Ask a yes/no question, defaulting to no.
 #
-# Reads from /dev/tty, never from stdin. Piped from curl, stdin *is the script*
-# — a `read` there eats the rest of the source and the shell runs whatever is
-# left. That is the classic way a curl-pipe installer corrupts itself, so the
-# terminal is addressed directly or the question is not asked at all.
+# Always /dev/tty, never stdin: piped from curl, stdin *is the script*, and a
+# `read` there eats the rest of the source. `[ -r /dev/tty ]` is not a
+# sufficient test — the node can exist and still fail to open with no
+# controlling terminal, so it is opened for real in a subshell.
 ask() {
   [ "$ASSUME_YES" = "1" ] && return 0
-  # `[ -r /dev/tty ]` is not enough. The device node can exist and pass a read
-  # test and still fail to open, when the process has no controlling terminal —
-  # which is the case this whole function exists to survive. Opening it for
-  # real, quietly, in a subshell, is the only test that answers the question.
   ( : < /dev/tty ) 2>/dev/null || return 1
   printf '  \033[1m%s\033[0m [y/N] ' "$1" > /dev/tty
   local reply=''
@@ -55,9 +51,8 @@ ask() {
 
 # ── 0. Get the code, if we do not already have it ────────────────────
 #
-# `$0` is not a path when the script arrives through a pipe (it is "bash", or
-# "-"), so the checkout is identified by what is next to the script rather than
-# by how it was invoked: a sibling `server/package.json` means we are in one.
+# `$0` is not a path when piped, so a checkout is identified by a sibling
+# `server/package.json` rather than by how the script was invoked.
 SELF_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
   SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -66,9 +61,29 @@ fi
 if [ -z "$SELF_DIR" ] || [ ! -f "$SELF_DIR/server/package.json" ]; then
   REPO="${AGENT_REPO:-https://github.com/PratimeshTiwari/Gemini-Agent.git}"
   BRANCH="${AGENT_BRANCH:-main}"
-  TARGET="${AGENT_INSTALL_DIR:-$HOME/Gemini-Agent}"
 
   step "Fetching the code"
+
+  # Where it goes. AGENT_INSTALL_DIR wins outright; otherwise offer the default
+  # and take a different answer. No tty, or --yes, means the default without a
+  # question — the same rule every other prompt here follows.
+  TARGET="${AGENT_INSTALL_DIR:-}"
+  if [ -z "$TARGET" ]; then
+    TARGET="$HOME/Gemini-Agent"
+    if [ "$ASSUME_YES" != "1" ] && ( : < /dev/tty ) 2>/dev/null; then
+      printf '  \033[1mInstall to %s?\033[0m [Y/n] ' "$TARGET" > /dev/tty
+      read -r reply < /dev/tty || reply=''
+      case "$reply" in
+        [nN]*)
+          printf '  Path: ' > /dev/tty
+          read -r chosen < /dev/tty || chosen=''
+          [ -n "$chosen" ] && TARGET="$chosen"
+          ;;
+      esac
+    fi
+  fi
+  # `read` hands back a literal ~; no shell expanded it on the way.
+  case "$TARGET" in "~") TARGET="$HOME" ;; "~/"*) TARGET="$HOME/${TARGET#\~/}" ;; esac
 
   if ! command -v git >/dev/null 2>&1; then
     echo "  git is not installed, and this step needs it."
@@ -99,9 +114,8 @@ if [ -z "$SELF_DIR" ] || [ ! -f "$SELF_DIR/server/package.json" ]; then
     ok "cloned $BRANCH into $TARGET"
   fi
 
-  # Hand over to the copy that came with the code. `exec` so there is one
-  # process and one exit status, and the script that continues is the one that
-  # matches the tree it is setting up.
+  # Continue in the copy that came with the code, so the script matches the
+  # tree it is setting up. `exec`: one process, one exit status.
   exec bash "$TARGET/setup.sh" "$@"
 fi
 
@@ -141,19 +155,9 @@ ok "extension/service-worker.js"
 
 # ── 4. The command on your PATH ──────────────────────────────────────
 #
-# A shim, never `npm link`.
-#
-# `npm link` writes into the *global* prefix, which on a managed or work
-# machine is usually somewhere you cannot write — and `sudo npm link` is the
-# wrong answer to that, because it leaves root-owned files in a tree npm will
-# later try to modify as you. It also points at the bin directory of whichever
-# Node created it, so switching versions with nvm silently breaks it.
-#
-# The shim has none of that: two lines of sh in a directory you already own,
-# calling this checkout by absolute path. This script used to try the link
-# first and fall back here; the fallback was the better answer every time, so
-# the attempt was only a way to fail on the machines that most needed it to
-# work.
+# A shim, never `npm link`. The link needs npm's global prefix, which a managed
+# machine does not grant, and it breaks on an nvm version switch. Two lines of
+# sh in a directory you already own has neither problem.
 step "Putting 'agent' and 'agent-cli' on your PATH"
 
 # Read again in 4b below.
@@ -195,10 +199,7 @@ fi
 
 # ── 4b. The shell rc file ────────────────────────────────────────────
 #
-# Only ever *offered*, and only when it would actually change something: if
-# `agent` already resolves, appending a line to someone's rc file is noise they
-# have to read past forever. Writing to a shell rc without asking is the kind
-# of thing that makes an installer unwelcome.
+# Offered, never assumed, and only when `agent` does not already resolve.
 step "Making 'agent' stick around"
 
 rc_file() {
@@ -216,8 +217,7 @@ if command -v agent >/dev/null 2>&1; then
   ok "'agent' already resolves — nothing to add"
 else
   RC="$(rc_file)"
-  # The line to add depends on which of the two paths above ran: a shim needs
-  # its directory on PATH, no shim at all needs an alias into the checkout.
+  # A shim needs its directory on PATH; no shim needs an alias.
   if [ -n "${SHIM_DIR:-}" ] && [ -x "${SHIM_DIR:-}/agent" ]; then
     LINE="export PATH=\"$SHIM_DIR:\$PATH\"  $MARKER"
   else

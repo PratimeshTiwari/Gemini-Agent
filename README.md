@@ -97,7 +97,7 @@ and the same result:
 
 ```bash
 git clone https://github.com/PratimeshTiwari/Gemini-Agent.git
-cd Gemini-Agent && ./setup.sh
+cd Gemini-Agent && ./setup.sh   # asks where to install; enter for ~/Gemini-Agent
 ```
 
 #### Manual
