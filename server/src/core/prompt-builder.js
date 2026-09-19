@@ -359,7 +359,17 @@ export class PromptBuilder {
   _buildSystemInstructions(mode, topology = 'single', modelConfig = {}) {
     const modeInstructions = mode === 'auto'
       ? 'You are in AUTO MODE. Safe operations (reads, searches, small additions) will be auto-applied. Risky operations (large rewrites, deletions, commands) will still require user approval.'
-      : 'You are in PLAN MODE. All file modifications and command executions require user approval before being applied.';
+      // "Require user approval before being applied" is true and reads as
+      // "obtain approval before you call the tool" — so the model stops and
+      // asks in prose ("Ready to exit PLAN MODE and implement the fixes?"),
+      // which spends a turn on a question the user cannot answer with a
+      // keypress. The tool catalog already forbids that in as many words; it
+      // was being contradicted by this line. Saying what actually happens
+      // costs nothing and removes the reason to ask.
+      : 'You are in PLAN MODE. Call edit_file, create_file and run_command exactly as you '
+        + 'normally would — the user is shown the diff or the command and approves or rejects '
+        + 'it before anything happens. Do not ask in prose for permission to proceed or to '
+        + 'change mode; propose the change and let them answer it.';
 
     // One setting decides both. They used to be stored separately and could
     // disagree — "flash tier, deep reasoning" was representable and meant
