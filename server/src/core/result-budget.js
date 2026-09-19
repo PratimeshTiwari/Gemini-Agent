@@ -110,6 +110,24 @@ export function headAndTail(text, allowance, note = '') {
     used += lines[i].length + 1;
   }
 
+  /**
+   * A line longer than the allowance is still content.
+   *
+   * Cutting on line boundaries reads better, and it returns **nothing at all**
+   * when no whole line fits — one 53,000-character line and a 16,000-character
+   * allowance produced a 36-character marker and no text. Minified JavaScript,
+   * a single-line JSON blob and a long log line all look like that, and the
+   * first one of those cost a real turn: a `read_file` came back as a marker,
+   * and the model gave up on the file rather than paging it.
+   *
+   * The tests used many short lines, so they never saw it. Characters are the
+   * fallback because an ugly excerpt beats no excerpt.
+   */
+  if (!head.length && !tail.length) {
+    const cut = text.length - room;
+    return `${text.slice(0, headRoom)}${marker(cut)}${text.slice(-tailRoom)}`;
+  }
+
   const cut = text.length - head.join('\n').length - tail.join('\n').length;
   return `${head.join('\n')}${marker(cut)}${tail.join('\n')}`;
 }

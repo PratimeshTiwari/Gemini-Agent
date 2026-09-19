@@ -60,11 +60,22 @@ const MAX_TASK_CHARS = 2000;
 /**
  * Characters the tool results of one prompt may occupy between them.
  *
- * ~16 KB, against a `run_command` cap of 50 KB **each**. Not a token budget:
- * this is about what a content script types into a composer, and the cost that
- * matters is the one paid on the wire and in Gemini's repetition heuristics.
+ * Not a token budget: this is about what a content script types into a
+ * composer, and the cost that matters is paid on the wire and in Gemini's
+ * repetition heuristics.
+ *
+ * **It must not be tighter than the tightest per-tool cap it is composing.**
+ * This was 16 KB, chosen against `run_command`'s 50 KB — and `read_file`'s own
+ * page is 800 lines, about 44 KB, so a single read was being cut to a third of
+ * what the tool had already decided to give. That is this ceiling silently
+ * overruling a considered decision made one layer down, and it cost a real
+ * turn: the model saw "45,000 characters cut", concluded the file was
+ * unreadable, and answered from guesswork instead of paging it.
+ *
+ * 48 KB fits one `read_file` page whole. The case this exists for — five
+ * parallel `run_command`s at 50 KB each — is still cut from 250 KB to 48.
  */
-const RESULT_BUDGET_CHARS = 16000;
+const RESULT_BUDGET_CHARS = 48000;
 
 export class PromptBuilder {
   constructor(workspace, agentSourceDir) {

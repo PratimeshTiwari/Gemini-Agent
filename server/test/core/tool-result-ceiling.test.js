@@ -38,7 +38,9 @@ describe('five parallel commands do not become a quarter-megabyte prompt', () =>
     const after = pb.buildToolResultBatch(five).length;
 
     assert.ok(before > 180000, 'the fixture is not the reported shape');
-    assert.ok(after < 20000, `batch was ${after} characters`);
+    // 48 KB, not 16: the ceiling must fit one read_file page or it overrules a
+    // decision that tool already made. The pathological case is still cut 74%.
+    assert.ok(after < 55000, `batch was ${after} characters`);
     rmSync(ws, { recursive: true, force: true });
   });
 
@@ -139,5 +141,55 @@ describe('it cannot fail a turn', () => {
     assert.match(out, /<tool_results>/);
     assert.match(out, /characters cut/);
     assert.doesNotMatch(out, /\.agent\/tmp/, 'it claimed a spool it could not write');
+  });
+});
+
+/**
+ * The batch ceiling must not be tighter than the per-tool caps it composes.
+ *
+ * It was 16 KB, chosen against `run_command`'s 50 KB — and `read_file` pages at
+ * 800 lines, about 44 KB. So a single read was cut to a third of what the tool
+ * had already decided to give, which is this ceiling overruling a considered
+ * decision one layer down. It cost a real turn: the model saw "45,000
+ * characters cut", concluded the file was unreadable, and answered from
+ * guesswork instead of calling `read_file` again with a `startLine`.
+ */
+describe('one read_file page survives the ceiling', () => {
+  const page = (n = 800) =>
+    Array.from({ length: n }, (_, i) => `${String(i + 1).padStart(4)}: const something = whatever(i);`).join('\n');
+
+  test('a full page is not cut at all', () => {
+    const { pb, ws } = builderIn();
+    const out = pb.buildToolResultBatch([{ name: 'read_file', result: page() }]);
+
+    assert.doesNotMatch(out, /characters cut/, 'a single read_file page was truncated again');
+    assert.match(out, /^ *800: /m, 'the last line of the page is missing');
+    rmSync(ws, { recursive: true, force: true });
+  });
+
+  // And the case the ceiling exists for is still capped hard.
+  test('five parallel commands are still cut', () => {
+    const { pb, ws } = builderIn();
+    const five = Array.from({ length: 5 }, () => ({ name: 'run_command', result: bulk(50000) }));
+    const out = pb.buildToolResultBatch(five);
+
+    assert.ok(out.length < 55000, `batch was ${out.length} characters`);
+    assert.match(out, /characters cut/);
+    rmSync(ws, { recursive: true, force: true });
+  });
+
+  /*
+   * `read_file`'s own recovery instruction lives at the *end* of its output —
+   * "[File truncated at line 800 of 1155. Call read_file with startLine=801]".
+   * Keeping the tail is what preserves it, and losing it is what turns a paged
+   * read into a dead end.
+   */
+  test('read_file own truncation note survives a cut', () => {
+    const { pb, ws } = builderIn();
+    const withNote = `${page(2000)}\n\n... [File truncated at line 800 of 1155. Call read_file with startLine=801 to read more.]`;
+    const out = pb.buildToolResultBatch([{ name: 'read_file', result: withNote }]);
+
+    assert.match(out, /startLine=801/, 'the model was left with no way to read the rest');
+    rmSync(ws, { recursive: true, force: true });
   });
 });

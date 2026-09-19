@@ -121,6 +121,31 @@ describe('headAndTail', () => {
     assert.match(cut, /cut/);
   });
 
+  /*
+   * The bug the line-based cut had, and the one the fixtures above could not
+   * see because every one of them is many short lines.
+   *
+   * A 53,000-character single line against a 16,000 allowance returned a
+   * 36-character marker and no content at all — no whole line fitted, so head
+   * and tail were both empty. Minified JavaScript, a one-line JSON blob and a
+   * long log line all look like that. It cost a real turn: a `read_file` came
+   * back as a marker, and the model concluded the file was unreadable and
+   * answered from guesswork rather than paging it.
+   */
+  test('a single line longer than the allowance still yields content', () => {
+    const out = headAndTail('x'.repeat(53000), 16000, 'spooled');
+
+    assert.ok(out.length > 15000, `got ${out.length} characters, so the excerpt vanished`);
+    assert.ok(out.length <= 16000);
+    assert.match(out, /characters cut/);
+  });
+
+  test('a mostly-one-line result keeps its ends', () => {
+    const out = headAndTail(`START${'x'.repeat(40000)}END`, 2000);
+    assert.ok(out.startsWith('START'));
+    assert.ok(out.endsWith('END'), 'the tail is where an error would be');
+  });
+
   test('non-strings and empties are returned as they came', () => {
     assert.equal(headAndTail('', 10), '');
     assert.equal(headAndTail(null, 10), null);
