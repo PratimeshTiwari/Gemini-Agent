@@ -59,12 +59,10 @@
 
   // src/background/content.js
   var MODEL_URLS = {
-    "gemini": "https://gemini.google.com/*",
-    "chatgpt": "https://chatgpt.com/*"
+    "gemini": "https://gemini.google.com/*"
   };
   var MODEL_SCRIPTS = {
-    "gemini": "content-scripts/gemini-bridge.js",
-    "chatgpt": "content-scripts/chatgpt-bridge.js"
+    "gemini": "content-scripts/gemini-bridge.js"
   };
   async function reinjectModelTabs() {
     for (const [model, targetUrl] of Object.entries(MODEL_URLS)) {
@@ -354,7 +352,7 @@
     const existing = await pickMainTab(targetModel);
     if (existing) return existing;
     console.log(`[Agent CLI] No ${targetModel} tab found. Auto-reopening in a new tab...`);
-    const openUrl = targetModel === "gemini" ? "https://gemini.google.com/app" : targetModel === "chatgpt" ? "https://chatgpt.com" : targetUrl.replace("/*", "");
+    const openUrl = targetModel === "gemini" ? "https://gemini.google.com/app" : targetUrl.replace("/*", "");
     const newTab = await chrome.tabs.create({ url: openUrl, active: true });
     await new Promise((resolve) => {
       let resolved = false;
@@ -475,7 +473,7 @@
     const model = thread?.model || "gemini";
     const id = thread?.id;
     if (!id || !MODEL_URLS[model]) return false;
-    const url = model === "chatgpt" ? `https://chatgpt.com/c/${id}` : `https://gemini.google.com/app/${id}`;
+    const url = `https://gemini.google.com/app/${id}`;
     try {
       const existing = await pickMainTab(model);
       const tab = existing ? await chrome.tabs.update(existing.id, { url, active: true }) : await chrome.tabs.create({ url, active: true });
@@ -700,7 +698,7 @@
     broadcastTabStatus();
   });
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.status === "complete" && tab.url && (tab.url.includes("gemini.google.com") || tab.url.includes("chatgpt.com"))) {
+    if (changeInfo.status === "complete" && tab.url && tab.url.includes("gemini.google.com")) {
       broadcastTabStatus();
     }
   });

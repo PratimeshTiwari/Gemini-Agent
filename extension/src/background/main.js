@@ -23,7 +23,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' && tab.url && (tab.url.includes('gemini.google.com') || tab.url.includes('chatgpt.com'))) {
+  if (changeInfo.status === 'complete' && tab.url && tab.url.includes('gemini.google.com')) {
     broadcastTabStatus();
   }
 });

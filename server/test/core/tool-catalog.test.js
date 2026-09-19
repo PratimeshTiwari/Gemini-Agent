@@ -68,9 +68,21 @@ describe('what each topology is offered', () => {
     assert.equal(toolsFor('single').length + 1, toolsFor('duo').length);
   });
 
-  test('the reviewer block names the model that will actually review', () => {
-    const defs = renderToolDefinitions('pro', 'duo', { reviewer: 'chatgpt' });
-    assert.match(defs, /Reviewer Subagent \(chatgpt\)/);
+  /*
+   * The reviewer is a second tab of the same model, so what the block has to
+   * convey is not *which* model but that it has no context: a caller that
+   * assumes shared memory sends a question the reviewer cannot answer.
+   */
+  test('the reviewer block says the reviewer has not seen the conversation', () => {
+    const defs = renderToolDefinitions('pro', 'duo', { reviewer: 'gemini' });
+    assert.match(defs, /NOT seen this conversation/);
+    assert.match(defs, /include the code and the claim/);
+  });
+
+  // The negative control: single must not carry the block at all, or the model
+  // is told about a tool it was never given.
+  test('single is told nothing about a reviewer', () => {
+    assert.doesNotMatch(renderToolDefinitions('pro', 'single', {}), /NOT seen this conversation/);
   });
 });
 
@@ -78,7 +90,7 @@ describe('the rendered block keeps its shape', () => {
   for (const tier of ['flash', 'pro']) {
     for (const topology of ['single', 'duo']) {
       test(`${tier}/${topology} is wrapped, ordered and complete`, () => {
-        const defs = renderToolDefinitions(tier, topology, { reviewer: 'chatgpt' });
+        const defs = renderToolDefinitions(tier, topology, { reviewer: 'gemini' });
         assert.ok(defs.startsWith('<available_tools>\n'));
         assert.ok(defs.endsWith('</available_tools>'));
         const rendered = [...defs.matchAll(/^## ([a-z_]+)/gm)].map((m) => m[1]);

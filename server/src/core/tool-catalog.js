@@ -358,7 +358,7 @@ Parameters:
     dispatch: 'loop',
     when: 'duo',
     lead: '\n',
-    flash: (modelConfig) => `\nDelegate a code review or verification task to the Reviewer Subagent (${modelConfig.reviewer || 'chatgpt'}).\nParameters:\n  - prompt (string, required): The task, context, and specific questions for the reviewer.\n\n`,
+    flash: () => `\nSend work to the Reviewer — a second tab that has NOT seen this conversation.\nIt reads only what you send, so include the code and the claim you want checked.\nParameters:\n  - prompt (string, required): The task, the relevant code, and the specific questions.\n\n`,
   },
 ];
 

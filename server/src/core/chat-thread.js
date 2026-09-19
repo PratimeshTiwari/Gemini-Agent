@@ -23,7 +23,6 @@
 /** Where each site keeps the conversation id in its URL. */
 const THREAD_PATTERNS = [
   { model: 'gemini', re: /^https?:\/\/gemini\.google\.com\/app\/([A-Za-z0-9_-]+)/ },
-  { model: 'chatgpt', re: /^https?:\/\/chatgpt\.com\/c\/([A-Za-z0-9_-]+)/ },
 ];
 
 /**
@@ -52,6 +51,11 @@ export function threadFromUrl(url) {
  * Both halves have to be known. An unknown thread on either side is "we cannot
  * tell", and the honest handling of that is the same as "no" — tell the model
  * what happened rather than assume it was there.
+ *
+ * A session recorded before ChatGPT was removed carries `{model: 'chatgpt'}`.
+ * It still resolves correctly without a migration: the models differ, so this
+ * returns false and `planResume` says `replay` — which is the honest answer,
+ * because there is no longer a bridge that could reopen that conversation.
  *
  * @param {{model: string, id: string} | null} recorded - what the session used
  * @param {{model: string, id: string} | null} live - what the tab is on now

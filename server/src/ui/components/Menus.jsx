@@ -305,31 +305,29 @@ export function Menus({
         {activeMenu?.type === 'config' && (() => {
           const main = agentLoop.modelConfig?.main || 'gemini';
           const reviewer = agentLoop.modelConfig?.reviewer || null;
-          const other = main === 'gemini' ? 'chatgpt' : 'gemini';
-          const isDuo = Boolean(reviewer) && reviewer !== main;
+          const isDuo = Boolean(reviewer);
           const run = async (args) => { await applyAndReturn(activeMenu, 'config', args); };
 
           return (
             <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
               <Text bold color="cyan">
                 🌐 {isDuo ? 'Duo' : 'Solo'} — {main} implements
-                {isDuo ? `, ${reviewer} reviews` : ' and reviews its own work'}
+                {isDuo ? ', a second tab reviews' : ' and reviews its own work'}
               </Text>
               <Text dimColor wrap="wrap">
-                A second tab is worth it only on the other model: the same model reviewing
-                itself has the same blind spots.
+                The reviewer shares the model, not the conversation — it has never seen the
+                reasoning that produced the change, so it checks the code instead.
               </Text>
               <SelectInput
                 items={[
                   {
-                    label: `👤  Solo — ${main} alone, start to finish${isDuo ? '' : '  ← current'}`,
+                    label: `👤  Solo — one tab, start to finish${isDuo ? '' : '  ← current'}`,
                     value: 'reviewer none',
                   },
                   {
-                    label: `Duo — ${other} reviews ${main}${isDuo ? '  ← current' : ''}`,
-                    value: `reviewer ${other}`,
+                    label: `🔍  Duo — a second tab reviews, reading cold${isDuo ? '  ← current' : ''}`,
+                    value: 'reviewer gemini',
                   },
-                  { label: `Swap the main model to ${other}`, value: `main ${other}` },
                 ]}
                 onSelect={(item) => run(item.value.split(' '))}
               />

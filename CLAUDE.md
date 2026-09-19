@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A local coding agent that has **no LLM API client**. Inference happens by driving a real
 browser tab: the Node server sends a prompt over WebSocket to a Chrome extension, a content
-script types it into gemini.google.com / chatgpt.com, scrapes the streamed reply,
+script types it into gemini.google.com, scrapes the streamed reply,
 and sends the text back. Every architectural oddity below follows from that.
 
 npm workspaces: `server/` (brain + CLI UI), `extension/` (MV3 bridge), plus a standalone
@@ -19,7 +19,8 @@ npm install                       # installs both workspaces from the root
 npm run start                     # server with workspace pinned to repo root (../)
 npm run dev                       # same, with tsx --watch
 cd server && npm start -- --workspace /path/to/project   # run against another project
-npm link --workspace=server       # exposes the `agent` (and `agent-cli`) bin globally
+./setup.sh                        # installs an `agent` / `agent-cli` shim in ~/.local/bin
+                                  # (never `npm link` — it needs npm's global prefix)
 
 npm run build --workspace=extension   # esbuild src/background/main.js -> service-worker.js
 cd vscode-companion && vsce package --allow-missing-repository --skip-license
@@ -479,10 +480,13 @@ objection is that summaries lose the implicit decisions behind them. One reviewe
 access is that shape; a planner → tech-planner → reviewer chain handing each other summaries is
 precisely the failure mode.
 
-It is also the only fan-out that is *real* here. `extension-lock` gives each model a lane, so
-Gemini and ChatGPT genuinely overlap; two **same-model** requests serialise behind one tab and
-can interleave two prompts into one conversation, which is why phase 6 made that
-unrepresentable. Claude Code's subagents buy *context isolation* rather than speed, and Cursor
+It is also the only fan-out that is *real* here. `extension-lock` gives each **tab** a lane —
+`main:<model>` for the conversation you are looking at, `sub:<requestId>` for a subagent turn in
+a tab opened for it and closed after — so `ask_*` calls genuinely run at once, same model or
+not. That was not always true: the extension addressed tabs by URL pattern, so two same-model
+requests raced for one tab and could interleave two prompts into one conversation. Tab identity
+is what removed that, and it is why a same-model reviewer is now offered at all. Claude Code's
+subagents buy *context isolation* rather than speed, and Cursor
 3's eight parallel agents are bought with **git worktree isolation** — a separate filesystem per
 agent, which this project does not have and would need before parallel *writers* were safe.
 
@@ -547,10 +551,18 @@ closed — anything unresolvable, or outside, needs approval.
 
 ### Subagents
 
-`AgentLoop.topology` is `single` | `duo` | `swarm`. `ask_reviewer` / `ask_reasoner` /
-`ask_researcher` / `ask_subagent` run **in parallel** (see the `isParallel` list in
-`_executeToolCalls`), each routed by `modelConfig[role]` to a *different browser tab*.
-`_runSubAgentSession` gives subagents a restricted tool set.
+`AgentLoop.topology` is `single` | `duo`, derived from whether a reviewer is set.
+`ask_reviewer` / `ask_researcher` / `ask_subagent` run **in parallel** (see the `isParallel`
+list in `_executeToolCalls`), each in a *different browser tab* on its own `sub:<requestId>`
+lane. `_runSubAgentSession` gives subagents a restricted tool set.
+
+**Duo is two Gemini tabs, not two models,** since ChatGPT was removed. What the reviewer
+contributes is not different weights: it is a reader with **no memory of the conversation that
+produced the work**. That is the half that matters for the failure it exists to catch — a model
+that reads enough to cite and then reasons from the citation instead of reading on. A cold
+reader has nothing to reason from but the file, so it opens the file. The `reviewer !== main`
+guard that used to forbid this was written when two same-model requests raced for one tab; tab
+identity fixed that, and the guard outlived its reason.
 
 ### Context engine
 
@@ -824,22 +836,52 @@ make both sides share the same base, not to resolve 120 files by hand.
 
 Standing constraints on this project. These are choices, not limitations to route around:
 
-- **Gemini Web only, for now** — other bridges exist (`chatgpt-bridge.js`) and work for
-  subagents, but Gemini is the primary target.
+- **Gemini Web only.** Not "primary target" any more — the only one. ChatGPT was removed on
+  2026-09-19 (see the removal note below); a second provider is a decision to re-open, not a
+  file to un-delete.
 - **Purely local** — no hosted backend, no telemetry, no API keys. Inference happens in the
   user's own browser session, which is the whole point of the extension bridge.
 - **Two front-ends** — the terminal CLI and the Chrome side panel are both supported surfaces.
 - **One answer per turn** — never emit drafts or A/B alternatives for the user to pick between.
-- **The two bridges stay separate.** ~600 duplicated lines across `gemini-bridge.js` and
-  `chatgpt-bridge.js`, and it is why the ChatGPT image bug survived for months. Collapsing
-  them was planned and **declined**: the cost it removes is "fix it twice", and fixing the
-  scrape twice took one commit. The jsdom tests run against *both* files, so a divergence
-  fails the build — most of the value, none of the risk of breaking both bridges at once.
+- **One bridge.** This used to read "the two bridges stay separate" — ~600 duplicated lines
+  across `gemini-bridge.js` and `chatgpt-bridge.js`, kept apart because collapsing them risked
+  breaking both at once, and defended by jsdom tests that ran against *both* files so a
+  divergence failed the build. Deleting one settled that argument by removing its subject. The
+  jsdom tests still run, against the one bridge, and say in a comment **not** to restore a
+  second target to make the comparison mean something again: the comparison was a side-effect
+  of having two, never a reason to have two.
 - **An API backend is a fork, not a plan.** It would remove the ceiling — structured tool
   calls, real parallelism, caching, and `looksLikeCapabilityDenial` plus half of
   `PromptBuilder`'s economics become dead code — and it contradicts "no API keys" above,
   which is the identity of the project. The framing that preserves the thesis: the browser
   bridge stays the default, an API backend is opt-in for people who already have a key.
+
+### ChatGPT removed, 2026-09-19
+
+Owner's call. It makes the code match a product decision that was already standing and retires
+the caveat that was attached to it. `extension/content-scripts/chatgpt-bridge.js` is deleted;
+eleven other files lost a line or two each. What is worth keeping is the parts that were **not**
+mechanical:
+
+- **Duo survived by changing meaning.** With one model, `reviewer !== main` meant no reviewer at
+  all. See "Subagents" above for why a second Gemini tab is still worth having — and why the
+  guard that forbade it had outlived its reason by the time it was removed.
+- **An old config is folded on read, not left alone.** `_saveConfig` deliberately preserves keys
+  it does not own, so a stored `modelConfig.main: 'chatgpt'` survives every save and points the
+  agent at a site with no bridge, silently. `_loadConfig` folds it — reading from the **on-disk**
+  object, not the merged one, because the merge's defaults would shadow the legacy key. That is
+  the same mistake `config-merge.test.js` already covers for `effort`, and the negative control
+  matters as much as the fix: a ChatGPT main with **no** reviewer must stay solo, or folding
+  turns every solo session into a duo one.
+- **Old sessions need no migration, and that is a claim with a test.** A session filed before the
+  removal carries `thread: {model: 'chatgpt'}`. `sameThread` compares model *and* id, so it
+  resolves to `replay` rather than `continue` — the honest answer, because the conversation still
+  exists and nothing here can reopen it.
+- **The jsdom tests lost their reason and kept their value.** They ran against both bridges so a
+  divergence failed the build. The comment in them now says not to restore a second target to
+  make that loop mean something again.
+- **`content.js` is bundled.** `npm run build --workspace=extension` before committing, or Chrome
+  loads the old `service-worker.js` and none of it is real.
 
 ### Removed as dead, 2026-09-16
 
@@ -1104,7 +1146,8 @@ names its lane (`_releaseExtension(model)`, defaulting to `mainModel`); the suba
 the lane out of `pendingSubagents` *before* `handleSubagentResponse` deletes the entry, which is
 the only record of which tab the reply came from.
 
-`topology` is now a getter: `reviewer && reviewer !== main ? 'duo' : 'single'`. It is not written
+`topology` is now a getter: `reviewer ? 'duo' : 'single'` (it also required
+`reviewer !== main` until ChatGPT was removed). It is not written
 to config any more — a derived value in a config file is one someone edits and is ignored for
 editing — and a stored `topology` is folded into the reviewer on read. `/mode` and `/config`
 became one command and one screen: the role picker, then the model picker, then a "View Current
@@ -1267,10 +1310,11 @@ dispatch paths still want scaffolding and are left for the split in P3.
   message that actually failed. Content scripts run in the page and cannot set fields on that
   payload, so they prefix `[stage]` to their message and the bridge lifts it back out — a
   changed selector on gemini.google.com now logs as `find_input` rather than "failed".
-- **The ChatGPT bridge's image path** — *fixed, and it was broken.* It matched the
-  `<image_data>` block and **deleted** it, then pasted the remaining text — so `/image` against
-  ChatGPT sent a prompt discussing a screenshot nobody had been given. It now rebuilds the data
-  URL into a `File` the way the Gemini bridge does, and says so in the prompt if it cannot.
+- **The ChatGPT bridge's image path** — *fixed, then deleted with the bridge.* Kept as a
+  record of the failure mode: it matched the `<image_data>` block and **deleted** it, then
+  pasted the remaining text, so `/image` sent a prompt discussing a screenshot nobody had been
+  given. A scrape that silently drops what it cannot handle looks identical to one that
+  works.
 - **`grep_search` for large repos** — *done.* Several patterns in one call (`["rate limit",
   "throttle", "quota"]` is one search, not three round trips), optional context lines capped at
   five, and results grouped by file with the busiest file first — on a large repo the module

@@ -140,66 +140,57 @@ npm run build --workspace=extension --silent
 ok "extension/service-worker.js"
 
 # ── 4. The command on your PATH ──────────────────────────────────────
-# npm link writes into the bin directory of the Node you are running now. If
-# you switch versions with nvm, run this again on the new one.
-step "Putting 'agent-cli' on your PATH"
+#
+# A shim, never `npm link`.
+#
+# `npm link` writes into the *global* prefix, which on a managed or work
+# machine is usually somewhere you cannot write — and `sudo npm link` is the
+# wrong answer to that, because it leaves root-owned files in a tree npm will
+# later try to modify as you. It also points at the bin directory of whichever
+# Node created it, so switching versions with nvm silently breaks it.
+#
+# The shim has none of that: two lines of sh in a directory you already own,
+# calling this checkout by absolute path. This script used to try the link
+# first and fall back here; the fallback was the better answer every time, so
+# the attempt was only a way to fail on the machines that most needed it to
+# work.
+step "Putting 'agent' and 'agent-cli' on your PATH"
 
-if npm link --workspace=server --silent 2>/dev/null; then
-  if command -v agent-cli >/dev/null 2>&1; then
-    ok "agent-cli → $(command -v agent-cli)"
-    ok "agent (short alias)"
-  else
-    warn "linked, but the shell has not noticed yet — run 'hash -r' or open a new terminal"
-  fi
-else
-  # `npm link` writes into the *global* prefix, which on a managed machine is
-  # usually somewhere you cannot write — and `sudo npm link` is the wrong answer
-  # to that, because it leaves root-owned files in a tree npm will later try to
-  # modify as you.
-  #
-  # A shim needs none of it: two lines of sh in a directory you already own,
-  # calling this checkout by absolute path. It also survives switching Node
-  # versions with nvm, which a link does not — the link points at the bin
-  # directory of whichever Node created it.
-  warn "npm link failed — no write access to npm's global prefix, most likely"
-  step "Installing a shim instead"
+# Read again in 4b below.
+SHIM_DIR=""
+for candidate in "$HOME/.local/bin" "$HOME/bin"; do
+  case ":$PATH:" in
+    *":$candidate:"*) [ -d "$candidate" ] && [ -w "$candidate" ] && SHIM_DIR="$candidate" && break ;;
+  esac
+done
 
-  # Declared at the top of this branch and read again in 4b below.
-  SHIM_DIR=""
-  for candidate in "$HOME/.local/bin" "$HOME/bin"; do
-    case ":$PATH:" in
-      *":$candidate:"*) [ -d "$candidate" ] && [ -w "$candidate" ] && SHIM_DIR="$candidate" && break ;;
-    esac
-  done
+# Nothing suitable already on PATH: make the conventional one and say the line.
+ON_PATH_ALREADY=1
+if [ -z "$SHIM_DIR" ]; then
+  SHIM_DIR="$HOME/.local/bin"
+  mkdir -p "$SHIM_DIR" 2>/dev/null || true
+  ON_PATH_ALREADY=0
+fi
 
-  # Nothing suitable already on PATH: make the conventional one and say the line.
-  ON_PATH_ALREADY=1
-  if [ -z "$SHIM_DIR" ]; then
-    SHIM_DIR="$HOME/.local/bin"
-    mkdir -p "$SHIM_DIR" 2>/dev/null || true
-    ON_PATH_ALREADY=0
-  fi
-
-  if [ -w "$SHIM_DIR" ]; then
-    for name in agent agent-cli; do
-      cat > "$SHIM_DIR/$name" <<SHIM
+if [ -w "$SHIM_DIR" ]; then
+  for name in agent agent-cli; do
+    cat > "$SHIM_DIR/$name" <<SHIM
 #!/bin/sh
-# Installed by Gemini-Agent's setup.sh because npm link was not available.
-# Points at the checkout it was run from; move the checkout and re-run setup.
+# Installed by Gemini-Agent's setup.sh. Points at the checkout it was run
+# from; move the checkout and re-run setup.
 exec node "$ROOT/server/src/index.js" "\$@"
 SHIM
-      chmod +x "$SHIM_DIR/$name"
-    done
-    ok "agent, agent-cli → $SHIM_DIR"
+    chmod +x "$SHIM_DIR/$name"
+  done
+  ok "agent, agent-cli → $SHIM_DIR"
 
-    if [ "$ON_PATH_ALREADY" -eq 0 ]; then
-      warn "$SHIM_DIR is not on your PATH yet. Add this to ~/.zshrc (or ~/.bashrc):"
-      printf '\n    export PATH="%s:$PATH"\n\n' "$SHIM_DIR"
-    fi
-  else
-    warn "could not write a shim to $SHIM_DIR either"
-    warn "Run it from this directory with: npm start"
+  if [ "$ON_PATH_ALREADY" -eq 0 ]; then
+    warn "$SHIM_DIR is not on your PATH yet. Add this to ~/.zshrc (or ~/.bashrc):"
+    printf '\n    export PATH="%s:$PATH"\n\n' "$SHIM_DIR"
   fi
+else
+  warn "could not write a shim to $SHIM_DIR either"
+  warn "Run it from this directory with: npm start"
 fi
 
 # ── 4b. The shell rc file ────────────────────────────────────────────

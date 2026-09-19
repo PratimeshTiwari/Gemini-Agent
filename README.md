@@ -106,7 +106,6 @@ cd Gemini-Agent
 
 npm install                          # both workspaces
 npm run build --workspace=extension  # Chrome loads the bundle, not the sources
-npm link --workspace=server          # puts `agent` and `agent-cli` on your PATH
 npm test                             # optional, and a good smoke check
 ```
 
@@ -114,21 +113,27 @@ The build step is not optional on a fresh clone. `extension/service-worker.js` i
 committed artifact and Chrome loads *that*, not the sources under
 `extension/src/background/` — skip it and you ship whatever was committed last.
 
-If `npm link` fails, see the locked-down note below; it is a normal outcome on a work
-machine, not a broken install.
+That leaves `agent` off your `PATH`. `npm start` from the checkout always works; for the
+command, `./setup.sh` installs a shim, or write one yourself — see below.
 
 <details>
-<summary>On a locked-down machine — no <code>npm link</code>, no <code>sudo</code></summary>
+<summary>Why there is no <code>npm link</code> step</summary>
 
-This is handled, and it needs neither. `npm link` writes into npm's **global prefix**, which
-on a managed machine is usually somewhere you cannot write — and `sudo npm link` is the wrong
-answer to that anyway, because it leaves root-owned files in a tree npm will later try to
-modify as you.
+Because it is the worse answer on every machine, and the *failing* answer on a managed one.
+`npm link` writes into npm's **global prefix**, which on a work laptop is usually somewhere
+you cannot write — and `sudo npm link` is the wrong fix, because it leaves root-owned files
+in a tree npm will later try to modify as you.
 
-When the link fails, `setup.sh` writes a two-line shim to `~/.local/bin` (or `~/bin`) instead
-— a directory you already own — that calls the checkout by absolute path. If that directory
-is not on your `PATH`, it offers to add the line to your shell rc file. Nothing is written to
-your rc file without asking.
+`setup.sh` writes a two-line shim to `~/.local/bin` (or `~/bin`) instead — a directory you
+already own — that calls the checkout by absolute path:
+
+```sh
+#!/bin/sh
+exec node /path/to/Gemini-Agent/server/src/index.js "$@"
+```
+
+If that directory is not on your `PATH`, setup offers to add the line to your shell rc file.
+Nothing is written to your rc file without asking.
 
 The shim has a second advantage over a link: it survives switching Node versions with `nvm`.
 A link points into the bin directory of whichever Node created it, so changing version

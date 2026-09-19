@@ -101,40 +101,49 @@ export async function handleSlashCommand(loop, command, args) {
       };
     }
 
-    // Topology is derived from whether a reviewer is set, so there is one
-    // place to change it and no way for the two to disagree.
+    /**
+     * Topology is derived from whether a reviewer is set, so there is one
+     * place to change it and no way for the two to disagree.
+     *
+     * There is one model now. `main` survives as a concept because everything
+     * downstream reads `mainModel`, but it has nothing to switch to, so the
+     * command is really an on/off for the reviewer. `reviewer gemini` used to
+     * be refused outright — a same-model review was both pointless and unsafe,
+     * because the extension raced two requests for one tab. Tab identity fixed
+     * the second, and the first was always narrower than it sounded: the
+     * reviewer's value is that it has not seen the conversation, not that it
+     * has different weights.
+     */
     case 'mode':
     case 'config': {
       const role = args?.[0]?.toLowerCase();
       const model = args?.[1]?.toLowerCase();
-      const MODELS = ['gemini', 'chatgpt'];
 
-      if (role === 'reviewer' && (model === 'none' || model === 'off')) {
+      if (role === 'reviewer' && ['none', 'off', 'solo'].includes(model)) {
         loop.modelConfig.reviewer = null;
         loop._saveConfig();
         loop.promptBuilder.resetPromptState();
-        return { message: '👤 Solo — one model plans, implements and reviews its own work.' };
+        return { message: '👤 Solo — one tab plans, implements and reviews its own work.' };
       }
 
-      if (['main', 'reviewer'].includes(role) && MODELS.includes(model)) {
-        if (role === 'reviewer' && model === loop.mainModel) {
-          // The point of a reviewer is different blind spots. Same model,
-          // same blind spots, and the extension would race the two requests
-          // for one tab besides.
-          return {
-            message: `❌ The reviewer has to be a *different* model from the main agent `
-              + `(currently **${loop.mainModel}**). Try \`/config reviewer `
-              + `${MODELS.find((m) => m !== loop.mainModel)}\`, or \`/config reviewer none\`.`,
-          };
-        }
-        loop.modelConfig[role] = model;
-        if (role === 'main' && loop.modelConfig.reviewer === model) loop.modelConfig.reviewer = null;
+      if (role === 'reviewer' && ['gemini', 'on', 'duo'].includes(model)) {
+        loop.modelConfig.reviewer = 'gemini';
         loop._saveConfig();
         loop.promptBuilder.resetPromptState();
         return {
-          message: `✔ ${role} → **${model}**\n\nNow running **${loop.topology}**`
-            + `${loop.topology === 'duo' ? ` — ${loop.mainModel} implements, ${loop.modelConfig.reviewer} reviews.` : ' — one model, start to finish.'}`,
+          message: '🔍 Duo — a second Gemini tab reviews, reading the work cold.\n\n'
+            + 'It shares the model, not the conversation: it has never seen the reasoning '
+            + 'that produced the change, so it has nothing to check against but the code.',
         };
+      }
+
+      // Accepted and idempotent. `main gemini` is the only main there is, and
+      // answering "unknown command" to the thing that is already true is worse
+      // than doing nothing visibly.
+      if (role === 'main' && model === 'gemini') {
+        loop.modelConfig.main = 'gemini';
+        loop._saveConfig();
+        return { message: '✔ main → **gemini** (the only model — inference runs in your own browser session).' };
       }
 
       const renamed = command === 'mode'
@@ -143,9 +152,10 @@ export async function handleSlashCommand(loop, command, args) {
       return {
         message: `${renamed}### 🌐 ${loop.topology === 'duo' ? 'Duo' : 'Solo'}\n\n`
           + `  Main:     **${loop.mainModel}**\n`
-          + `  Reviewer: **${loop.modelConfig.reviewer || 'none'}**\n\n`
-          + '_`/config main <gemini|chatgpt>` · `/config reviewer <gemini|chatgpt|none>`_\n'
-          + '_A reviewer on the other model is the point — the same model reviewing itself has the same blind spots._',
+          + `  Reviewer: **${loop.modelConfig.reviewer ? 'gemini — a second tab, reading cold' : 'none'}**\n\n`
+          + '_`/config reviewer on` · `/config reviewer off`_\n'
+          + '_The reviewer is a second Gemini tab that has not seen this conversation. '
+          + 'That is what it checks with — the code, rather than the reasoning that produced it._',
       };
     }
 

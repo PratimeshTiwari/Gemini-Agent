@@ -12,7 +12,6 @@
   ],
   "host_permissions": [
     "https://gemini.google.com/*",
-    "https://chatgpt.com/*",
     "https://github.com/*"
   ],
   "side_panel": {
@@ -33,7 +32,6 @@
     },
     {
       "matches": [
-        "https://chatgpt.com/*"
       ],
       "js": [
         "content-scripts/chatgpt-bridge.js"

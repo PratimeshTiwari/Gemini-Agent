@@ -79,14 +79,44 @@ describe('AgentLoop._saveConfig', () => {
     assert.strictEqual(loop.topology, 'single');
   });
 
-  test('a stored duo with no reviewer named picks the other model', () => {
+  test('a stored duo with no reviewer named gets a second tab of the one model', () => {
     writeFileSync(paths.configPath(ws), JSON.stringify({
       topology: 'duo', modelConfig: { main: 'gemini', reviewer: null },
     }));
     const loop = loopFor(ws);
     loop._loadConfig();
-    assert.strictEqual(loop.modelConfig.reviewer, 'chatgpt');
+    assert.strictEqual(loop.modelConfig.reviewer, 'gemini');
     assert.strictEqual(loop.topology, 'duo');
+  });
+
+  /*
+   * `_saveConfig` preserves keys it does not own, which is what makes a config
+   * written when ChatGPT existed survive every later save. Left alone it points
+   * the agent at a site with no bridge, and nothing on screen says why.
+   */
+  test('a config naming ChatGPT is folded to the one model that is left', () => {
+    writeFileSync(paths.configPath(ws), JSON.stringify({
+      modelConfig: { main: 'chatgpt', reviewer: 'chatgpt', effort: 'standard' },
+    }));
+    const loop = loopFor(ws);
+    loop._loadConfig();
+    assert.strictEqual(loop.modelConfig.main, 'gemini');
+    assert.strictEqual(loop.modelConfig.reviewer, 'gemini', 'a reviewer was asked for, so keep one');
+    assert.strictEqual(loop.topology, 'duo');
+  });
+
+  // The negative control. Folding must not invent a reviewer where the config
+  // says there is none — that would turn every solo session into a duo one.
+  test('a ChatGPT main with no reviewer stays solo', () => {
+    writeFileSync(paths.configPath(ws), JSON.stringify({
+      modelConfig: { main: 'chatgpt', reviewer: null, effort: 'standard' },
+    }));
+    const loop = loopFor(ws);
+    loop.modelConfig = { main: 'gemini', reviewer: null, effort: 'standard' };
+    loop._loadConfig();
+    assert.strictEqual(loop.modelConfig.main, 'gemini');
+    assert.strictEqual(loop.modelConfig.reviewer, null);
+    assert.strictEqual(loop.topology, 'single');
   });
 
   test('a missing config is created rather than refused', () => {

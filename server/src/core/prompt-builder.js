@@ -422,7 +422,7 @@ They run in parallel and return to you. Delegating judgement is what you cannot 
 - If you're not confident in a change, tell the user explicitly rather than guessing`;
 
     } else if (topology === 'duo') {
-      const reviewer = modelConfig.reviewer || 'chatgpt';
+      const reviewer = modelConfig.reviewer || 'gemini';
       topologyInstructions = `
 ## Role: Primary Agent (Duo System)
 You are the PRIMARY coding agent in a 2-agent system.

@@ -1,14 +1,15 @@
 import { broadcastToSidePanel, sendToServer } from './messaging.js';
 import { ws } from './socket.js';
 
+// One model. `MODEL_URLS` and `MODEL_SCRIPTS` stay keyed rather than collapsing
+// to constants: every lookup below is already written against a model name, and
+// a map with one entry is a smaller change than unpicking that everywhere.
 const MODEL_URLS = {
   'gemini': 'https://gemini.google.com/*',
-  'chatgpt': 'https://chatgpt.com/*',
 };
 
 const MODEL_SCRIPTS = {
   'gemini': 'content-scripts/gemini-bridge.js',
-  'chatgpt': 'content-scripts/chatgpt-bridge.js',
 };
 
 /**
@@ -673,9 +674,9 @@ export async function ensureModelTab(targetModel = 'gemini') {
 
   // No tab found: automatically reopen in a new tab
   console.log(`[Agent CLI] No ${targetModel} tab found. Auto-reopening in a new tab...`);
-  const openUrl = targetModel === 'gemini' 
-    ? 'https://gemini.google.com/app' 
-    : (targetModel === 'chatgpt' ? 'https://chatgpt.com' : targetUrl.replace('/*', ''));
+  const openUrl = targetModel === 'gemini'
+    ? 'https://gemini.google.com/app'
+    : targetUrl.replace('/*', '');
 
   const newTab = await chrome.tabs.create({ url: openUrl, active: true });
 
@@ -873,9 +874,7 @@ export async function openThread(thread) {
   const id = thread?.id;
   if (!id || !MODEL_URLS[model]) return false;
 
-  const url = model === 'chatgpt'
-    ? `https://chatgpt.com/c/${id}`
-    : `https://gemini.google.com/app/${id}`;
+  const url = `https://gemini.google.com/app/${id}`;
 
   try {
     const existing = await pickMainTab(model);

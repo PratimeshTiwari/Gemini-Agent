@@ -647,7 +647,7 @@ export class AgentLoop {
   }
 
   /**
-   * Handle a response from a subagent (e.g. ChatGPT/Claude).
+   * Handle a response from a subagent — its own Gemini tab, its own lane.
    */
   handleSubagentResponse(requestId, content, url) {
     if (this.pendingSubagents.has(requestId)) {
@@ -968,7 +968,23 @@ export class AgentLoop {
         if (data.topology === 'single') {
           this.modelConfig.reviewer = null;
         } else if (data.topology === 'duo' && !this.modelConfig.reviewer) {
-          this.modelConfig.reviewer = this.mainModel === 'gemini' ? 'chatgpt' : 'gemini';
+          this.modelConfig.reviewer = this.mainModel;
+        }
+        /**
+         * Fold a config written when ChatGPT was a model.
+         *
+         * `_saveConfig` preserves keys it does not own — that was a bug fix,
+         * and it means a stored `main: 'chatgpt'` survives every save and
+         * sends the agent at a site with no bridge. Read from `data` (what is
+         * on disk) rather than the merged object, or the default would shadow
+         * the legacy key — the mistake `config-merge.test.js` covers for
+         * effort.
+         */
+        if (data.modelConfig?.main && data.modelConfig.main !== 'gemini') {
+          this.modelConfig.main = 'gemini';
+        }
+        if (data.modelConfig?.reviewer && data.modelConfig.reviewer !== 'gemini') {
+          this.modelConfig.reviewer = 'gemini';
         }
         // The memory toggle used to live only in the MemoryManager instance, so
         // /memory off lasted until you quit. PromptBuilder reads the same key
@@ -1158,18 +1174,28 @@ export class AgentLoop {
   }
 
   /**
-   * Solo, or a reviewer on the other model.
+   * Solo, or a reviewer in a second tab.
    *
    * Derived rather than stored. As a knob of its own it could disagree with
    * the thing it describes: duo with no reviewer configured advertised
    * `ask_reviewer` to the model with nowhere to send it, and single with a
-   * reviewer configured left a second tab wired up and never used. A review by
-   * the same model is not offered — same blind spots review nothing — so
-   * "is there another model?" is the whole question.
+   * reviewer configured left a second tab wired up and never used.
+   *
+   * It used to also require `reviewer !== mainModel`, because the extension
+   * addressed tabs by URL pattern and two same-model requests raced for one
+   * tab. Tab identity landed in the bridge — a subagent turn opens its *own*
+   * tab on a `sub:<requestId>` lane and closes it after — so that clause was
+   * guarding something that had already been fixed. With ChatGPT removed it
+   * would also mean no reviewer at all.
+   *
+   * What a second Gemini tab buys is **not** different weights. It is a reader
+   * with no memory of the conversation that produced the work, which is the
+   * half that matters for the failure this exists to catch: a model that reads
+   * enough to cite and then reasons from the citation. A cold reader has
+   * nothing to reason from but the file, so it opens the file.
    */
   get topology() {
-    const reviewer = this.modelConfig.reviewer;
-    return reviewer && reviewer !== this.mainModel ? 'duo' : 'single';
+    return this.modelConfig.reviewer ? 'duo' : 'single';
   }
 
   _enqueueExtensionRequest(payload) {
