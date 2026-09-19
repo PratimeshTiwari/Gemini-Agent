@@ -358,7 +358,13 @@ export class PromptBuilder {
         + 'callers checked, what you did not do.';
     }
     this.hasSeenHandover = true;
-    return prompt(level === 'brief' ? 'handover-lite' : 'pro-handover-review');
+    /*
+     * `handover-lite` used to be `brief`'s four-point version. With one pro
+     * rung there is no `brief`, so pro always gets the full review — and the
+     * lite copy is not orphaned: `_getReasoningInstructions` still hands it to
+     * `flash-thinking`, which is the rung it now belongs to.
+     */
+    return prompt('pro-handover-review');
   }
 
   buildToolResultBatch(results = [], turnEvidence = '', handover = '') {
@@ -754,17 +760,21 @@ ${modelTier === 'pro' ? `## 4. Communication
   /**
    * Reasoning levels only mean anything for the pro tier — the flash tiers are
    * defined by *not* having room for the scaffolding.
+   *
+   * There is one pro level since 2026-09-20, so this now has one job: turn
+   * whatever it is handed — including a `brief` or `deep` left in a config
+   * written by an older version — into the one level that exists. Kept as a
+   * function rather than inlined because every caller reaching it is a caller
+   * that would otherwise branch on a level, which is the thing being removed.
    */
-  _normalizeLevel(level) {
-    const allowed = ['brief', 'standard', 'deep'];
-    const wanted = String(level ?? '').toLowerCase();
-    return allowed.includes(wanted) ? wanted : 'standard';
+  // eslint-disable-next-line class-methods-use-this
+  _normalizeLevel() {
+    return 'standard';
   }
 
-  /** One-line protocol reminder, matched to the level in force. */
-  _reminderLineForLevel(level) {
-    if (level === 'brief') return '- Investigate → Implement → Verify. Read before you edit.';
-    if (level === 'deep') return '- Restate and decompose first, then Investigate → Analyze → Implement → Verify, then self-review the diff.';
+  /** One-line protocol reminder. One level, so one line. */
+  // eslint-disable-next-line class-methods-use-this
+  _reminderLineForLevel() {
     return '- Restate the task and decompose it into a checklist first, then Investigate → Analyze → Implement → Verify.';
   }
 
@@ -818,8 +828,20 @@ ${modelTier === 'pro' ? `## 4. Communication
    *   deep     — standard, plus approach enumeration and adversarial self-review.
    */
   _getProInstructions(level = 'standard', subagents = true) {
-    const isBrief = level === 'brief';
-    const isDeep = level === 'deep';
+    /*
+     * `isBrief` and `isDeep` used to live here, gating the blocks that told
+     * three pro rungs apart. One rung since 2026-09-20, so both were constants:
+     * every `isBrief ? a : b` took `b` and every `isDeep ? a : ''` took `''`.
+     * Collapsed rather than left reading as a choice — a branch that can only
+     * go one way is a comment that lies, and this file is the one with the
+     * never-bulk-edit warning on it.
+     *
+     * What went with them: `brief`'s three-phase protocol and its shorter
+     * investigation, `deep`'s CRITICAL ANALYSIS phase and its ASSUMPTION
+     * LEDGER. `deep`'s third block — the review step — stayed, and is now
+     * gated on `hasReviewer` alone. See `core/effort.js` for why those two and
+     * not the third.
+     */
     // A second *model*, not a second persona. See the review step below.
     const hasReviewer = Boolean(subagents);
 
@@ -830,7 +852,7 @@ defensible in review. You DO NOT guess. You VERIFY.
 Reasoning level: **${level}**.`;
 
     // The heart of it: decide what you are doing before you touch anything.
-    const planFirst = isBrief ? '' : `\n${prompt('pro-plan-first')}\n`;
+    const planFirst = `\n${prompt('pro-plan-first')}\n`;
 
     const investigate = `
 ### PHASE 1: INVESTIGATION (never skip)
@@ -840,32 +862,23 @@ Before forming an opinion or writing code:
 1. **Read the relevant files** — not just the target. Imports, callers, tests, configs.
 2. **Trace the execution path** — who CALLS this, what it CALLS, what SIDE EFFECTS it has.
 3. **Check existing tests** — what IS covered and what is NOT.
-4. **Search for the project's own patterns** before deviating from them.${isBrief ? '' : `
-5. **Map the blast radius** — every file that a change here could affect.`}
+4. **Search for the project's own patterns** before deviating from them.
+5. **Map the blast radius** — every file that a change here could affect.
 
 **Chain-of-Thought**: Open each phase with a <thought> block — what you know, what you need
 next, what you expect the next call to show. One per phase, not one per call: a four-point
-preamble in front of every read turns a five-file investigation into twenty round-trips.${isBrief ? '' : `\n\n${prompt('pro-hypothesis')}`}`;
+preamble in front of every read turns a five-file investigation into twenty round-trips.
 
-    const analyse = isBrief ? '' : (isDeep ? `
-### PHASE 2: CRITICAL ANALYSIS
+${prompt('pro-hypothesis')}`;
 
-In a <thought> block:
-
-1. **Root cause** — what EXACTLY is wrong. Not the symptom.
-2. **Approach enumeration** — 2-4 options. For each: how it works, pros, cons, and the edge
-   cases it does and does not handle.
-3. **Recommendation** — pick the best, not the easiest, and justify it in one line.
-4. **Risk assessment** — null/empty inputs, concurrency, scale, unicode, error propagation
-   across module boundaries.
-5. **Security** — injection, auth bypass, data leak, path traversal.` : `
+    const analyse = `
 ### PHASE 2: ANALYSIS
 
 In a <thought> block: the root cause (not the symptom), the approach you have chosen and why,
-and what could go wrong with it — empty inputs, concurrent access, scale, error propagation.`);
+and what could go wrong with it — empty inputs, concurrent access, scale, error propagation.`;
 
     const implement = `
-### PHASE ${isBrief ? '2' : '3'}: SURGICAL IMPLEMENTATION
+### PHASE 3: SURGICAL IMPLEMENTATION
 
 1. The SMALLEST change that solves the problem correctly.
 2. Handle every error case explicitly — no empty catch blocks, no swallowed errors.
@@ -874,18 +887,18 @@ and what could go wrong with it — empty inputs, concurrent access, scale, erro
 5. Mark any assumption you must make: **⚠️ ASSUMPTION**: [what] — and what changes if wrong.`;
 
     const verify = `
-### PHASE ${isBrief ? '3' : '4'}: VERIFICATION (never skip)
+### PHASE 4: VERIFICATION (never skip)
 
 1. **Re-read the edited file** — confirm the edit landed as intended.
 2. **Run the tests** if they exist.
 3. **Re-check the callers** you found in Phase 1. Does your change break them?
-4. **Name the gaps** — any path you introduced that nothing covers.${isDeep ? (hasReviewer ? `
+4. **Name the gaps** — any path you introduced that nothing covers.${hasReviewer ? `
 5. **Send the diff to \`ask_subagent\` with \`role: "review"\`** — a second tab, reading it
    cold, with no memory of why you chose any of it. Paste the diff itself, the file paths,
    and what the change is meant to do — it cannot see your files. Act on what comes back
    or say why you are not; do not paste it onward unread.` : `
 5. **Adversarial self-review** — read the diff as a hostile reviewer. What would you flag?
-   Say it out loud rather than hoping nobody looks.`) : ''}`;
+   Say it out loud rather than hoping nobody looks.`}`;
 
     const guardrails = `\n${prompt('pro-guardrails')}`;
 
@@ -919,25 +932,12 @@ and what could go wrong with it — empty inputs, concurrent access, scale, erro
      */
     const handover = '';
 
-    const assumptions = isDeep ? `
-
-## ASSUMPTION LEDGER
-
-Collect every **⚠️ ASSUMPTION** you relied on into a closing section, each with what changes if
-it is wrong:
-
-\`\`\`
-## ⚠️ Assumptions
-1. **Assumed**: \`validateToken()\` returns a boolean. If it returns a Promise<boolean>, the fix must be async.
-\`\`\`
-
-Never proceed past an assumption *silently* — but stating one and continuing is normal work.
-Stop and call \`ask_question\` only when being wrong would cost real effort to undo.` : '';
+    const assumptions = '';
 
     return [
       header,
       planFirst,
-      `\n## ${isBrief ? '3-PHASE' : 'MANDATORY 4-PHASE'} PROTOCOL`,
+      '\n## MANDATORY 4-PHASE PROTOCOL',
       investigate,
       analyse,
       implement,

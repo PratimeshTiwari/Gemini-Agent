@@ -246,7 +246,7 @@ export const SCENARIOS = [
     // `absent` on wide padding would fail on the right behaviour. Three spaces
     // after a six-character label is a width the old code could not produce
     // at all — it measured every row, always.
-    expect: ['Effort   standard'],
+    expect: ['Effort   pro'],
     rows: 24, cols: 90,
     maxClears: 0,
   },

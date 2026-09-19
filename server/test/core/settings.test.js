@@ -6,7 +6,7 @@ import { describeSettings, filterSettings, settingsChanged, settingsColumns, SET
 const loop = (over = {}) => ({
   workspace: '/work/repo',
   mode: 'plan',
-  modelConfig: { main: 'gemini', subagents: true, effort: 'standard' },
+  modelConfig: { main: 'gemini', subagents: true, effort: 'pro' },
   commandRules: { enabled: true, allow: ['git status'], block: [] },
   memoryManager: { isMemoryEnabled: () => true, getAllMemories: () => ['a', 'b'] },
   skillFolders: [],
@@ -18,7 +18,7 @@ const row = (rows, label) => rows.find((r) => r.label === label);
 test('describeSettings', async (t) => {
   await t.test('reports the values actually in force', () => {
     const rows = describeSettings(loop());
-    assert.equal(row(rows, 'Effort').value, 'standard');
+    assert.equal(row(rows, 'Effort').value, 'pro');
     assert.equal(row(rows, 'Main model').value, 'gemini');
     assert.equal(row(rows, 'Edit approval').value, 'plan');
     assert.equal(row(rows, 'Memory').value, 'on');
@@ -37,7 +37,7 @@ test('describeSettings', async (t) => {
    * capability away from every existing workspace.
    */
   await t.test('a config with no subagent key reads as on', () => {
-    const legacy = loop({ modelConfig: { main: 'gemini', effort: 'standard' } });
+    const legacy = loop({ modelConfig: { main: 'gemini', effort: 'pro' } });
     assert.equal(row(describeSettings(legacy), 'Subagents').value, 'on');
   });
 
@@ -80,7 +80,7 @@ test('filterSettings', async (t) => {
   });
 
   await t.test('matches the value, so you can search for what it is set to', () => {
-    assert.ok(filterSettings(rows, 'deep').some((r) => r.label === 'Effort'));
+    assert.ok(filterSettings(rows, 'pro').some((r) => r.label === 'Effort'));
   });
 
   // "review" appears in no label. It is exactly what someone types to find out
@@ -190,7 +190,7 @@ test('settingsChanged only reports settings', async (t) => {
   // The control. Narrowing to one group must not stop it reporting a real one.
   await t.test('an actual setting still reports, with a way back', () => {
     const after = describeSettings(loop({
-      modelConfig: { main: 'gemini', subagents: false, effort: 'standard' },
+      modelConfig: { main: 'gemini', subagents: false, effort: 'pro' },
     }));
     const changes = settingsChanged(before, after);
 

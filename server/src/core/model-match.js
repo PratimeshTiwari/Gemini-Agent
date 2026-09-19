@@ -41,24 +41,29 @@ const INTENT = {
     // down to the lite option either.
     avoid: ['lite', 'fastest', 'extended', 'complex'],
   },
-  brief: {
+  /*
+   * One entry since the ladder became three rungs (2026-09-20). It is
+   * `standard`'s list, because `pro` is `standard`'s profile — `deep`'s
+   * `prefer: ['extended', 'complex', …]` went with `deep`.
+   *
+   * **This table is keyed by rung id, which makes it the thing a rung change
+   * breaks silently.** `INTENT[effortId]` undefined means `pickModelFor`
+   * returns null, `planModelSwitch` answers `unavailable`, and `/effort pro`
+   * quietly stops matching any browser model — it still *reads* like it worked,
+   * because the message just changes from "Switching the browser" to "Asking
+   * the browser". Caught here only because `model-match.test.js` asserts on
+   * which of those two sentences comes back.
+   */
+  pro: {
     prefer: ['pro', 'reasoning', 'advanced'],
     avoid: ['extended', 'complex'],
-  },
-  standard: {
-    prefer: ['pro', 'reasoning', 'advanced'],
-    avoid: ['extended', 'complex'],
-  },
-  deep: {
-    prefer: ['extended', 'complex', 'pro', 'reasoning'],
-    avoid: [],
   },
 };
 
 const haystack = (m) => `${m.label || ''} ${m.description || ''}`.toLowerCase();
 
 /**
- * @param {string} effortId  a rung id: flash | flash-thinking | brief | standard | deep
+ * @param {string} effortId  a rung id: flash | flash-thinking | pro
  * @param {Array<{label: string, description?: string, selected?: boolean}>} models
  *        what the picker actually offers, in the order it offers it
  * @returns {{model: object, why: string}|null} null when there is nothing to pick

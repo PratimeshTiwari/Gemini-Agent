@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { pickModelFor, planModelSwitch } from '../../src/core/model-match.js';
+import { EFFORT_LEVELS } from '../../src/core/effort.js';
 import { AgentLoop } from '../../src/core/agent-loop.js';
 
 /** Exactly what the picker showed on the owner's plan, labels and blurbs. */
@@ -22,18 +23,28 @@ describe('pickModelFor — decide by what an option is for, not what it is calle
     assert.equal(pickModelFor('flash', OWNER_PLAN).model.label, '3.5 Flash-Lite');
   });
 
-  test('the deep rung prefers extended thinking over pro', () => {
-    assert.equal(pickModelFor('deep', OWNER_PLAN).model.label, 'Extended thinking');
+  test('the pro rung takes the reasoning model', () => {
+    assert.equal(pickModelFor('pro', OWNER_PLAN).model.label, '3.1 Pro');
   });
 
-  test('the pro rungs take the reasoning model', () => {
-    for (const rung of ['brief', 'standard']) {
-      assert.equal(pickModelFor(rung, OWNER_PLAN).model.label, '3.1 Pro', rung);
+  /*
+   * `INTENT` is keyed by rung id, which makes it what a rung change breaks
+   * *silently*: an unknown id returns null, `planModelSwitch` answers
+   * `unavailable`, and the message merely softens from "Switching the browser"
+   * to "Asking the browser". Collapsing five rungs to three broke exactly this
+   * and nothing else caught it.
+   */
+  test('every rung on the ladder can pick something', () => {
+    for (const e of EFFORT_LEVELS) {
+      assert.ok(pickModelFor(e.id, OWNER_PLAN), `${e.id} matched nothing in the owner's plan`);
+      assert.ok(pickModelFor(e.id, LEAN_PLAN), `${e.id} matched nothing in the lean plan`);
     }
   });
 
-  test('a plan without extended thinking degrades to pro rather than failing', () => {
-    assert.equal(pickModelFor('deep', LEAN_PLAN).model.label, '3.1 Pro');
+  test('a retired rung id matches nothing, rather than pretending to', () => {
+    for (const gone of ['brief', 'standard', 'deep']) {
+      assert.equal(pickModelFor(gone, OWNER_PLAN), null, gone);
+    }
   });
 
   test('a plan without a lite option still gives the fast rung something', () => {
@@ -51,7 +62,7 @@ describe('pickModelFor — decide by what an option is for, not what it is calle
       { label: '4.0 Pro', description: 'Advanced reasoning' },
     ];
     assert.equal(pickModelFor('flash', renamed).model.label, '4.2 Flash-Lite');
-    assert.equal(pickModelFor('standard', renamed).model.label, '4.0 Pro');
+    assert.equal(pickModelFor('pro', renamed).model.label, '4.0 Pro');
   });
 
   test('a description alone is enough when the label says nothing', () => {
@@ -60,7 +71,7 @@ describe('pickModelFor — decide by what an option is for, not what it is calle
       { label: 'Model B', description: 'Advanced reasoning' },
     ];
     assert.equal(pickModelFor('flash', opaque).model.label, 'Model A');
-    assert.equal(pickModelFor('standard', opaque).model.label, 'Model B');
+    assert.equal(pickModelFor('pro', opaque).model.label, 'Model B');
   });
 
   test('the fast rung refuses a heavy option even when the words overlap', () => {
@@ -78,8 +89,8 @@ describe('pickModelFor — decide by what an option is for, not what it is calle
   });
 
   test('it says why, because a switch you cannot explain reads as a bug', () => {
-    assert.match(pickModelFor('deep', OWNER_PLAN).why, /Extended thinking/);
-    assert.match(pickModelFor('deep', OWNER_PLAN).why, /deep/);
+    assert.match(pickModelFor('pro', OWNER_PLAN).why, /3\.1 Pro/);
+    assert.match(pickModelFor('pro', OWNER_PLAN).why, /pro/);
   });
 });
 
@@ -90,21 +101,26 @@ describe('planModelSwitch — the cheapest interaction is the one not performed'
     assert.match(plan.reason, /already on 3\.8 Flash/);
   });
 
+  /*
+   * `pro` reaches for the reasoning model and *avoids* extended thinking —
+   * that preference belonged to `deep`, which is gone. Asserting the label
+   * rather than just `action: 'switch'` is what makes that visible.
+   */
   test('a different model means switch, and names it', () => {
-    const plan = planModelSwitch('deep', OWNER_PLAN);
+    const plan = planModelSwitch('pro', OWNER_PLAN);
     assert.equal(plan.action, 'switch');
-    assert.equal(plan.model.label, 'Extended thinking');
+    assert.equal(plan.model.label, '3.1 Pro');
   });
 
   test('no list yet is unavailable, not a failure to act on', () => {
-    const plan = planModelSwitch('deep', []);
+    const plan = planModelSwitch('pro', []);
     assert.equal(plan.action, 'unavailable');
     assert.match(plan.reason, /not reported a model list/);
   });
 
   test('a plan that offers nothing suitable says what it does offer', () => {
     const odd = [{ label: 'Canvas', description: 'Drawing' }];
-    const plan = planModelSwitch('deep', odd);
+    const plan = planModelSwitch('pro', odd);
     assert.equal(plan.action, 'unavailable');
     assert.match(plan.reason, /Canvas/);
   });
@@ -129,7 +145,7 @@ describe('the message after an effort switch', () => {
     // Only what `/effort` reaches for. Growing this as it errors is how the
     // stub stays honest about the command's real dependencies.
     const loop = {
-      modelConfig: { effort: 'standard' },
+      modelConfig: { effort: 'pro' },
       modelOptions,
       promptBuilder: { resetPromptState() {} },
       switchModelTo() {},
@@ -148,7 +164,7 @@ describe('the message after an effort switch', () => {
    * promises a line, instead of sending the user to go and find a browser tab.
    */
   test('a known switch says the picker will be read back', async () => {
-    const msg = await run('brief', [{ label: 'Gemini Pro' }, { label: '3.8 Flash' }]);
+    const msg = await run('pro', [{ label: 'Gemini Pro' }, { label: '3.8 Flash' }]);
     assert.match(msg, /Switching the browser/);
     assert.match(msg, /read back after the switch/);
     assert.match(msg, /Gemini Pro/);
@@ -156,7 +172,7 @@ describe('the message after an effort switch', () => {
   });
 
   test('so does an unknown one, while it goes looking', async () => {
-    const msg = await run('brief', []);
+    const msg = await run('pro', []);
     assert.match(msg, /Asking the browser/);
     assert.match(msg, /read back after the switch/);
   });
@@ -166,7 +182,7 @@ describe('the message after an effort switch', () => {
   // version of this test passed a list the effort could not match at all,
   // which is `unavailable`, a different branch.
   test('already on it asks for nothing', async () => {
-    const msg = await run('brief', [
+    const msg = await run('pro', [
       { label: 'Gemini Pro', selected: true },
       { label: '3.8 Flash' },
     ]);
@@ -176,7 +192,7 @@ describe('the message after an effort switch', () => {
 
   test('it no longer leads with reload instructions', async () => {
     for (const options of [[], [{ label: 'Gemini Pro' }]]) {
-      const msg = await run('brief', options);
+      const msg = await run('pro', options);
       assert.doesNotMatch(msg, /chrome:\/\/extensions/,
         'a stale bridge is a different problem, and there is no sign of one yet');
       assert.doesNotMatch(msg, /If nothing happens/);

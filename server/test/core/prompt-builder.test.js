@@ -197,8 +197,8 @@ describe('PromptBuilder — tier differentiation', () => {
     assert.strictEqual(effortFromConfig({ modelTier: 'flash' }), 'flash');
     assert.strictEqual(effortFromConfig({ reasoningEffort: 'low' }), 'flash');
     assert.strictEqual(effortFromConfig({ reasoningEffort: 'medium' }), 'flash-thinking');
-    assert.strictEqual(effortFromConfig({ modelTier: 'pro', reasoningLevel: 'deep' }), 'deep');
-    assert.strictEqual(effortFromConfig({}), 'standard');
+    assert.strictEqual(effortFromConfig({ modelTier: 'pro', reasoningLevel: 'deep' }), 'pro');
+    assert.strictEqual(effortFromConfig({}), 'pro');
   });
 
   // "flash tier, deep reasoning" was representable and meant nothing. The tier
@@ -208,41 +208,47 @@ describe('PromptBuilder — tier differentiation', () => {
   });
 });
 
-describe('PromptBuilder — pro reasoning levels', () => {
-  const proPrompt = (effort) => {
+/*
+ * One pro rung since 2026-09-20. `brief` and `deep` are gone, so what was a
+ * comparison between three rungs is now a description of the one that is left:
+ * `pro` is the old `standard` plus `deep`'s review step, and explicitly
+ * *without* `deep`'s other two blocks.
+ *
+ * Those two are the assertions that carry weight here. The critical-analysis
+ * phase and the assumption ledger were declined on **output** cost, which no
+ * character count of the prompt can see — so nothing but a `doesNotMatch` will
+ * notice them creeping back in.
+ */
+describe('PromptBuilder — the pro rung', () => {
+  const proPrompt = (effort = 'pro') => {
     const pb = new PromptBuilder(ws, ws);
     return build(pb, { modelConfig: { effort } });
   };
 
-  test('brief skips the planning ceremony; standard and deep require it', () => {
-    assert.doesNotMatch(proPrompt('brief'), /RESTATE AND DECOMPOSE/);
-    assert.match(proPrompt('standard'), /RESTATE AND DECOMPOSE/);
-    assert.match(proPrompt('deep'), /RESTATE AND DECOMPOSE/);
+  test('it plans first — the block `brief` used to skip', () => {
+    assert.match(proPrompt(), /RESTATE AND DECOMPOSE/);
   });
 
-  /*
-   * `Adversarial self-review` is now the *fallback*: with subagents on, deep
-   * sends the diff to one instead. `proPrompt` builds with them on, so the
-   * self-review line only appears where there is nobody to send it to.
-   */
-  test('deep adds approach enumeration and an adversarial pass', () => {
-    assert.match(proPrompt('deep'), /Approach enumeration/);
-    assert.match(proPrompt('deep'), /Send the diff to `ask_subagent`/);
-    assert.doesNotMatch(proPrompt('standard'), /Send the diff to `ask_subagent`/);
+  test('it keeps deep\'s review step', () => {
+    assert.match(proPrompt(), /Send the diff to `ask_subagent`/);
   });
 
-  test('the levels are ordered by how much prompt they spend', () => {
-    const brief = proPrompt('brief').length;
-    const standard = proPrompt('standard').length;
-    const deep = proPrompt('deep').length;
-    assert.ok(brief < standard, `brief ${brief} !< standard ${standard}`);
-    assert.ok(standard < deep, `standard ${standard} !< deep ${deep}`);
+  test('and not deep\'s other two blocks, which cost output on every turn', () => {
+    assert.doesNotMatch(proPrompt(), /Approach enumeration/);
+    assert.doesNotMatch(proPrompt(), /ASSUMPTION LEDGER/);
   });
 
-  test('phase numbering stays consistent within a level', () => {
-    // brief drops the analysis phase, so its verify step is PHASE 3, not 4.
-    assert.match(proPrompt('brief'), /PHASE 3: VERIFICATION/);
-    assert.match(proPrompt('standard'), /PHASE 4: VERIFICATION/);
+  test('the four-phase protocol, not brief\'s three', () => {
+    assert.match(proPrompt(), /PHASE 4: VERIFICATION/);
+    assert.doesNotMatch(proPrompt(), /PHASE 3: VERIFICATION/);
+  });
+
+  // The retired ids are not rungs; asking for one must land on `pro` rather
+  // than on a flash profile, which is the whole point of `RETIRED_RUNGS`.
+  test('a retired rung name still builds the pro prompt', () => {
+    for (const gone of ['brief', 'standard', 'deep']) {
+      assert.match(proPrompt(gone), /RESTATE AND DECOMPOSE/, gone);
+    }
   });
 
   test('an unknown or missing level falls back to standard, never to nothing', () => {
@@ -260,13 +266,20 @@ describe('PromptBuilder — pro reasoning levels', () => {
     assert.doesNotMatch(p, /Adversarial self-review/);
   });
 
-  test('the periodic reminder repeats the level actually in force', () => {
-    const pb = new PromptBuilder(ws, ws);
-    const modelConfig = { effort: 'brief' };
-    build(pb, { modelConfig });
-    const { prompt } = driveToRefresh(pb, { modelConfig });
-    assert.match(prompt, /Investigate → Implement → Verify/);
-    assert.doesNotMatch(prompt, /decompose it into a checklist/i);
+  /*
+   * The reminder has to describe the rung in force, not a default. With one pro
+   * rung the discriminating pair is flash-thinking against pro — if the
+   * reminder ever hard-coded either, this is what catches it.
+   */
+  test('the periodic reminder repeats the rung actually in force', () => {
+    const remind = (effort) => {
+      const pb = new PromptBuilder(ws, ws);
+      const modelConfig = { effort };
+      build(pb, { modelConfig });
+      return driveToRefresh(pb, { modelConfig }).prompt;
+    };
+    assert.match(remind('pro'), /decompose/i);
+    assert.doesNotMatch(remind('flash'), /decompose/i);
   });
 });
 
@@ -555,7 +568,7 @@ describe('PromptBuilder — a dispatchable tool the prompt never mentions is unr
 describe('every rung asks for a list, checks it, and reviews before finishing', () => {
   const pro = (effort) => build(new PromptBuilder(ws, ws), { modelConfig: { effort } });
   const pb = () => new PromptBuilder(ws, ws);
-  const LADDER = ['flash', 'flash-thinking', 'brief', 'standard', 'deep'];
+  const LADDER = ['flash', 'flash-thinking', 'pro'];
 
   /*
    * Where the handover lives depends on the rung now.
@@ -604,10 +617,8 @@ describe('every rung asks for a list, checks it, and reviews before finishing', 
    * and without this the move could silently revert to "in both places", which
    * costs the characters twice and looks like it works.
    */
-  test('the pro rungs no longer carry it in the opening prompt', () => {
-    for (const effort of ['brief', 'standard', 'deep']) {
-      assert.doesNotMatch(pro(effort), /THE HANDOVER REVIEW|Read back:/, effort);
-    }
+  test('the pro rung no longer carries it in the opening prompt', () => {
+    assert.doesNotMatch(pro('pro'), /THE HANDOVER REVIEW|Read back:/);
   });
 
   test('and the flash rungs still do, because theirs is small', () => {
@@ -617,8 +628,12 @@ describe('every rung asks for a list, checks it, and reviews before finishing', 
     }
   });
 
-  // Three sizes, because one size is either ceremony on a one-line fix or too
-  // thin for work where being wrong is expensive.
+  /*
+   * Still three sizes, and they are the three rungs now rather than a split
+   * inside pro. `handover-lite` was `brief`'s four-point version; with `brief`
+   * gone it belongs to `flash-thinking`, which is the rung it now serves — so
+   * nothing was orphaned by the collapse, it moved down one.
+   */
   test('the depth scales with the rung', () => {
     // A fresh builder each time: the block is full once per chat and a pointer
     // after, so reusing one here would ask the same chat for it repeatedly and
@@ -628,14 +643,12 @@ describe('every rung asks for a list, checks it, and reviews before finishing', 
     assert.match(pro('flash'), /BEFORE YOU FINISH/);
     assert.doesNotMatch(pro('flash'), /THE HANDOVER REVIEW/, 'the full review on a 5.6k prompt is +33%');
 
-    // `brief` promises "straight to work", so it gets the four-point version.
+    // flash-thinking carries the four-point version inside its own reasoning
+    // prompt, and gets no second block.
     assert.match(pro('flash-thinking'), /Read back:/);
-    assert.match(blockFresh('brief'), /Read back:/);
-    assert.doesNotMatch(blockFresh('brief'), /THE HANDOVER REVIEW/);
+    assert.doesNotMatch(pro('flash-thinking'), /THE HANDOVER REVIEW/);
 
-    for (const deep of ['standard', 'deep']) {
-      assert.match(blockFresh(deep), /THE HANDOVER REVIEW/, deep);
-    }
+    assert.match(blockFresh('pro'), /THE HANDOVER REVIEW/);
   });
 
   // The whole prompt strategy exists to avoid large repeated payloads typed
@@ -644,8 +657,7 @@ describe('every rung asks for a list, checks it, and reviews before finishing', 
     const chars = Object.fromEntries(LADDER.map((e) => [e, pro(e).length]));
     assert.ok(chars.flash < 7000, `flash grew to ${chars.flash}; it is the terse rung`);
     assert.ok(chars.flash < chars['flash-thinking'], 'the ladder stopped being a ladder');
-    assert.ok(chars.brief < chars.standard);
-    assert.ok(chars.standard < chars.deep);
+    assert.ok(chars['flash-thinking'] < chars.pro, 'the ladder stopped being a ladder');
   });
 });
 
@@ -660,12 +672,16 @@ describe('the handover review — asked for, so pin where it appears', () => {
     }
   });
 
-  // `brief`'s promise on the ladder is "straight to work", so it gets the
-  // four-point version rather than the seven-point one — but not nothing.
-  // "Did you run it" and "what did you not do" are worth asking at any size.
-  test('brief gets the shorter one instead', () => {
-    assert.doesNotMatch(block('brief'), /THE HANDOVER REVIEW/);
-    assert.match(block('brief'), /BEFORE YOU FINISH/);
+  /*
+   * A retired rung name must still produce the pro block rather than nothing.
+   * `buildHandoverBlock` takes the level, and `brief` used to select the
+   * four-point version — so if the collapse had missed this call site, an old
+   * stored config would silently get a shorter review than the rung it folds to.
+   */
+  test('a retired rung name gets the pro block, not the old short one', () => {
+    for (const gone of ['brief', 'standard', 'deep']) {
+      assert.match(block(gone), /THE HANDOVER REVIEW/, gone);
+    }
   });
 
   test('the flash tiers never see the pro prompt, so they get their own', () => {

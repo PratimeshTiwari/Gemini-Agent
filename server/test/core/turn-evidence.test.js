@@ -231,11 +231,26 @@ describe('the handover arrives when there is something to hand over', () => {
     }
   });
 
-  test('brief gets the short version, deep the long one', () => {
-    const b = loop('brief'); b._turnEvidence.set('edit_file', 1);
-    const d = loop('deep'); d._turnEvidence.set('edit_file', 1);
-    assert.match(b._dueHandover(), /BEFORE YOU FINISH/);
-    assert.match(d._dueHandover(), /THE HANDOVER REVIEW/);
+  /*
+   * One pro rung, so the split is between rungs rather than inside pro:
+   * flash-thinking carries the four-point version, pro gets the full review.
+   * A retired name must land on the full one too — `_dueHandover` reads the
+   * effort, and `brief` selecting the short version was the old behaviour.
+   */
+  test('pro gets the full review; the flash rungs carry their own', () => {
+    const pro = loop('pro'); pro._turnEvidence.set('edit_file', 1);
+    assert.match(pro._dueHandover(), /THE HANDOVER REVIEW/);
+
+    // Not a gap: the flash rungs carry a few lines inside their own reasoning
+    // prompt, so a second block here would be the same words twice.
+    for (const small of ['flash', 'flash-thinking']) {
+      const f = loop(small); f._turnEvidence.set('edit_file', 1);
+      assert.equal(f._dueHandover(), '', small);
+    }
+
+    // A retired rung id must still reach the pro block rather than nothing.
+    const old = loop('deep'); old._turnEvidence.set('edit_file', 1);
+    assert.match(old._dueHandover(), /THE HANDOVER REVIEW/, 'a retired rung folds to pro');
   });
 });
 

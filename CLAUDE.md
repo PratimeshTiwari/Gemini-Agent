@@ -1020,6 +1020,44 @@ mechanical:
 - **`content.js` is bundled.** `npm run build --workspace=extension` before committing, or Chrome
   loads the old `service-worker.js` and none of it is real.
 
+### Standing decisions rescued from `HANDOFF.md`, 2026-09-20
+
+That file was a baton — "delete this once the work below is done" — and its work
+is done or obsolete: three of its eight open items were GitHub-agent work deleted
+in `e375aed`, `/update` has now run against a real merge, `ask_subagent` is
+verified (`4b520b9`), and `/logs rates` has its data. What it also held, and
+nothing else did, is these. They are decisions, so they belong here.
+
+- **No reply envelope** — asking the model to wrap replies in JSON. Argued from
+  measurement, and the price is the case against it: the browser tab stops being
+  readable to the person watching it, which is a *supported surface*;
+  `gemini_response_stream` can no longer render live, because JSON cannot be
+  drawn until it closes and parses; every reply becomes as fragile as
+  `_cleanJsonString` already is, since prose is exactly what escaping gets
+  wrong; and it is more text typed into a browser every turn, against a prompt
+  strategy that exists to avoid exactly that. The three drift detectors look
+  like candidates and are not — a provider error is Gemini's own error page
+  rather than model output, and a model confused enough to deny its own tools
+  will not emit a correct marker saying so. **If it comes back**, the thing
+  worth doing instead is a short output-contract line asking for the constructs
+  the renderer handles best.
+- **The jitter's second half is not happening** — ~20% of the live frame spent
+  on the seam that brought the scroll glitches back twice.
+- **Terminal failures are opt-in per terminal**, chosen over an age filter.
+- **The emoji sweep is not happening.** ~100 glyphs across 16 files were changed
+  and then reverted; the only real complaint was the tick on a dark background,
+  which is now `✔`. Change a glyph when someone names *that glyph* — `✅` → `✓`
+  on the compaction row was right, and re-running the sweep is not.
+
+And two traps that were only written down there:
+
+- **A test can pin the bug.** A list-indent fix failed two tests that asserted
+  the broken two-space indent. A test written from observed output describes
+  what the code *does*, which is not what it *should* do — and it will defend
+  the bug.
+- **Do not write a derived number into a document here.** Commit counts and test
+  counts both drifted within a day. Print the command instead.
+
 ### Removed as dead, 2026-09-16
 
 Found by auditing every export for a caller. Recorded because "why is this gone?" is a

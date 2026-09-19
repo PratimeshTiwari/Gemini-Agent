@@ -46,7 +46,7 @@ describe('describeDestructive — ask before destroying what was never named', (
 
   test('ordinary settings changes are not gated', () => {
     for (const [cmd, args] of [['plan', []], ['auto', []], ['memory', ['off']],
-      ['effort', ['deep']], ['allowlist', ['disable']], ['config', []]]) {
+      ['effort', ['pro']], ['allowlist', ['disable']], ['config', []]]) {
       assert.equal(describeDestructive(cmd, args, { turnCount: 9 }), null, `${cmd} ${args}`);
     }
   });
