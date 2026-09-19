@@ -468,7 +468,8 @@ Two traps, both of which produced confident wrong numbers first:
 Nth turn** (`resetPromptState` after `/compact` or `/clear`). This is not an optimization —
 resending a large system prompt every turn trips Gemini's repetition/safety
 filters and A/B-test modals. Prompt content is also tiered by `modelTier`
-(`flash` / `flash-thinking` / `pro`) via `_getReasoningInstructions`.
+(`lite` / `flash` / `pro` — renamed 2026-09-20 to the picker's own words) via
+`_getReasoningInstructions`.
 
 The **tool anchor** (`_buildToolAnchor`) is the exception that rides on *every* turn: tool
 names only, 56 tokens against 1,575 for the definitions. The model does not gradually forget
@@ -1463,9 +1464,11 @@ dispatch paths still want scaffolding and are left for the split in P3.
   escaping rules that prose does not — a single stray backtick there surfaces as
   `ReferenceError` from an unrelated function.
 
-  Only **static** prose moved (~116 lines, seven files): the flash and flash-thinking
-  protocols, both tool-call formats, the flash core rules, the pro guardrails and the
-  plan-first step. Anything the builder computes stays in JavaScript, because a markdown file
+  Only **static** prose moved (~116 lines, seven files): the two cheap-rung protocols,
+  both tool-call formats, the terse core rules, the pro guardrails and the plan-first step.
+  The files were named after the rungs and moved with them in 2026-09-20's rename —
+  `reasoning-lite.md` / `reasoning-flash.md`, and `core-terse.md` /
+  `tool-call-format-terse.md` for the two that serve *both* cheap rungs. Anything the builder computes stays in JavaScript, because a markdown file
   full of `${isBrief ? '2' : '3'}` is worse than what it replaced. The move was verified
   byte-for-byte: all ten effort × topology prompt shapes came out identical, and one did not
   at first — `trimEnd()` had eaten a trailing newline that the assembled prompt depended on.
