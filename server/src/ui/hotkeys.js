@@ -30,6 +30,7 @@ export const HOTKEYS = {
   '\x06': 'attach-failures', // ctrl+f — pull in commands that failed in the editor
   '\x19': 'copy-code',    // ctrl+y — the last code block in the transcript
   '\x07': 'artifacts',    // ctrl+g — the task list, on its own key and its own state
+  '\x02': 'focus-browser', // ctrl+b — bring the Gemini tab to the front
 };
 
 const PASTE_START = '\x1b[200~';

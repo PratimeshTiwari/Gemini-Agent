@@ -469,6 +469,20 @@
       sendToServer(errorMsg);
     }
   }
+  async function focusModelTab(targetModel = "gemini") {
+    const tab = await pickMainTab(targetModel);
+    if (!tab) return false;
+    try {
+      await chrome.tabs.update(tab.id, { active: true });
+      if (tab.windowId != null) {
+        await chrome.windows.update(tab.windowId, { focused: true, state: "normal" });
+      }
+      return true;
+    } catch (err) {
+      console.warn("[Agent CLI] Could not focus the model tab:", err);
+      return false;
+    }
+  }
   async function openThread(thread) {
     const model = thread?.model || "gemini";
     const id = thread?.id;
@@ -684,6 +698,9 @@
       }
       case "end_session":
         await endSession(payload?.sessionId);
+        break;
+      case "focus_tab":
+        await focusModelTab(payload?.targetModel);
         break;
       case "discover_models":
       case "switch_model":

@@ -860,6 +860,10 @@ export function App({ agentLoop, wsServer }) {
     }),
     'paste-image': () => handleSubmit('/paste-image'),
 
+    // The model picker, a stalled turn, a tab that was minimised — the three
+    // times you need that tab and have to go hunting through windows for it.
+    'focus-browser': () => agentLoop.focusModelTab?.(),
+
     // ctrl+u and ctrl+w are what every readline prompt has bound for decades,
     // and they have to come through this channel rather than useInput:
     // ink-text-input types any key it does not recognise, so a ctrl+u handled

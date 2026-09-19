@@ -205,7 +205,7 @@ describe('noteModelOptions reports what landed', () => {
     const { loop, said } = notes();
     loop.noteModelOptions([{ label: 'Gemini Pro', selected: true }], 'Gemini Pro', 'Gemini Pro');
     assert.match(said[0], /now Gemini Pro/);
-    assert.doesNotMatch(said[0], /⚠️/);
+    assert.ok(said[0].startsWith('✓'), `not a success row: ${said[0]}`);
   });
 
   /*
@@ -217,14 +217,18 @@ describe('noteModelOptions reports what landed', () => {
   test('a switch that did not land is a warning, not silence', () => {
     const { loop, said } = notes();
     loop.noteModelOptions([{ label: '3.8 Flash', selected: true }], '3.8 Flash', 'Gemini Pro');
-    assert.match(said[0], /Asked the browser for Gemini Pro/);
-    assert.match(said[0], /picker reads 3.8 Flash/);
+    assert.ok(said[0].startsWith('!'), `not a failure row: ${said[0]}`);
+    assert.match(said[0], /still 3.8 Flash/);
+    assert.match(said[0], /asked for Gemini Pro/);
+    // The one thing the person can actually do about it, and how to get there.
+    assert.match(said[0], /by hand in the Gemini tab/);
+    assert.match(said[0], /ctrl\+b/);
   });
 
   test('a picker that reads nothing recognisable still says something', () => {
     const { loop, said } = notes();
     loop.noteModelOptions([{ label: 'x' }], null, 'Gemini Pro');
-    assert.match(said[0], /nothing recognisable/);
+    assert.match(said[0], /still unknown/);
   });
 
   // Case matters to nobody but a string compare. "gemini pro" and "Gemini Pro"
@@ -233,6 +237,6 @@ describe('noteModelOptions reports what landed', () => {
   test('the comparison is not case-sensitive', () => {
     const { loop, said } = notes();
     loop.noteModelOptions([{ label: 'gemini pro', selected: true }], 'gemini pro', 'Gemini Pro');
-    assert.doesNotMatch(said[0], /⚠️/);
+    assert.ok(said[0].startsWith('✓'));
   });
 });

@@ -1,7 +1,7 @@
 import { getState, setState } from './state.js';
 import { retryDelay, resolvePort, socketUrlFor } from './policy.js';
 import { broadcastToSidePanel, sendToServer } from './messaging.js';
-import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab, endSession, openThread } from './content.js';
+import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab, endSession, openThread, focusModelTab } from './content.js';
 
 /**
  * The socket to the local agent, and the retry policy around it.
@@ -292,6 +292,10 @@ async function handleServerMessage(message) {
       // next turn has to find the thread still there.
       await endSession(payload?.sessionId);
       break;
+    case 'focus_tab':
+      await focusModelTab(payload?.targetModel);
+      break;
+
     case 'discover_models':
     case 'switch_model':
       // Straight to the model tab. Neither injects a prompt, so neither goes

@@ -869,6 +869,34 @@ export async function injectPromptIntoModel(payload) {
  * @param {{model: string, id: string}} thread
  * @returns {Promise<boolean>} whether a tab is now on that conversation
  */
+/**
+ * Bring the model's own tab to the front, in its own window.
+ *
+ * Three moments need it and all three used to mean hunting through windows: the
+ * model picker after `/effort`, a turn that has stalled, and the "make sure the
+ * Chrome tab is not minimised" case. `chrome.windows.update` as well as
+ * `chrome.tabs.update`, because activating a tab in a minimised or background
+ * window changes which tab is selected there and leaves the window where it was.
+ *
+ * The lane's own tab, never a subagent's — `pickMainTab` is what tells them
+ * apart, and pulling a background task's tab in front of someone is the fault
+ * the ownership rules exist to prevent.
+ */
+export async function focusModelTab(targetModel = 'gemini') {
+  const tab = await pickMainTab(targetModel);
+  if (!tab) return false;
+  try {
+    await chrome.tabs.update(tab.id, { active: true });
+    if (tab.windowId != null) {
+      await chrome.windows.update(tab.windowId, { focused: true, state: 'normal' });
+    }
+    return true;
+  } catch (err) {
+    console.warn('[Agent CLI] Could not focus the model tab:', err);
+    return false;
+  }
+}
+
 export async function openThread(thread) {
   const model = thread?.model || 'gemini';
   const id = thread?.id;

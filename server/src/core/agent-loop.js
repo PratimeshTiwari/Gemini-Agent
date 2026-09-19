@@ -1232,10 +1232,13 @@ export class AgentLoop {
      */
     if (requested) {
       const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+      // `✓` and `!` rather than emoji, which is what every other row in this
+      // transcript uses for the same two meanings.
       this._notify(same(switchedTo, requested)
-        ? `🔀 Browser mode is now ${switchedTo}.`
-        : `⚠️ Asked the browser for ${requested}, but the picker reads `
-          + `${switchedTo || 'nothing recognisable'}. The prompt profile changed here either way.`);
+        ? `✓ Browser model is now ${switchedTo}.`
+        : `! Browser model is still ${switchedTo || 'unknown'} — asked for ${requested}.`
+          + `\n  Change it by hand in the Gemini tab (ctrl+b opens it). `
+          + 'The prompt here already changed.');
       return;
     }
 
@@ -1322,6 +1325,11 @@ export class AgentLoop {
 
   requestModelOptions() {
     this._toExtension('discover_models');
+  }
+
+  /** Bring the model's own tab to the front. ctrl+b. */
+  focusModelTab() {
+    this._toExtension('focus_tab', { targetModel: this.mainModel });
   }
 
   /**

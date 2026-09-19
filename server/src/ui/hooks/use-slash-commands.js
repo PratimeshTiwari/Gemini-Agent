@@ -136,6 +136,7 @@ export async function handleSlashCommand(query, {
           '  ctrl+e      expand or collapse every step',
           '  ctrl+t      shell',
           '  ctrl+o      GitHub dashboard',
+          '  ctrl+b      bring the Gemini tab to the front',
           '  ctrl+u      clear the input   ·   ctrl+w   delete the last word',
           '  ctrl+j      newline, without sending   ·   ↑ ↓   move a line, or recall',
           '  ctrl+f      attach commands that failed in the editor terminal',
