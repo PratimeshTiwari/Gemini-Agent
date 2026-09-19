@@ -10,6 +10,14 @@ const WebSocket = require(require('path').join(__dirname, '..', 'node_modules', 
 const port = Number(process.argv[2]);
 const replies = JSON.parse(process.argv[3]); // array of strings, in order
 const delay = Number(process.argv[4] || 300); // how long the 'model' takes
+/*
+ * What the browser's mode picker is offering, if a scenario cares.
+ *
+ * Only two things read it — `planModelSwitch` when `/effort` runs, and the
+ * model-mismatch notice — and both are silent without it, so scenarios that do
+ * not pass any behave exactly as before.
+ */
+const models = process.argv[5] ? JSON.parse(process.argv[5]) : null;
 let n = 0;
 
 const ws = new WebSocket(`ws://127.0.0.1:${port}`, {
@@ -26,6 +34,12 @@ ws.on('open', () => {
     id: 'id-2', type: 'tab_status',
     payload: { connectedModels: ['gemini'] }, timestamp: Date.now(),
   }));
+  if (models) {
+    ws.send(JSON.stringify({
+      id: 'id-3', type: 'model_options',
+      payload: { models }, timestamp: Date.now(),
+    }));
+  }
   console.error('[fake] connected');
 });
 

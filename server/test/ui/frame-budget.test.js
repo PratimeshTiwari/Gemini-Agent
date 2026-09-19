@@ -89,9 +89,41 @@ describe('the notice rows are charged for', () => {
     }
   });
 
+  /*
+   * Three now, not two: the model-mismatch warning joined them on 2026-09-20.
+   * `CLAUDE.md` records the two `/update` rows reproducing the clear-and-repaint
+   * path at 13 rows before the floor came down — so a third is exactly the kind
+   * of addition that needs the arithmetic checked rather than assumed.
+   */
+  test('all three notices fit wherever three can be drawn', () => {
+    for (let height = COMPACT_BELOW_ROWS; height <= 60; height += 1) {
+      assert.ok(frameHeight(height, 3) <= height,
+        `${height} rows with three notices: frame would be ${frameHeight(height, 3)}`);
+    }
+  });
+
+  /*
+   * And they cannot all be drawn below that, which is why `App.jsx` sheds the
+   * model-mismatch row there. This is the assertion that says the shedding is
+   * *required* rather than a preference — delete the guard and the frame is one
+   * row taller than a 9-row terminal, which is the clear-and-repaint path.
+   */
+  test('three do NOT fit a compact terminal — hence the guard', () => {
+    assert.ok(frameHeight(9, 3) > 9,
+      'if this ever fits, the shed in App.jsx can go');
+  });
+
+  test('two still fit there, which is what is left after shedding', () => {
+    for (let height = 9; height < COMPACT_BELOW_ROWS; height += 1) {
+      assert.ok(frameHeight(height, 2) <= height, `${height} rows with two notices`);
+      assert.ok(budget(height, 2) >= 1, `${height} rows: budget ${budget(height, 2)}`);
+    }
+  });
+
   test('a notice costs the turn a row, rather than being drawn for free', () => {
     assert.equal(budget(24, 0) - budget(24, 1), 1);
     assert.equal(budget(24, 0) - budget(24, 2), 2);
+    assert.equal(budget(24, 0) - budget(24, 3), 3);
   });
 
   test('at the floor the turn keeps a row and the frame still fits', () => {

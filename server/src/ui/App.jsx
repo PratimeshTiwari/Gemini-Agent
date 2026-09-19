@@ -9,6 +9,7 @@ import { InputBar } from './components/InputBar.jsx';
 import { clampForDisplay, extractCodeBlocks } from './format.js';
 import { SLASH_COMMANDS, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES, reservedRows, isCompactHeight } from './constants.js';
 import { resolveEffort } from '../core/effort.js';
+import { modelMismatch } from '../core/model-match.js';
 import { groupTurns, parseTurnActions } from './transcript.js';
 import { expandPastes, attachedPastes } from './paste.js';
 import { drainChatQueue } from './chat-queue.js';
@@ -478,7 +479,32 @@ export function App({ agentLoop, wsServer }) {
 
   // One line each, and charged for. A row that draws without being budgeted is
   // how the frame outgrows the viewport.
-  const noticeRows = (update.available ? 1 : 0) + (pendingReload ? 1 : 0);
+  /*
+   * The browser is on a different model from the one this rung is written for.
+   *
+   * Reported from use: the status bar read PRO while the Gemini tab's picker
+   * read Flash. `/effort` switches the picker when it runs, but the user can
+   * change it back, a new tab can open on something else, and the plan's
+   * default is Google's to choose — so the disagreement has to be *watched*,
+   * not assumed away at the moment of setting it.
+   *
+   * Read straight off the loop, like the effort in the status bar at `:1312`:
+   * these are live values, and a React copy of them is a second thing that can
+   * disagree. `modelMismatch` is silent unless it knows both halves.
+   *
+   * **Shed below `COMPACT_BELOW_ROWS`, and that is arithmetic rather than
+   * taste.** Three notice rows do not fit a 9-row terminal: 6 reserved + 3
+   * notices + the floored 1 for the turn is 10, and a frame taller than the
+   * viewport is the clear-and-repaint path — the single most important rule in
+   * `ui/`. `frame-budget.test.js` fails on exactly that height without this.
+   * It is the right one of the three to drop: `/update`'s two rows are about
+   * work in progress, and the effort is still on the status bar.
+   */
+  const mismatch = isCompactHeight(terminalHeight) ? null : modelMismatch(
+    agentLoop.modelConfig?.effort,
+    agentLoop.modelOptions || [],
+  );
+  const noticeRows = (update.available ? 1 : 0) + (pendingReload ? 1 : 0) + (mismatch ? 1 : 0);
 
   /**
    * What is left after the furniture — floored at one row, never at three.
@@ -1140,6 +1166,19 @@ export function App({ agentLoop, wsServer }) {
             <Text color="cyan" wrap="truncate">
               {'⬆ '}{update.behind} update{update.behind === 1 ? '' : 's'} available
               <Text dimColor>{'  —  /update to pull'}</Text>
+            </Text>
+          )}
+          {/*
+            The model the prompt is written for, against the one the tab is on.
+            Both names, because "wrong model" without saying which is a warning
+            you cannot act on — and `ctrl+b` is the key that shows the tab, so
+            the row carries the fix rather than only the complaint.
+          */}
+          {mismatch && (
+            <Text color="yellow" wrap="truncate">
+              {'⚠ browser is on '}<Text bold>{mismatch.current}</Text>
+              {', this rung wants '}<Text bold>{mismatch.wanted}</Text>
+              <Text dimColor>{'  —  ctrl+b shows the tab'}</Text>
             </Text>
           )}
 

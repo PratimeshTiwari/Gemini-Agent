@@ -28,7 +28,10 @@ for (const s of SCENARIOS) {
   const ws = mkdtempSync(join(tmpdir(), 'harness-'));
   const args = [join(here, 'drive.py'), String(s.rows ?? 30), String(s.cols ?? 100),
     String(port++), JSON.stringify(s.steps), ws, JSON.stringify(s.replies),
-    String(s.delayMs ?? 300)];
+    String(s.delayMs ?? 300),
+    // What the browser's picker is offering. Omitted unless a scenario says,
+    // and both readers of it are silent without one.
+    ...(s.models ? [JSON.stringify(s.models)] : [])];
 
   let out = '';
   try { out = execFileSync('python3', ['-u', ...args], { encoding: 'utf8', timeout: 180000 }); }

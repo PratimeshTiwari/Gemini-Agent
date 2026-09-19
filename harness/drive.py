@@ -59,8 +59,10 @@ def quiet(idle_ms=900, timeout=45):
 fails = []
 # The prompt box is the CLI's "ready".
 if not wait_for('Ask anything', 60): fails.append('CLI never drew its prompt')
+MODELS = sys.argv[8] if len(sys.argv) > 8 else ''
 fake = subprocess.Popen(['node', os.path.join(os.path.dirname(__file__), 'fake-extension.js'),
-                         str(PORT), REPLIES, DELAY], stderr=subprocess.DEVNULL)
+                         str(PORT), REPLIES, DELAY] + ([MODELS] if MODELS else []),
+                        stderr=subprocess.DEVNULL)
 quiet(700)
 
 marks = []

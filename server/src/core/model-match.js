@@ -107,6 +107,34 @@ export function pickModelFor(effortId, models = []) {
  *
  * @returns {{action: 'none'|'switch'|'unavailable', model?: object, reason: string}}
  */
+/**
+ * Is the browser on a different model from the one this rung is written for?
+ *
+ * Reported from use: the CLI's status bar read **PRO** while the Gemini tab's
+ * picker read **Flash** — a pro-tier prompt going into a Flash tab, which
+ * `CLAUDE.md` names as the worst case, the long prompt to the model that
+ * handles long prompts worst. Nothing said so. `/effort` switches the picker
+ * when it is run, but the user can change it back, a new tab can open on
+ * something else, and the plan's default is whatever Google decides.
+ *
+ * **Silent unless both halves are known.** No reported selection means the
+ * picker has not been read, not that it disagrees — and a warning that fires on
+ * missing information is one people learn to ignore, which costs more than the
+ * mismatch it was meant to catch.
+ *
+ * @returns {{current: string, wanted: string} | null}
+ */
+export function modelMismatch(effortId, models = []) {
+  const options = (models || []).filter((m) => m && m.label);
+  const current = options.find((m) => m.selected);
+  if (!current) return null;
+  const plan = planModelSwitch(effortId, options);
+  // `none` is agreement; `unavailable` means nothing here suits the rung, which
+  // is a different problem and not one the user can fix from the picker.
+  if (plan.action !== 'switch' || !plan.model) return null;
+  return { current: current.label, wanted: plan.model.label };
+}
+
 export function planModelSwitch(effortId, models = []) {
   const options = (models || []).filter((m) => m && m.label);
   if (options.length === 0) {

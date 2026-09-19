@@ -415,4 +415,48 @@ export const SCENARIOS = [
     rows: 24, cols: 90,
     maxClears: 0,
   },
+  {
+    name: 'a browser on the wrong model says so, and how to fix it',
+    /*
+     * Reported from use with a screenshot: the status bar read **PRO** while
+     * the Gemini tab's picker read **Flash** — a pro-tier prompt typed into a
+     * Flash tab, which `CLAUDE.md` names as the worst case, the long prompt to
+     * the model that handles long prompts worst. Nothing said so.
+     *
+     * Both names, because "wrong model" without saying which is a warning you
+     * cannot act on, and the key that shows the tab, so the row carries the fix
+     * rather than only the complaint.
+     */
+    replies: ['HI THERE.'],
+    models: [
+      { label: '3.8 Flash', selected: true },
+      { label: '3.1 Pro', description: 'reasoning' },
+    ],
+    steps: [
+      { send: '/effort pro\r' },
+      { wait: 'ctrl+b shows the tab', timeout: 20 },
+    ],
+    expect: ['⚠ browser is on 3.8 Flash', 'this rung wants 3.1 Pro', 'ctrl+b shows the tab'],
+    rows: 24, cols: 100,
+    maxClears: 0,
+  },
+  {
+    name: 'a browser on the right model says nothing at all',
+    // The control, and the one that matters: a warning that fires when there is
+    // nothing wrong is one people learn to dismiss, at which point it costs
+    // more than the mismatch it exists to catch.
+    replies: ['HI THERE.'],
+    models: [
+      { label: '3.1 Pro', description: 'reasoning', selected: true },
+      { label: '3.8 Flash' },
+    ],
+    steps: [
+      { send: 'hello\r' },
+      { wait: 'HI THERE', timeout: 30 },
+    ],
+    expect: ['HI THERE'],
+    absent: ['browser is on', 'ctrl+b shows the tab'],
+    rows: 24, cols: 100,
+    maxClears: 0,
+  },
 ];

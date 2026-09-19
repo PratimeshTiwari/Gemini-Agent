@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { pickModelFor, planModelSwitch } from '../../src/core/model-match.js';
+import { modelMismatch, pickModelFor, planModelSwitch } from '../../src/core/model-match.js';
 import { EFFORT_LEVELS } from '../../src/core/effort.js';
 import { AgentLoop } from '../../src/core/agent-loop.js';
 
@@ -281,5 +281,51 @@ describe('noteModelOptions reports what landed', () => {
     const { loop, said } = notes();
     loop.noteModelOptions([{ label: 'gemini pro', selected: true }], 'gemini pro', 'Gemini Pro');
     assert.ok(said[0].startsWith('✓'));
+  });
+});
+
+/*
+ * The CLI said PRO while the Gemini tab's picker said Flash, and nothing
+ * mentioned it — a pro-tier prompt typed into a Flash tab, which `CLAUDE.md`
+ * names as the worst case.
+ */
+describe('modelMismatch — only when both halves are known', () => {
+  test('a different selected model is a mismatch, and names both sides', () => {
+    const m = modelMismatch('pro', [
+      { label: '3.8 Flash', selected: true },
+      { label: '3.1 Pro', description: 'reasoning' },
+    ]);
+    assert.deepEqual(m, { current: '3.8 Flash', wanted: '3.1 Pro' });
+  });
+
+  test('agreement is silence', () => {
+    assert.equal(modelMismatch('pro', [
+      { label: '3.1 Pro', description: 'reasoning', selected: true },
+      { label: '3.8 Flash' },
+    ]), null);
+  });
+
+  /*
+   * The controls, and they matter more than the positive case. A warning that
+   * fires on missing information is one people learn to dismiss — at which
+   * point it costs more than the mismatch it exists to catch.
+   */
+  test('nothing reported selected is silence, not a guess', () => {
+    assert.equal(modelMismatch('pro', [{ label: '3.8 Flash' }, { label: '3.1 Pro' }]), null);
+    assert.equal(modelMismatch('pro', []), null);
+    assert.equal(modelMismatch('pro'), null);
+    assert.equal(modelMismatch('pro', null), null);
+  });
+
+  // `unavailable` — nothing offered suits the rung — is a different problem and
+  // not one the picker can fix, so it is not dressed up as one.
+  test('a plan with nothing suitable is silence', () => {
+    assert.equal(modelMismatch('flash', [{ label: 'Extended thinking', selected: true }]), null);
+  });
+
+  test('every rung on the ladder can be checked without throwing', () => {
+    for (const e of EFFORT_LEVELS) {
+      assert.doesNotThrow(() => modelMismatch(e.id, OWNER_PLAN), e.id);
+    }
   });
 });
