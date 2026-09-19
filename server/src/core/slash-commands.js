@@ -250,7 +250,20 @@ export async function handleSlashCommand(loop, command, args) {
       loop.promptBuilder.resetPromptState();
       // `reset` so every front-end drops the transcript it is showing. Without
       // it the panel kept displaying a conversation the agent had forgotten.
-      return { message: '🧹 Conversation history cleared.', reset: true };
+      /*
+       * Say which half went.
+       *
+       * "Conversation history cleared" reads as *all of it*, and it is not:
+       * the browser tab still holds every turn, so the model remembers a
+       * conversation the CLI has forgotten. Reported as confusing, and it is
+       * also the only thing that explains why the context bar does not drop to
+       * zero here — which is correct, and looks like a bug without this line.
+       */
+      return {
+        message: '🧹 Window cleared. The agent has forgotten this conversation; '
+          + 'the Gemini tab has not — `/new` starts a fresh one there.',
+        reset: true,
+      };
 
     // `/context` reports what is in the window. Registering folders of .md
     // files here was a second way to give the model standing instructions;
