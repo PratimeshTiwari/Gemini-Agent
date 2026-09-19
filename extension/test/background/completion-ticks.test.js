@@ -112,11 +112,20 @@ test('confirms fast when the tab says it is one observation from done', async ()
   // interval on top.
   const ticks = stubChrome(() => ({ watching: true, confirmSoon: true }));
   mod.startCompletionTicks(7, TICK);
-  await elapse(TICK * 1.6);
+  await elapse(TICK * 3);
 
-  // One slow tick would have fired once in that window; the fast confirm
-  // turns it into several.
-  assert.ok(ticks.length >= 3, `expected fast re-checks, got ${ticks.length}`);
+  /*
+   * The slow cadence cannot reach 6 in this window — it fires 3 times — while
+   * the confirming look, at a quarter of the interval, gives about 9.
+   *
+   * The margin is the point. This asserted `>= 3` after `TICK * 1.6`, where a
+   * slow tick fires once and the fast ones land at exactly 50ms and 60ms of a
+   * 64ms window: the third tick and the deadline were 4ms apart, so ordinary
+   * scheduler jitter failed it about one run in five. A wall-clock driver with
+   * no margin measures the machine's load, not the code — the same lesson the
+   * frame-budget harness already learned.
+   */
+  assert.ok(ticks.length >= 6, `expected fast re-checks, got ${ticks.length}`);
 });
 
 test('does not poll fast while the model is still writing', async () => {
@@ -127,6 +136,59 @@ test('does not poll fast while the model is still writing', async () => {
   await elapse(TICK * 2.5);
 
   assert.ok(ticks.length <= 3, `expected the slow cadence, got ${ticks.length}`);
+});
+
+/**
+ * Stopping a turn has to stop the confirming look too.
+ *
+ * The confirm was a bare `setTimeout` nobody held, and `stopCompletionTicks`
+ * cleared only the interval — so a turn stopped from outside (the tab closed,
+ * the session ended, the next turn starting) left a scheduled tick to fire into
+ * a tab whose turn was over.
+ *
+ * The costly half is the next turn. `startCompletionTicks` stops the old ticker
+ * and installs a new one, so an orphaned confirm firing afterwards finds
+ * `completionTickers.has(tabId)` true again and schedules another — a second
+ * fast chain beside the real one, at the *previous* turn's cadence, with no
+ * handle anywhere to stop it. It compounds once per turn.
+ *
+ * Found by widening an unrelated timing window until the leak reached the next
+ * test, which is the only reason anything noticed: a stray message costs
+ * nothing visible, and the doubling is invisible until you count.
+ */
+test('stopping a turn cancels a confirm that was already scheduled', async () => {
+  const ticks = stubChrome(() => ({ watching: true, confirmSoon: true }));
+  mod.startCompletionTicks(7, TICK);
+
+  // Long enough for the first tick to land and schedule its confirm.
+  await elapse(TICK * 1.25);
+  const atStop = ticks.length;
+  assert.ok(atStop >= 1, 'nothing ticked, so there is no confirm to cancel');
+
+  mod.stopCompletionTicks(7);
+  await elapse(TICK * 3);
+
+  assert.equal(ticks.length, atStop, `${ticks.length - atStop} ticks fired after the turn was stopped`);
+});
+
+/*
+ * And the compounding case, which is the one that costs something. A second
+ * turn on the same tab must run at one cadence, not two.
+ */
+test('a new turn does not inherit the previous turn\'s confirm chain', async () => {
+  const first = stubChrome(() => ({ watching: true, confirmSoon: true }));
+  mod.startCompletionTicks(7, TICK);
+  await elapse(TICK * 1.25);
+  assert.ok(first.length >= 1, 'the first turn never ticked');
+
+  // The next turn: slow cadence, nothing to confirm. Anything above the slow
+  // rate here is the old turn's orphaned chain still running.
+  const second = stubChrome(() => ({ watching: true, confirmSoon: false }));
+  mod.startCompletionTicks(7, TICK);
+  await elapse(TICK * 2.5);
+
+  assert.ok(second.length <= 3,
+    `expected the slow cadence for the new turn, got ${second.length} — the old chain is still ticking`);
 });
 
 test('a fast confirmation stops with the turn, not after it', async () => {

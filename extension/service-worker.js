@@ -240,6 +240,7 @@
   var COMPLETION_TICK_MS = 2e3;
   var COMPLETION_CONFIRM_MS = 250;
   var completionTickers = /* @__PURE__ */ new Map();
+  var completionConfirms = /* @__PURE__ */ new Map();
   function startCompletionTicks(tabId, everyMs = COMPLETION_TICK_MS) {
     stopCompletionTicks(tabId);
     const tick = async () => {
@@ -252,6 +253,7 @@
         if (res && res.confirmSoon && completionTickers.has(tabId)) {
           const soon = setTimeout(tick, Math.min(COMPLETION_CONFIRM_MS, everyMs / 4));
           soon.unref?.();
+          completionConfirms.set(tabId, soon);
         }
       } catch {
         stopCompletionTicks(tabId);
@@ -262,6 +264,11 @@
     completionTickers.set(tabId, timer);
   }
   function stopCompletionTicks(tabId) {
+    const soon = completionConfirms.get(tabId);
+    if (soon !== void 0) {
+      clearTimeout(soon);
+      completionConfirms.delete(tabId);
+    }
     const timer = completionTickers.get(tabId);
     if (timer === void 0) return;
     clearInterval(timer);

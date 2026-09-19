@@ -450,6 +450,21 @@ const COMPLETION_CONFIRM_MS = 250;
 
 /** @type {Map<number, any>} tab id -> interval handle */
 const completionTickers = new Map();
+/**
+ * The pending confirming look, per tab, so it can be cancelled.
+ *
+ * It used to be a bare `setTimeout` nobody held. `stopCompletionTicks` cleared
+ * the interval and the scheduled confirm fired anyway — one stray
+ * `tick_completion` into a tab whose turn was over, which is merely wasteful.
+ *
+ * The expensive case is back-to-back turns. `startCompletionTicks` stops the
+ * old ticker and installs a new one, so by the time an orphaned confirm fires,
+ * `completionTickers.has(tabId)` is true again — for the *new* turn. The old
+ * closure then schedules another confirm, at the old cadence, and keeps doing
+ * it: a second fast chain running beside the real one, holding the previous
+ * turn's `everyMs`, and untrackable because nothing ever held a handle to it.
+ */
+const completionConfirms = new Map();
 
 /**
  * The cadence, as an argument, because the tests would otherwise take 35s.
@@ -480,6 +495,7 @@ export function startCompletionTicks(tabId, everyMs = COMPLETION_TICK_MS) {
         // useful if it lands well before the next ordinary tick would.
         const soon = setTimeout(tick, Math.min(COMPLETION_CONFIRM_MS, everyMs / 4));
         soon.unref?.();
+        completionConfirms.set(tabId, soon);
       }
     } catch {
       // The tab is gone, discarded, or its script died. Nothing left to tick.
@@ -499,6 +515,14 @@ export function startCompletionTicks(tabId, everyMs = COMPLETION_TICK_MS) {
 }
 
 export function stopCompletionTicks(tabId) {
+  // The confirm first, and unconditionally: it outlives the interval by design,
+  // so returning early on a missing interval is how it got left running.
+  const soon = completionConfirms.get(tabId);
+  if (soon !== undefined) {
+    clearTimeout(soon);
+    completionConfirms.delete(tabId);
+  }
+
   const timer = completionTickers.get(tabId);
   if (timer === undefined) return;
   clearInterval(timer);
