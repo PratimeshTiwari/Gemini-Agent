@@ -341,6 +341,82 @@ export function oneLine(value, max = 60) {
  * One-line description of a tool result, for the collapsed transcript row.
  * Falls back to a hard-clamped snippet for tools without a specific shape.
  */
+/**
+ * What a tool row is *about*, from the arguments the model sent.
+ *
+ * `⏺ read_file · 134 lines · 4.9 KB` does not say which file, and two identical
+ * rows in one turn are indistinguishable — reported from use, looking at a turn
+ * with a 134-line read and a 1,155-line read and no way to tell what either was.
+ *
+ * From `args` rather than the result, because the request is the thing that is
+ * always there: a call that failed has no result to name a path, and that is
+ * exactly the row you most want to read.
+ *
+ * Paths truncate from the **left**, keeping the basename. A row in the live
+ * frame is cut from the right by `wrap="truncate"`, so anything that must
+ * survive goes on the left of the row — but within the path itself the end is
+ * the informative half, and `…/ui/transcript.js` beats `server/src/ui/tra…`.
+ *
+ * @param {string} toolName
+ * @param {object} args - what the model sent
+ * @param {number} [max] - characters this may occupy
+ * @returns {string} '' when there is nothing worth naming
+ */
+export function subjectOf(toolName, args, max = 44) {
+  const a = args || {};
+  const pick = (...keys) => {
+    for (const k of keys) {
+      const v = a[k];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+      if (Array.isArray(v) && v.length) return v.filter(Boolean).join(', ');
+    }
+    return '';
+  };
+
+  let raw = '';
+  let isPath = false;
+  switch (toolName) {
+    case 'read_file':
+    case 'edit_file':
+    case 'create_file':
+    case 'list_directory':
+    case 'open_in_editor':
+    case 'undo_edit':
+      raw = pick('path', 'filePath', 'file');
+      isPath = true;
+      break;
+    case 'grep_search':
+      raw = pick('pattern', 'patterns', 'query');
+      break;
+    case 'search_files':
+      raw = pick('query', 'pattern', 'name');
+      break;
+    case 'find_symbol':
+    case 'find_references':
+      raw = pick('symbol', 'name', 'query');
+      break;
+    case 'run_command':
+    case 'run_background':
+      raw = pick('command', 'cmd');
+      break;
+    case 'ask_subagent':
+      // The role, not the prompt: the prompt is a paragraph and the role is
+      // the thing that distinguishes two otherwise identical rows.
+      raw = pick('role');
+      break;
+    default:
+      return '';
+  }
+
+  if (!raw) return '';
+  const flat = raw.replace(/\s+/g, ' ').trim();
+  if (flat.length <= max) return flat;
+
+  // A path keeps its tail; anything else keeps its head, because a command or
+  // a pattern is read left to right and its start is what identifies it.
+  return isPath ? `…${flat.slice(-(max - 1))}` : `${flat.slice(0, max - 1)}…`;
+}
+
 export function summarizeResult(toolName, result) {
   const plural = (n, word, many) => `${n} ${n === 1 ? word : many || word + 's'}`;
   try {

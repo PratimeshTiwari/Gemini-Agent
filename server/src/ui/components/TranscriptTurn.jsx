@@ -3,7 +3,7 @@ import { Box, Text } from 'ink';
 import { DiffRows } from './DiffRows.jsx';
 import { rowsFromPatch } from '../diff-preview.js';
 import { Dots } from './RunningLine.jsx';
-import { renderMarkdown, oneLine, summarizeResult, clampForDisplay, formatCommandResult, blockLines, liveMessageText } from '../format.js';
+import { renderMarkdown, oneLine, summarizeResult, subjectOf, clampForDisplay, formatCommandResult, blockLines, liveMessageText } from '../format.js';
 import { parseTurnActions, describeArtifactWrite } from '../transcript.js';
 
 /**
@@ -130,7 +130,9 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
           )}
 
           <Box flexDirection="column" marginLeft={2} width="100%">
-            {shown.map((act) => <ActionRow key={act.id} act={act} verbose={verbose} isLive={isLive} />)}
+            {shown.map((act) => (
+              <ActionRow key={act.id} act={act} verbose={verbose} isLive={isLive} width={terminalWidth} />
+            ))}
           </Box>
         </Box>
       )}
@@ -192,8 +194,20 @@ const limitsFor = (isLive, verbose) => {
 };
 
 /** One step inside a turn. Collapsed to a line unless `verbose`. */
-function ActionRow({ act, verbose, isLive }) {
+function ActionRow({ act, verbose, isLive, width = 80 }) {
   const limit = limitsFor(isLive, verbose);
+  /*
+   * The subject is budgeted against the real terminal width, not a constant.
+   *
+   * This row had no `wrap` at all, so it could already wrap — and a row that
+   * wraps is charged as one and drawn as two, which is the bug this frame has
+   * had twice. Naming the file makes it longer, so the width has to come in.
+   *
+   * Two columns for the glyph, the tool name, the separator and the summary;
+   * whatever is left over is the subject's, and `wrap="truncate"` is the
+   * backstop for the summary, which is not bounded here.
+   */
+  const subjectRoom = Math.max(12, width - String(act.toolName || '').length - 28);
   if (act.type === 'tool') {
     /**
      * A write to the agent's own artifacts is drawn as what it means.
@@ -220,7 +234,15 @@ function ActionRow({ act, verbose, isLive }) {
         <Box flexDirection="row">
           <Text color={act.success === false ? 'red' : 'green'}>{(act.success === false ? '✗' : '⏺') + ' '}</Text>
           <Text bold color="gray">{act.toolName}</Text>
-          <Text dimColor> · {summarizeResult(act.toolName, act.result)}</Text>
+          {/* Which file, which pattern, which command. Without it two reads in
+              one turn are the same row twice, which is how a turn reading four
+              files reads as a turn that did nothing in particular. */}
+          {subjectOf(act.toolName, act.args, subjectRoom) ? (
+            <Text color="gray" wrap="truncate">
+              {' '}{subjectOf(act.toolName, act.args, subjectRoom)}
+            </Text>
+          ) : null}
+          <Text dimColor wrap="truncate"> · {summarizeResult(act.toolName, act.result)}</Text>
         </Box>
         {verbose && act.result !== null && act.result !== undefined && (
           <Box paddingLeft={2} width="100%">
