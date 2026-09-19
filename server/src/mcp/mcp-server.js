@@ -41,7 +41,7 @@ const TOOL_DEFINITIONS = [
       + 'is one search, not three, and guessing wrong three times in a row costs three round trips. '
       + 'Use contextLines when a bare matching line would not tell you whether it is the right one.',
     parameters: {
-      pattern: { type: 'string', description: 'Text or regex to find. May also be an array of terms, which are searched together (OR).', required: true },
+      pattern: { type: 'string|array', description: 'Text or regex to find. May also be an array of terms, which are searched together (OR).', required: true },
       isRegex: { type: 'boolean', description: 'If true, every pattern is treated as a regex', required: false },
       includes: { type: 'array', description: 'Globs to restrict the search (e.g. ["*.js", "*.ts"])', required: false },
       maxResults: { type: 'number', description: 'Maximum matches (default 50, max 500)', required: false },

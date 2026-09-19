@@ -50,6 +50,22 @@ function schemaForType(type) {
       return z.preprocess((v) => (v !== undefined && !Array.isArray(v) ? [v] : v), z.array(z.any()));
     case 'object':
       return z.object({}).passthrough();
+    case 'string|array':
+      /*
+       * Both, because the description promises both.
+       *
+       * `grep_search.pattern` was declared `string` while its own description
+       * told the model to "pass SEVERAL patterns at once — ['rate limit',
+       * 'throttle', 'quota'] is one search, not three". The handler has always
+       * accepted an array. Only this refused, so the model did exactly what it
+       * was instructed to do and the call was rejected — four times in one
+       * afternoon's real use, on the second most-used tool there is.
+       *
+       * The `array` case above already forgives the other direction, turning a
+       * bare value into a list. This is the same forgiveness pointing the other
+       * way, and it is declared on the parameter rather than guessed here.
+       */
+      return z.union([z.string(), z.array(z.string())]);
     case 'string':
     default:
       return z.string();
