@@ -170,6 +170,15 @@ let lastActivityTime = 0;
  */
 const RESPONSE_SETTLE_MS = 1500;
 const RESPONSE_SETTLE_CHECKS = 2;
+/**
+ * How many times a reply that ends mid-construct may hold the turn open.
+ *
+ * Bounded so a reply that genuinely ends on an unclosed backtick is still
+ * delivered rather than waiting out the five-minute cap. At the confirming
+ * cadence this is a few seconds, which is the length of a code-block render and
+ * far short of the model actually stopping.
+ */
+const UNFINISHED_GRACE_CHECKS = 6;
 
 let activityCheckTimer = null;
 /** The in-flight turn's completion check, or null between turns. */
@@ -643,6 +652,7 @@ function startResponseObserver() {
    * makes both transients unrepresentable.
    */
   let quietStreak = 0;
+  let unfinishedHolds = 0;
   // Read by the `tick_completion` reply so the worker can come back quickly
   // for the confirming observation instead of waiting out a whole interval.
   quietPending = () => quietStreak > 0 && quietStreak < RESPONSE_SETTLE_CHECKS;
@@ -755,6 +765,21 @@ function startResponseObserver() {
       silenceMs: silenceDuration,
     });
 
+    /*
+     * A reply that stops mid-construct is a pause, not an ending — but only
+     * for so long. `UNFINISHED_GRACE_CHECKS` bounds it, because a reply that
+     * genuinely ends on an unclosed backtick must still be delivered rather
+     * than waiting out the five-minute cap. Past the grace it is accepted as
+     * it stands, which is what happened before this existed.
+     */
+    if (quietStreak >= RESPONSE_SETTLE_CHECKS && looksUnfinished(lastResponseText)) {
+      unfinishedHolds += 1;
+      if (unfinishedHolds <= UNFINISHED_GRACE_CHECKS) {
+        console.log(`[Gemini Bridge] Quiet, but the reply ends mid-construct — waiting (${unfinishedHolds}/${UNFINISHED_GRACE_CHECKS})`);
+        quietStreak = 0;
+      }
+    }
+
     if (quietStreak >= RESPONSE_SETTLE_CHECKS) {
       console.log(`[Gemini Bridge] Generation finished (quiet for ${quietStreak} checks)`);
       clearInterval(streamingUpdateTimer);
@@ -833,6 +858,33 @@ function startResponseObserver() {
 function nextQuietStreak(streak, now) {
   const settled = !now.isGenerating && now.hasText && now.silenceMs >= RESPONSE_SETTLE_MS;
   return settled ? streak + 1 : 0;
+}
+
+/**
+ * Does this reply stop in the middle of something?
+ *
+ * The quiet rule watches the *page*: no Stop button, and text that has not
+ * changed for 1.5s, twice over. A code block starting to render looks exactly
+ * like that — the Stop button flickers while the composer re-renders and the
+ * text pauses while the fence is built. Observed three times in one turn, each
+ * reply ending at a backtick, each followed by the model carrying on into a
+ * `stale_response`.
+ *
+ * So the *content* gets a veto the page cannot give: an odd number of code
+ * fences, or a trailing unclosed inline backtick, means Gemini was mid-construct
+ * and the silence was a pause rather than an ending.
+ *
+ * Deliberately narrow. Prose that merely stops abruptly is not detectable and
+ * is not claimed to be — this only catches the case where the markup itself
+ * says the text is incomplete, which is the case that was happening.
+ */
+function looksUnfinished(text) {
+  const t = String(text || '');
+  if (!t) return false;
+  if ((t.match(/```/g) || []).length % 2 === 1) return true;
+  // A lone backtick on the final line, with nothing closing it.
+  const lastLine = t.slice(t.lastIndexOf('\n') + 1);
+  return (lastLine.match(/`/g) || []).length % 2 === 1;
 }
 
 /**
