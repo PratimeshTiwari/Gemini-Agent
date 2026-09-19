@@ -877,6 +877,24 @@ really do keep data there.
 `.agent-github-plans/`, root `setAgentName.json` / `agent.log`) into `.agent/` on startup. It
 runs only when `.agent/` is absent, moves rather than copies, and is a no-op on the second run.
 
+**Those three claims are now assertions** (`test/core/migrate-workspace.test.js`), because the
+module moves the user's data — config, instructions, backups, logs — on startup, before
+anything is on screen, and it sat at **46% line coverage** with one narrow rename tested. Same
+combination as `diff-engine.js`, which was 358 lines with no tests and was writing backups
+outside the backup directory.
+
+Nothing was wrong: all four behaviours were probed against the real code first and all four
+held. What the tests buy is that the failure mode is silent and unrecoverable — a migration
+that clobbers has already destroyed the thing it overwrote by the time anyone looks. The one
+that would hurt most is `rules.md` → `AGENT.md`, the only move that writes into the user's
+*tracked* tree; the test asserts both that a human-written `AGENT.md` survives **and** that
+declining to move it does not delete the source instead. Coverage 46% → 70%.
+
+**A wrong fixture made correct code look broken first.** The first probe put sessions in
+`.gemini/sessions/`, which never existed — they lived in the *home* directory, and
+`migrateHome` handles them. The fixture has to come from the migration's own plan, not from
+memory of what the old layout probably was.
+
 `vscode-companion/extension.js` duplicates the `.agent` constant — it cannot import from
 `server/`. Changing `AGENT_DIR` in `paths.js` means changing it there too, then repackaging
 the `.vsix`.
