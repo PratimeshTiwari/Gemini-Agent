@@ -50,6 +50,7 @@ import { canPickFolder, pickFolder } from '../../core/folder-picker.js';
 import { summariseTraces, formatMs } from '../../core/trace-log.js';
 import { channelHealth, formatRate, MIN_TURNS_FOR_RATE } from '../../core/channel-health.js';
 import { checkForUpdate, isDirty, pullUpdate, savePendingReload, readPendingReload, clearPendingReload } from '../../core/update.js';
+import { installRoot, installDependencies } from '../../core/dep-recovery.js';
 
 
 /**
@@ -260,11 +261,48 @@ export async function handleSlashCommand(query, {
       if (!outcome.files.length) { say('✔ Already up to date.'); return; }
 
       const n = outcome.files.length;
-      const lines = [`### Updated — ${n} file${n === 1 ? '' : 's'} changed`, ''];
+      const heading = `### Updated — ${n} file${n === 1 ? '' : 's'} changed`;
+      const lines = [];
+
+      /**
+       * Run the install rather than print it.
+       *
+       * The old version said `npm install` and then refused to restart, which
+       * is safe and is still half a job: the next start runs new code against
+       * an old tree, and the failure that produces is the same fatal
+       * `Cannot find package` the startup recovery exists for. Doing it here
+       * catches it from the other direction, before there is anything to
+       * recover from.
+       *
+       * Announced *before* it runs, as a committed row. A bare wait of half a
+       * minute with nothing on screen reads as a hang — and a spinner is not
+       * available, because `SLOW_COMMANDS` is keyed on the first word and
+       * `/update` on its own answers instantly, so raising one would strand
+       * exactly the row CLAUDE.md warns about. A committed row costs nothing
+       * in the live frame.
+       *
+       * `stdio: 'pipe'`, never `inherit`: npm's progress written straight to a
+       * terminal that has a live Ink frame on it is a frame regression.
+       */
+      let installed = null;
       if (outcome.install) {
-        lines.push('`package.json` moved, so dependencies need reinstalling:', '',
-          '```bash', 'npm install', '```', '');
+        // The heading goes out with the announcement rather than being held
+        // back for the summary, so the wait has something above it.
+        say([heading, '', 'Dependencies moved, so installing them now…'].join('\n'));
+        const root = installRoot(agentLoop.agentSourceDir);
+        installed = root
+          ? await installDependencies(root, { stdio: 'pipe' })
+          : { ok: false, error: 'Could not find a `package.json` to install from.' };
+
+        if (installed.ok) {
+          lines.push('`npm install` done — dependencies are in sync.', '');
+        } else {
+          lines.push('! `npm install` failed, so the new code has not been started:', '',
+            '```', installed.error, '```', '',
+            'Run `npm install` by hand, then `/restart`.', '');
+        }
       }
+      if (!outcome.install) lines.unshift(heading, '');
       if (outcome.steps.length) {
         // Saved before the restart, and kept until acknowledged: the failure
         // this prevents is silent, so a notice that scrolls past once and is
@@ -276,12 +314,18 @@ export async function handleSlashCommand(query, {
       } else {
         lines.push('_Only the server changed — a restart is all it needs._');
       }
-      lines.push('', process.env.AGENT_CLI_SUPERVISED
+      // Restart unless an install was needed and failed — going back into a
+      // tree we know is out of sync is how the reported crash happened.
+      const willRestart = Boolean(process.env.AGENT_CLI_SUPERVISED)
+        && (!outcome.install || installed?.ok === true);
+      lines.push('', willRestart
         ? '_Restarting into the new version…_'
-        : '_Quit with `/exit` and start again to run the new version._');
+        : process.env.AGENT_CLI_SUPERVISED
+          ? '_Not restarting until the dependencies are in._'
+          : '_Quit with `/exit` and start again to run the new version._');
       say(lines.join('\n'));
 
-      if (process.env.AGENT_CLI_SUPERVISED && !outcome.install) {
+      if (willRestart) {
         setTimeout(() => leaveWhenIdle(RESTART_EXIT_CODE, { wsServer, agentLoop }), 1200);
       }
       return;

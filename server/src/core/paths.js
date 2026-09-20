@@ -361,6 +361,24 @@ export const nextWorkspacePath = () => path.join(homeDir(), 'next-workspace');
 export const pendingReloadPath = () => path.join(homeDir(), 'pending-reload.json');
 
 /**
+ * The record that one automatic `npm install` has already been tried.
+ *
+ * A dependency the code imports and the tree does not have is fatal at startup,
+ * and the recovery for it — install, then exit asking to be restarted — runs in
+ * a **different process** from the one that will find out whether it worked.
+ * Nothing in memory survives that gap, so the "we have already tried this once"
+ * has to be on disk, for the same reason `nextWorkspacePath` is a file.
+ *
+ * In the home directory rather than a workspace: the thing out of sync is the
+ * agent's own `node_modules`, which belongs to the checkout and not to whatever
+ * project it happens to be pointed at.
+ *
+ * It is cleared by a boot that gets as far as drawing the UI, so the next
+ * genuine occurrence gets its own attempt rather than inheriting this one's.
+ */
+export const depRecoveryPath = () => path.join(homeDir(), 'dep-recovery.json');
+
+/**
  * Name a file the way the caller would recognise it.
  *
  * Relative to the workspace when it is inside, absolute when it is not. Every

@@ -30,6 +30,18 @@ import { RiskClassifier } from './core/risk-classifier.js';
 import { FileWatcher } from './watcher/file-watcher.js';
 import { TaskManager } from './core/task-manager.js';
 import { logError } from './core/error-log.js';
+import { recoverMissingDependency, explainFailure, clearAttempt } from './core/dep-recovery.js';
+import { RESTART_EXIT_CODE } from './core/restart.js';
+
+/**
+ * This file's own directory, at module scope.
+ *
+ * It was declared inside `main()`, which is fine for everything that reads it
+ * there and wrong for `main().catch()` — that handler runs outside the
+ * function, so a reference to it would throw a ReferenceError *from inside the
+ * error handler* and replace the real failure with a confusing one.
+ */
+const SRC_DIR = dirname(fileURLToPath(import.meta.url));
 
 /** How long to wait for an already-running extension to greet us, at startup. */
 const EXTENSION_GREETING_MS = 1500;
@@ -214,9 +226,7 @@ async function main() {
   rememberWorkspace(config.workspace);
 
   // Determine agent source directory (the 'server' folder)
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = dirname(__filename);
-  const agentSourceDir = resolve(__dirname, '../');
+  const agentSourceDir = resolve(SRC_DIR, '../');
 
   // Initialize components
   const diffEngine = new DiffEngine(config.workspace);
@@ -299,6 +309,17 @@ async function main() {
   const { CliUI } = await import('./ui/cli-ui.jsx');
   const cli = new CliUI(agentLoop, wsServer);
   cli.start();
+
+  /**
+   * Far enough to matter.
+   *
+   * Every import in the startup graph has resolved by the time there is a UI,
+   * so whatever an automatic `npm install` was recorded against is settled. It
+   * is cleared here rather than left, so the next genuine missing dependency
+   * gets its own attempt instead of inheriting this one's — the marker is a
+   * "once per occurrence" bound, not a "once ever" one.
+   */
+  clearAttempt();
 
   /**
    * Give the extension a moment to announce itself, and open a tab only if it
@@ -386,8 +407,48 @@ async function main() {
   process.on('SIGTERM', shutdown);
 }
 
-main().catch((err) => {
-  console.error('💥 Fatal initialization error:', err.message);
-  console.error('Recovering gracefully... please check your configuration and restart.');
+/**
+ * The last word, and the one place a startup failure can still be repaired.
+ *
+ * A dependency the code imports and the tree does not have is the one fatal
+ * error whose fix is always the same command, so it is the one worth doing
+ * rather than describing. Everything else prints and exits, as before.
+ *
+ * **This catches what `main()` rejects with**, which covers every dynamically
+ * imported module — `ui/cli-ui.jsx`, and through it `App.jsx`, the file the
+ * report came from. A package missing from main.js's *static* imports fails
+ * before this function is ever reached; see `core/dep-recovery.js`.
+ */
+main().catch(async (err) => {
+  let said = false;
+  const outcome = await recoverMissingDependency(err, {
+    from: SRC_DIR,
+    // Said before npm starts talking, not after: its output streams straight
+    // to this terminal, so anything printed afterwards lands under a dozen
+    // lines of install log and the reason arrives after the noise.
+    announce: ({ package: pkg, root }) => {
+      said = true;
+      console.error(`💥 ${String(err.message).split('\n')[0]}`);
+      console.log(`→ \`${pkg}\` is missing. Installing dependencies in ${root}…`);
+    },
+  });
+
+  if (outcome.ok) {
+    console.log('✔ Dependencies installed.');
+    // 75 only means anything to a supervisor. Without one it is a number
+    // nobody reads, so say the thing the user has to do instead.
+    if (process.env.AGENT_CLI_SUPERVISED) {
+      console.log('⟳ Restarting…');
+      process.exit(RESTART_EXIT_CODE);
+    }
+    console.log('Start the agent again to run it.');
+    process.exit(1);
+  }
+
+  // Not repeated when the attempt was announced — an install that failed has
+  // already printed the error once, above its own npm log.
+  if (!said) console.error('💥 Fatal initialization error:', err.message);
+  const why = explainFailure(outcome);
+  if (why) console.error(why);
   process.exit(1);
 });
