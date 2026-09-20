@@ -221,7 +221,6 @@ export class AgentLoop {
     this._loadConfig();
     this.conversationHistory = this.sessionStore.loadHistory();
     this.pendingGeminiResponse = null;
-    this.queuedUserMessage = null;
     this.callbacks = null;
     this.isProcessing = false;
     // One in-flight prompt per model, not one for the whole bridge — see
