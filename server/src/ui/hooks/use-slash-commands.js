@@ -41,9 +41,9 @@ export function resolveOpenTarget(workspace, target) {
   const abs = path.resolve(expanded.startsWith('/') ? expanded : path.join(workspace, expanded));
   return { abs, exists: fs.existsSync(abs) };
 }
-import { SLASH_COMMANDS } from '../constants.js';
+import { SLASH_COMMANDS, COMMAND_GROUPS } from '../constants.js';
 import { AGENT_COMMANDS } from '../../core/slash-commands.js';
-import { oneLine } from '../format.js';
+import { oneLine, renderCommandList } from '../format.js';
 import { planResume } from '../../core/chat-thread.js';
 import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
 import { canPickFolder, pickFolder } from '../../core/folder-picker.js';
@@ -127,7 +127,6 @@ export async function handleSlashCommand(query, {
     // were gone, and describing /memory as "view memory" while it toggled it —
     // because nothing made the two lists agree.
     if (command === 'help' || command === 'shortcuts') {
-      const width = Math.max(...SLASH_COMMANDS.map((c) => c.name.length));
       setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
         role: 'assistant',
         isLocal: true,
@@ -144,7 +143,7 @@ export async function handleSlashCommand(query, {
           '  esc         stop the run, or close a menu',
           '',
           '### ⌨️  Commands',
-          ...SLASH_COMMANDS.map((c) => `  /${c.name.padEnd(width)}   ${c.desc}`),
+          renderCommandList(SLASH_COMMANDS, COMMAND_GROUPS),
           '',
           '_Typing `/` filters this same list as you go. `/settings` shows what is configured._',
         ].join('\n'),
@@ -1016,9 +1015,9 @@ export async function handleSlashCommand(query, {
       const unknown = command
         ? `❌ No such command: \`/${command}\`\n\n`
         : '';
-      const list = SLASH_COMMANDS
-        .map((c) => `  \`/${c.name}\`${' '.repeat(Math.max(1, 12 - c.name.length))}${c.desc}`)
-        .join('\n');
+      // The same renderer `/help` uses. Two of these drifted three characters
+      // apart in their padding; one list cannot.
+      const list = renderCommandList(SLASH_COMMANDS, COMMAND_GROUPS);
       setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `${unknown}${list}`, isLocal: true }]);
     }
     setIsProcessing(false);

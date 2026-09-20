@@ -792,3 +792,52 @@ export function fsEventRow(paths) {
   if (named.length === 0) return '∙ a file changed on disk';
   return `∙ changed on disk — ${named.join(', ')}`;
 }
+
+/**
+ * The command list, grouped, for `/help` and for "no such command".
+ *
+ * **One renderer because there were two lists.** `/help` built its own and the
+ * unknown-command path built another, three characters different in the
+ * padding. That is the shape of the drift this list has already suffered:
+ * CLAUDE.md records a hand-kept copy advertising `/init-skills` and
+ * `/paste-image` after both were gone. Generating from `SLASH_COMMANDS` fixed
+ * the *data* drifting; two renderers left the *presentation* free to.
+ *
+ * Unknown groups are printed under a trailing heading rather than dropped. A
+ * command added with a `group` nobody put in `COMMAND_GROUPS` would otherwise
+ * work perfectly and be invisible on the one screen that exists to list it —
+ * failing silently, in the direction that is hardest to notice.
+ *
+ * @param {Array<{name: string, desc: string, group?: string}>} commands
+ * @param {Array<[string, string]>} groups - `[key, heading]`, in print order
+ * @returns {string}
+ */
+export function renderCommandList(commands, groups) {
+  const width = Math.max(...commands.map((c) => c.name.length));
+  const known = new Set(groups.map(([key]) => key));
+  const sections = [...groups, ['', 'Other']]
+    .map(([key, heading]) => [heading, commands.filter((c) => (key
+      ? c.group === key
+      : !known.has(c.group)))])
+    .filter(([, list]) => list.length > 0);
+
+  const out = [];
+  for (const [heading, list] of sections) {
+    // A blank row between sections, not above the first: the caller has
+    // already printed a heading above this.
+    if (out.length) out.push('');
+    /*
+     * Bold at column 0, rows indented four.
+     *
+     * Both halves are what markdown does rather than what looks tidy in the
+     * source. A heading's own leading spaces are insignificant and get
+     * stripped, so indenting it achieves nothing — which is also why the flat
+     * list this replaces was written with two spaces and drew at column 0.
+     * Four spaces *are* preserved, so they are what actually nests the
+     * commands under their heading.
+     */
+    out.push(`**${heading}**`);
+    for (const c of list) out.push(`    /${c.name.padEnd(width)}   ${c.desc}`);
+  }
+  return out.join('\n');
+}

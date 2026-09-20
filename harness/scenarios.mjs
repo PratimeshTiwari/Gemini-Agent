@@ -534,4 +534,23 @@ export const SCENARIOS = [
     rows: 10, cols: 80,
     maxClears: 0,
   },
+  /*
+   * `/help` grew group headings and blank rows between sections, which makes
+   * it a taller block on screen than it was.
+   *
+   * Committed rows are free — `<Static>` writes them once and the live frame
+   * never redraws them — so the cost should be nothing at any height. "Should
+   * be" is the reason this exists rather than a reason to skip it: an instant
+   * local command drawing a tall block is the exact shape that stranded a
+   * spinner row once already, and the cheapest terminal to be wrong on is the
+   * short one.
+   */
+  {
+    name: '/help is grouped, and costs nothing to draw on a short terminal',
+    replies: [],
+    steps: [{ send: '/help\r' }, { wait: 'The agent itself', timeout: 30 }],
+    expect: ['While it works', 'This conversation', 'The agent itself', '/compact'],
+    rows: 13, cols: 80,
+    maxClears: 0,
+  },
 ];

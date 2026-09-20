@@ -2,33 +2,56 @@
  * Values the UI shares across modules. No behaviour, no imports.
  */
 
+/**
+ * The sections `/help` prints, in order, with the heading for each.
+ *
+ * Ordered by how often you reach for them rather than alphabetically: a flat
+ * list of 25 was the complaint, and sorting it would have made it findable
+ * without making it *readable*. The Keys block above the commands has always
+ * been grouped; this is the other half of the same screen.
+ *
+ * A command whose `group` is not named here would vanish from `/help` while
+ * still working, which is the silent half of the drift this list has already
+ * suffered twice. `renderCommandList` puts unknown groups in a trailing
+ * section rather than dropping them, and a test asserts every command is
+ * printed exactly once.
+ */
+export const COMMAND_GROUPS = [
+  ['work', 'While it works'],
+  ['chat', 'This conversation'],
+  ['project', 'This project'],
+  ['config', 'Settings'],
+  ['audit', 'What it has been doing'],
+  ['agent', 'The agent itself'],
+];
+
 export /** Slash commands offered by the palette, and the source `/help` prints from. */
 const SLASH_COMMANDS = [
-  { name: 'help', desc: 'Keys, and every command' },
-  { name: 'settings', desc: 'Everything that is set, on one page' },
-  { name: 'open', desc: 'Open a file in your editor' },
-  { name: 'effort', desc: 'How hard to work, and which browser tab it expects' },
-  { name: 'allowlist', desc: 'Manage auto-approved/blocked command rules' },
-  { name: 'config', desc: 'Which model implements, and which one reviews it' },
-  { name: 'plan', desc: 'Plan Mode — every edit needs approval' },
-  { name: 'auto', desc: 'Auto Mode — safe edits apply automatically' },
-  { name: 'workspace', desc: 'Where the agent works — and switch, which restarts' },
-  { name: 'memory', desc: 'What the agent has learned about this project' },
-  { name: 'context', desc: 'Show what is in the context window' },
-  { name: 'compact', desc: 'Compact history to save tokens' },
-  { name: 'clear', desc: 'Forget this conversation, keep the browser chat' },
-  { name: 'new', desc: 'Fresh session, and a fresh chat in the browser too' },
-  { name: 'undo', desc: 'Undo the last step/action' },
-  { name: 'skills', desc: 'List, create and open skills the agent can load' },
-  { name: 'image', desc: 'Attach an image — a path, bare for the clipboard, remove to drop it' },
-  { name: 'plans', desc: 'Past plans, newest first' },
-  { name: 'history', desc: 'Past conversations — pick one to reopen it' },
-  { name: 'commands', desc: 'Every shell command the agent has run, by day' },
-  { name: 'name', desc: 'Name the agent — shown in the banner' },
-  { name: 'update', desc: 'Pull the agent\'s own repo, and say what to reload' },
-  { name: 'logs', desc: 'What has been failing — `/logs rates` for how often' },
-  { name: 'restart', desc: 'Restart the server' },
-  { name: 'exit', desc: 'Quit the agent' },
+  { name: 'help', desc: 'Keys, and every command', group: 'agent' },
+  { name: 'settings', desc: 'Everything that is set, on one page', group: 'config' },
+  { name: 'open', desc: 'Open a file in your editor', group: 'project' },
+  { name: 'effort', desc: 'How hard to work, and which browser tab it expects', group: 'config' },
+  { name: 'allowlist', desc: 'Manage auto-approved/blocked command rules', group: 'config' },
+  { name: 'config', desc: 'Which model implements, and which one reviews it', group: 'config' },
+  { name: 'plan', desc: 'Plan Mode — every edit needs approval', group: 'work' },
+  { name: 'auto', desc: 'Auto Mode — safe edits apply automatically', group: 'work' },
+  { name: 'workspace', desc: 'Where the agent works — and switch, which restarts', group: 'project' },
+  { name: 'memory', desc: 'What the agent has learned about this project', group: 'chat' },
+  { name: 'context', desc: 'Show what is in the context window', group: 'chat' },
+  { name: 'compact', desc: 'Compact history to save tokens', group: 'chat' },
+  { name: 'clear', desc: 'Forget this conversation, keep the browser chat', group: 'chat' },
+  { name: 'new', desc: 'Fresh session, and a fresh chat in the browser too', group: 'chat' },
+  { name: 'undo', desc: 'Undo the last step/action', group: 'work' },
+  { name: 'skills', desc: 'List, create and open skills the agent can load', group: 'project' },
+  { name: 'image', desc: 'Attach an image — a path, bare for the clipboard, remove to drop it', group: 'work' },
+  { name: 'plans', desc: 'Past plans, newest first', group: 'project' },
+  { name: 'history', desc: 'Past conversations — pick one to reopen it', group: 'chat' },
+  { name: 'commands', desc: 'Every shell command the agent has run, by day', group: 'audit' },
+  { name: 'name', desc: 'Name the agent — shown in the banner', group: 'config' },
+  { name: 'update', desc: 'Pull the agent\'s own repo, and say what to reload', group: 'agent' },
+  { name: 'logs', desc: 'What has been failing — `/logs rates` for how often', group: 'audit' },
+  { name: 'restart', desc: 'Restart the server', group: 'agent' },
+  { name: 'exit', desc: 'Quit the agent', group: 'agent' },
 ];
 
 /** Where typed input goes. */
