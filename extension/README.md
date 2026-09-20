@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.24.0**
+## Current version: **1.25.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -91,6 +91,43 @@ observers and clears its timers instead of ticking on.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.25.0 — 2026-09-20
+
+Two latency bugs, both reported from use and both measured against
+`.agent/logs/traces.jsonl` (237 recorded turns).
+
+- **A reply that ends in a code block is finished, not mid-construct.**
+  `looksUnfinished` gives the content a veto the page cannot give — an odd
+  number of ``` fences, or a trailing unclosed inline backtick, means the
+  silence was a pause. The fence half is right. The inline half read the last
+  line of the *whole* reply, and `extractTextContent` ends with `.trim()`, so a
+  reply ending in a code block ends **on its closing fence** — three backticks,
+  an odd count.
+
+  That is every tool call, and therefore every round of the agent loop. Each
+  veto reset the quiet streak, six times over. It shows in the traces as
+  bimodality rather than a distribution: a fast mode at **3,176ms** (n=70) and a
+  slow one at **13,936ms** (n=11), ~10.8s apart — a near-fixed penalty is a
+  bug's fingerprint, not model variance.
+
+  Reported as *"a considerable delay between Gemini sending the JSON block and
+  us sending back the tool result"*, at 28 seconds on a `list_directory` call.
+
+  The existing test passed against it: its fixture ended ``` ...```\nDone. ``` —
+  the block followed by prose, so the last line was never the fence. Real
+  replies end on it.
+
+- **`waitForSendButton` no longer sleeps 500ms before looking.** An
+  unconditional half second on every round, waiting for a button that is
+  usually already enabled — `send` was 698ms median and 1,383ms p90 across 237
+  turns, and that line was most of it.
+
+  It was guarding something real: the empty-composer test means "the user
+  pressed send themselves", and that reading only holds once our text has been
+  *seen* there. `sawText` answers the same question directly and cannot be wrong
+  in either direction, which is the trade this bridge already made for tabs when
+  fixed sleeps became `waitForBridge`.
 
 ### 1.24.0 — 2026-09-19
 

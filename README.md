@@ -711,7 +711,7 @@ and reprinting the whole transcript *below* the copy already on screen. On a tal
 terminal you saw the banner three times, once per tool round. Measured at 210×64:
 **3× → 1×**, 0 full clears, 22,868 → 15,312 bytes.
 
-**The effort ladder is three rungs** — `flash`, `flash-thinking`, `pro` — because
+**The effort ladder is three rungs** — `lite`, `flash`, `pro` — because
 five was one tier wearing three hats. `standard → deep` was three substantive
 blocks for 4.2%, so `pro` is the old `standard` plus the one of them with a
 demonstrated job: a second tab reading the diff cold. The other two are paid in
@@ -728,17 +728,33 @@ demonstrated job: a second tab reading the diff cold. The other two are paid in
   against what the turn actually did.
 - One ceiling for a batch of tool results, divided fairly rather than
   first-come.
+- A warning when the browser tab is on a different model from the effort rung,
+  naming both and the key that shows the tab.
+- `/open` says when the file is not there; `/clear` says which half it cleared.
+- Escape clears what you typed before it kills a turn.
+- The settings exit screen reports what you changed, not what moved.
+- Plan mode offers the mode switch on the diff, where the evidence is.
 - `setup.sh` asks where to install.
-- A pty harness in the repo — 17 scenarios driving the real CLI with a fake
-  extension, asserting text, files and that the frame cost 0 full clears.
+- A pty harness in the repo — 20 scenarios driving the real CLI with a fake
+  extension, asserting text, files, drawing order, string counts, and that the
+  frame cost 0 full clears.
 
 **Removed**
 - The GitHub PR agent — `github/`, the tab, two hooks, a content script.
 - ChatGPT, the second bridge, and `topology` as a stored setting.
 - `figlet` and `@inquirer/prompts`; `node_modules` 98.5 MB → 72.7 MB.
 - The `brief` and `deep` effort rungs; a stored config naming one folds to `pro`.
+- `server/README.md` — the root README and `CLAUDE.md` already covered it.
 
-**Quality**: 1,741 tests (1,537 server + 204 extension) and 17 pty scenarios, **92.8% line coverage** (91.0% branch, 94.4% function).
+**Changed**
+- The rungs are named after the tabs they expect: `lite` · `flash` · `pro`.
+- Tables are drawn at the width the terminal actually is.
+- Plain `✓` / `!` instead of emoji on the compaction, diff and model-switch rows.
+- Two latency bugs, measured: a reply ending in a code block was read as
+  mid-construct (**−10.8s on ~13% of rounds**) and the send path slept 500ms
+  before looking (**−0.5s every round**). Extension **1.25.0**.
+
+**Quality**: 1,755 tests (1,545 server + 210 extension) and 20 pty scenarios, **92.8% line coverage** (91.0% branch, 94.4% function).
 
 
 #### The GitHub PR agent is gone (2026-09-19)
