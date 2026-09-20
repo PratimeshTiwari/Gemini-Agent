@@ -40,7 +40,7 @@ function userMessageText(content, isLive) {
  * `verbose` (ctrl+e) opens every step's raw output. Because committed rows
  * cannot be repainted, App reprints the transcript when it changes.
  */
-export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick = 0, terminalWidth = 80, fromItem = 0, showUserBar = true }) {
+export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick = 0, terminalWidth = 80, fromItem = 0, showUserBar = true, compact = false }) {
   // Only shown when it can actually be worked out. A turn whose messages were
   // never stamped has no duration, and printing one anyway is how this shipped
   // reading `Worked for -6.2s`.
@@ -100,7 +100,8 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
         Deciding from `fromItem` drew it twice for the whole thinking phase.
       */}
       {turn.userMsg && showUserBar && (
-        <UserBar content={turn.userMsg.content} isLive={isLive} terminalWidth={terminalWidth} />
+        <UserBar content={turn.userMsg.content} isLive={isLive} terminalWidth={terminalWidth}
+          compact={compact} />
       )}
 
       {/*
@@ -150,9 +151,34 @@ export function TranscriptTurn({ turn, isLive, verbose, status, liveBudget, tick
  * Its own component because it is **final the moment it is drawn**, which is
  * the property `<Static>` requires and the turn around it does not have.
  */
-export function UserBar({ content, isLive, terminalWidth = 80 }) {
+export function UserBar({ content, isLive, terminalWidth = 80, compact = false }) {
   return (
-    <Box flexDirection="column" marginBottom={1} width="100%">
+    /*
+     * A blank row **above** the bar, and it is the bar's to own.
+     *
+     * Reported with a screenshot: `✔ Up to date.` sat flush against the next
+     * `❯ /update` bar. The bar is a full-width inverted block, so a reply
+     * butted against it reads as one run-on row rather than the end of one
+     * turn and the start of the next.
+     *
+     * It was missing for exactly the turns that end on a reply. Rows are
+     * emitted `user → item* → summary` (App.jsx), and the summary is only
+     * emitted when the turn had **actions** — so a local command like
+     * `/update` and a plain answer with no tool calls both end on an item row,
+     * and the next bar followed it with nothing between. A turn that did call
+     * a tool ended on a summary, which carried its own `marginBottom`, which
+     * is why the gap looked present most of the time.
+     *
+     * Owned here rather than added to the summary because two owners is how
+     * the gap becomes two rows on the turns that have both. The summary's
+     * `marginBottom` is gone; the breathing room above the input box is
+     * InputBar's and is unaffected.
+     *
+     * Dropped below `COMPACT_BELOW_ROWS`, like every other blank row in this
+     * UI: spacing is exactly what the compact path is meant to shed, and a
+     * live frame that outgrows the viewport is the clear-and-repaint bug.
+     */
+    <Box flexDirection="column" marginTop={compact ? 0 : 1} marginBottom={1} width="100%">
       {blockLines(userMessageText(content, isLive), terminalWidth, 2)
         .map((line, i) => (
           // eslint-disable-next-line react/no-array-index-key

@@ -66,6 +66,45 @@ for (const s of SCENARIOS) {
     const got = plain.split(needle).length - 1;
     if (got !== want) problems.push(`${JSON.stringify(needle)} drawn ${got}x, expected ${want}x`);
   }
+  /*
+   * `blankAbove` asserts how many blank rows sit directly above a row, which
+   * is the only way to state "these two do not read as one run-on row" — the
+   * prompt bar is a full-width inverted block, and a reply butted against it
+   * was reported from use.
+   *
+   * Computed from its own CRLF-normalised copy rather than `plain`: the pty
+   * writes `\r\n`, and the first version of this check looked for `\n\n` and
+   * so matched nothing at all, passing while measuring nothing. The *last*
+   * occurrence is the committed one, for the same reason `order` uses it.
+   */
+  const rows = transcript.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b/g, '')
+    .replace(/\r\n/g, '\n').split('\n');
+  const blankRun = (needle, step, label) => {
+    const at = rows.map((l, n) => (l.startsWith(needle) ? n : -1)).filter((n) => n >= 0).pop();
+    if (at === undefined) return `${label}: ${JSON.stringify(needle)} never drawn`;
+    let got = 0;
+    for (let n = at + step; n >= 0 && n < rows.length && rows[n].trim() === ''; n += step) got++;
+    return got;
+  };
+  for (const [needle, want] of s.blankAbove ?? []) {
+    const got = blankRun(needle, -1, 'blankAbove');
+    if (typeof got === 'string') problems.push(got);
+    else if (got !== want) problems.push(`${JSON.stringify(needle)} has ${got} blank rows above it, expected ${want}`);
+  }
+  /*
+   * `blankBelow` is the same question the other way up, and it is needed
+   * because the two cannot see the same things. A <Static> row is written as
+   * its own chunk and the live frame is redrawn between chunks, so what sits
+   * above a row in the stream is the last live repaint rather than the
+   * previous committed row. `blankAbove` therefore pins a row's own leading
+   * margin and cannot see the *preceding* row's trailing one — which is
+   * exactly where a second owner of the same gap shows up.
+   */
+  for (const [needle, want] of s.blankBelow ?? []) {
+    const got = blankRun(needle, 1, 'blankBelow');
+    if (typeof got === 'string') problems.push(got);
+    else if (got !== want) problems.push(`${JSON.stringify(needle)} has ${got} blank rows below it, expected ${want}`);
+  }
   if (clears > (s.maxClears ?? 0)) problems.push(`${clears} full clears (max ${s.maxClears ?? 0})`);
   if (s.wrote && !existsSync(join(ws, s.wrote))) problems.push(`${s.wrote} was not written`);
   if (s.didNotWrite && existsSync(join(ws, s.didNotWrite))) problems.push(`${s.didNotWrite} WAS written`);

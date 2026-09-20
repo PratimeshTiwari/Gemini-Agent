@@ -459,4 +459,79 @@ export const SCENARIOS = [
     rows: 24, cols: 100,
     maxClears: 0,
   },
+  /*
+   * Reported with a screenshot: `✔ Up to date.` sat flush against the next
+   * `❯ /update` bar. The bar is a full-width inverted block, so a reply butted
+   * against it reads as one run-on row.
+   *
+   * Two scenarios rather than one, because the gap was missing for a specific
+   * reason and only one of the two shapes shows it. Rows commit as
+   * `user → item* → summary`, and the summary is only emitted when the turn had
+   * **actions** — so a turn that called a tool ended on a summary carrying its
+   * own margin and looked fine, while a local command and a plain answer ended
+   * on an item row with nothing between it and the next bar.
+   */
+  {
+    name: 'a local command and the next prompt bar are not one run-on row',
+    replies: [],
+    steps: [{ send: '/plan\r' }, { wait: 'Plan Mode', timeout: 30 },
+            { send: '/auto\r' }, { wait: 'Auto Mode', timeout: 30 }],
+    expect: ['Switched to Auto Mode'],
+    blankAbove: [[' ❯ /auto', 1]],
+    rows: 24, cols: 90,
+    maxClears: 0,
+  },
+  {
+    name: 'a plain reply with no tool calls gets the gap too',
+    replies: ['REPLY ONE here.'],
+    steps: [{ send: 'first\r' }, { wait: 'REPLY ONE', timeout: 30 },
+            { send: '/plan\r' }, { wait: 'Plan Mode', timeout: 30 }],
+    expect: ['REPLY ONE'],
+    blankAbove: [[' ❯ /plan', 1]],
+    rows: 24, cols: 90,
+    maxClears: 0,
+  },
+  {
+    /*
+     * The turn that already had a gap, asserting it did not become two.
+     *
+     * A turn with actions ends on a summary, and the summary used to carry its
+     * own `marginBottom`. Giving the prompt bar a `marginTop` without taking
+     * that one away is two owners for one gap, and Ink does not collapse
+     * adjacent margins the way CSS does — so these turns would quietly spend a
+     * second blank row. Added because a negative control showed the three
+     * scenarios around it all passed with the doubling restored: none of them
+     * runs a tool, so none of them has a summary at all.
+     */
+    name: 'a turn summary does not add a second blank row before the next bar',
+    replies: [toolCall('probe.js', 'const a = 1;\n'), 'DONE HERE now.'],
+    steps: [{ send: 'make a file\r' }, { wait: 'Approve' }, { send: '\r' },
+            { wait: 'DONE HERE', timeout: 40 },
+            { send: '/plan\r' }, { wait: 'Plan Mode', timeout: 30 }],
+    expect: ['DONE HERE'],
+    blankAbove: [[' ❯ /plan', 1]],
+    // Below the summary, not above the bar: see `blankBelow` in run.mjs for
+    // why those are different questions. 2 here is the doubling.
+    blankBelow: [['  Worked for', 1]],
+    wrote: 'probe.js',
+    rows: 24, cols: 90,
+    maxClears: 0,
+  },
+  {
+    /*
+     * The control that keeps the one above honest, and the frame-budget half.
+     * Every blank row is charged to the live frame, so spacing is exactly what
+     * `COMPACT_BELOW_ROWS` exists to drop — and a scenario that only ever
+     * asserted "1" would pass just as well with the margin made unconditional,
+     * which is how a short terminal starts clearing its own scrollback.
+     */
+    name: 'the gap is dropped on a terminal too short to afford it',
+    replies: [],
+    steps: [{ send: '/plan\r' }, { wait: 'Plan Mode', timeout: 30 },
+            { send: '/auto\r' }, { wait: 'Auto Mode', timeout: 30 }],
+    expect: ['Switched to Auto Mode'],
+    blankAbove: [[' ❯ /auto', 0]],
+    rows: 10, cols: 80,
+    maxClears: 0,
+  },
 ];

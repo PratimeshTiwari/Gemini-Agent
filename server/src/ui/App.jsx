@@ -1113,12 +1113,16 @@ export function App({ agentLoop, wsServer }) {
           }
           if (row.kind === 'user') {
             return (
-              <UserBar key={row.id} content={row.content} isLive={false} terminalWidth={terminalWidth} />
+              <UserBar key={row.id} content={row.content} isLive={false}
+                terminalWidth={terminalWidth} compact={compact} />
             );
           }
           if (row.kind === 'summary') {
             return (
-              <Box key={row.id} flexDirection="column" marginBottom={1} width="100%">
+              // No `marginBottom`: the gap before the next turn belongs to that
+              // turn's prompt bar, so that a turn which has both a summary and
+              // a following bar does not get two blank rows. See UserBar.
+              <Box key={row.id} flexDirection="column" width="100%">
                 <TurnSummary
                   isLive={false}
                   duration={row.duration}
@@ -1190,6 +1194,7 @@ export function App({ agentLoop, wsServer }) {
               isLive
               fromItem={liveFrom}
               showUserBar={liveNeedsBar}
+              compact={compact}
               verbose={verbose}
               status={status}
               liveBudget={liveBudget}
