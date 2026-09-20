@@ -31,9 +31,6 @@ export class SessionStore {
     this.localFile = localSessionPath(workspacePath);
     this.homeFile = homeSessionPath(workspacePath);
 
-    // Kept for callers that still reference a single path.
-    this.sessionFile = this.localFile;
-
     this._reconcile();
   }
 

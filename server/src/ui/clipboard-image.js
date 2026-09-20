@@ -103,9 +103,3 @@ export function readClipboardImage(workspace) {
     return null;
   }
 }
-
-/** The marker that stands in for an image in the prompt. */
-export const imageMarker = (n, sizeKB) => `[Image #${n} ${sizeKB}KB]`;
-
-/** Every image marker, so they can be stripped before the text is sent. */
-export const IMAGE_MARKER = /\[Image #\d+ \d+KB\]\s*/g;
