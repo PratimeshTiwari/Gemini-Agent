@@ -31,34 +31,39 @@
  * reaching for.
  */
 const INTENT = {
-  flash: {
-    prefer: ['fastest', 'lite', 'flash'],
+  lite: {
+    prefer: ['lite', 'fastest', 'flash'],
     avoid: ['extended', 'complex', 'pro', 'advanced'],
   },
-  'flash-thinking': {
+  flash: {
     prefer: ['thinking', 'flash'],
     // A step up from flash, not a step into the heavyweight tier — and not back
     // down to the lite option either.
     avoid: ['lite', 'fastest', 'extended', 'complex'],
   },
-  brief: {
+  /*
+   * One entry since the ladder became three rungs (2026-09-20). It is
+   * `standard`'s list, because `pro` is `standard`'s profile — `deep`'s
+   * `prefer: ['extended', 'complex', …]` went with `deep`.
+   *
+   * **This table is keyed by rung id, which makes it the thing a rung change
+   * breaks silently.** `INTENT[effortId]` undefined means `pickModelFor`
+   * returns null, `planModelSwitch` answers `unavailable`, and `/effort pro`
+   * quietly stops matching any browser model — it still *reads* like it worked,
+   * because the message just changes from "Switching the browser" to "Asking
+   * the browser". Caught here only because `model-match.test.js` asserts on
+   * which of those two sentences comes back.
+   */
+  pro: {
     prefer: ['pro', 'reasoning', 'advanced'],
     avoid: ['extended', 'complex'],
-  },
-  standard: {
-    prefer: ['pro', 'reasoning', 'advanced'],
-    avoid: ['extended', 'complex'],
-  },
-  deep: {
-    prefer: ['extended', 'complex', 'pro', 'reasoning'],
-    avoid: [],
   },
 };
 
 const haystack = (m) => `${m.label || ''} ${m.description || ''}`.toLowerCase();
 
 /**
- * @param {string} effortId  a rung id: flash | flash-thinking | brief | standard | deep
+ * @param {string} effortId  a rung id: lite | flash | pro
  * @param {Array<{label: string, description?: string, selected?: boolean}>} models
  *        what the picker actually offers, in the order it offers it
  * @returns {{model: object, why: string}|null} null when there is nothing to pick
@@ -102,6 +107,34 @@ export function pickModelFor(effortId, models = []) {
  *
  * @returns {{action: 'none'|'switch'|'unavailable', model?: object, reason: string}}
  */
+/**
+ * Is the browser on a different model from the one this rung is written for?
+ *
+ * Reported from use: the CLI's status bar read **PRO** while the Gemini tab's
+ * picker read **Flash** — a pro-tier prompt going into a Flash tab, which
+ * `CLAUDE.md` names as the worst case, the long prompt to the model that
+ * handles long prompts worst. Nothing said so. `/effort` switches the picker
+ * when it is run, but the user can change it back, a new tab can open on
+ * something else, and the plan's default is whatever Google decides.
+ *
+ * **Silent unless both halves are known.** No reported selection means the
+ * picker has not been read, not that it disagrees — and a warning that fires on
+ * missing information is one people learn to ignore, which costs more than the
+ * mismatch it was meant to catch.
+ *
+ * @returns {{current: string, wanted: string} | null}
+ */
+export function modelMismatch(effortId, models = []) {
+  const options = (models || []).filter((m) => m && m.label);
+  const current = options.find((m) => m.selected);
+  if (!current) return null;
+  const plan = planModelSwitch(effortId, options);
+  // `none` is agreement; `unavailable` means nothing here suits the rung, which
+  // is a different problem and not one the user can fix from the picker.
+  if (plan.action !== 'switch' || !plan.model) return null;
+  return { current: current.label, wanted: plan.model.label };
+}
+
 export function planModelSwitch(effortId, models = []) {
   const options = (models || []).filter((m) => m && m.label);
   if (options.length === 0) {

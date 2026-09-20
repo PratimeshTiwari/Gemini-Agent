@@ -13,10 +13,12 @@
 
 import path from 'path';
 import * as paths from './paths.js';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, rmSync } from 'fs';
+import { randomUUID } from 'crypto';
 import os from 'os';
 import { resolve, relative, join, dirname } from 'path';
 import { CodeMinifier } from '../context/code-minifier.js';
+import { allocate, headAndTail, planSpoolPruning } from './result-budget.js';
 import { skillCatalogue } from './skills.js';
 import { resolveEffort } from './effort.js';
 import { renderToolDefinitions } from './tool-catalog.js';
@@ -55,6 +57,26 @@ export function agentMdState(body) {
 const MAX_TASK_ITEMS = 40;
 const MAX_TASK_CHARS = 2000;
 
+/**
+ * Characters the tool results of one prompt may occupy between them.
+ *
+ * Not a token budget: this is about what a content script types into a
+ * composer, and the cost that matters is paid on the wire and in Gemini's
+ * repetition heuristics.
+ *
+ * **It must not be tighter than the tightest per-tool cap it is composing.**
+ * This was 16 KB, chosen against `run_command`'s 50 KB — and `read_file`'s own
+ * page is 800 lines, about 44 KB, so a single read was being cut to a third of
+ * what the tool had already decided to give. That is this ceiling silently
+ * overruling a considered decision made one layer down, and it cost a real
+ * turn: the model saw "45,000 characters cut", concluded the file was
+ * unreadable, and answered from guesswork instead of paging it.
+ *
+ * 48 KB fits one `read_file` page whole. The case this exists for — five
+ * parallel `run_command`s at 50 KB each — is still cut from 250 KB to 48.
+ */
+const RESULT_BUDGET_CHARS = 48000;
+
 export class PromptBuilder {
   constructor(workspace, agentSourceDir) {
     this.workspace = workspace;
@@ -62,6 +84,8 @@ export class PromptBuilder {
     this.agentMdContent = this._loadAgentMd();
     this.messagesSinceRefresh = 0; // Messages sent to the tab since the last reminder
     this.hasSeenSystemPrompt = false; // Has the current chat session received a system prompt?
+    this.hasSeenHandover = false;     // ...and the full handover review, once
+    this.pendingToolRedeclare = false; // Does the next prompt owe the model its tools back?
   }
 
   /**
@@ -70,6 +94,33 @@ export class PromptBuilder {
   resetPromptState() {
     this.messagesSinceRefresh = 0;
     this.hasSeenSystemPrompt = false;
+    // A new thread has not seen the handover either, whatever the old one did.
+    this.hasSeenHandover = false;
+    // A full prompt carries the definitions anyway, so any outstanding
+    // redeclaration is already satisfied by the turn this reset causes.
+    this.pendingToolRedeclare = false;
+  }
+
+  /**
+   * The model denied having tools: put the definitions back, and nothing else.
+   *
+   * This used to go through `resetPromptState()`, which makes the next turn a
+   * *turn-0* prompt — system instructions, tool definitions, `AGENT.md`,
+   * memory and the skill catalogue, all of it again. The model had not
+   * forgotten what project it was in or what it had learned here; it had
+   * forgotten it has tools, which is one block of that payload.
+   *
+   * Resending the rest is not merely wasteful. The whole reason
+   * `PromptBuilder` tiers its prompts is that a large repeated payload trips
+   * Gemini's repetition and A/B-test filters — so the heaviest possible
+   * recovery prompt is a plausible *cause* of the next failure, fired
+   * precisely when the session is already unhealthy.
+   *
+   * The condensed reminder still rides along, because a model that has lost
+   * its tools has usually lost the framing with them, and that block is small.
+   */
+  requestToolRedeclaration() {
+    this.pendingToolRedeclare = true;
   }
 
   /**
@@ -87,17 +138,21 @@ export class PromptBuilder {
    * @param {string} options.mode - 'plan' or 'auto'
    * @returns {string} The complete prompt to inject
    */
-  buildPrompt({ userMessage, mode = 'plan', topology = 'single', modelConfig = {}, objective = '' }) {
+  buildPrompt({ userMessage, mode = 'plan', subagents = true, modelConfig = {}, objective = '' }) {
     const parts = [];
 
     const needsFullPrompt = !this.hasSeenSystemPrompt;
-    const needsRefresh = !needsFullPrompt && this.messagesSinceRefresh >= REFRESH_INTERVAL_MESSAGES;
+    // A repair outranks the periodic refresh: the refresh sends names only,
+    // which is exactly what the model has just demonstrated is not enough.
+    const needsToolRedeclare = !needsFullPrompt && this.pendingToolRedeclare;
+    const needsRefresh = !needsFullPrompt && !needsToolRedeclare
+      && this.messagesSinceRefresh >= REFRESH_INTERVAL_MESSAGES;
 
     if (needsFullPrompt) {
       // First turn in this chat session — send everything
-      parts.push(`<system_state mode="${mode}" topology="${topology}">`);
-      parts.push(this._buildSystemInstructions(mode, topology, modelConfig));
-      parts.push(this._buildToolDefinitions(topology, modelConfig));
+      parts.push(`<system_state mode="${mode}" subagents="${subagents ? 'on' : 'off'}">`);
+      parts.push(this._buildSystemInstructions(mode, subagents, modelConfig));
+      parts.push(this._buildToolDefinitions(subagents, modelConfig));
       
       if (objective && objective.trim() !== userMessage.trim()) {
         parts.push(`<current_objective>\n${objective}\n</current_objective>`);
@@ -128,12 +183,20 @@ export class PromptBuilder {
 
       this.hasSeenSystemPrompt = true;
       this.messagesSinceRefresh = 0;
+      this.pendingToolRedeclare = false;
+    } else if (needsToolRedeclare) {
+      // The targeted repair: the framing and the full definitions, without
+      // AGENT.md, memory or the skill catalogue, which the model never lost.
+      parts.push(this._buildCondensedReminder(mode, objective, modelConfig));
+      parts.push(this._buildToolDefinitions(subagents, modelConfig));
+      this.pendingToolRedeclare = false;
+      this.messagesSinceRefresh = 0;
     } else if (needsRefresh) {
       // Periodic refresh — a reminder, not a re-teach. Gemini Web still has the full
       // definitions in its own thread, so resending them buys nothing and resending a
       // large block is what trips the A/B-test modal. Names only.
       parts.push(this._buildCondensedReminder(mode, objective, modelConfig));
-      parts.push(this._buildToolIndex(topology, modelConfig));
+      parts.push(this._buildToolIndex(subagents, modelConfig));
       this.messagesSinceRefresh = 0;
     } else {
       // Regular turn — just a brief context line
@@ -146,7 +209,7 @@ export class PromptBuilder {
       }
       // The anchor goes on the same line as the workspace: one short bracketed
       // context line, not two competing headers.
-      const anchor = this._buildToolAnchor(topology, modelConfig);
+      const anchor = this._buildToolAnchor(subagents, modelConfig);
       parts.push(anchor ? `${contextLine} ${anchor}` : contextLine);
     }
 
@@ -251,21 +314,96 @@ export class PromptBuilder {
    *
    * @param {Array<{name: string, result: any}>} results
    */
-  buildToolResultBatch(results = []) {
+  /**
+   * @param {object[]} results
+   * @param {string} [turnEvidence] - what has actually run this turn, from
+   *   `AgentLoop.turnEvidence`. Derived from dispatched calls, never from
+   *   anything the model said.
+   */
+  /**
+   * The handover review, for the round that has earned it.
+   *
+   * `brief` gets the four-point version, not nothing and not the seven-point
+   * one. Its promise is "straight to work", and a long review on a one-line fix
+   * is ceremony people learn to skip — but "did you run it" and "what did you
+   * not do" are worth asking at any size.
+   *
+   * The flash rungs are unaffected: their handover is a few lines inside their
+   * own reasoning prompt, small enough that moving it would cost more in
+   * machinery than it saves in characters.
+   *
+   * @param {string} effort
+   * @returns {string} '' for a rung that carries its own
+   */
+  buildHandoverBlock(effort) {
+    const { tier, level } = resolveEffort(effort);
+    if (tier !== 'pro') return '';
+
+    /**
+     * Full once per chat, a pointer after — the tool anchor's shape.
+     *
+     * Measured on real use rather than on the test fixtures, which flattered
+     * it: turns are short (median 1 message) and 29% change something, so
+     * "once per working turn" sends this **five times** where the old
+     * every-20-messages refresh sent it once. Five times a small block beats
+     * once inside a 26,000-character payload, but it still grows with session
+     * length, and repeated payloads are the thing this project's whole prompt
+     * strategy exists to avoid.
+     *
+     * So: the definitions once, the reminder thereafter. 1,879 characters the
+     * first time a turn has something to hand over, 96 every time after.
+     */
+    if (this.hasSeenHandover) {
+      return 'Before you finish: close with the `## Review` block — checklist, what you ran, '
+        + 'callers checked, what you did not do.';
+    }
+    this.hasSeenHandover = true;
+    /*
+     * `handover-lite` used to be `brief`'s four-point version. With one pro
+     * rung there is no `brief`, so pro always gets the full review — and the
+     * lite copy is not orphaned: `_getReasoningInstructions` still hands it to
+     * `flash`, which is the rung it now belongs to.
+     */
+    return prompt('pro-handover-review');
+  }
+
+  buildToolResultBatch(results = [], turnEvidence = '', handover = '') {
     const failures = results.filter((r) => r.failed);
 
-    const body = results.map(({ name, result, failed }) => [
+    /**
+     * One ceiling for the whole batch, divided fairly.
+     *
+     * The per-tool caps do not compose — `run_command` allows 50 KB *each* and
+     * `_executeToolCalls` runs calls in parallel, so five commands was 250 KB
+     * typed into a browser composer by a content script. Nothing capped the
+     * batch, in the project whose entire prompt strategy exists to avoid large
+     * payloads.
+     *
+     * Serialised first, because the budget is about what is *typed*, and a
+     * minified object is a different size from the object.
+     */
+    const serialised = results.map(({ name, result, failed }) => ({
+      name,
       // `status="failed"` is the point: a non-zero exit code inside minified
       // JSON is easy to skim past, and the model would summarise a failed
       // command back to the user as though it had worked.
-      failed ? `<result tool="${name}" status="failed">` : `<result tool="${name}">`,
+      failed,
       // Minified, not pretty-printed. Every tool result goes into the prompt,
       // and indentation is the single largest avoidable cost there — a plain
       // list_directory result is 40% smaller without it. The model does not
       // read the whitespace; the token budget does.
-      typeof result === 'string' ? result : CodeMinifier.minifyJson(result),
+      text: typeof result === 'string' ? result : CodeMinifier.minifyJson(result),
+    }));
+    const allowances = allocate(serialised.map((r) => r.text.length), RESULT_BUDGET_CHARS);
+
+    const body = serialised.map(({ name, text, failed }, i) => [
+      failed ? `<result tool="${name}" status="failed">` : `<result tool="${name}">`,
+      allowances[i] >= text.length
+        ? text
+        : headAndTail(text, allowances[i], this._spool(name, text)),
       `</result>`,
     ].join('\n'));
+
 
     const instruction = failures.length > 0
       // Fix, do not narrate. Left to itself the model reports the error back to
@@ -279,13 +417,75 @@ export class PromptBuilder {
       : 'Reply once, with exactly one of: the next tool call, or your final answer to the '
         + 'user. To change a file, use edit_file or create_file — do not paste code at them.';
 
+    /**
+     * The turn's own record, handed back before it reports on itself.
+     *
+     * `pro-handover-review.md` asks it to say what it ran and whose callers it
+     * checked, and nothing ever checked the answer — so prose was always
+     * cheaper than a tool call and looked identical on screen. One observed
+     * review claimed `Ran: adversarial analysis` having run nothing, and
+     * `Callers checked: …` having called `find_references` zero times.
+     *
+     * This is the prevention half, and it rides here rather than on
+     * `buildPrompt` for a simple reason: `buildPrompt` runs once, at the top of
+     * the turn, when nothing has happened yet. The place where the tally is
+     * both non-empty and about to matter is the round where the model decides
+     * whether to tick a box, claim a check, or answer.
+     *
+     * A dozen characters, derived, and it cannot be wrong about itself the way
+     * the model's own account can.
+     */
+    const evidence = turnEvidence
+      ? ['', `<turn_so_far>${turnEvidence}</turn_so_far>`,
+        'Report only what is in that list. Anything else is "not checked".']
+      : [];
+
+    // After the evidence and before the closing instruction. The model reads
+    // the last thing hardest, and the last thing must stay "what to do next" —
+    // the review is a condition on finishing, not the next action.
+    const review = handover ? ['', handover] : [];
+
     return [
       '<tool_results>',
       ...body,
       '</tool_results>',
+      ...evidence,
+      ...review,
       '',
       instruction,
     ].join('\n');
+  }
+
+  /**
+   * Write a result that did not fit, and say where it went.
+   *
+   * This is what makes truncation non-lossy, and it is the difference between
+   * a batch ceiling and the per-tool caps that already existed: the model can
+   * `read_file` the rest if it turns out to need it. Without it, a cut result
+   * is a decision made on the model's behalf about what mattered.
+   *
+   * Best-effort. A workspace we cannot write to is not a reason to fail a turn
+   * — the excerpt is still useful — so a failure here just drops the pointer.
+   *
+   * @returns {string} a note for the cut marker, or '' if nothing was written
+   */
+  _spool(name, text) {
+    try {
+      const dir = paths.tmpDir(this.workspace);
+      mkdirSync(dir, { recursive: true });
+      const file = `${name}-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}.txt`;
+      writeFileSync(path.join(dir, file), text, 'utf-8');
+
+      // Or `.agent/tmp/` grows by one file per over-budget batch, forever.
+      // Pruned after the write rather than before, so the one just written is
+      // counted and the newest is never the one deleted.
+      for (const old of planSpoolPruning(readdirSync(dir))) {
+        try { rmSync(path.join(dir, old), { force: true }); } catch { /* it can wait */ }
+      }
+      return `full output: \`.agent/tmp/${file}\` (read_file it)`;
+    } catch {
+      return '';
+    }
   }
 
   /** Single-result convenience wrapper over {@link buildToolResultBatch}. */
@@ -318,10 +518,20 @@ export class PromptBuilder {
 
   // ── Private Methods ──────────────────────────────────────────────
 
-  _buildSystemInstructions(mode, topology = 'single', modelConfig = {}) {
+  _buildSystemInstructions(mode, subagents = true, modelConfig = {}) {
     const modeInstructions = mode === 'auto'
       ? 'You are in AUTO MODE. Safe operations (reads, searches, small additions) will be auto-applied. Risky operations (large rewrites, deletions, commands) will still require user approval.'
-      : 'You are in PLAN MODE. All file modifications and command executions require user approval before being applied.';
+      // "Require user approval before being applied" is true and reads as
+      // "obtain approval before you call the tool" — so the model stops and
+      // asks in prose ("Ready to exit PLAN MODE and implement the fixes?"),
+      // which spends a turn on a question the user cannot answer with a
+      // keypress. The tool catalog already forbids that in as many words; it
+      // was being contradicted by this line. Saying what actually happens
+      // costs nothing and removes the reason to ask.
+      : 'You are in PLAN MODE. Call edit_file, create_file and run_command exactly as you '
+        + 'normally would — the user is shown the diff or the command and approves or rejects '
+        + 'it before anything happens. Do not ask in prose for permission to proceed or to '
+        + 'change mode; propose the change and let them answer it.';
 
     // One setting decides both. They used to be stored separately and could
     // disagree — "flash tier, deep reasoning" was representable and meant
@@ -331,11 +541,11 @@ export class PromptBuilder {
     const reasoningLevel = effort.level || 'standard';
 
     // Tier-adaptive core instructions
-    const coreInstructions = modelTier === 'flash'
+    const coreInstructions = modelTier === 'lite'
       ? this._buildFlashCoreInstructions()
       : this._buildFullCoreInstructions(modelTier);
 
-    const reasoningInstructions = this._getReasoningInstructions(modelTier, reasoningLevel);
+    const reasoningInstructions = this._getReasoningInstructions(modelTier, reasoningLevel, subagents);
 
     // Tool call format (Flash gets examples, Pro gets description only)
     const toolCallFormat = this._buildToolCallFormat(modelTier);
@@ -356,41 +566,42 @@ ${reasoningInstructions}
 `;
 
     // Topology-specific instructions
-    let topologyInstructions = '';
+    /*
+     * One block, not two.
+     *
+     * There were a Solo and a Duo version, and Duo's told the model it was
+     * "the PRIMARY coding agent in a 2-agent system" with a "Security Reviewer
+     * subagent (powered by gemini, but abstract this detail)" — a two-model
+     * framing that outlived the second model, a reviewer narrowed to security
+     * that `deep` then asked for general review, and an instruction to abstract
+     * a detail it was being given in the same sentence.
+     *
+     * Its one genuinely load-bearing line survives, moved into the subagent
+     * paragraph below: give the reviewer the specific paths and the purpose.
+     * That is what makes a reader with no context useful rather than decorative.
+     */
+    const subagentParagraph = subagents ? `
+You can fan work out to parallel tabs of yourself with \`ask_subagent\` — \`role: "research"\` for
+read-only exploration you would otherwise do with a long serial chain of read_file calls,
+\`role: "review"\` to have a finished change read by someone who does not share your assumptions,
+\`role: "task"\` for a self-contained errand. Each one starts empty: it has not seen this
+conversation, so send the specific file paths, the change itself, and what it is meant to do.
+A reference to "the fix above" means nothing to it. They run in parallel and return to you.
+Delegating judgement about what to *write* is what you cannot do — every edit is yours.` : `
+There are no subagents available in this session, so planning, research, implementation and
+review are all yours. Nothing can be delegated; say what you have not checked rather than
+implying it was checked elsewhere.`;
 
-    if (topology === 'single') {
-      topologyInstructions = `
-## Role: Solo Agent
-You are the only *model* on this task — there is no reviewer to defer to, so
-planning, implementation, review and testing are all yours. You can still fan work out to
-parallel tabs of yourself: \`ask_researcher\` for read-only exploration you would otherwise do
-with a long serial chain of read_file calls, \`ask_subagent\` for a self-contained side task.
-They run in parallel and return to you. Delegating judgement is what you cannot do here.
+    const topologyInstructions = `
+## Role: Coding Agent
+You are the only agent on this task — planning, implementation, review and testing are yours.
+${subagentParagraph}
 
 - When tasks are complex, create a plan first (save it to \`.agent/artifacts/implementation_plan.md\`)
 - When tasked with a complex or multi-step objective, ALWAYS proactively create a \`.agent/artifacts/task.md\` checklist using the \`create_file\` tool to plan your work, similar to Antigravity IDE. Its current contents are given back to you in \`<task_checklist>\` on every turn — tick an item the moment it is done, with \`edit_file\` replacing that exact line's \`- [ ]\` with \`- [x]\`. The user is reading that file to see where you are.
 - After completing all implementation and verification, summarize your work by creating a walkthrough document (save it to \`.agent/artifacts/walkthrough.md\`). Document changes made, what was tested, and validation results.
 - After implementing changes, self-review: re-read the edited files and verify correctness
 - If you're not confident in a change, tell the user explicitly rather than guessing`;
-
-    } else if (topology === 'duo') {
-      const reviewer = modelConfig.reviewer || 'chatgpt';
-      topologyInstructions = `
-## Role: Primary Agent (Duo System)
-You are the PRIMARY coding agent in a 2-agent system.
-You have a Security Reviewer subagent (powered by ${reviewer}, but abstract this detail) available via the \`ask_reviewer\` tool.
-
-**Your Role**: Plan, research, and implement changes using your tools.
-**Reviewer's Role**: Verify your work — find bugs, security issues, and quality problems.
-
-**Delegation Rules**:
-- ALWAYS send completed edits to the reviewer before telling the user you're done (for non-trivial changes)
-- Provide the reviewer with the SPECIFIC file path, the changes made, and the purpose
-- If the reviewer finds issues, fix them and re-submit
-- Do NOT send vague questions. Send concrete code + context
-- For trivial changes (typos, formatting), skip the review`;
-
-    }
 
     // toolCallFormat goes last: <available_tools> is appended straight after
     // this block, and the format is the contract for reading that list.
@@ -409,15 +620,62 @@ ${toolCallFormat}
    * Build a wrapper prompt for subagent delegation.
    * This is prepended to the user's prompt when sending to a subagent.
    */
+  /**
+   * What the subagent is told it is.
+   *
+   * This took a `role` and **ignored it**: every subagent — reviewer,
+   * researcher, generic — got one "you are a HELPER SUBAGENT … return a clear,
+   * concise result" wrapper. So `ask_reviewer`, `ask_researcher` and
+   * `ask_subagent` were the same tool three times, and the cold adversarial
+   * read that `deep` promised was never asked for anywhere. The three names
+   * were the only thing implying otherwise.
+   *
+   * Each wrapper below leads with the one thing that role must not forget. For
+   * `review` that is **read before judging**: the failure this exists to catch
+   * is a reviewer reading enough to cite and then reasoning from the citation,
+   * which is exactly what an unbriefed helper does with a diff.
+   */
   buildSubagentWrapper(role) {
-    
-    // Default generic subagent wrapper
-    return `<role>
-You are a HELPER SUBAGENT. The main coding agent has delegated a task to you to run in parallel.
-Your job is to execute the task using your read-only tools if necessary and return a clear, concise result.
+    const ROLES = {
+      review: `<role>
+You are a REVIEWER. You have not seen the conversation that produced this work and you cannot
+see the repository state the author sees — you have only what is below, plus read-only tools.
+
+**Read before you judge.** If the request claims something about a file, open that file and
+check the claim before agreeing or disagreeing with it. Do not reason from a line number
+someone quoted at you; go and read around it. A review that repeats the author's assumptions
+back to them is worth nothing, and that is the failure this role exists to prevent.
+
+Report what you found, with file and line for every claim you make. If you did not check
+something, say so plainly rather than hedging — "not checked" is a useful answer and "this
+should be fine" is not.
 </role>
 
-`;
+`,
+      research: `<role>
+You are a RESEARCHER. You have read-only tools and no memory of the conversation that sent you.
+
+Your job is to find things and report where they are, not to judge or fix them. Answer with
+file paths and line numbers; a finding without a location cannot be acted on. Cover breadth
+before depth — the caller usually wants to know everywhere something appears, not everything
+about the first place it appears. If you cannot find it, say where you looked, because that is
+what stops the caller repeating your search.
+</role>
+
+`,
+      task: `<role>
+You are a HELPER SUBAGENT. The main coding agent has delegated a self-contained task to you to
+run in parallel. You have read-only tools and only the context below.
+
+Do the task and return the result, not a narration of how you got it. If the task is
+underspecified, say what you assumed rather than guessing silently.
+</role>
+
+`,
+    };
+    // An unknown role is the generic one rather than an error: the role comes
+    // from the model, and a turn should not die because it invented a word.
+    return ROLES[String(role || '').toLowerCase()] || ROLES.task;
   }
 
   /**
@@ -429,11 +687,11 @@ Your job is to execute the task using your read-only tools if necessary and retu
    * Flash models struggle with long prompts — keep it minimal.
    */
   _buildFlashCoreInstructions() {
-    return prompt('core-flash');
+    return prompt('core-terse');
   }
 
   /**
-   * Full core instructions for flash-thinking and pro tiers.
+   * Full core instructions for the flash and pro tiers.
    */
   _buildFullCoreInstructions(modelTier) {
     return `## Core Principles
@@ -480,39 +738,43 @@ ${modelTier === 'pro' ? `## 4. Communication
    * does not need the tokens spent on showing it.
    */
   _buildToolCallFormat(tier) {
-    return prompt(tier === 'flash' ? 'tool-call-format-flash' : 'tool-call-format-full');
+    return prompt(tier === 'lite' ? 'tool-call-format-terse' : 'tool-call-format-full');
   }
 
   /**
    * Tier-specific reasoning instructions.
    * This is the core differentiation between model tiers.
    */
-  _getReasoningInstructions(tier, level = 'standard') {
+  _getReasoningInstructions(tier, level = 'standard', subagents = true) {
     switch (tier) {
-      case 'flash':
+      case 'lite':
         return this._getFlashInstructions();
-      case 'flash-thinking':
+      case 'flash':
         return this._getFlashThinkingInstructions();
       case 'pro':
       default:
-        return this._getProInstructions(this._normalizeLevel(level));
+        return this._getProInstructions(this._normalizeLevel(level), subagents);
     }
   }
 
   /**
    * Reasoning levels only mean anything for the pro tier — the flash tiers are
    * defined by *not* having room for the scaffolding.
+   *
+   * There is one pro level since 2026-09-20, so this now has one job: turn
+   * whatever it is handed — including a `brief` or `deep` left in a config
+   * written by an older version — into the one level that exists. Kept as a
+   * function rather than inlined because every caller reaching it is a caller
+   * that would otherwise branch on a level, which is the thing being removed.
    */
-  _normalizeLevel(level) {
-    const allowed = ['brief', 'standard', 'deep'];
-    const wanted = String(level ?? '').toLowerCase();
-    return allowed.includes(wanted) ? wanted : 'standard';
+  // eslint-disable-next-line class-methods-use-this
+  _normalizeLevel() {
+    return 'standard';
   }
 
-  /** One-line protocol reminder, matched to the level in force. */
-  _reminderLineForLevel(level) {
-    if (level === 'brief') return '- Investigate → Implement → Verify. Read before you edit.';
-    if (level === 'deep') return '- Restate and decompose first, then Investigate → Analyze → Implement → Verify, then self-review the diff.';
+  /** One-line protocol reminder. One level, so one line. */
+  // eslint-disable-next-line class-methods-use-this
+  _reminderLineForLevel() {
     return '- Restate the task and decompose it into a checklist first, then Investigate → Analyze → Implement → Verify.';
   }
 
@@ -535,7 +797,7 @@ ${modelTier === 'pro' ? `## 4. Communication
    * tier is for is one the model follows worse, not better.
    */
   _getFlashInstructions() {
-    return `${prompt('reasoning-flash')}\n\n${prompt('handover-micro')}`;
+    return `${prompt('reasoning-lite')}\n\n${prompt('handover-micro')}`;
   }
 
   /**
@@ -550,7 +812,7 @@ ${modelTier === 'pro' ? `## 4. Communication
    * protocol and a context budget twice Flash's, so the check costs ~2% here.
    */
   _getFlashThinkingInstructions() {
-    return `${prompt('reasoning-flash-thinking')}\n\n${prompt('handover-lite')}`;
+    return `${prompt('reasoning-flash')}\n\n${prompt('handover-short')}`;
   }
 
   /**
@@ -565,9 +827,23 @@ ${modelTier === 'pro' ? `## 4. Communication
    *   standard — restate and decompose first, then the 4-phase protocol. (default)
    *   deep     — standard, plus approach enumeration and adversarial self-review.
    */
-  _getProInstructions(level = 'standard') {
-    const isBrief = level === 'brief';
-    const isDeep = level === 'deep';
+  _getProInstructions(level = 'standard', subagents = true) {
+    /*
+     * `isBrief` and `isDeep` used to live here, gating the blocks that told
+     * three pro rungs apart. One rung since 2026-09-20, so both were constants:
+     * every `isBrief ? a : b` took `b` and every `isDeep ? a : ''` took `''`.
+     * Collapsed rather than left reading as a choice — a branch that can only
+     * go one way is a comment that lies, and this file is the one with the
+     * never-bulk-edit warning on it.
+     *
+     * What went with them: `brief`'s three-phase protocol and its shorter
+     * investigation, `deep`'s CRITICAL ANALYSIS phase and its ASSUMPTION
+     * LEDGER. `deep`'s third block — the review step — stayed, and is now
+     * gated on `hasReviewer` alone. See `core/effort.js` for why those two and
+     * not the third.
+     */
+    // A second *model*, not a second persona. See the review step below.
+    const hasReviewer = Boolean(subagents);
 
     const header = `## Cognitive Mode: PRINCIPAL ENGINEER
 
@@ -576,7 +852,7 @@ defensible in review. You DO NOT guess. You VERIFY.
 Reasoning level: **${level}**.`;
 
     // The heart of it: decide what you are doing before you touch anything.
-    const planFirst = isBrief ? '' : `\n${prompt('pro-plan-first')}\n`;
+    const planFirst = `\n${prompt('pro-plan-first')}\n`;
 
     const investigate = `
 ### PHASE 1: INVESTIGATION (never skip)
@@ -586,32 +862,23 @@ Before forming an opinion or writing code:
 1. **Read the relevant files** — not just the target. Imports, callers, tests, configs.
 2. **Trace the execution path** — who CALLS this, what it CALLS, what SIDE EFFECTS it has.
 3. **Check existing tests** — what IS covered and what is NOT.
-4. **Search for the project's own patterns** before deviating from them.${isBrief ? '' : `
-5. **Map the blast radius** — every file that a change here could affect.`}
+4. **Search for the project's own patterns** before deviating from them.
+5. **Map the blast radius** — every file that a change here could affect.
 
 **Chain-of-Thought**: Open each phase with a <thought> block — what you know, what you need
 next, what you expect the next call to show. One per phase, not one per call: a four-point
-preamble in front of every read turns a five-file investigation into twenty round-trips.`;
+preamble in front of every read turns a five-file investigation into twenty round-trips.
 
-    const analyse = isBrief ? '' : (isDeep ? `
-### PHASE 2: CRITICAL ANALYSIS
+${prompt('pro-hypothesis')}`;
 
-In a <thought> block:
-
-1. **Root cause** — what EXACTLY is wrong. Not the symptom.
-2. **Approach enumeration** — 2-4 options. For each: how it works, pros, cons, and the edge
-   cases it does and does not handle.
-3. **Recommendation** — pick the best, not the easiest, and justify it in one line.
-4. **Risk assessment** — null/empty inputs, concurrency, scale, unicode, error propagation
-   across module boundaries.
-5. **Security** — injection, auth bypass, data leak, path traversal.` : `
+    const analyse = `
 ### PHASE 2: ANALYSIS
 
 In a <thought> block: the root cause (not the symptom), the approach you have chosen and why,
-and what could go wrong with it — empty inputs, concurrent access, scale, error propagation.`);
+and what could go wrong with it — empty inputs, concurrent access, scale, error propagation.`;
 
     const implement = `
-### PHASE ${isBrief ? '2' : '3'}: SURGICAL IMPLEMENTATION
+### PHASE 3: SURGICAL IMPLEMENTATION
 
 1. The SMALLEST change that solves the problem correctly.
 2. Handle every error case explicitly — no empty catch blocks, no swallowed errors.
@@ -620,14 +887,18 @@ and what could go wrong with it — empty inputs, concurrent access, scale, erro
 5. Mark any assumption you must make: **⚠️ ASSUMPTION**: [what] — and what changes if wrong.`;
 
     const verify = `
-### PHASE ${isBrief ? '3' : '4'}: VERIFICATION (never skip)
+### PHASE 4: VERIFICATION (never skip)
 
 1. **Re-read the edited file** — confirm the edit landed as intended.
 2. **Run the tests** if they exist.
 3. **Re-check the callers** you found in Phase 1. Does your change break them?
-4. **Name the gaps** — any path you introduced that nothing covers.${isDeep ? `
+4. **Name the gaps** — any path you introduced that nothing covers.${hasReviewer ? `
+5. **Send the diff to \`ask_subagent\` with \`role: "review"\`** — a second tab, reading it
+   cold, with no memory of why you chose any of it. Paste the diff itself, the file paths,
+   and what the change is meant to do — it cannot see your files. Act on what comes back
+   or say why you are not; do not paste it onward unread.` : `
 5. **Adversarial self-review** — read the diff as a hostile reviewer. What would you flag?
-   Say it out loud rather than hoping nobody looks.` : ''}`;
+   Say it out loud rather than hoping nobody looks.`}`;
 
     const guardrails = `\n${prompt('pro-guardrails')}`;
 
@@ -645,31 +916,28 @@ and what could go wrong with it — empty inputs, concurrent access, scale, erro
      * would be asked to audit a list it cannot see, which is the write-only
      * trap that made the original task.md useless.
      */
-    // `brief` gets the four-point version, not nothing and not the seven-point
-    // one. Its promise is "straight to work", and a long review on a one-line
-    // fix is ceremony people learn to skip — but "did you run it" and "what did
-    // you not do" are worth asking at any size, and cost ~2% of this prompt.
-    const handover = `\n${prompt(isBrief ? 'handover-lite' : 'pro-handover-review')}`;
+    /*
+     * The handover review is **not** here any more — see `buildHandoverBlock`.
+     *
+     * It is instructions for the *end* of a turn, and this block is delivered at
+     * the *start* of one. By the time the model has run twenty tool calls and is
+     * writing its answer, 1,879 characters of "check your work" are thousands of
+     * tokens behind it. That is the same failure the tool anchor exists for: the
+     * model does not gradually forget, it forgets completely, and the cure was
+     * to put the thing where it is needed rather than to say it louder up front.
+     *
+     * It now rides the tool-result prompt of the round that first changes
+     * something, which is both nearer the point of use and free on the turns —
+     * most of them — that only answer a question.
+     */
+    const handover = '';
 
-    const assumptions = isDeep ? `
-
-## ASSUMPTION LEDGER
-
-Collect every **⚠️ ASSUMPTION** you relied on into a closing section, each with what changes if
-it is wrong:
-
-\`\`\`
-## ⚠️ Assumptions
-1. **Assumed**: \`validateToken()\` returns a boolean. If it returns a Promise<boolean>, the fix must be async.
-\`\`\`
-
-Never proceed past an assumption *silently* — but stating one and continuing is normal work.
-Stop and call \`ask_question\` only when being wrong would cost real effort to undo.` : '';
+    const assumptions = '';
 
     return [
       header,
       planFirst,
-      `\n## ${isBrief ? '3-PHASE' : 'MANDATORY 4-PHASE'} PROTOCOL`,
+      '\n## MANDATORY 4-PHASE PROTOCOL',
       investigate,
       analyse,
       implement,
@@ -691,11 +959,11 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
    * were registered, implemented and unreachable for exactly that reason.
    *
    * The text is unchanged: it was moved byte-for-byte and `tool-catalog.test.js`
-   * pins every tier x topology shape against what this method used to return.
+   * pins every tier x subagent shape against what this method used to return.
    */
-  _buildToolDefinitions(topology = 'single', modelConfig = {}) {
+  _buildToolDefinitions(subagents = true, modelConfig = {}) {
     const tier = resolveEffort(modelConfig.effort).tier;
-    return renderToolDefinitions(tier, topology, modelConfig);
+    return renderToolDefinitions(tier, subagents, modelConfig);
   }
 
   /**
@@ -761,13 +1029,13 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
    * confidence, and the turn is lost. Detecting that afterwards is guesswork
    * over prose; keeping a name list in front of it is not.
    *
-   * Names are fixed for a given topology, so this is computed once.
+   * The names are fixed for a given toggle state, so this is computed once.
    */
-  _buildToolAnchor(topology = 'single', modelConfig = {}) {
-    const key = `${topology}:${modelConfig.reviewer || ''}`;
+  _buildToolAnchor(subagents = true, modelConfig = {}) {
+    const key = String(Boolean(subagents));
     if (this._anchorCache?.key === key) return this._anchorCache.value;
 
-    const defs = this._buildToolDefinitions(topology, modelConfig);
+    const defs = this._buildToolDefinitions(subagents, modelConfig);
     const names = [...defs.matchAll(/^## ([a-z_]+)/gm)].map((m) => m[1]);
     const value = names.length
       ? `[tools: ${names.join(' ')}]`
@@ -776,8 +1044,8 @@ Stop and call \`ask_question\` only when being wrong would cost real effort to u
     return value;
   }
 
-  _buildToolIndex(topology = 'single', modelConfig = {}) {
-    const defs = this._buildToolDefinitions(topology, modelConfig);
+  _buildToolIndex(subagents = true, modelConfig = {}) {
+    const defs = this._buildToolDefinitions(subagents, modelConfig);
     const names = [...defs.matchAll(/^## ([a-z_]+)/gm)].map(m => m[1]);
     return `<available_tools>
 ${names.join(', ')}
@@ -793,7 +1061,7 @@ Full parameter schemas were given earlier in this chat — scroll back to them r
     const modeStr = mode === 'auto' ? 'AUTO MODE (safe ops auto-applied)' : 'PLAN MODE (all edits need approval)';
     const tier = resolveEffort(modelConfig.effort).tier;
 
-    if (tier === 'flash') {
+    if (tier === 'lite') {
       // Ultra-short reminder for Flash
       return `<system_reminder>
 Mode: ${modeStr}. Workspace: \`${this.workspace}\`${objective ? ` | Goal: ${objective.substring(0, 80)}` : ''}

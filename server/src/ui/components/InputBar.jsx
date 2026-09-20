@@ -4,17 +4,10 @@ import { PromptInput } from './PromptInput.jsx';
 import { RunningLine } from './RunningLine.jsx';
 import { FOCUS_INPUT } from '../constants.js';
 import { applyPaste, nextPasteId } from '../paste.js';
+import { oneLine } from '../format.js';
 import { hasClipboardImage } from '../clipboard-image.js';
 
 /** First `n` non-empty lines of an artifact, for the one-glance summary. */
-function head(text, n) {
-  return String(text || '')
-    .split('\n')
-    .filter((l) => l.trim())
-    .slice(0, n)
-    .join('\n');
-}
-
 /**
  * The bottom of the agent tab: the thinking line while a turn runs, then the
  * prompt with its slash palette.
@@ -27,9 +20,12 @@ function head(text, n) {
  * the prompt is visible, so there is no state in which typing goes nowhere.
  */
 export function InputBar({
+  queued = [],
   activeMenu,
   addPaste,
   artifacts,
+  artifactsOpen,
+  artifactLines = 6,
   filedSession,
   history,
   diffRequest,
@@ -60,7 +56,36 @@ export function InputBar({
   verbose,
   compact,
 }) {
-  const hasArtifacts = Boolean(artifacts?.task || artifacts?.walkthrough);
+  const hasArtifacts = Boolean(artifacts?.task || artifacts?.review || artifacts?.walkthrough);
+
+  /**
+   * `3/6 done` on the header row, so the panel answers the question it exists
+   * for without being opened at all. Counted from the file, which is the only
+   * copy either the user or the model can be looking at.
+   */
+  const progress = (() => {
+    if (!artifacts?.task) return '';
+    const items = String(artifacts.task).match(/^\s*[-*]\s*\[[ xX]\]/gm) || [];
+    if (items.length === 0) return '';
+    const done = items.filter((l) => /\[[xX]\]/.test(l)).length;
+    return `${done}/${items.length} done`;
+  })();
+
+  /**
+   * Counted before it is cut, or the count is always zero.
+   *
+   * The first version ran `head(task, artifactLines)` and *then* sliced to
+   * `artifactLines`, so the overflow was the difference between a number and
+   * itself — the `… +N more` row could never appear, and a list cut to two
+   * lines looked like a list with two items.
+   */
+  const artifactBody = [artifacts?.task, artifacts?.review, artifacts?.walkthrough]
+    .filter(Boolean)
+    .join('\n')
+    .split('\n')
+    .filter((l) => l.trim());
+  const shownArtifactLines = artifactBody.slice(0, artifactLines);
+  const artifactOverflow = artifactBody.length - shownArtifactLines.length;
   const promptVisible = !diffRequest && !terminalOpen && !activeMenu;
 
   // Bracketed paste, which this hook turns on, is what separates "the user
@@ -122,7 +147,7 @@ export function InputBar({
         <Box flexDirection="column" marginTop={compact ? 0 : 1}>
           {/*
             What happened to the last conversation.
-            
+
             Starting without `--continue` files it and clears the screen, which
             from the outside is indistinguishable from losing it. The storage,
             the flags and the picker were all built and nothing ever said a
@@ -130,39 +155,79 @@ export function InputBar({
             displaying the session id for resume?"
 
             One row, once, and only on the run that filed something. It is
-            dismissed by the first message, because after that the id is
-            history rather than an offer.
+            dismissed by the first message, because after that it is history
+            rather than an offer.
+
+            **It used to print `--resume <id>`, and that was the wrong offer.**
+            A 28-character timestamp id is not something anyone reads or types,
+            and the command it belonged to only works at launch — so the CLI's
+            answer to "where did my last chat go?" was to quit and start again.
+            Reported as exactly that. `/history` is in the session you are
+            already in, lists every conversation rather than the most recent
+            one, and says per row whether the model still remembers it.
           */}
           {filedSession && !isProcessing && history.length === 0 && (
             <Box marginBottom={1}>
-              {/*
-                The id leads, and the prose trails it, because `wrap="truncate"`
-                eats the tail: with the sentence first, an 80-column terminal cut
-                the id mid-suffix and left a `--resume` that resumes nothing —
-                which is worse than showing no row at all. The id is 28
-                characters and fixed-width, so putting it first puts the only
-                part that must survive where truncation cannot reach it.
-              */}
               <Text dimColor wrap="truncate">
-                {'  ↺ '}
-                <Text color="cyan">--resume {filedSession.id}</Text>
-                {'  · previous conversation'}
+                {'  ↺ previous conversation filed'}
                 {filedSession.turns ? `, ${filedSession.turns} turns` : ''}
+                {'  · '}
+                <Text color="cyan">/history</Text>
+                {' to reopen it'}
               </Text>
+            </Box>
+          )}
+
+          {/*
+            Prompts waiting their turn.
+            
+            They used to be discarded: the loop returns early when busy, and
+            the only trace was a status line the thinking cycle painted over —
+            while the transcript had already echoed the message and the input
+            box had already been cleared. It looked sent. Reported after
+            typing four prompts and getting one reply.
+            
+            Bounded, because this is the live frame: three rows and a count.
+            `wrap="truncate"` for the same reason — a queued prompt can be a
+            paragraph, and a row that wraps is charged as one and drawn as two.
+          */}
+          {queued.length > 0 && (
+            <Box flexDirection="column" marginBottom={1}>
+              {queued.slice(0, 3).map((q, i) => (
+                <Text key={i} dimColor wrap="truncate">
+                  {'  ⏸ queued  '}{oneLine(q, 64)}
+                </Text>
+              ))}
+              {queued.length > 3 && (
+                <Text dimColor>{'  ⏸ '}… {queued.length - 3} more queued</Text>
+              )}
             </Box>
           )}
 
           {hasArtifacts && !isProcessing && (
             <Box flexDirection="column" marginBottom={1}>
-              <Text color="cyan">
-                {'▸ '}{[artifacts.task && 'task.md', artifacts.walkthrough && 'walkthrough.md'].filter(Boolean).join(' · ')}
-                <Text dimColor>{verbose ? '' : ' — ctrl+e to expand'}</Text>
+              <Text color="cyan" wrap="truncate">
+                {artifactsOpen ? '▾ ' : '▸ '}
+                {[artifacts.task && 'task.md', artifacts.review && 'review.md',
+                  artifacts.walkthrough && 'walkthrough.md'].filter(Boolean).join(' · ')}
+                {progress ? <Text dimColor>{'  '}{progress}</Text> : null}
+                <Text dimColor>{artifactsOpen ? ' — ctrl+g to collapse' : ' — ctrl+g to expand'}</Text>
               </Text>
-              {verbose && artifacts.task && (
-                <Text dimColor wrap="wrap">{head(artifacts.task, 6)}</Text>
-              )}
-              {verbose && artifacts.walkthrough && (
-                <Text dimColor wrap="wrap">{head(artifacts.walkthrough, 6)}</Text>
+              {/*
+                Bounded, because this is the live frame. Unbudgeted it cost
+                4 clears at 13x80 on a six-item list, on top of the two the
+                toggle itself pays — and the toggle used to be ctrl+e, which
+                reprints the whole transcript to show you six lines.
+
+                `truncate` per row for the same reason the GitHub rows have
+                it: a row that wraps is charged as one and drawn as two.
+              */}
+              {artifactsOpen && shownArtifactLines.map((line, i) => (
+                // eslint-disable-next-line react/no-array-index-key
+                <Text key={i} dimColor wrap="truncate">{'  '}{line}</Text>
+              ))}
+              {artifactsOpen && artifactOverflow > 0 && (
+                <Text dimColor>{'  '}… +{artifactOverflow} more — open the file</Text>
               )}
             </Box>
           )}

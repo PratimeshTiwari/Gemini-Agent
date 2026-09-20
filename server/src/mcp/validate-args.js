@@ -50,6 +50,22 @@ function schemaForType(type) {
       return z.preprocess((v) => (v !== undefined && !Array.isArray(v) ? [v] : v), z.array(z.any()));
     case 'object':
       return z.object({}).passthrough();
+    case 'string|array':
+      /*
+       * Both, because the description promises both.
+       *
+       * `grep_search.pattern` was declared `string` while its own description
+       * told the model to "pass SEVERAL patterns at once — ['rate limit',
+       * 'throttle', 'quota'] is one search, not three". The handler has always
+       * accepted an array. Only this refused, so the model did exactly what it
+       * was instructed to do and the call was rejected — four times in one
+       * afternoon's real use, on the second most-used tool there is.
+       *
+       * The `array` case above already forgives the other direction, turning a
+       * bare value into a list. This is the same forgiveness pointing the other
+       * way, and it is declared on the parameter rather than guessed here.
+       */
+      return z.union([z.string(), z.array(z.string())]);
     case 'string':
     default:
       return z.string();
@@ -88,7 +104,8 @@ function describeValue(value) {
 /**
  * Validate and coerce one tool call.
  *
- * @returns {{ ok: true, value: object } | { ok: false, message: string }}
+ * @returns {{ ok: true, value: object }
+ *   | { ok: false, message: string, problems: string[] }}
  */
 export function validateArgs(toolName, parameters, args) {
   const spec = parameters || {};
@@ -114,8 +131,23 @@ export function validateArgs(toolName, parameters, args) {
   const known = Object.entries(spec).map(([n, s]) => describe(n, s)).join(', ');
   const given = Object.keys(input);
 
+  /*
+   * `problems` is returned as well as rendered into `message` because the two
+   * readers want different things and only one of them can re-parse prose.
+   *
+   * The model gets `message`: the whole multi-line contract, headline first.
+   * The error log gets one line and keeps only the first — `logError` slices
+   * at the newline, and `/logs` does it again when it draws `detail` — so a
+   * caller logging `message` stores the headline, which is the same sentence
+   * for every failure of every tool. This repo's own log holds six
+   * `grep_search:bad_args` records saying nothing but that; the diagnosis that
+   * would have identified the cause in one read was built here and discarded
+   * at the call site. Handing back the list means the log can carry it without
+   * splitting formatted output back apart.
+   */
   return {
     ok: false,
+    problems,
     message: `${toolName} was called with arguments that do not match its schema.\n`
       + `  ${problems.join('\n  ')}\n`
       + `Parameters: ${known || '(none)'}\n`

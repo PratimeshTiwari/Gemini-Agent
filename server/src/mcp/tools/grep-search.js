@@ -7,11 +7,15 @@
 
 import { execFile } from 'child_process';
 import { AGENT_DIR } from '../../core/paths.js';
+import { logError } from '../../core/error-log.js';
 import { promisify } from 'util';
 import { readFileSync, readdirSync, statSync } from 'fs';
-import { resolve, relative, extname } from 'path';
+import { resolve, relative, extname, sep } from 'path';
 
 const execFileAsync = promisify(execFile);
+
+/** Said once per process, not once per search. */
+let warnedNoRipgrep = false;
 
 // Binary file extensions to skip in fallback mode
 const BINARY_EXTENSIONS = new Set([
@@ -74,8 +78,29 @@ export async function grepSearch(args, context) {
   let matches;
   try {
     matches = await ripgrepSearch(patterns, workspace, probe);
-  } catch {
-    // ripgrep not available, fall back
+  } catch (err) {
+    /*
+     * Say, once, which half of this tool is running.
+     *
+     * The catch was bare, so a missing ripgrep was invisible: every search
+     * quietly took the hand-rolled path, and when that path had a bug there was
+     * nothing anywhere to suggest which implementation had produced the answer.
+     * `spawn('rg')` fails with ENOENT wherever ripgrep is not a real binary on
+     * PATH — including where it is a shell function, which `command -v rg`
+     * reports as present.
+     *
+     * Once per process: a line per search would bury the log, which is the
+     * failure `error-log.js` collapses repeats to avoid.
+     */
+    if (!warnedNoRipgrep) {
+      warnedNoRipgrep = true;
+      logError(workspace, {
+        flow: 'tool',
+        op: 'grep_no_ripgrep',
+        message: 'ripgrep is not runnable; grep_search is using the built-in fallback',
+        detail: String(err?.code || err?.message || err).slice(0, 200),
+      });
+    }
     matches = await nodeSearch(patterns, workspace, probe);
   }
   return groupByFile(patterns, matches, limit);
@@ -194,6 +219,43 @@ async function ripgrepSearch(patterns, workspace, { isRegex, includes, maxResult
   return matches;
 }
 
+/**
+ * Does this include-glob match this file?
+ *
+ * The old test was `entry.name.endsWith(glob.replace('*', ''))` — the
+ * **basename** against the raw glob. `*.js` worked by accident (`".js"` is a
+ * suffix), and anything containing a directory could never match: asking for
+ * `includes: ["server/src/core/prompt-builder.js"]` compared
+ * `"prompt-builder.js".endsWith("server/src/core/prompt-builder.js")` and got
+ * false, every time.
+ *
+ * So a grep narrowed to one file returned **0 matches** — indistinguishable, to
+ * the model reading it, from "that code is not there". In the session that
+ * prompted this audit, every single `grep_search` carrying an `includes` path
+ * came back empty, and the model concluded the file was unreadable and answered
+ * from guesswork. It then wrote a post-mortem blaming its own discipline.
+ *
+ * This only ever ran because it is the *fallback*: `spawn('rg')` fails with
+ * ENOENT wherever ripgrep is not a real binary on PATH, the catch is silent,
+ * and nothing tells you which half you are in.
+ *
+ * Matched against the relative path, and against the basename too, so a bare
+ * `*.test.js` still means "anywhere" rather than "at the root".
+ */
+function globMatches(glob, relPath) {
+  const rx = String(glob)
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')   // escape regex metacharacters
+    .replace(/\*\*\//g, '\u0000')            // `**/` -> any depth, including none
+    .replace(/\*\*/g, '\u0001')               // `**`  -> anything
+    .replace(/\*/g, '[^/]*')                  // `*`   -> anything but a separator
+    .replace(/\?/g, '[^/]')
+    .replace(/\u0000/g, '(?:.*/)?')
+    .replace(/\u0001/g, '.*');
+  const re = new RegExp(`^${rx}$`);
+  const normalised = relPath.split(sep).join('/');
+  return re.test(normalised) || re.test(normalised.split('/').pop());
+}
+
 async function nodeSearch(patterns, workspace, { isRegex, includes, maxResults, contextLines }) {
   // One regex per pattern, or a plain substring test — same semantics as the
   // ripgrep path, so which one ran is invisible in the result.
@@ -231,13 +293,7 @@ async function nodeSearch(patterns, workspace, { isRegex, includes, maxResults, 
       if (BINARY_EXTENSIONS.has(extname(entry.name).toLowerCase())) continue;
 
       // Apply include filters
-      if (includes.length > 0) {
-        const matchesInclude = includes.some(glob => {
-          const ext = glob.replace('*', '');
-          return entry.name.endsWith(ext);
-        });
-        if (!matchesInclude) continue;
-      }
+      if (includes.length > 0 && !includes.some((g) => globMatches(g, relPath))) continue;
 
       // Read and search
       try {

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A local coding agent that has **no LLM API client**. Inference happens by driving a real
 browser tab: the Node server sends a prompt over WebSocket to a Chrome extension, a content
-script types it into gemini.google.com / chatgpt.com, scrapes the streamed reply,
+script types it into gemini.google.com, scrapes the streamed reply,
 and sends the text back. Every architectural oddity below follows from that.
 
 npm workspaces: `server/` (brain + CLI UI), `extension/` (MV3 bridge), plus a standalone
@@ -19,7 +19,8 @@ npm install                       # installs both workspaces from the root
 npm run start                     # server with workspace pinned to repo root (../)
 npm run dev                       # same, with tsx --watch
 cd server && npm start -- --workspace /path/to/project   # run against another project
-npm link --workspace=server       # exposes the `agent` (and `agent-cli`) bin globally
+./setup.sh                        # installs an `agent` / `agent-cli` shim in ~/.local/bin
+                                  # (never `npm link` — it needs npm's global prefix)
 
 npm run build --workspace=extension   # esbuild src/background/main.js -> service-worker.js
 cd vscode-companion && vsce package --allow-missing-repository --skip-license
@@ -95,6 +96,24 @@ during a live turn" measurement had no live turn in it.
 empty catalog and went green — it needed a negative control per branch before the pass meant
 anything.
 
+**And a tool with no test at all is worse.** `find_symbol` had 1,474 green tests around it and
+not one that called it, so a stray edit that left `isMethod` referenced in `findSymbol` — where
+it is never defined — made **every** `find_symbol` call return `Tool find_symbol failed:
+isMethod is not defined`, and shipped. Its sibling `find_references` was covered in detail;
+the tool beside it was covered not at all.
+
+The cause is a class, not an accident: **a Python `str.replace(old, new)` with no count
+replaces every occurrence**, and the tail of `findSymbol` was byte-identical to the tail of
+`findReferences`. This file already said "a string anchor hits the first match"; replacing
+without a count is the same trap with the opposite failure. When editing by script, assert the
+match count before writing.
+
+`test/mcp/tool-smoke.test.js` is the answer that generalises: every registered tool called once
+on its happy path, plus a membership assertion so a tool added later cannot slip past by simply
+not being in the map. It asserts almost nothing about *what* comes back — the per-tool suites
+do that — only that the call the agent makes does not throw. A tool that cannot run at all is
+the failure that costs a whole turn, and the model has been told by the prompt that it exists.
+
 ## Layout
 
 ```
@@ -143,13 +162,314 @@ Modules are kebab-case; React components keep PascalCase (`ui/App.jsx`). Tests l
    dispatches through `MCPServer.executeTool`.
 6. Results are fed back via `buildToolResultPrompt` and the loop repeats.
 
+### Bridge liveness — why a prompt used to wait for you to open Chrome
+
+Reported from use, 2026-09-17: *"most of the time the prompt is not sent while I am out
+of Chrome, and as soon as I open Chrome or the Gemini tab it is sent."* That is two
+independent faults that produce one symptom, and neither is throttling.
+
+**The reconnect alarm was cleared on connect.** `chrome.alarms.create('reconnect')` was
+called in `scheduleRetry` and `chrome.alarms.clear` in `stopKeepAlive` — which runs on
+`onopen`. So a *healthy* bridge had no alarm at all. Chrome can still evict a service
+worker that believes it is connected, and when it does the socket dies with it: `onclose`
+never runs inside a worker that is already gone, no `setTimeout` survives it, and nothing
+outside the browser can reach in and start it. What actually revived it was incidental —
+the user focusing a tab, `chrome.tabs.onUpdated` firing, and Chrome starting the worker to
+deliver that event, which re-runs the module and its bottom-line `connectWebSocket()`.
+The alarm is periodic and permanent now. While connected it costs nothing, because the
+heartbeat already keeps the worker resident; it is the only thing that can resurrect a
+worker Chrome has silently collected. `test/background/watchdog-alarm.test.js` pins it,
+including a source assertion that `stopKeepAlive` does not clear it — re-adding that line
+reads as ordinary cleanup in a diff.
+
+**And the prompt it was waiting for had already been thrown away.** `broadcast` returns
+whether it reached anyone; every caller ignored it. `injectPrompt` with no extension
+connected wrote to no sockets and vanished, leaving the lane busy until the seven-minute
+watchdog. `sendInjectPrompt` honours the return and holds what it could not deliver;
+`flushPendingInjects` drains it when a client **identifies as an extension** — not on
+socket open, because the socket is open before we know what is on the other end and the
+side panel uses the same transport. Held prompts past `INJECT_BUFFER_TTL_MS` are dropped
+rather than sent: the lane watchdog has already abandoned that turn, and typing it into
+Gemini then starts a conversation nobody is listening to.
+
+**Fixed sleeps became a readiness handshake.** 4000ms after opening a subagent tab, 1500ms
+after a new main tab loaded, 1000ms after re-injecting — 6.5s of unconditional waiting per
+new tab, wrong in both directions: seconds burnt on a warm machine, and still too early on
+a cold one, where the send lands before the listener exists and is reported as an
+unreachable tab. `waitForBridge` polls a `ping` the content script answers. It reports two
+things because they fail differently: `ready` (this script is listening and not orphaned)
+and `canType` (the composer is in the DOM, which is the real precondition for an inject).
+**Gating only on `canType` would be worse than the sleep it replaces** — a changed composer
+selector would turn "the send fails with a readable error" into "every turn burns its whole
+budget first" — so the last 40% of the budget accepts `ready` alone and lets the send
+produce the honest error.
+
+**The 3-second nudge was the third mechanism doing this job, and the most expensive.** Every
+model tab ran `setInterval(() => safeSend({type:'connect'}), 3000)` for the life of the
+page, so an open Gemini tab woke the service worker twenty times a minute forever — a
+worker never allowed to go idle, to solve a problem that only exists while there is nothing
+to connect to. The worker now answers `connect` with its state and the tab backs off to 30s
+once connected, which is a tenth of the steady-state cost with the fast cadence still there
+for the case it was written for. It reports the state *before* attempting the connection:
+`connectWebSocket` resolves long before a socket is open, and answering "connected" there
+would slow the nudge down at the moment it is working.
+
+**The clock was the only throttled thing, and that is measurable.**
+
+The bridge activated the model tab and held your focus for the length of a turn, because
+completion was detected by a 2s `setInterval` in the content script and Chrome throttles
+page timers in a hidden tab. Before redesigning around that, it was measured — on
+example.com, in a genuinely hidden tab, Chrome 152, over 334 seconds:
+
+| mechanism | delivered | expected |
+| --- | --- | --- |
+| page `setInterval(100ms)` | 63 | 3340 — **1.9%** |
+| **Worker** `setInterval(100ms)` | 3344 | 3340 — 100% |
+| **`MutationObserver`** | 9.97–10/s every bucket | 10/s |
+| **`getBoundingClientRect()`** | 3213 real boxes | **0** empty |
+
+Three things that were assumed to be broken in a hidden tab are not. The MutationObserver
+that supplies the evidence runs at full rate. Layout works, so the Stop-button visibility
+check — `getBoundingClientRect` plus `getComputedStyle` — is sound. A Worker's timers are
+not throttled at all. **Only the page's own timer is**, and it collapses to roughly one
+tick per minute within 60 seconds of the tab being hidden, staying there across the
+five-minute intensive-throttling boundary rather than degrading further at it.
+
+So a 2s completion check becomes a ~60s one, per round, and a multi-round turn stalls until
+you look at the browser. That is the whole of "it hangs while I am out of Chrome".
+
+The fix keeps the evidence in the page and moves the clock out: a service worker is not a
+tab and is not throttled, and `chrome.tabs.sendMessage` is an *event* rather than a timer,
+so it is delivered at full rate into a hidden page. `startCompletionTicks` drives
+`tick_completion` every 2s from the worker; the content script's own interval stays as a
+backstop for a worker evicted mid-turn. **A Worker inside the page would also have worked
+and was rejected**: creating one from a content script means either a `blob:` URL, which
+gemini.google.com's CSP is entitled to refuse, or a `chrome-extension://` URL, which is
+cross-origin for a worker. The service worker needs no new capability and is already kept
+alive for the turn by the heartbeat.
+
+With the clock outside the tab, **focus is returned as soon as the send lands** rather than
+when the reply does — the tab only has to be in front long enough to accept the paste.
+
+**Chrome also discards background tabs**, which looks identical to a hang: the tab stays in
+the strip with its title intact while the page and content script are gone.
+`prepareTabForTurn` sets `autoDiscardable: false` on a tab about to hold a turn, and
+reloads plus re-handshakes one that was already discarded. The flag is a request, not a
+guarantee, which is why the repair exists alongside it.
+
+**What is still unexamined:** the `MutationObserver` watches `document.body` with
+`subtree: true, characterData: true`, which on an app as busy as Gemini fires far more than
+it needs to. Narrowing it to the response container is a real cost saving and a real risk —
+a wrong selector observes nothing and every turn breaks — so it wants measuring against the
+live page, not a guess.
+
+**Self-healing: what is repaired, and the two things deliberately not.**
+
+Every failure below used to end the turn, and the prompt with it.
+
+- **A failing send repairs the tab.** `sendWithRepairs` is a ladder — send,
+  re-inject the content script, reload the tab — cheapest repair first, because
+  the commonest cause by far is a script orphaned by an extension reload. It
+  **stops before opening a fresh tab, on purpose**: a reload returns to the same
+  `/app/<id>` and Gemini still holds the thread, while a new tab is a new
+  conversation, and an incremental prompt sent into one gets a confident answer
+  to a question the model never saw. Losing a turn beats answering a different
+  one. That is the same reasoning `session_lost` already encodes for batch tabs.
+
+  **That middle rung did nothing at all until 2026-09-19.** The bridge declared
+  its constants at the top level of the content-script world, and that world
+  outlives the script that created it — so re-injecting into a tab that already
+  had a copy threw `Identifier 'RESPONSE_IDLE_TIMEOUT' has already been
+  declared` on line one and the fresh copy never evaluated. The rung existed for
+  exactly the case that guarantees a copy is already there. It failed silently,
+  `waitForBridge` then burned its budget waiting for a script that had not
+  loaded, and the only evidence was an entry on `chrome://extensions`.
+
+  The file is an IIFE now, which makes a second injection legal, and a
+  `window.__agentBridgeStop` handover makes it a *replacement*: the new copy
+  calls the old one's `invalidate()` before taking the handle, so the orphan's
+  MutationObservers and timers stop immediately instead of running until
+  something happens to call `safeSend`. Skipping would not have done — the goal
+  is to replace an orphan, not to notice one.
+- **A prompt that never reached the composer is sent again, once.** The content
+  script always knew the difference and discarded it. `sawGenerating` is the
+  discriminator: generation started and we failed to read it means the model
+  **has** an answer, so a resend asks twice into a thread that already holds the
+  first reply; generation never started and nothing scraped means the submit did
+  not happen, so a resend is the first attempt landing. Only the second retries.
+  It resends `_lastMainPrompt` **verbatim**, because `buildPrompt` has side
+  effects — rebuilding after a failed turn 0 marks the system prompt as seen and
+  hands the model a bare question with no tools.
+- **A tab about to hold a turn is opted out of discarding, and reloaded if it
+  was already discarded** (`prepareTabForTurn`). A discarded tab is
+  indistinguishable from a hang: it keeps its title in the strip while the page
+  and script are gone.
+
+Not done, and why: **`timedOut` with partial text is not retried** — the model
+answered, and a second ask corrupts the thread for a reply we already partly
+have. And **a disconnected extension mid-turn does not re-dispatch the in-flight
+prompt**; `pendingInjects` covers prompts that were never delivered, but one
+that *was* delivered may have been answered into a tab we can no longer see, and
+re-sending it blind is the double-answer bug again. Doing that safely needs the
+worker to ask the tab whether it is still watching that `requestId` — the
+`tick_completion` handshake is the piece that would make it answerable.
+
+**Tool amnesia: the cause is a thread the model never saw, not a bad detector.**
+
+Reported from use with two screenshots. The prompt in both was the *short*
+turn — a bracketed context line and a list of tool **names** — sent into a
+brand-new Gemini conversation. The model has names and no definitions, so it
+says the tools "are not actually connected to my current execution
+environment", and the turn is spent.
+
+`hasSeenSystemPrompt` is the **prompt builder's belief**; the model's memory is
+the **thread**, which is the entire premise of `chat-thread.js`. Nothing
+connected the two. So when the tab moved to a different conversation — the user
+opening a new chat, `ensureModelTab` opening one because the old tab was gone,
+a reload landing on `/app` with no id — the builder carried on sending short
+turns forever. `_recordThread` notices the change already; it now also calls
+`resetPromptState()`, but **only when there was a previous thread**: the first
+id of a session is turn 0's own conversation, which already carried the prompt.
+
+**The detector was wrong in both directions, and one of them destroyed
+answers.** `looksLikeCapabilityDenial` gates a repair that discards the reply
+and re-asks. It asked for an inability phrase and then, loosely, for any of
+`execute|run|access|read|…` within 60 characters of any of
+`local|file|directory|command|…` — a window wide enough to span two clauses, so
+*"I read the file and I can't see any problem with the parser — the local
+variable is fine"* was classified as a refusal and thrown away. Meanwhile both
+denials seen in use that day slipped through, because both were **passive**:
+the model did not say it could not, it said the tools were not connected.
+
+The cure for the false positives is the *subject*, not a narrower window. A
+denial is about the agent's tooling or the box it runs in; an ordinary answer
+saying "can't" is about code. `local scope` and `local variable` are no longer
+objects, `local disk` and `file system` are, and `mcp/tools/` is excluded by
+path because in this repo that directory is a thing an answer mentions by name.
+A second pattern covers *"I can't read files in that directory"*, which names
+no environment: there the negation must attach within four words to a verb the
+tools perform, so `can't see`, `can't reproduce`, `can't find` and `can't make`
+— the four ways an ordinary answer says it — do not qualify.
+`test/core/denial-corpus.test.js` holds both lists; the old pattern fails it in
+both directions.
+
+**And moving the clock exposed a latent race.** A turn ended on a *single*
+observation of "no Stop button and one second since the text changed". That was
+only safe while the check was throttled to roughly once a minute, where a
+transient is almost never sampled. At a reliable 2s cadence the transients get
+caught, and a reply came back truncated mid-token. Gemini pauses longer than a
+second between sections and the Stop button is briefly absent while the
+composer re-renders — either alone looks exactly like finished. The condition
+must now hold across consecutive checks. **A fix that makes something reliable
+will find every place that was quietly relying on it being unreliable.**
+
+**Turn latency, measured — and where it actually goes.**
+
+`core/trace-log.js` records five stages per turn (`find_input`, `type`, `send`,
+`first_token`, `complete`); `/trace` reads them back. From 74 real turns on the
+owner's machine:
+
+| stage | median | p90 |
+| --- | --- | --- |
+| `find_input` | 1ms | 13ms |
+| `type` | 24ms | 513ms |
+| `send` | 514ms | 1201ms |
+| `first_token` | **0ms** | 1ms |
+| `complete` | 6004ms | 18981ms |
+
+Two things fall out of that table, and neither is Gemini being slow.
+
+**`first_token` measured nothing.** It was marked one line after the send, so
+it timed the gap between two adjacent statements. The number it is named for —
+the one that separates *the model thinking* from *our overhead* — was never
+captured; it all went into `complete`. Marked now when the observer first sees
+text, which is what makes any further latency claim checkable.
+
+**`complete` was quantised to the poll interval.** 6004, 8966, 10001, 16002,
+30064: every sample sits on a ~2000ms boundary, because a finished reply is
+only noticed when the check next fires. A reply that ended at 4.2s was
+delivered at 6s, and the two-consecutive-checks rule that stopped truncated
+replies added another whole interval. The rule is right and the *cadence* was
+wrong: the tab now reports `confirmSoon` as soon as it goes quiet and the
+worker returns at a quarter of the interval for the confirming look — slow
+while the model writes, fast only when there is something to confirm.
+
+The remaining per-turn overhead is `send` (~0.5s median, 1.2s p90), and the
+real multiplier is **round trips**: every tool call is another full
+inject → think → scrape cycle, so tail latency is paid once per round, not
+once per turn.
+
+**And the confirming look leaked, once per turn, compounding.** It was scheduled with a bare
+`setTimeout` nobody held, and `stopCompletionTicks` cleared only the interval. Stopping a turn
+from outside — the tab closing, the session ending, the next turn starting — therefore left a
+tick to fire into a tab whose turn was over, which costs one stray message and nothing else.
+
+The next turn is where it gets expensive. `startCompletionTicks` stops the old ticker and
+installs a new one, so an orphaned confirm firing afterwards finds `completionTickers.has(tabId)`
+**true again** — for the new turn — and schedules another. That is a second fast chain running
+beside the real one, holding the *previous* turn's `everyMs`, with no handle anywhere to stop
+it, and it compounds once per turn on a long session.
+
+`completionConfirms` holds the pending timeout so the stop can cancel it, and the cancel runs
+*before* the early return on a missing interval — returning early there is precisely how it got
+left running.
+
+**It was found by widening an unrelated timing window until the leak reached the next test.**
+Nothing else would have: a stray message is invisible and the doubling only shows if you count.
+That test had asserted `>= 3` ticks after `TICK * 1.6`, where the third tick and the deadline
+are 4ms apart — so it failed about one run in five, on the machine's load rather than the code.
+**A wall-clock assertion with no margin measures the machine**, which the frame-budget harness
+had already learned once.
+
+**`mergeLoopHistory` uses a recorded position, not a count.** It counted the screen's
+non-local rows and used that number to `slice()` the loop's history — valid only if the screen
+mirrors the loop one-for-one, in order. Two ordinary things break that: `file-watcher.js`
+appends `[System Event]` turns the screen never asked for, *including before the session's
+first prompt*, and the prompt is echoed to the screen optimistically, so it is there before the
+loop has it. Measured under the harness with a busy watcher: screen 1 row, loop 16 —
+`[system ×12, user, agent, system, system]`. Slicing from index 1 appended eleven system events
+and a second copy of the user's own prompt, and every later merge was misaligned. The position
+now rides on the rows (`__loopIndex`), and the optimistic echo (`__echo`) is claimed by the
+loop's own copy rather than drawn twice — once per echo, because asking the same question twice
+must produce two rows.
+
+**The reply after a diff approval — fixed by reprinting, not by staying live.** `App.jsx` keeps only the last turn live *while `isProcessing`*; everything else is
+committed to `<Static>`, which Ink never repaints. `agent_response` cleared `isProcessing` even
+when the turn still had tool calls to run, so the turn was written to scrollback mid-flight and
+the tool result, the approval and the closing reply were appended to a group that could no
+longer be drawn. Reproduced in the harness: file written, diff shown, final reply never drawn.
+
+The obvious fix — make `isProcessing` follow `agentLoop.isProcessing`, so the turn stays live
+until the loop is done — restores the reply and is **catastrophic**: one run went from 15KB and
+**0** full clears to **6.8MB and 1,228**, which is the flicker bug entire. Three attempts to
+bound the longer-lived turn made it worse still (45, then 89 clears). Do not retry it.
+
+What works is the mechanism this file already had for exactly this: the turn still commits
+early, and when a *committed* turn grows, `<Static>` is remounted and the transcript reprinted.
+Measured across three runs: **18.2–18.5KB, 0 clears, reply present** — against a 15.1KB, 0-clear
+baseline where the reply never appeared. A remount reprints without clearing, so it is cheaper
+than the one clear `ctrl+e` pays.
+
+Two traps, both of which produced confident wrong numbers first:
+
+- **The harness was measuring nothing repeatable.** `drive2.py` waited a fixed number of
+  seconds between steps, so pressing enter to approve could land *before* the prompt existed —
+  a different code path. Identical code measured 1 clear and 89. `drive3.py` waits on observed
+  output (`{"wait": "Approve"}`) and is reproducible to within 300 bytes across runs. **Any
+  frame-budget number taken with a wall-clock driver is noise.**
+- **The first cut of the reprint counted `t.messages`, which `groupTurns` does not return** (it
+  is `steps`). The shape never changed, the epoch never bumped, and it measured a clean 0
+  clears *while doing nothing at all* — a fix that looks perfect because it is inert. Only the
+  reply still being missing caught it.
+
 ### Prompt economics
 
 `PromptBuilder` sends the **full system prompt + tool definitions only on turn 0 and every
 Nth turn** (`resetPromptState` after `/compact` or `/clear`). This is not an optimization —
 resending a large system prompt every turn trips Gemini's repetition/safety
 filters and A/B-test modals. Prompt content is also tiered by `modelTier`
-(`flash` / `flash-thinking` / `pro`) via `_getReasoningInstructions`.
+(`lite` / `flash` / `pro` — renamed 2026-09-20 to the picker's own words) via
+`_getReasoningInstructions`.
 
 The **tool anchor** (`_buildToolAnchor`) is the exception that rides on *every* turn: tool
 names only, 56 tokens against 1,575 for the definitions. The model does not gradually forget
@@ -157,10 +477,83 @@ its tools, it forgets them completely — mid-session it answers "I cannot execu
 commands or access your local file system" with total confidence and the turn is lost. Three
 detectors in `core/drift-detector.js` back that up, each with a different response:
 `looksLikeMultipleDrafts` → bring the refresh forward; `looksLikeCapabilityDenial` → resend the
-full definitions and retry the turn once; `looksLikeProviderError` → Gemini's own error rather
+full definitions and retry the turn once (`requestToolRedeclaration`, **not**
+`resetPromptState` — see below); `looksLikeProviderError` → Gemini's own error rather
 than an answer, so re-ask (this one used to be written to disk as a PR plan). All three match
 prose and will always trail the model's phrasing, which is why the anchor exists: prevention
 first, detection as the backstop.
+
+**The repair for tool amnesia used to be the heaviest prompt in the system.** It called
+`resetPromptState()`, which does not mean "send the tools again" — it means "pretend this
+chat has never seen a prompt", so the next turn was a full turn-0 payload: system
+instructions, tool definitions, `AGENT.md`, memory and the skill catalogue. The model had
+not forgotten the project; it had forgotten one block. And the reason prompts are tiered at
+all is that a large repeated payload trips Gemini's repetition and A/B-test filters — so
+the old repair fired the largest prompt available at exactly the moment the session was
+already unhealthy, which makes it a plausible *cause* of the next failure. Measured on this
+repo: **25,445 characters against 9,991, a 61% cut.** `requestToolRedeclaration()` sends the
+condensed reminder plus the full definitions and nothing else. It outranks the periodic
+refresh, because that tier sends tool *names* and names are what just failed.
+
+**Saying what would prove you wrong (`pro-hypothesis.md`).** Proposed as a "hypothesis
+engine": a falsifiable hypothesis before every search, with `<invalidation_criteria>` and a
+1–100 `<confidence_score>`. Measuring the prompts first narrowed it a long way. `standard`
+already asks for *"what you expect the next call to show"*, which is most of a hypothesis —
+what no rung asked was **what would disprove it**, or what to do when the answer is not clear.
+Those two are the whole gap, and they cost **714 characters** rather than a taxonomy rewrite.
+
+Scoped to `standard` and `deep`, because it costs **output** tokens and output is generation
+time: `brief` promises "straight to work", and the flash rungs are written for a model that
+follows short prompts and ignores long ones. Verified the way the last prompt move was —
+**6 of the 10 effort × topology shapes come out byte-identical**, and the four that change do
+so by exactly +714. The first attempt was +1 character on `brief` too, from a newline left
+outside the conditional.
+
+**The numeric confidence score was declined.** A model asked for a number produces one, and a
+fabricated `87` reads as evidence. The instruction is behavioural instead — if you would not
+bet on it, ask — which is the part that changes what the agent *does*.
+
+**And the rungs were not as thin as they looked — then they were revisited and there is one.**
+An earlier note here claimed the three pro rungs "differ only by `isBrief`". Measured:
+21,907 / 25,436 / 26,343 characters, differing by plan-first, a phase-2 analysis, adversarial
+self-review and an assumption ledger. What was genuinely thin was `standard` → `deep` at
+**+3.6%**, and that is the one that was acted on: **since 2026-09-20 there is a single pro
+rung.** `pro` is the old `standard` plus `deep`'s review step; the critical-analysis phase and
+the assumption ledger are declined because they are paid in **output** tokens on every pro
+turn, which a prompt character count does not show.
+
+**On `deep`, the hostile reviewer is a different model.** `deep` ended with "read the diff as
+a hostile reviewer", and a model reviewing its own diff is the weakest reviewer available: it
+shares every assumption that produced the code. With a reviewer configured it now calls
+`ask_reviewer` instead.
+
+Scoped to `deep` **and** `topology === 'duo'`. On solo the step stays self-review, because
+naming `ask_reviewer` in a prompt that does not define it instructs a call to a tool the model
+has never been given — the drift `toolCatalogDrift` exists to catch. Verified: 9 of the 10
+effort × topology shapes byte-identical, `deep/duo` +111 characters.
+
+**Why this shape and not a multi-agent pipeline.** The current reading of the literature is
+that extra agents earn their place when they contribute *intelligence rather than actions* and
+writes stay single-threaded — [Cognition's "Don't Build Multi-Agents"](https://cognition.com/blog/dont-build-multi-agents)
+reports coordination breakdowns as ~37% of multi-agent production failures, and its core
+objection is that summaries lose the implicit decisions behind them. One reviewer with no write
+access is that shape; a planner → tech-planner → reviewer chain handing each other summaries is
+precisely the failure mode.
+
+It is also the only fan-out that is *real* here. `extension-lock` gives each **tab** a lane —
+`main:<model>` for the conversation you are looking at, `sub:<requestId>` for a subagent turn in
+a tab opened for it and closed after — so `ask_*` calls genuinely run at once, same model or
+not. That was not always true: the extension addressed tabs by URL pattern, so two same-model
+requests raced for one tab and could interleave two prompts into one conversation. Tab identity
+is what removed that, and it is why a same-model reviewer is now offered at all. Claude Code's
+subagents buy *context isolation* rather than speed, and Cursor
+3's eight parallel agents are bought with **git worktree isolation** — a separate filesystem per
+agent, which this project does not have and would need before parallel *writers* were safe.
+
+**Subagents are not faster here, and the reason is measured.** Each subagent turn opens a tab
+that is closed when the turn ends, so turn 2 has never seen turn 1 — **81% of characters
+resent** over ten turns. Holding one tab across a subagent's turns is the largest single waste
+left in the system, and it is a bridge change rather than a prompt one.
 
 ### Tools
 
@@ -168,6 +561,29 @@ first, detection as the backstop.
 handler) with handlers in `mcp/tools/`. To add a tool: write the handler, add one entry to that
 array, **and one to `core/tool-catalog.js`** — that is what the prompt is rendered from, and
 `toolCatalogDrift()` fails the build if the two disagree. The description *is* the contract.
+
+**`find_references` answered 0 for every method in the repo, and said "It may be dead code".**
+A method is only ever called as `x.name()`, and `referencesIn` excluded member properties —
+correctly, for a *binding*: `fs.readFile` does not use a `readFile` variable. Nothing
+distinguished that question from "who calls this method?", so the second one always answered
+nothing. Measured through the real tool before the fix: `buildToolResultBatch` **0** against 17
+real call sites, `acceptDiff` **0** against 17, `classify` 4 (the standalone function only)
+against 14. This is the `semantic_search` failure exactly — the model reaches for the tool, is
+told the code is not there, and acts on it — except that here the action it invites is deletion.
+
+`includeMembers` is the second question, and the caller has to say which one it is asking.
+Hits found that way are tagged `viaMember`, because `x.name` genuinely cannot be told from a
+same-named method on another object; an answer that hides its own ambiguity is the one that
+gets acted on wrongly. **It is gated on the name being defined as a method in this repo**, not
+on always: measured unconditionally, `find_references("map")` is 165 rows of `Array.prototype`
+and `join` 180 — a wall of text about the standard library, every character of which is retyped
+into a browser next turn. Neither is defined here, so the gate excludes both.
+
+**And the definition was missing from the answer that promises to list it.** The prompt says
+"list the definition too (default true)" and "the definition is marked". For a function, whose
+`id` is a real Identifier, that was true; for a method, whose non-computed `MethodDefinition`
+key is deliberately never visited, it never was. Added in the handler rather than in
+`referencesIn`, so that function goes on answering only the question it is good at.
 
 `find_symbol` / `find_references` (`context/symbol-index.js`) are the structural half of code
 search, on acorn + acorn-jsx + acorn-walk. Two traps, either of which reproduces the failure
@@ -195,18 +611,111 @@ Writes never go straight to disk. `edit_file` / `create_file` produce a `DiffEng
 Commands pass through `core/risk-classifier.js`, which decides whether `App.jsx` must prompt;
 persistent allow/block rules live in `commandRules`  (`/allowlist`).
 
+**Who may run what is `core/tool-policy.js`, not `_executeToolCalls`.** Two pure functions —
+`isBlockedOutright` and `requiresApproval` — over the catalog's own `mutates`, `shell` and
+`detached` flags. It was decided inline, 487 lines deep in dispatch, and that is precisely how
+`run_background` came to skip every gate: the plan-mode branch named the mutating tools
+literally, a fourth was added later and not added there, so the mode whose status bar reads
+"plan — every edit needs approval" spawned a detached shell process without asking, while auto
+mode asked about the same call through the classifier's "Unknown tool" default. **The careful
+mode was the permissive one.** The fix is not "add it to the list" — there is no list any more,
+so the next tool that writes is gated by declaring itself beside its description.
+
+**And the extraction immediately found a second one of the same shape.** The read-only
+exemption — `ls` must not need a keystroke, or the prompt becomes something people dismiss
+without reading — was written as *any shell tool the classifier calls safe*, and
+`run_background` is a shell tool. So `run_background npm run dev` was exempt on the strength of
+a verdict about the **command text**, while the process it spawns is still running after the
+turn, the mode, and possibly the session have ended. The classifier reads a string; it cannot
+see that. `DETACHED_TOOLS` is the flag that lets the exemption ask. It was invisible while the
+policy was a branch inside dispatch and took one test to surface once it was a function.
+
+**The rest of the dispatch loop came apart the same way.** `_executeToolCalls` was 487
+lines; it is 240 now, and the two pieces that left are the two that were doing something other
+than dispatching.
+
+`core/loop-tools.js` holds the three the loop answers itself — `ask_question`,
+`ask_subagent`, `manage_memory`. The catalog has said `dispatch: 'loop'` about them since it
+was written, and the chain named them literally with an `else` sending everything else to
+`mcpServer.executeTool`: a fourth loop tool would have gone to a server with no handler and
+come back to the model as an unknown tool it had just been told it has. `LOOP_TOOLS` is derived
+from the catalog now, so the two cannot disagree.
+
+**The drift check caught the move, which is the point of it.** `LOOP_DISPATCHED` in
+`tool-catalog.test.js` scrapes the dispatching source rather than deriving from the catalog —
+derived, it would be comparing the catalog to itself. It went red the moment the arms left
+`agent-loop.js`, and it now reads `loop-tools.js`. **The file it reads must be the file with
+the implementation in it.**
+
+`core/diff-approval.js` holds what happens between building a diff and it being on disk. Three
+parties have to be told the same thing about that, and each has been the odd one out: the model
+(told `pending_approval` about a file already written), the screen (a rejected edit drawn in
+green), and the disk (the only one never wrong). Keeping them in one function is the reason it
+is one.
+
+**A mechanical extraction tried to drop a line and the comments are why it did not.**
+`manage_memory` computes its result and *then* calls `resetPromptState()` — the facts ride
+inside `<memory>` in the system prompt, so a changed set is invisible until that prompt is
+rebuilt. A regex turning `result = x` into `return x` deletes the call silently, and the tool
+goes on reporting "Remembered:" for facts the model will never see. Written by hand instead,
+and `loop-tools.test.js` asserts the reset on both paths and its *absence* on a rejected action,
+which would otherwise spend a full turn-0 payload to change nothing.
+
+**Plan mode exempts the agent's own artifacts, and nothing else.** The check was
+`path.endsWith('.md')`, beside a comment reading "Creating/Editing Markdown files (like plans)
+is harmless". The intent was real — `task.md` and `plan.md` are files the system prompt *tells*
+the model to keep current, and it cannot do that if every tick needs a keystroke. But the test
+was the **extension**, not the **location**, so in plan mode the agent could silently write any
+markdown anywhere: `README.md`, `CLAUDE.md`, and `AGENT.md` — the one file this project promises
+"can always be trusted to say what the human wrote" — plus anything outside the workspace,
+because these tools accept absolute paths.
+
+Reported from use: `create_file test-agent-cli.md` in plan mode returned `"status":"applied"`.
+Meanwhile `prompt-builder.js:362` tells the model *"All file modifications and command
+executions require user approval before being applied"* and the status row reads *"plan — every
+edit needs approval"*. **The model was told the truth and the enforcement was not doing it** —
+which is the worst arrangement of the three, because nothing on screen or in the prompt gives
+you any reason to doubt it.
+
+`isAgentArtifact` resolves the path and prefix-checks it against `paths.artifactsDir`, because
+the model supplies that string: `task.md`, `./task.md`, an absolute path and
+`.agent/artifacts/../../../task.md` are one string test and four different files. It fails
+closed — anything unresolvable, or outside, needs approval.
+
 ### Subagents
 
-`AgentLoop.topology` is `single` | `duo` | `swarm`. `ask_reviewer` / `ask_reasoner` /
-`ask_researcher` / `ask_subagent` run **in parallel** (see the `isParallel` list in
-`_executeToolCalls`), each routed by `modelConfig[role]` to a *different browser tab*.
-`_runSubAgentSession` gives subagents a restricted tool set.
+`AgentLoop.topology` is `single` | `duo`, derived from whether a reviewer is set.
+`ask_reviewer` / `ask_researcher` / `ask_subagent` run **in parallel** (see the `isParallel`
+list in `_executeToolCalls`), each in a *different browser tab* on its own `sub:<requestId>`
+lane. `_runSubAgentSession` gives subagents a restricted tool set.
+
+**Duo is two Gemini tabs, not two models,** since ChatGPT was removed. What the reviewer
+contributes is not different weights: it is a reader with **no memory of the conversation that
+produced the work**. That is the half that matters for the failure it exists to catch — a model
+that reads enough to cite and then reasons from the citation instead of reading on. A cold
+reader has nothing to reason from but the file, so it opens the file. The `reviewer !== main`
+guard that used to forbid this was written when two same-model requests raced for one tab; tab
+identity fixed that, and the guard outlived its reason.
 
 ### Context engine
 
 `context/` — `code-minifier`, `context-manager`, `memory-manager`, `symbol-index`. `CodeMinifier.minifyJson` is on the hot
 path: `PromptBuilder.buildToolResultBatch` embeds every tool result in the next prompt, and
-serialising them compact rather than pretty-printed is ~40% fewer characters there.
+serialising them compact rather than pretty-printed is ~40% fewer characters there — measured
+on a 30-entry `list_directory` shape: 2,456 pretty against 1,424 compact, **42%**.
+
+**Nothing had ever called it from a test, and two things were wrong behind that.** Every
+fixture in the suite passed a *string* result, so the branch that serialises an object was
+never taken — while real tool results are mostly objects. `undefined` came back as `undefined`
+rather than a string, under a `@returns {string}` annotation, and the caller reads `.length`
+off it, so the whole prompt build throws and every other result in the batch dies with it.
+Worse, **a cycle or a BigInt threw, was caught, and returned `''`** — the model handed a tool
+that ran and produced nothing, which is a confident wrong answer where the other is merely a
+dead turn. A replacer keeps what can be serialised and marks what cannot.
+
+Neither was reachable from a path traced today — every `ask_question` resolver passes a
+`result` — so this is a contract made true rather than a reported bug. The doc already promised
+a caller could "pass it anything a tool handler might have produced".
 
 There is no `ast-chunker` and no `skills/` registry any more. Both were written, never wired to
 anything, and removed on 2026-09-10: the chunker resolved 24% of this repo's top-level symbols
@@ -218,113 +727,89 @@ it wants `acorn-walk` plus `acorn-jsx`, not that file.
 `watcher/file-watcher.js` (chokidar) invalidates context on external edits. `semantic_search`
 is backed by a local TF-IDF index.
 
-### GitHub agent
+### GitHub agent — removed 2026-09-19, documented to be rebuilt
 
-`github/` polls PRs (`github-poller`), classifies comments (`comment-classifier`), parses CI
-logs (`ci-log-parser`), decides what to analyse and when (`work-queue`), builds the prompt
-(`review-task`) and writes the result via `review-writer` into `.agent/github-reviews/`.
+Deleted on the owner's call: *"delete github for now, maybe we will have it
+later so document the things as they are today."* 2,009 lines in
+`server/src/github/`, plus a tab, two hooks, a content script and eight test
+files — 8% of the server source for a second product living inside the first.
 
-That directory used to be `github-pr-plans/`, and `/plans` still means something else —
-`.agent/artifacts/plans/`, a different format written by a different path. One word, two
-answers. `migrateGitHubReviews` renames it on startup and refuses to clobber.
+**Why it went.** Every `flow: 'github'` entry in the error log was `poll: fetch
+failed`. Three review directories were ever written. The tab showed comments
+stuck at `⚠ not analysed` after being sent for analysis, with no way to tell
+"still working" from "silently failed" from "done, and the row is stale". And
+it was competing for attention with a core loop that produced six separate
+"the prompt promises what the code refuses" bugs in a single day.
 
-**The tab is for browsing; the stream is for noticing.** Decided 2026-09-16, after the
-screen was cut from 11 rows to 5 (the border and heading, a ranked status line, a one-line
-empty state, hints on one row, and `@who commented` in place of `requires_review` — which
-was a constant, because it is the only non-noise value the classifier can return and
-anything it calls noise never reaches a row).
+Not deleted because it was bad. Deleted because a half-working second product
+costs more than it returns while the first one is still being made to work.
 
-The open question was whether it should be a tab at all. Everything else in this app is a
-stream and nothing else is a page, and this is a stream of events. Resolved as a middle
-path rather than either extreme: the tab keeps the browsing — PRs, plans, comment bodies,
-all of which want a screen — and every new event *also* arrives in the transcript as one
-dim row (`githubNoticeRow`, `ui/hooks/use-github-tab.js`), where you are already reading.
-`^o` still opens the detail. Nothing interrupts and nothing is inserted into the prompt,
-which is the same contract a failed VS Code terminal command already has.
+#### What it did
 
-Three constraints that shaped the row, none obvious:
+| file | lines | job |
+| --- | --- | --- |
+| `github-poller.js` | 476 | polled the REST API for PRs, comments and workflow runs |
+| `github-event-handler.js` | 380 | orchestrator wiring the poller to everything below |
+| `review-writer.js` | 376 | wrote one `.md` per comment into `.agent/github-reviews/PR-<n>/` |
+| `ci-log-parser.js` | 198 | pulled the actionable failure out of an Actions log |
+| `github-review-prompt.js` | 166 | the system prompt for investigating a comment |
+| `review-task.js` | 162 | turned one comment into one prompt |
+| `work-queue.js` | 119 | what to analyse and when — knew nothing about GitHub |
+| `comment-classifier.js` | 70 | which comments were worth a pass |
+| `github-config.js` | 62 | token, repo, intervals |
 
-- It is a `system` message, because `groupTurns` and `TranscriptTurn` already draw those
-  dim and wrapped. A new role would mean teaching both, for one line.
-- It is a *notification*, not the record — the tab's `activity` is the record. `groupTurns`
-  keeps a system message only inside a turn, so an event arriving before the session's
-  first prompt is not drawn, and the alternative is inventing an orphan turn to hang it
-  from.
-- **The author is capped at 20 characters.** The row is drawn in the *live* frame while a
-  turn is in flight, and a GitHub username runs to 39 — which put the worst case at 78
-  columns: one row at 80, two at 72. A row that wraps is charged as one and drawn as two,
-  which is a bug this frame has had twice. The test pins it at 60 columns.
+Surfaces: `ui/components/GithubTab.jsx`, `ui/hooks/use-github-tab.js`,
+`ui/hooks/use-github-keys.js`, `^o` to open the tab, `/github` and its
+subcommands, `extension/content-scripts/github-bridge.js` for reading comment
+bodies off the page.
 
-Only `github_plan_generated` earns a row; `processing_started` and `processing_finished`
-bracket the same event and would draw three lines for one comment.
+#### The decisions worth keeping, if it is rebuilt
 
-**The tab is one list, three levels, and it fills the terminal.** Reworked
-2026-09-17 after three screenshots and "this github one is a mess". It had
-*two* lists — an activity feed you landed on, and a PR explorer behind an
-unadvertised `p` — which showed overlapping things, and `⏎` meant something
-different on each of the three screens (open the plan / open comments / send to
-the agent). The feed was also empty on a fresh session with open PRs sitting
-right there, because it only ever held events from *this* process.
+- **The tab is for browsing; the stream is for noticing.** Every new event also
+  arrived in the transcript as one dim row (`githubNoticeRow`), because that is
+  where you are already reading. Nothing interrupted, nothing was inserted into
+  the prompt. The author was capped at 20 characters: a GitHub username runs to
+  39, and the row is drawn in the *live* frame, where 78 columns is one row at
+  80 and two at 72 — and a row that wraps is charged as one and drawn as two.
+- **One list, three levels.** PRs → that PR's comments → the analysis in your
+  editor, where `⏎` means "go deeper" at every level and `esc` comes back. It
+  had been *two* lists — an activity feed you landed on and a PR explorer behind
+  an unadvertised `p` — showing overlapping things, with `⏎` meaning something
+  different on each of three screens. The feed was also empty on a fresh session
+  with open PRs sitting right there, because it only ever held events from that
+  process. `summarisePrs` folded the feed into "what does the agent know about
+  each PR", which is what the rows counted.
+- **`height={rows}` with `overflow="hidden"`, budgeted at `terminalHeight - 3`.**
+  The banner is a `<Static>` item and cannot be cleared, so the screen has to
+  push it off; remounting `<Static>` to lose it reprints the whole transcript,
+  which is where a second banner came from. `- 2` looks exact and costs one
+  `ESC[2J` on the way back, because Ink's frame carries a trailing newline the
+  row count does not.
+- **No box and no inner scrolling.** The only box-drawn frame in this product is
+  the input field, where the border *means* the mode. The list was windowed
+  against the budget and said what it trimmed (`… N more`).
+- **The agent had no shell.** `runHeadlessTask` offered only `grep_search`,
+  `read_file`, `list_directory`, `search_files` and `ask_subagent`, so it could
+  not run `git checkout` whatever it was asked — a structural guarantee, not a
+  prompt rule. Rebuild it that way.
 
-So the feed stopped being a view and became the evidence: `summarisePrs`
-(exported and tested) folds it into "what does the agent know about each PR",
-which is what the PR rows count and what the comment rows join against. What is
-left is a drill-down — **PRs → that PR's comments → the analysis in your
-editor** — where `⏎` means go deeper at every level and `esc` comes back. Level
-two lists *every* comment on the PR with the agent's work marked on it, rather
-than only the ones it happened to process.
+#### What was still broken when it went
 
-Two rules came out of making it a screen rather than a paragraph:
+- **Comments sent for analysis never updated their row.** Unknown whether the
+  analysis ran, and unknown whether a plan file was written. Start by comparing
+  the tab's `activity` against what is on disk in `.agent/github-reviews/`.
+- **The reviewer could not see git.** The prompt handed it a title, a number, a
+  branch *name*, the comment and a diff snippet — no current branch, no
+  divergence, no merge base. So "why is there a merge conflict", which is what
+  people actually asked it, was unanswerable. The fix is two parts: put the git
+  facts in the prompt (the server computes them; `rev-list --left-right --count`
+  is the diagnostic), and only then consider an allowlisted read-only `git`
+  tool. An allowlisted `git` is still a shell unless `-c`, `-C` and
+  `--exec-path` are refused: `git -c core.pager=sh` runs `sh`.
+- **`.agent/github-reviews/` and `/plans` meant two different things.**
+  `migrateGitHubReviews` in `core/migrate.js` renamed the older
+  `github-pr-plans/` and refused to clobber; that migration is kept.
 
-- **The banner cannot be cleared, so the screen has to push it off.** It is a
-  `<Static>` item, committed to the terminal permanently, and remounting
-  `<Static>` to lose it reprints the entire transcript — that is where the
-  second banner came from. `height={rows}` with `overflow="hidden"` scrolls it
-  away instead, and the fixed height is also what lets the hint row be *pinned*
-  to the last line instead of trailing however much content there was.
-- **`terminalHeight - 2` is one row too tall, and the arithmetic does not say
-  so.** The tab draws only itself and the status bar (one row plus a margin
-  `compact` drops), so `- 2` looks exact — and measured, it costs one `ESC[2J`
-  + `ESC[3J` on the way *back* to the agent tab, because Ink's frame carries a
-  trailing newline the row count does not. `- 3` is zero clears at 40x100,
-  24x90, 24x72, 13x80, 13x72, 10x80, 9x72 and 40x60. `RESERVED_ROWS` is the
-  agent tab's furniture and does not apply here; budgeting this screen at
-  `- 8` was what left four rows of figlet on top of it.
-
-**Two things about that screen were argued against and are not oversights.**
-There is **no box** — the only box-drawn frame in this product is the input
-field, where the border *means* the mode, so a second one devalues it and costs
-four rows. And there is **no scrolling inside the screen**: the list is windowed
-against the budget and says what it trimmed (`… N more`), because a second
-scroll model in an app whose whole scroll story is "the terminal's, and we never
-take it" is a worse answer than a list that admits its own limit.
-
-**The one thing still missing there is the analysis's own Gemini thread id.**
-`subagentUrl` is available where the analysis runs and is not recorded on the
-`plan_generated` payload, so there is no way to reopen the conversation that
-produced a review. It needs threading through `core/turn-runner.js`.
-
-**The question that decided the shape, and the answer that was not the lean.**
-The working document asked whether the activity feed and the PR explorer should
-be one screen, and leaned towards keeping them separate — they answer different
-questions ("what happened?" vs "what is open?"), and merging means a mode switch
-inside one list. That was wrong, and the giveaway was inside the question: *"the
-second is the one people go looking for when the first is empty."* That is not
-two questions, it is one question with the wrong list in front of it — and the
-feed was empty on a fresh session **by construction**, because it only ever held
-events from this process. The lean came from reasoning about the two screens
-rather than opening them; one screenshot settled it.
-
-The batch loop is `core/turn-runner.js`, not `agent-loop.js`: `runHeadlessTask` is a caller
-now. **Its flat re-serialisation is necessary, not an oversight** — every batch send opens a
-fresh browser tab that is closed when the turn ends, so turn 2 has never seen turn 1. Removing
-it needs one tab held across a task, which is a bridge change.
-
-## State and config
-
-**All workspace state lives under `.agent/`. Never hardcode that path — import
-`server/src/core/paths.js`,** which is the single source of truth and the reason the layout
-can't drift again.
 
 ### Where `.agent/` actually is
 
@@ -373,6 +858,15 @@ walking at `$HOME`; `paths.test.js` covers it.
 | `<ws>/.agent/sessions/history.jsonl` | conversation history, local copy |
 | `~/.agent/workspaces/<name>-<hash>/history.jsonl` | the durable copy of the same history |
 
+**A session with no user turn is not filed.** `watcher/file-watcher.js` appends
+`[System Event] File X was modified` turns whenever anything on disk changes, so leaving
+the agent open while editing in another window manufactures history containing no prompt.
+Filing those put **6 of 19** rows into a real `/history` picker, every one reading
+`Untitled` with a turn count and nothing to tell them apart — a third of the list was
+watcher noise, in a picker whose only job is choosing. Dropped rather than titled better,
+because a better title is still a row offering to restore a transcript of file
+notifications.
+
 **Session history is written to both copies on every turn** (`storage/session-store.js`). The
 workspace copy sits next to the code; the home copy survives a clean checkout or a wiped
 `.agent/`. On startup the two are reconciled — more turns wins, the other is rebuilt from it.
@@ -386,6 +880,24 @@ really do keep data there.
 `core/migrate.js` folds the pre-`.agent` layout (`.gemini/`, `.gemini-agent/`, `~/.gemini-agent/`,
 `.agent-github-plans/`, root `setAgentName.json` / `agent.log`) into `.agent/` on startup. It
 runs only when `.agent/` is absent, moves rather than copies, and is a no-op on the second run.
+
+**Those three claims are now assertions** (`test/core/migrate-workspace.test.js`), because the
+module moves the user's data — config, instructions, backups, logs — on startup, before
+anything is on screen, and it sat at **46% line coverage** with one narrow rename tested. Same
+combination as `diff-engine.js`, which was 358 lines with no tests and was writing backups
+outside the backup directory.
+
+Nothing was wrong: all four behaviours were probed against the real code first and all four
+held. What the tests buy is that the failure mode is silent and unrecoverable — a migration
+that clobbers has already destroyed the thing it overwrote by the time anyone looks. The one
+that would hurt most is `rules.md` → `AGENT.md`, the only move that writes into the user's
+*tracked* tree; the test asserts both that a human-written `AGENT.md` survives **and** that
+declining to move it does not delete the source instead. Coverage 46% → 70%.
+
+**A wrong fixture made correct code look broken first.** The first probe put sessions in
+`.gemini/sessions/`, which never existed — they lived in the *home* directory, and
+`migrateHome` handles them. The fixture has to come from the migration's own plan, not from
+memory of what the old layout probably was.
 
 `vscode-companion/extension.js` duplicates the `.agent` constant — it cannot import from
 `server/`. Changing `AGENT_DIR` in `paths.js` means changing it there too, then repackaging
@@ -465,22 +977,90 @@ make both sides share the same base, not to resolve 120 files by hand.
 
 Standing constraints on this project. These are choices, not limitations to route around:
 
-- **Gemini Web only, for now** — other bridges exist (`chatgpt-bridge.js`) and work for
-  subagents, but Gemini is the primary target.
+- **Gemini Web only.** Not "primary target" any more — the only one. ChatGPT was removed on
+  2026-09-19 (see the removal note below); a second provider is a decision to re-open, not a
+  file to un-delete.
 - **Purely local** — no hosted backend, no telemetry, no API keys. Inference happens in the
   user's own browser session, which is the whole point of the extension bridge.
 - **Two front-ends** — the terminal CLI and the Chrome side panel are both supported surfaces.
 - **One answer per turn** — never emit drafts or A/B alternatives for the user to pick between.
-- **The two bridges stay separate.** ~600 duplicated lines across `gemini-bridge.js` and
-  `chatgpt-bridge.js`, and it is why the ChatGPT image bug survived for months. Collapsing
-  them was planned and **declined**: the cost it removes is "fix it twice", and fixing the
-  scrape twice took one commit. The jsdom tests run against *both* files, so a divergence
-  fails the build — most of the value, none of the risk of breaking both bridges at once.
+- **One bridge.** This used to read "the two bridges stay separate" — ~600 duplicated lines
+  across `gemini-bridge.js` and `chatgpt-bridge.js`, kept apart because collapsing them risked
+  breaking both at once, and defended by jsdom tests that ran against *both* files so a
+  divergence failed the build. Deleting one settled that argument by removing its subject. The
+  jsdom tests still run, against the one bridge, and say in a comment **not** to restore a
+  second target to make the comparison mean something again: the comparison was a side-effect
+  of having two, never a reason to have two.
 - **An API backend is a fork, not a plan.** It would remove the ceiling — structured tool
   calls, real parallelism, caching, and `looksLikeCapabilityDenial` plus half of
   `PromptBuilder`'s economics become dead code — and it contradicts "no API keys" above,
   which is the identity of the project. The framing that preserves the thesis: the browser
   bridge stays the default, an API backend is opt-in for people who already have a key.
+
+### ChatGPT removed, 2026-09-19
+
+Owner's call. It makes the code match a product decision that was already standing and retires
+the caveat that was attached to it. `extension/content-scripts/chatgpt-bridge.js` is deleted;
+eleven other files lost a line or two each. What is worth keeping is the parts that were **not**
+mechanical:
+
+- **Duo survived by changing meaning.** With one model, `reviewer !== main` meant no reviewer at
+  all. See "Subagents" above for why a second Gemini tab is still worth having — and why the
+  guard that forbade it had outlived its reason by the time it was removed.
+- **An old config is folded on read, not left alone.** `_saveConfig` deliberately preserves keys
+  it does not own, so a stored `modelConfig.main: 'chatgpt'` survives every save and points the
+  agent at a site with no bridge, silently. `_loadConfig` folds it — reading from the **on-disk**
+  object, not the merged one, because the merge's defaults would shadow the legacy key. That is
+  the same mistake `config-merge.test.js` already covers for `effort`, and the negative control
+  matters as much as the fix: a ChatGPT main with **no** reviewer must stay solo, or folding
+  turns every solo session into a duo one.
+- **Old sessions need no migration, and that is a claim with a test.** A session filed before the
+  removal carries `thread: {model: 'chatgpt'}`. `sameThread` compares model *and* id, so it
+  resolves to `replay` rather than `continue` — the honest answer, because the conversation still
+  exists and nothing here can reopen it.
+- **The jsdom tests lost their reason and kept their value.** They ran against both bridges so a
+  divergence failed the build. The comment in them now says not to restore a second target to
+  make that loop mean something again.
+- **`content.js` is bundled.** `npm run build --workspace=extension` before committing, or Chrome
+  loads the old `service-worker.js` and none of it is real.
+
+### Standing decisions rescued from `HANDOFF.md`, 2026-09-20
+
+That file was a baton — "delete this once the work below is done" — and its work
+is done or obsolete: three of its eight open items were GitHub-agent work deleted
+in `e375aed`, `/update` has now run against a real merge, `ask_subagent` is
+verified (`4b520b9`), and `/logs rates` has its data. What it also held, and
+nothing else did, is these. They are decisions, so they belong here.
+
+- **No reply envelope** — asking the model to wrap replies in JSON. Argued from
+  measurement, and the price is the case against it: the browser tab stops being
+  readable to the person watching it, which is a *supported surface*;
+  `gemini_response_stream` can no longer render live, because JSON cannot be
+  drawn until it closes and parses; every reply becomes as fragile as
+  `_cleanJsonString` already is, since prose is exactly what escaping gets
+  wrong; and it is more text typed into a browser every turn, against a prompt
+  strategy that exists to avoid exactly that. The three drift detectors look
+  like candidates and are not — a provider error is Gemini's own error page
+  rather than model output, and a model confused enough to deny its own tools
+  will not emit a correct marker saying so. **If it comes back**, the thing
+  worth doing instead is a short output-contract line asking for the constructs
+  the renderer handles best.
+- **The jitter's second half is not happening** — ~20% of the live frame spent
+  on the seam that brought the scroll glitches back twice.
+- **Terminal failures are opt-in per terminal**, chosen over an age filter.
+- **The emoji sweep is not happening.** ~100 glyphs across 16 files were changed
+  and then reverted; the only real complaint was the tick on a dark background,
+  which is now `✔`. Change a glyph when someone names *that glyph* — `✅` → `✓`
+  on the compaction row was right, and re-running the sweep is not.
+
+And two traps that were only written down there:
+
+- **A test can pin the bug.** A list-indent fix failed two tests that asserted
+  the broken two-space indent. A test written from observed output describes
+  what the code *does*, which is not what it *should* do — and it will defend
+  the bug.
+- **Do not write a derived number into a document here.** Commit counts and test
+  counts both drifted within a day. Print the command instead.
 
 ### Removed as dead, 2026-09-16
 
@@ -557,6 +1137,49 @@ An old `.agent/config.json` can also carry `contextFolders` and `modelConfig.rea
 fossils of features deleted in Direction phases 2 and 7. Nothing in the source reads either.
 They are left in place on purpose: config saving deliberately preserves keys it does not
 own — that was a bug fix — and auto-pruning known-dead keys would fight it for no gain.
+
+**`figlet` is gone; the one font it was used for is vendored.** It was 20.8MB — 328 fonts
+across `fonts/` and `importable-fonts/` — and this app rendered exactly one, `Standard`, for
+the wordmark: **21% of `node_modules` for a banner**. The font is 30KB in `ui/fonts/` and
+`ui/figfont.js` renders it. Measured: `node_modules` **98.5MB → 77.2MB**.
+
+Only what `Standard` needs is implemented. Its header sets horizontal smushing with rules 1,
+2, 4 and 8; the vertical rules it also sets never apply, because the banner is one line.
+Correctness was not argued, it was compared — while `figlet` was still installed, **25,110
+strings** (every printable character alone, the banner, and 25,000 random strings of 1–12
+characters) were rendered through both and required to match byte for byte.
+
+Two things that comparison caught, neither of which would have been found by looking:
+the shipped `.flf` files are **CRLF**, so splitting on `\n` leaves a `\r` as each row's
+"endmark" and strips nothing — every glyph keeps its `@` and none of them overlap. And a row
+where one side is **entirely blank** cannot collide, so it must not limit the slide; counting
+its blanks drew `7,` and `W.` one column too wide. That was the difference between 3,106 and
+3,110, and then 25,110 of 25,110.
+
+The banner was also being rendered **twice** — a synchronous render to seed the state and an
+async `figlet.text` in an effect that recomputed the same string on mount. The async half was
+pure duplicate work and went with the dependency.
+
+**`@inquirer/prompts` went too** — sixteen packages for one yes/no that fires only when the
+port is taken. `node:readline/promises` does it in six lines. Measured: another **4.4MB**,
+more than the 0.6MB the top-level directory suggested, because of what it pulled in behind it.
+
+**Code blocks are drawn plainly whichever way they were written.** `renderMarkdown` lifts
+*fenced* blocks out before `marked` sees them and draws them with `renderBlock`; an *indented*
+block never matched that lift and fell through to `marked-terminal`, which highlights it. The
+result was backwards — the shape this project controls and designed for came out plain, the
+rare untagged four-space shape came out coloured. Measured with colour forced: fenced 6 ANSI
+spans, all of them rules; indented 14, with the number green. A `code` renderer now draws both
+the same way. It is overridden rather than lifted out by regex because four-space indentation
+is also how a list continues, and `marked` can already tell those apart.
+
+That makes `highlight.js` unreachable — **4.3MB and ~60ms of startup for output that can no
+longer be shown** — but it is a transitive dependency of `marked-terminal`, so removing it
+means replacing that renderer. `format.js` already overrides lists and code; what remains is
+headings, tables, blockquotes, emphasis, links and rules. Left as a deliberate choice, not an
+oversight.
+
+**Total: `node_modules` 98.5MB → 72.7MB.**
 
 **Dependencies: none unused.** Every entry in all four `package.json` files is imported,
 used in a script, or `@types/react`, which is types-only and exists for editor JSX
@@ -668,7 +1291,13 @@ was a third name for the first — written on every change, read only as a fallb
 apologised for the impossible combinations at the point of use ("you are on the FLASH tier,
 where reasoning levels do nothing") instead of preventing them.
 
-`core/effort.js` is now the one ladder: `flash`, `flash-thinking`, `brief`, `standard`, `deep`.
+`core/effort.js` is now the one ladder — `flash`, `flash-thinking`, `brief`, `standard`,
+`deep` as of phase 4, then **three rungs**, then **renamed to the picker's own words**:
+`lite`, `flash`, `pro` (2026-09-20). The old `flash` is `lite` and the old `flash-thinking`
+is `flash`; the collision was the point, because "flash" named our terse rung while the
+browser uses it for the middle one.
+A stored `brief` / `standard` / `deep` folds to `pro` on read, *before* the `modelTier`
+branch, so a disagreeing legacy tier cannot drop a pro user onto the terse profile.
 `modelTier` and `reasoningLevel` survive as *derived* values because the prompt builder really
 does branch on both, but nothing stores them separately, so they cannot disagree. Each rung also
 names the browser tab it is written for — a pro-tier prompt in a Flash tab is a long prompt to
@@ -702,7 +1331,8 @@ names its lane (`_releaseExtension(model)`, defaulting to `mainModel`); the suba
 the lane out of `pendingSubagents` *before* `handleSubagentResponse` deletes the entry, which is
 the only record of which tab the reply came from.
 
-`topology` is now a getter: `reviewer && reviewer !== main ? 'duo' : 'single'`. It is not written
+`topology` is now a getter: `reviewer ? 'duo' : 'single'` (it also required
+`reviewer !== main` until ChatGPT was removed). It is not written
 to config any more — a derived value in a config file is one someone edits and is ignored for
 editing — and a stored `topology` is folded into the reviewer on read. `/mode` and `/config`
 became one command and one screen: the role picker, then the model picker, then a "View Current
@@ -834,9 +1464,11 @@ dispatch paths still want scaffolding and are left for the split in P3.
   escaping rules that prose does not — a single stray backtick there surfaces as
   `ReferenceError` from an unrelated function.
 
-  Only **static** prose moved (~116 lines, seven files): the flash and flash-thinking
-  protocols, both tool-call formats, the flash core rules, the pro guardrails and the
-  plan-first step. Anything the builder computes stays in JavaScript, because a markdown file
+  Only **static** prose moved (~116 lines, seven files): the two cheap-rung protocols,
+  both tool-call formats, the terse core rules, the pro guardrails and the plan-first step.
+  The files were named after the rungs and moved with them in 2026-09-20's rename —
+  `reasoning-lite.md` / `reasoning-flash.md`, and `core-terse.md` /
+  `tool-call-format-terse.md` for the two that serve *both* cheap rungs. Anything the builder computes stays in JavaScript, because a markdown file
   full of `${isBrief ? '2' : '3'}` is worse than what it replaced. The move was verified
   byte-for-byte: all ten effort × topology prompt shapes came out identical, and one did not
   at first — `trimEnd()` had eaten a trailing newline that the assembled prompt depended on.
@@ -865,10 +1497,11 @@ dispatch paths still want scaffolding and are left for the split in P3.
   message that actually failed. Content scripts run in the page and cannot set fields on that
   payload, so they prefix `[stage]` to their message and the bridge lifts it back out — a
   changed selector on gemini.google.com now logs as `find_input` rather than "failed".
-- **The ChatGPT bridge's image path** — *fixed, and it was broken.* It matched the
-  `<image_data>` block and **deleted** it, then pasted the remaining text — so `/image` against
-  ChatGPT sent a prompt discussing a screenshot nobody had been given. It now rebuilds the data
-  URL into a `File` the way the Gemini bridge does, and says so in the prompt if it cannot.
+- **The ChatGPT bridge's image path** — *fixed, then deleted with the bridge.* Kept as a
+  record of the failure mode: it matched the `<image_data>` block and **deleted** it, then
+  pasted the remaining text, so `/image` sent a prompt discussing a screenshot nobody had been
+  given. A scrape that silently drops what it cannot handle looks identical to one that
+  works.
 - **`grep_search` for large repos** — *done.* Several patterns in one call (`["rate limit",
   "throttle", "quota"]` is one search, not three round trips), optional context lines capped at
   five, and results grouped by file with the busiest file first — on a large repo the module
@@ -956,6 +1589,8 @@ measurement.
 
 **The extension.** Chrome throttling of background tabs, the retry behaviour around it, and
 whatever else the bridge is papering over. Raised 2026-09-11, to be planned rather than patched.
+**Answered 2026-09-17** — see "Bridge liveness" above, and "The clock was the only throttled
+thing" below.
 
 **`/skills` needs a proper look.** The list is aligned and reachable from settings now, and
 escape steps back — but the shape of the feature was not examined. `/skills dir` prints a
@@ -970,9 +1605,16 @@ responses, ascending:
 **A. Make the text channel as good as it gets** — P1's validation plus a sentinel-delimited
 call block. Free, no product decisions.
 
-**B. Measure before believing.** `parse_tool_calls`, `tool_amnesia` and `provider_error` are
-all logged and nothing reads them as rates. Any claim about how far behind this is — including
-the ones in this file — is an estimate until that view exists.
+**B. Measure before believing.** `parse_tool_calls`, `tool_amnesia`, `provider_error` and
+`multiple_drafts` are logged, and **`/logs rates` reads them back as rates** —
+`core/channel-health.js`, gated at `MIN_TURNS_FOR_RATE` so a handful of turns cannot look like
+a trend. This note used to say nothing read them; that stopped being true and the note did not
+follow, which nearly bought a second implementation of a view that already shipped.
+
+First real reading, 99 turns on the owner's machine: unparseable tool call **0%**, denied
+having tools **1.0%**, provider error **0%**, multiple drafts **0%**. The text channel is in
+better shape than the estimates in this file assume — which is the point of having the number
+rather than the estimate.
 
 **C. An optional API backend.** The only option that actually removes the ceiling: structured
 calls, real parallelism, caching, and `looksLikeCapabilityDenial` plus half of `PromptBuilder`'s
@@ -980,6 +1622,24 @@ economics become dead code. It contradicts the standing "no API keys" decision a
 recorded as a fork, not a plan. The framing that preserves the thesis: the browser bridge stays
 the default and the identity of the project; an API backend is opt-in for people who already
 have a key.
+
+**Prompts typed during a turn are queued, not dropped.** `handleUserMessage` returns early
+when busy, pushing a transient status line the thinking cycle paints over — and by then
+`handleSubmit` has echoed the message into the transcript and cleared the input box. It looked
+sent, the text was gone, and nothing would ever answer it. Reported as four prompts typed and
+one reply. `queuedUserMessage` had sat on the loop as a field that nothing read or wrote.
+
+The queue lives in the UI, because that is where the transcript and the marker are, and
+because "one turn at a time" is the contract that keeps the loop tractable. Busy is read from
+`agentLoop.isProcessing`, never React's copy — `handleSubmit` sets that itself. Draining is
+gated on the loop being idle *and* no diff prompt or menu being open, because the two flags
+disagree during an approval and draining then injects a prompt into a turn parked on a
+decision. `:stop` empties the queue, or stopping is followed instantly by the next prompt.
+
+**Up-arrow takes a queued prompt back** when the box is empty — press enter and it rejoins the
+queue, press nothing and it is gone, which is the cancel nobody had to invent a key for. Only
+when the box is empty: half a typed sentence must not be replaced by something queued a minute
+ago.
 
 ## Gotchas
 
@@ -991,6 +1651,76 @@ have a key.
   behind explicit dependency lists; the `<Static>` element, `staticEpoch` and the streaming
   path stayed in `App.jsx` deliberately, and adding memoization to the transcript rows is how
   the scroll glitches came back the last two times.
+- **Every slash command is driven once by a test, bare and with arguments.**
+  `use-slash-commands.js` was 967 lines at **8.69% line coverage** — the lowest
+  in the repo, and the surface almost every bug reported from use has come from.
+  `test/ui/slash-command-smoke.test.js` is shallow and total, the same shape as
+  the tool smoke sweep and for the same reason: the failure worth guarding is
+  "this entry point throws", and a command that crashes takes the turn with it.
+  It also asserts no listed command answers *"No such command"* about itself —
+  the `/name` bug, which shipped fully implemented and unreachable because the
+  dispatcher kept its own copy of the list. **55.5% now, and 92.5% overall.**
+
+  **Use the real collaborators, not stubs.** A first pass with hand-written
+  stubs produced three confident false positives, including `getAllMemories is
+  not a function` against a method that exists and has three callers. Real
+  `MemoryManager`, `ContextManager`, `DiffEngine` and `TaskManager` cost nothing
+  in a temp workspace and cannot lie that way.
+
+  Two real faults fell out of the sweep, both the same shape — the interface not
+  saying what happened. **A wrong effort word was ignored rather than
+  rejected**: `/effort deeep` fell through to the status display, which prints
+  the current rung and the ladder and reads exactly like a confirmation, so you
+  believe it changed and every later turn goes out on the old rung. And **a bare
+  `/` answered "No such command: `/`" followed by "Type `/` on its own to see
+  what there is"** — advice to do the thing that had just been done. It lists
+  the commands now, and an unknown command says so *and then* lists them.
+
+- **A local command must not touch a running turn.** `handleSubmit` set
+  `isProcessing` and cleared `activeToolCalls` before looking at what was
+  submitted, and every slash handler ends with `setIsProcessing(false)` — so
+  typing anything starting with `/` mid-turn wiped the live turn's rows and
+  then declared it finished while the loop carried on. Reported as `/efforttt`
+  during a turn and "the agent stopped responding and did not output the
+  result": it had not stopped, it had run the tool calls and produced the
+  answer. `turnInFlight` is read from **`agentLoop.isProcessing`**, not from
+  React's copy, which this very function sets true. Pinned by a source
+  assertion, because observing it needs a live turn under the pty harness and
+  because moving two `set…` calls back above the branch reads as tidying.
+
+  **The transcript only advances on `agent_response`** — `mergeLoopHistory`
+  runs in that one branch of `sendToPanel` — and `agent_response` is only sent
+  when a reply has prose left after the tool calls are stripped. So a round
+  that is *only* tool calls leaves the screen exactly as it was. That is why
+  the report looked like a dead agent rather than a busy one, and it is still
+  the case: the live tool rows are the only sign of progress during those
+  rounds, which is precisely what the bug above was wiping.
+
+- **An instant local command must not raise a spinner it takes down again.**
+  Reported with a screenshot: a `Thinking… (0s · ↑ 29.4k tokens · esc to stop)`
+  row sitting above `❯ /paste-image` and another above `❯ /image`, both frozen
+  at 0s, permanently in the scrollback. `handleSubmit` set `isProcessing(true)`
+  for *anything* starting with `/`, and every handler ends by setting it false —
+  so an instant command drew the live row, committed its own output to
+  `<Static>` in between, then shrank the live frame, stranding the row above the
+  static write where Ink can never repaint it. **Above** the command, because it
+  was drawn before the rows it ends up sitting on. `SLOW_COMMANDS`
+  (`core/slash-commands.js`) is the gate, and `/compact` is its only member:
+  it asks the model for a summary, `/new` fires `startNewChat` without awaiting
+  it, and the rest is arithmetic on state already in memory. A set beside the
+  commands rather than a literal at the call site, because the literal is what
+  drifts.
+
+- **An attached image can be taken off again, and says that it is on.**
+  Reported from use: *"there is no option to remove image? how to do that?"* —
+  and there was not. `setPendingImage(null)` ran in exactly one place, on
+  submit, so once attached the only ways to be rid of it were to send it or
+  restart. It had no representation either: the transcript said so once and
+  scrolled away, so the only way to find out an image was armed was to send it.
+  `/image remove` detaches, and the status row carries `1 image` beside the
+  paste count — the same field pattern, in a row that is already drawn and
+  already budgeted, costing nothing when there is no image.
+
 - **A menu opened from `/settings` must not answer in the transcript.** `returnTo` is the
   settings page, so setting it back reopens that page *on top of* whatever the command just
   said. Four screens did this — `/effort`, `/config`, and two on the allowlist — and the
@@ -1027,6 +1757,30 @@ have a key.
   and again when `/update`'s two notice rows reproduced it at 13 rows (9 + 2 + a floored 3 is
   14). Whenever there *is* room the subtraction already yields more than three, so the floor
   only ever bound in the case where binding it was wrong.
+
+  **The agent's reply was the unbudgeted row, and it was the biggest one.**
+  `TranscriptTurn` capped the *action* rows at `liveBudget` and then rendered
+  the reply underneath in full, live or not. Reported as "it gave me much more
+  output but I received only a portion of it", with a screenshot of an answer
+  cut mid-sentence and blank space below. **Nothing was lost** —
+  `history.jsonl` held all 5,090 characters and `renderMarkdown` returns all of
+  them, both checked before touching anything — but at ~85 rendered rows in a
+  ~30-row terminal the frame blew past the viewport, and what survived the
+  repaint was its top. `liveMessageText` clamps it while live and says
+  `… +N more lines`; the committed copy in `<Static>` is untouched, so the rest
+  appears a moment later. It lives in `format.js` rather than beside its only
+  caller because a test importing a `.jsx` file cannot run under the repo's
+  plain `node --test`.
+
+  **Its first version counted `\n`, which was the same bug again, and it
+  shipped looking fixed.** It was reported a second time — extension updated,
+  agent restarted, still truncated, still no marker. A 1,450-character reply
+  is **18 source lines and 26 rendered rows at 100 columns**, so an 18-line
+  clamp against a 14-row budget let the text straight through while the frame
+  still overflowed by twelve rows. The rule immediately below had already
+  said it. The budget is spent in *wrapped* rows now, at the width the
+  terminal actually is. **A clamp measured in the wrong unit reads as a fix
+  and behaves as nothing.**
 
   **A row you draw is a row you budget, and a row that wraps is two.** `/update`'s reload
   notice was ~105 characters, which wraps at 80 columns: charged as one row, drawn as two,

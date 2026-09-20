@@ -285,6 +285,15 @@ describe('artifacts travel with the session', () => {
  * command implemented in the UI layer is invisible to every other surface.
  */
 describe('/new', () => {
+  /*
+   * `startNewChat` is the real one, not a stub that records the call.
+   *
+   * It used to be stubbed, and `/new` cleared `chatThread` itself — so the
+   * assertion below passed against the stub whatever the method did. Once the
+   * clearing moved into `startNewChat`, where the outgoing thread can be kept
+   * as `previousThread`, the stub was testing itself. Only `_toExtension` is
+   * faked now, standing in for the extension acking immediately.
+   */
   const loopFor = (store) => {
     const sent = [];
     return {
@@ -294,7 +303,12 @@ describe('/new', () => {
         promptBuilder: { resetPromptState() {} },
         contextChars: 999,
         chatThread: { model: 'gemini', id: 'old-thread' },
-        startNewChat() { sent.push('new_chat'); },
+        _toExtension(type) {
+          sent.push(type);
+          if (type === 'new_chat') setImmediate(() => this.handleChatStarted({ ok: true }));
+        },
+        handleChatStarted: AgentLoop.prototype.handleChatStarted,
+        startNewChat: AgentLoop.prototype.startNewChat,
       },
       sent,
     };
@@ -327,12 +341,15 @@ describe('/new', () => {
       'a finished checklist survived into the new conversation');
   });
 
-  test('it starts a fresh browser thread, and forgets the old one', async () => {
+  test('it starts a fresh browser thread, and keeps the address of the old one', async () => {
     const { handleSlashCommand } = await import('../../src/core/slash-commands.js');
     const { loop, sent } = loopFor(conversation(new SessionStore(dir)));
     await handleSlashCommand(loop, 'new', []);
     assert.deepEqual(sent, ['new_chat'], 'the model kept the old conversation in mind');
     assert.equal(loop.chatThread, null);
+    // Not forgotten, handed over. A conversation you cannot look back at is a
+    // reset with a nicer name, and the id is the only address it has.
+    assert.deepEqual(loop.previousThread, { model: 'gemini', id: 'old-thread' });
     assert.deepEqual(loop.conversationHistory, []);
   });
 
@@ -402,5 +419,52 @@ describe('a filed conversation is named', () => {
     };
     const { message } = await handleSlashCommand(loop, 'new', []);
     assert.doesNotMatch(message, /--resume/);
+  });
+});
+
+/**
+ * A conversation the user never spoke in is not one.
+ *
+ * `file-watcher.js` appends `[System Event] File X was modified` turns
+ * whenever anything on disk changes, so leaving the agent open while editing
+ * in another window manufactures history containing no prompt at all. Filing
+ * those put 6 of 19 rows into a real `/history` picker, each reading
+ * `Untitled` with a turn count and nothing to tell them apart — a third of
+ * the list was watcher noise, in a picker whose only job is choosing.
+ */
+describe('sessions that are only file-watcher noise', () => {
+  const watcherOnly = () => [
+    { role: 'system', content: '[System Event] File a.js was modified', timestamp: 1 },
+    { role: 'system', content: '[System Event] File b.js was modified', timestamp: 2 },
+  ];
+
+  test('are not filed at all', () => {
+    const store = new SessionStore(dir);
+    store.saveHistory(watcherOnly());
+
+    assert.equal(store.rollover(), null, 'nothing was said, so there is nothing to come back to');
+    assert.deepEqual(store.listSessions(), []);
+  });
+
+  test('a real prompt among them is still filed, and titles the session', () => {
+    // The negative control: the guard must key on "did the user speak", not
+    // on "are there system turns".
+    const store = new SessionStore(dir);
+    store.saveHistory([
+      ...watcherOnly(),
+      { role: 'user', content: 'why is the bridge dropping prompts?', timestamp: 3 },
+      { role: 'agent', content: 'because…', timestamp: 4 },
+    ]);
+
+    const id = store.rollover();
+    assert.ok(id, 'this one is a conversation');
+    const [filed] = store.listSessions();
+    assert.equal(filed.title, 'why is the bridge dropping prompts?');
+  });
+
+  test('a user turn whose content is not a string does not count', () => {
+    const store = new SessionStore(dir);
+    store.saveHistory([{ role: 'user', content: { parts: ['an image'] }, timestamp: 1 }]);
+    assert.equal(store.rollover(), null);
   });
 });

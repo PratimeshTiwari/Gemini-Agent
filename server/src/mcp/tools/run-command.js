@@ -104,12 +104,29 @@ export async function runCommand(args, context) {
       };
 
       if (error && error.killed) {
+        /*
+         * Name the tool that would have worked, here, where the decision is.
+         *
+         * `run_background` exists for dev servers, watchers and builds — and
+         * across every stored session it has been called **zero** times, while
+         * `run_command` timing out is precisely the moment it was written for.
+         * Nothing pointed from one to the other: the model saw "timed out
+         * after 30s", which reads as a failure to retry rather than as the
+         * wrong tool.
+         *
+         * The tool's own description is the other place this could live, and it
+         * is the weaker one — it is read once at the top of a turn, whereas
+         * this is read at the moment the model is deciding what to do next.
+         */
         resolveP({
           exitCode: -1,
           stdout: truncate(stdout || ''),
           stderr: truncate(stderr || ''),
           timedOut: true,
-          message: `Command timed out after ${timeout}s`,
+          message: `Command timed out after ${timeout}s. If this is a long-running process `
+            + '(dev server, watcher, build --watch), use run_background instead — it returns '
+            + 'immediately with a taskId and manage_task reads its logs. If it should have '
+            + 'finished, raise `timeout` and try once more.',
         });
         return;
       }

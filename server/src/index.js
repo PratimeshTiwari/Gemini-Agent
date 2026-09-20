@@ -33,7 +33,7 @@ if (!existsSync(tsxPath)) {
 }
 
 if (!existsSync(tsxPath)) {
-  console.error("❌ 'tsx' not found. Please run 'npm install' in the workspace root or server directory.");
+  console.error("✗ 'tsx' not found. Please run 'npm install' in the workspace root or server directory.");
   process.exit(1);
 }
 
@@ -92,11 +92,11 @@ for (let restarts = 0; ; restarts++) {
     process.exit(result.status ?? 0);
   }
   if (restarts >= MAX_RESTARTS) {
-    console.error(`❌ Restarted ${MAX_RESTARTS} times without settling. Stopping.`);
+    console.error(`✗ Restarted ${MAX_RESTARTS} times without settling. Stopping.`);
     process.exit(1);
   }
 
   const handover = takeHandover();
   if (handover) argv = withWorkspace(argv, handover);
-  console.log(handover ? `🔄 Restarting in ${handover}…` : '🔄 Restarting…');
+  console.log(handover ? `⟳ Restarting in ${handover}…` : '⟳ Restarting…');
 }

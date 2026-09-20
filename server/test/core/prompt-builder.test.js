@@ -107,7 +107,7 @@ describe('PromptBuilder — refresh cadence counts messages, not user turns', ()
 
 describe('PromptBuilder — instructions the model can actually act on', () => {
   test('no message teaches the QUESTION: protocol, which nothing parses', () => {
-    for (const effort of ['flash', 'flash-thinking', 'standard']) {
+    for (const effort of ['lite', 'flash', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
       const modelConfig = { effort };
       const messages = [build(pb, { modelConfig }), driveToRefresh(pb, { modelConfig }).prompt];
@@ -139,30 +139,30 @@ describe('PromptBuilder — instructions the model can actually act on', () => {
 describe('PromptBuilder — the advertised tool set matches the dispatchable one', () => {
   const names = (text) => [...text.matchAll(/^## ([a-z_]+)/gm)].map((m) => m[1]);
 
-  test('ask_researcher is advertised in every tier', () => {
-    for (const effort of ['flash', 'flash-thinking', 'standard']) {
+  test('ask_subagent is advertised in every tier when subagents are on', () => {
+    for (const effort of ['lite', 'flash', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
-      const defs = pb._buildToolDefinitions('single', { effort });
-      assert.ok(names(defs).includes('ask_researcher'),
-        `${effort} omits ask_researcher, which agent-loop dispatches`);
+      const defs = pb._buildToolDefinitions(true, { effort });
+      assert.ok(names(defs).includes('ask_subagent'),
+        `${effort} omits ask_subagent, which agent-loop dispatches`);
     }
   });
 
   test('the reminder index cannot drift from the definitions', () => {
-    for (const topology of ['single', 'duo']) {
+    for (const subagents of [true, false]) {
       const pb = new PromptBuilder(ws, ws);
-      const defs = names(pb._buildToolDefinitions(topology, {}));
-      const index = pb._buildToolIndex(topology, {});
+      const defs = names(pb._buildToolDefinitions(subagents, {}));
+      const index = pb._buildToolIndex(subagents, {});
       for (const n of defs) {
-        assert.ok(index.includes(n), `${topology}: ${n} missing from the reminder index`);
+        assert.ok(index.includes(n), `subagents=${subagents}: ${n} missing from the index`);
       }
     }
   });
 
-  test('subagent tools appear only where that topology can route them', () => {
+  test('ask_subagent appears only when it can actually be routed', () => {
     const pb = new PromptBuilder(ws, ws);
-    assert.ok(!names(pb._buildToolDefinitions('single', {})).includes('ask_reviewer'));
-    assert.ok(names(pb._buildToolDefinitions('duo', {})).includes('ask_reviewer'));
+    assert.ok(!names(pb._buildToolDefinitions(false, {})).includes('ask_subagent'));
+    assert.ok(names(pb._buildToolDefinitions(true, {})).includes('ask_subagent'));
   });
 
   test('ask_reasoner is gone, in every topology', () => {
@@ -179,7 +179,7 @@ describe('PromptBuilder — the advertised tool set matches the dispatchable one
 describe('PromptBuilder — tier differentiation', () => {
   test('flash gets a smaller prompt than pro', () => {
     const pb = new PromptBuilder(ws, ws);
-    const flash = build(pb, { modelConfig: { effort: 'flash' } }).length;
+    const flash = build(pb, { modelConfig: { effort: 'lite' } }).length;
     const pb2 = new PromptBuilder(ws, ws);
     const pro = build(pb2, { modelConfig: { effort: 'standard' } }).length;
     assert.ok(flash < pro / 2, `flash ${flash} vs pro ${pro}`);
@@ -187,57 +187,68 @@ describe('PromptBuilder — tier differentiation', () => {
 
   test('flash gets worked examples of the tool format, pro gets the spec', () => {
     const pb = new PromptBuilder(ws, ws);
-    assert.match(pb._buildToolCallFormat('flash'), /"name": "read_file"/);
+    assert.match(pb._buildToolCallFormat('lite'), /"name": "read_file"/);
     assert.doesNotMatch(pb._buildToolCallFormat('pro'), /"name": "read_file"/);
   });
 
   // The three old keys are folded into one rung on read, so a config written
   // by any earlier build still lands on the profile it used to get.
   test('a config written before /effort still selects the right profile', () => {
-    assert.strictEqual(effortFromConfig({ modelTier: 'flash' }), 'flash');
-    assert.strictEqual(effortFromConfig({ reasoningEffort: 'low' }), 'flash');
-    assert.strictEqual(effortFromConfig({ reasoningEffort: 'medium' }), 'flash-thinking');
-    assert.strictEqual(effortFromConfig({ modelTier: 'pro', reasoningLevel: 'deep' }), 'deep');
-    assert.strictEqual(effortFromConfig({}), 'standard');
+    assert.strictEqual(effortFromConfig({ modelTier: 'lite' }), 'lite');
+    assert.strictEqual(effortFromConfig({ reasoningEffort: 'low' }), 'lite');
+    assert.strictEqual(effortFromConfig({ reasoningEffort: 'medium' }), 'flash');
+    assert.strictEqual(effortFromConfig({ modelTier: 'pro', reasoningLevel: 'deep' }), 'pro');
+    assert.strictEqual(effortFromConfig({}), 'pro');
   });
 
   // "flash tier, deep reasoning" was representable and meant nothing. The tier
   // is what the prompt branched on, so it wins and the level is dropped.
   test('a combination that never made sense resolves to the half that did', () => {
-    assert.strictEqual(effortFromConfig({ modelTier: 'flash', reasoningLevel: 'deep' }), 'flash');
+    assert.strictEqual(effortFromConfig({ modelTier: 'lite', reasoningLevel: 'deep' }), 'lite');
   });
 });
 
-describe('PromptBuilder — pro reasoning levels', () => {
-  const proPrompt = (effort) => {
+/*
+ * One pro rung since 2026-09-20. `brief` and `deep` are gone, so what was a
+ * comparison between three rungs is now a description of the one that is left:
+ * `pro` is the old `standard` plus `deep`'s review step, and explicitly
+ * *without* `deep`'s other two blocks.
+ *
+ * Those two are the assertions that carry weight here. The critical-analysis
+ * phase and the assumption ledger were declined on **output** cost, which no
+ * character count of the prompt can see — so nothing but a `doesNotMatch` will
+ * notice them creeping back in.
+ */
+describe('PromptBuilder — the pro rung', () => {
+  const proPrompt = (effort = 'pro') => {
     const pb = new PromptBuilder(ws, ws);
     return build(pb, { modelConfig: { effort } });
   };
 
-  test('brief skips the planning ceremony; standard and deep require it', () => {
-    assert.doesNotMatch(proPrompt('brief'), /RESTATE AND DECOMPOSE/);
-    assert.match(proPrompt('standard'), /RESTATE AND DECOMPOSE/);
-    assert.match(proPrompt('deep'), /RESTATE AND DECOMPOSE/);
+  test('it plans first — the block `brief` used to skip', () => {
+    assert.match(proPrompt(), /RESTATE AND DECOMPOSE/);
   });
 
-  test('deep adds approach enumeration and an adversarial pass', () => {
-    assert.match(proPrompt('deep'), /Approach enumeration/);
-    assert.match(proPrompt('deep'), /Adversarial self-review/);
-    assert.doesNotMatch(proPrompt('standard'), /Adversarial self-review/);
+  test('it keeps deep\'s review step', () => {
+    assert.match(proPrompt(), /Send the diff to `ask_subagent`/);
   });
 
-  test('the levels are ordered by how much prompt they spend', () => {
-    const brief = proPrompt('brief').length;
-    const standard = proPrompt('standard').length;
-    const deep = proPrompt('deep').length;
-    assert.ok(brief < standard, `brief ${brief} !< standard ${standard}`);
-    assert.ok(standard < deep, `standard ${standard} !< deep ${deep}`);
+  test('and not deep\'s other two blocks, which cost output on every turn', () => {
+    assert.doesNotMatch(proPrompt(), /Approach enumeration/);
+    assert.doesNotMatch(proPrompt(), /ASSUMPTION LEDGER/);
   });
 
-  test('phase numbering stays consistent within a level', () => {
-    // brief drops the analysis phase, so its verify step is PHASE 3, not 4.
-    assert.match(proPrompt('brief'), /PHASE 3: VERIFICATION/);
-    assert.match(proPrompt('standard'), /PHASE 4: VERIFICATION/);
+  test('the four-phase protocol, not brief\'s three', () => {
+    assert.match(proPrompt(), /PHASE 4: VERIFICATION/);
+    assert.doesNotMatch(proPrompt(), /PHASE 3: VERIFICATION/);
+  });
+
+  // The retired ids are not rungs; asking for one must land on `pro` rather
+  // than on a flash profile, which is the whole point of `RETIRED_RUNGS`.
+  test('a retired rung name still builds the pro prompt', () => {
+    for (const gone of ['brief', 'standard', 'deep']) {
+      assert.match(proPrompt(gone), /RESTATE AND DECOMPOSE/, gone);
+    }
   });
 
   test('an unknown or missing level falls back to standard, never to nothing', () => {
@@ -250,36 +261,53 @@ describe('PromptBuilder — pro reasoning levels', () => {
 
   test('levels do not leak into the flash tiers, which have no room for them', () => {
     const pb = new PromptBuilder(ws, ws);
-    const p = build(pb, { modelConfig: { effort: 'flash' } });
+    const p = build(pb, { modelConfig: { effort: 'lite' } });
     assert.doesNotMatch(p, /RESTATE AND DECOMPOSE/);
     assert.doesNotMatch(p, /Adversarial self-review/);
   });
 
-  test('the periodic reminder repeats the level actually in force', () => {
-    const pb = new PromptBuilder(ws, ws);
-    const modelConfig = { effort: 'brief' };
-    build(pb, { modelConfig });
-    const { prompt } = driveToRefresh(pb, { modelConfig });
-    assert.match(prompt, /Investigate → Implement → Verify/);
-    assert.doesNotMatch(prompt, /decompose it into a checklist/i);
+  /*
+   * The reminder has to describe the rung in force, not a default. With one pro
+   * rung the discriminating pair is flash-thinking against pro — if the
+   * reminder ever hard-coded either, this is what catches it.
+   */
+  test('the periodic reminder repeats the rung actually in force', () => {
+    const remind = (effort) => {
+      const pb = new PromptBuilder(ws, ws);
+      const modelConfig = { effort };
+      build(pb, { modelConfig });
+      return driveToRefresh(pb, { modelConfig }).prompt;
+    };
+    assert.match(remind('pro'), /decompose/i);
+    assert.doesNotMatch(remind('lite'), /decompose/i);
   });
 });
 
-describe('PromptBuilder — the solo topology tells the truth about delegation', () => {
-  test('single no longer claims there is nothing to delegate to while listing subagent tools', () => {
+describe('PromptBuilder — the prompt tells the truth about delegation', () => {
+  test('with subagents on it says they exist and what they are for', () => {
     const pb = new PromptBuilder(ws, ws);
-    const p = build(pb, { topology: 'single' });
+    const p = build(pb, { subagents: true });
     assert.doesNotMatch(p, /There are no other models to delegate to/);
-    // Both of these dispatch fine in single topology (agent-loop.js), so the
-    // prompt has to admit they exist.
-    assert.match(p, /ask_researcher/);
     assert.match(p, /ask_subagent/);
+    assert.match(p, /role: "research"/);
+  });
+
+  /*
+   * The half that used to be wrong in the other direction: a prompt that lists
+   * subagent tools while telling the model it has nobody to delegate to. With
+   * the toggle off it must do neither — no tool, and no claim that one exists.
+   */
+  test('with subagents off it says so, and names no subagent tool', () => {
+    const pb = new PromptBuilder(ws, ws);
+    const p = build(pb, { subagents: false });
+    assert.match(p, /no subagents available in this session/);
+    assert.doesNotMatch(p, /ask_subagent/);
   });
 });
 
 describe('PromptBuilder — the ask_question contract', () => {
   test('every tier is told a prose question does not reach the user', () => {
-    for (const effort of ['flash', 'flash-thinking', 'standard']) {
+    for (const effort of ['lite', 'flash', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
       const p = build(pb, { modelConfig: { effort } });
       assert.match(p, /ask_question/, `${effort} does not mention the tool`);
@@ -412,7 +440,7 @@ describe('PromptBuilder — the single-response rule is stated, not chanted', ()
   });
 
   test('the rule is still stated where it is read at least once', () => {
-    for (const effort of ['flash', 'flash-thinking', 'standard']) {
+    for (const effort of ['lite', 'flash', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
       const turn0 = build(pb, { modelConfig: { effort } });
       assert.match(turn0, /one answer per turn/i,
@@ -485,7 +513,7 @@ describe('PromptBuilder — the prompt may not name a tool that does not exist',
     const offenders = new Set();
 
     for (const mode of ['plan', 'auto']) {
-      for (const effort of ['flash', 'flash-thinking', 'brief', 'standard', 'deep']) {
+      for (const effort of ['lite', 'flash', 'brief', 'standard', 'deep']) {
         for (const topology of ['single', 'duo']) {
           const pb = new PromptBuilder(ws, ws);
           const modelConfig = { effort, main: 'gemini', ...(topology === 'duo' ? { reviewer: 'chatgpt' } : {}) };
@@ -539,7 +567,24 @@ describe('PromptBuilder — a dispatchable tool the prompt never mentions is unr
 
 describe('every rung asks for a list, checks it, and reviews before finishing', () => {
   const pro = (effort) => build(new PromptBuilder(ws, ws), { modelConfig: { effort } });
-  const LADDER = ['flash', 'flash-thinking', 'brief', 'standard', 'deep'];
+  const pb = () => new PromptBuilder(ws, ws);
+  const LADDER = ['lite', 'flash', 'pro'];
+
+  /*
+   * Where the handover lives depends on the rung now.
+   *
+   * The two flash rungs carry a few lines inside their own reasoning prompt —
+   * small enough that moving them would cost more machinery than it saves. The
+   * pro rungs get the full block on the **tool-result round that first changes
+   * something**, because it is an instruction for the end of a turn and was
+   * being delivered before the turn had done anything.
+   *
+   * So "every rung is asked" is still the property; it is just answered from
+   * two places, and this checks both rather than only the one it used to.
+   */
+  // `pb()` is a fresh builder each call, deliberately: the block is full once
+  // per chat and a pointer after.
+  const handoverFor = (effort) => pro(effort) + pb().buildHandoverBlock(effort);
 
   // The point of scaling rather than excluding: Flash is the *weakest* model on
   // the ladder, so it is the most likely to report a thing as done without
@@ -547,13 +592,13 @@ describe('every rung asks for a list, checks it, and reviews before finishing', 
   // needs it most.
   test('no rung is left without a handover check', () => {
     for (const effort of LADDER) {
-      assert.match(pro(effort), /BEFORE YOU FINISH|THE HANDOVER REVIEW/, effort);
+      assert.match(handoverFor(effort), /BEFORE YOU FINISH|THE HANDOVER REVIEW/, effort);
     }
   });
 
   test('every rung is told to keep a checklist, and to check it at the end', () => {
     for (const effort of LADDER) {
-      const p = pro(effort);
+      const p = handoverFor(effort);
       assert.match(p, /proactively create/, `${effort}: never asked for a list`);
       assert.match(p, /Checklist:|<task_checklist>/, `${effort}: never checks it`);
     }
@@ -563,69 +608,105 @@ describe('every rung asks for a list, checks it, and reviews before finishing', 
     // Silence here reads as "all of it is finished", which is how a partial job
     // gets handed over as a complete one.
     for (const effort of LADDER) {
-      assert.match(pro(effort), /Not done|not \*done\*|did \*not\* do/i, effort);
+      assert.match(handoverFor(effort), /Not done|not \*done\*|did \*not\* do/i, effort);
     }
   });
 
-  // Three sizes, because one size is either ceremony on a one-line fix or too
-  // thin for work where being wrong is expensive.
+  /*
+   * And the pro rungs must NOT carry it up front any more — that is the change,
+   * and without this the move could silently revert to "in both places", which
+   * costs the characters twice and looks like it works.
+   */
+  test('the pro rung no longer carries it in the opening prompt', () => {
+    assert.doesNotMatch(pro('pro'), /THE HANDOVER REVIEW|Read back:/);
+  });
+
+  test('and the flash rungs still do, because theirs is small', () => {
+    for (const effort of ['lite', 'flash']) {
+      assert.match(pro(effort), /BEFORE YOU FINISH/, effort);
+      assert.equal(pb().buildHandoverBlock(effort), '', `${effort} should not get a second one`);
+    }
+  });
+
+  /*
+   * Still three sizes, and they are the three rungs now rather than a split
+   * inside pro. `handover-lite` was `brief`'s four-point version; with `brief`
+   * gone it belongs to `flash-thinking`, which is the rung it now serves — so
+   * nothing was orphaned by the collapse, it moved down one.
+   */
   test('the depth scales with the rung', () => {
-    assert.match(pro('flash'), /BEFORE YOU FINISH/);
-    assert.doesNotMatch(pro('flash'), /THE HANDOVER REVIEW/, 'the full review on a 5.6k prompt is +33%');
+    // A fresh builder each time: the block is full once per chat and a pointer
+    // after, so reusing one here would ask the same chat for it repeatedly and
+    // assert against the reminder.
+    const blockFresh = (effort) => new PromptBuilder(ws, ws).buildHandoverBlock(effort);
 
-    for (const mid of ['flash-thinking', 'brief']) {
-      assert.match(pro(mid), /Read back:/, `${mid} should get the four-point version`);
-      assert.doesNotMatch(pro(mid), /THE HANDOVER REVIEW/, mid);
-    }
+    assert.match(pro('lite'), /BEFORE YOU FINISH/);
+    assert.doesNotMatch(pro('lite'), /THE HANDOVER REVIEW/, 'the full review on a 5.6k prompt is +33%');
 
-    for (const deep of ['standard', 'deep']) {
-      assert.match(pro(deep), /THE HANDOVER REVIEW/, deep);
-    }
+    // flash-thinking carries the four-point version inside its own reasoning
+    // prompt, and gets no second block.
+    assert.match(pro('flash'), /Read back:/);
+    assert.doesNotMatch(pro('flash'), /THE HANDOVER REVIEW/);
+
+    assert.match(blockFresh('pro'), /THE HANDOVER REVIEW/);
   });
 
   // The whole prompt strategy exists to avoid large repeated payloads typed
   // into a browser tab, and Flash's identity is being terse.
   test('the cost stays proportionate', () => {
     const chars = Object.fromEntries(LADDER.map((e) => [e, pro(e).length]));
-    assert.ok(chars.flash < 7000, `flash grew to ${chars.flash}; it is the terse rung`);
-    assert.ok(chars.flash < chars['flash-thinking'], 'the ladder stopped being a ladder');
-    assert.ok(chars.brief < chars.standard);
-    assert.ok(chars.standard < chars.deep);
+    assert.ok(chars.lite < 7000, `lite grew to ${chars.lite}; it is the terse rung`);
+    // Strictly increasing, named explicitly. A mechanical rename briefly turned
+    // the middle comparison into `chars.flash < chars.flash` — a value against
+    // itself, which passes forever and says nothing.
+    assert.ok(chars.lite < chars.flash, `lite ${chars.lite} !< flash ${chars.flash}`);
+    assert.ok(chars.flash < chars.pro, `flash ${chars.flash} !< pro ${chars.pro}`);
   });
 });
 
 describe('the handover review — asked for, so pin where it appears', () => {
   const pro = (effort, over = {}) =>
     build(new PromptBuilder(ws, ws), { modelConfig: { effort }, ...over });
+  const block = (effort) => new PromptBuilder(ws, ws).buildHandoverBlock(effort);
 
   test('standard and deep get it', () => {
     for (const effort of ['standard', 'deep']) {
-      assert.match(pro(effort), /THE HANDOVER REVIEW/, effort);
+      assert.match(block(effort), /THE HANDOVER REVIEW/, effort);
     }
   });
 
-  // `brief`'s promise on the ladder is "straight to work", so it gets the
-  // four-point version rather than the seven-point one — but not nothing.
-  // "Did you run it" and "what did you not do" are worth asking at any size.
-  test('brief gets the shorter one instead', () => {
-    assert.doesNotMatch(pro('brief'), /THE HANDOVER REVIEW/);
-    assert.match(pro('brief'), /BEFORE YOU FINISH/);
+  /*
+   * A retired rung name must still produce the pro block rather than nothing.
+   * `buildHandoverBlock` takes the level, and `brief` used to select the
+   * four-point version — so if the collapse had missed this call site, an old
+   * stored config would silently get a shorter review than the rung it folds to.
+   */
+  test('a retired rung name gets the pro block, not the old short one', () => {
+    for (const gone of ['brief', 'standard', 'deep']) {
+      assert.match(block(gone), /THE HANDOVER REVIEW/, gone);
+    }
   });
 
   test('the flash tiers never see the pro prompt, so they get their own', () => {
+    assert.doesNotMatch(pro('lite'), /THE HANDOVER REVIEW/);
     assert.doesNotMatch(pro('flash'), /THE HANDOVER REVIEW/);
-    assert.doesNotMatch(pro('flash-thinking'), /THE HANDOVER REVIEW/);
+    assert.match(pro('lite'), /BEFORE YOU FINISH/);
     assert.match(pro('flash'), /BEFORE YOU FINISH/);
-    assert.match(pro('flash-thinking'), /BEFORE YOU FINISH/);
   });
 
-  // The whole prompt strategy exists to avoid large repeated payloads, and
-  // this is ~1.8k characters retyped into a browser tab.
-  test('it rides turn 0, not every turn', () => {
+  /*
+   * It no longer rides turn 0 at all — the point of moving it.
+   *
+   * 1,879 characters of "check your work before you finish", delivered before
+   * the turn had done anything and then thousands of tokens behind the model by
+   * the time it mattered. It rides the tool-result round that first changes
+   * something instead.
+   */
+  test('it is not in the opening prompt on any turn', () => {
     const pb = new PromptBuilder(ws, ws);
     const first = build(pb, { modelConfig: { effort: 'deep' } });
     const second = build(pb, { modelConfig: { effort: 'deep' } });
-    assert.match(first, /THE HANDOVER REVIEW/);
+    assert.doesNotMatch(first, /THE HANDOVER REVIEW/);
     assert.doesNotMatch(second, /THE HANDOVER REVIEW/);
   });
 
@@ -633,11 +714,11 @@ describe('the handover review — asked for, so pin where it appears', () => {
     // It asks the model to audit `<task_checklist>`, which rides every turn.
     // Auditing a list it cannot see is the write-only trap that made the
     // original task.md useless.
-    assert.match(pro('deep'), /<task_checklist>/);
+    assert.match(block('deep'), /<task_checklist>/);
   });
 
   test('it demands evidence rather than reassurance', () => {
-    const p = pro('deep');
+    const p = block('deep');
     assert.match(p, /not a verdict|not checked/i);
     assert.match(p, /Paste what it\s+printed|Paste what it printed/);
   });

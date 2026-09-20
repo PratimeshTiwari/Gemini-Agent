@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import * as paths from '../../core/paths.js';
 import { leave, leaveWhenIdle, prepareWorkspaceSwitch, RESTART_EXIT_CODE } from '../../core/restart.js';
 import { createSkill, listSkills, skillSearchPath } from '../../core/skills.js';
@@ -8,9 +9,42 @@ import { readErrors, summarizeErrors, clearErrors, FLOWS } from '../../core/erro
 import { listPlans } from '../../core/plan-archive.js';
 import { listCommandDays, readCommands } from '../../core/command-log.js';
 import { resolveWorkspaceInput, validateWorkspace } from '../../core/workspaces.js';
+
+/**
+ * Where `/open <target>` would actually open, and whether anything is there.
+ *
+ * The check is the point. `/open` ran the editor and reported
+ * `Opened <path> in <editor>` whenever the *editor process* exited 0 — and an
+ * editor handed a path that does not exist opens an empty buffer and exits 0.
+ * So `/open plna.md` reported success, and what you got was a new empty file
+ * named after your typo.
+ *
+ * That is the same fault the comment below the call site already describes one
+ * level up: "the report has to describe what happened, or it is worse than no
+ * report". There it was the editor that was not runnable; here it is the file
+ * that was not there.
+ *
+ * A directory counts as existing — opening one is a normal thing to want, and
+ * every editor here handles it.
+ *
+ * @param {string} workspace
+ * @param {string} target - what the user typed, absolute or workspace-relative
+ * @returns {{abs: string, exists: boolean}}
+ */
+export function resolveOpenTarget(workspace, target) {
+  const raw = String(target ?? '').trim();
+  // `~` is the shell's, not ours: nothing expands it before we get here, so a
+  // path starting with it would resolve to a literal directory called "~".
+  const expanded = raw === '~' || raw.startsWith('~/')
+    ? path.join(os.homedir(), raw.slice(1))
+    : raw;
+  const abs = path.resolve(expanded.startsWith('/') ? expanded : path.join(workspace, expanded));
+  return { abs, exists: fs.existsSync(abs) };
+}
 import { SLASH_COMMANDS } from '../constants.js';
 import { AGENT_COMMANDS } from '../../core/slash-commands.js';
 import { oneLine } from '../format.js';
+import { planResume } from '../../core/chat-thread.js';
 import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
 import { canPickFolder, pickFolder } from '../../core/folder-picker.js';
 import { summariseTraces, formatMs } from '../../core/trace-log.js';
@@ -55,7 +89,7 @@ export async function handleSlashCommand(query, {
   setHistory,
   setIsProcessing,
   setPendingImage,
-  github,
+  pendingImage,
   confirmed = false,
 }) {
     const parts = query.slice(1).split(/\s+/);
@@ -101,7 +135,7 @@ export async function handleSlashCommand(query, {
           '  shift+tab   plan ⇄ auto',
           '  ctrl+e      expand or collapse every step',
           '  ctrl+t      shell',
-          '  ctrl+o      GitHub dashboard',
+          '  ctrl+b      bring the Gemini tab to the front',
           '  ctrl+u      clear the input   ·   ctrl+w   delete the last word',
           '  ctrl+j      newline, without sending   ·   ↑ ↓   move a line, or recall',
           '  ctrl+f      attach commands that failed in the editor terminal',
@@ -266,7 +300,17 @@ export async function handleSlashCommand(query, {
         setIsProcessing(false);
         return;
       }
-      const abs = target.startsWith('/') ? target : `${agentLoop.workspace}/${target}`;
+      const resolved = resolveOpenTarget(agentLoop.workspace, target);
+      if (!resolved.exists) {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+          role: 'assistant', isLocal: true, timestamp: Date.now(),
+          content: `! \`${resolved.abs}\` does not exist.`
+            + '\n\n_`/open` opens what is there; it does not create._',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+      const abs = resolved.abs;
       const { exec } = await import('child_process');
       const editor = agentLoop.editor || 'code';
 
@@ -447,6 +491,68 @@ export async function handleSlashCommand(query, {
         return;
       }
       setActiveMenu({ type: 'plans', plans });
+      setIsProcessing(false);
+      return;
+    }
+
+    /**
+     * Past conversations, and the way back into one.
+     *
+     * Until now the only way to reopen a conversation was to quit and relaunch
+     * with `--resume <id>` — which meant the CLI's own answer to "where did my
+     * last chat go?" was to restart the program. The side panel had a proper
+     * picker all along; this is the same machinery, reachable from the place
+     * people actually are.
+     *
+     * Bare `/history` lists; `/history <id>` acts. Same split as `/update`,
+     * and it is what lets the picker below simply submit a command rather than
+     * reach into the loop itself.
+     */
+    if (command === 'history' || command === 'sessions' || command === 'resume') {
+      const store = agentLoop.sessionStore;
+      const wanted = (args[0] || '').trim();
+
+      if (wanted) {
+        const outcome = agentLoop.resumeSessionById(wanted);
+        if (outcome.ok) {
+          // The restored turns become the transcript. `isLocal` is wrong for
+          // these — they really were said to a model — so they go in as they
+          // were recorded, and the note about what just happened follows.
+          resetScreen();
+          setHistory([...(outcome.turns || []), {
+            role: 'assistant', isLocal: true, content: `↺ ${outcome.message}`,
+          }]);
+        } else {
+          setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+            role: 'assistant', isLocal: true, content: outcome.message,
+          }]);
+        }
+        setIsProcessing(false);
+        return;
+      }
+
+      const live = agentLoop.chatThread || null;
+      const sessions = (store?.listSessions?.() || []).slice(0, 30).map((session) => ({
+        ...session,
+        // Worked out per row, before the choice is made, because "continue"
+        // and "replay" are different promises: one carries on in a thread the
+        // model still has, the other has to re-explain itself to a model that
+        // was never there.
+        resume: planResume(session.thread, live).action,
+      }));
+
+      if (sessions.length === 0) {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+          role: 'assistant',
+          isLocal: true,
+          content: 'No past conversations yet.\n\nStarting the agent without `--continue` files '
+            + 'the previous conversation here, so this fills up as you go.',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      setActiveMenu({ type: 'history', sessions });
       setIsProcessing(false);
       return;
     }
@@ -731,13 +837,34 @@ export async function handleSlashCommand(query, {
       return;
     }
 
-    if (command === 'github' && args.length === 0) {
-      setActiveMenu({ type: 'github' });
-      setIsProcessing(false);
-      return;
-    }
-
     if (command === 'image' || command === 'paste-image') {
+      /**
+       * Taking it back off.
+       *
+       * Reported from use: *"there is no option to remove image? how to do
+       * that?"* — and there was not. `setPendingImage(null)` ran in exactly one
+       * place, on submit, so once an image was attached the only ways to get
+       * rid of it were to send it or to restart the CLI. Attaching by accident
+       * meant your next prompt carried a base64 payload you did not want, into
+       * a browser composer, on a turn you had not budgeted for it.
+       *
+       * `remove` shadows a file of that name in the workspace, which is a
+       * trade worth making: `/image remove` is what people type, and the
+       * file-not-found path was the only thing it displaced.
+       */
+      if (args.length === 1 && ['remove', 'clear', 'off', 'none'].includes(args[0].toLowerCase())) {
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+          role: 'assistant',
+          isLocal: true,
+          content: pendingImage
+            ? `🖼️ Image detached — ${pendingImage.path} will not be sent.`
+            : 'No image is attached.',
+        }]);
+        setPendingImage(null);
+        setIsProcessing(false);
+        return;
+      }
+
       let finalFilePath = '';
       let ext = '';
       // `/image` with a path attaches that file; with nothing after it, the
@@ -789,7 +916,7 @@ export async function handleSlashCommand(query, {
           path: finalFilePath,
           sizeKB: Math.round(imageBuffer.length / 1024)
         });
-        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `🖼️ Image attached: ${finalFilePath} (${Math.round(imageBuffer.length / 1024)}KB)\nType your prompt and the image will be included.` }]);
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `🖼️ Image attached: ${finalFilePath} (${Math.round(imageBuffer.length / 1024)}KB)\nType your prompt and the image will be included, or \`/image remove\` to drop it.` }]);
       } catch (e) {
         setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `❌ Error reading image: ${e.message}` }]);
       }
@@ -823,24 +950,7 @@ export async function handleSlashCommand(query, {
           setHistory(newHistory);
           resetScreen();
         } else if (result && result.message) {
-          /**
-           * A GitHub command answers on the GitHub screen.
-           *
-           * `/github refresh` was writing "Polling GitHub now…" into the
-           * *agent's* transcript — twice in the screenshot, above a
-           * conversation that had nothing to do with it. The two surfaces
-           * exist because the events are different kinds of thing; sending one
-           * surface's output to the other is the same mistake in reverse.
-           *
-           * It still goes somewhere visible: the GitHub tab's activity feed,
-           * which is where the result of a GitHub command belongs and where
-           * the poll it triggered will report back.
-           */
-          if (command === 'github' && github?.notify) {
-            github.notify(result.message);
-          } else {
-            setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: result.message, isLocal: true }]);
-          }
+          setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: result.message, isLocal: true }]);
         }
       } catch (err) {
         setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
@@ -850,7 +960,22 @@ export async function handleSlashCommand(query, {
         }]);
       }
     } else {
-      setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `❌ No such command: \`/${command}\`\nType \`/\` on its own to see what there is.`, isLocal: true }]);
+      /*
+       * A bare `/` is not an unknown command, it is the question.
+       *
+       * It answered `No such command: /` followed by "Type `/` on its own to
+       * see what there is" — advice to do the thing that had just been done.
+       * The input bar opens the menu while you type it, so this is only reached
+       * by submitting it, and then the one reply guaranteed to be useless was
+       * the one it gave.
+       */
+      const unknown = command
+        ? `❌ No such command: \`/${command}\`\n\n`
+        : '';
+      const list = SLASH_COMMANDS
+        .map((c) => `  \`/${c.name}\`${' '.repeat(Math.max(1, 12 - c.name.length))}${c.desc}`)
+        .join('\n');
+      setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, { role: 'assistant', content: `${unknown}${list}`, isLocal: true }]);
     }
     setIsProcessing(false);
     return;

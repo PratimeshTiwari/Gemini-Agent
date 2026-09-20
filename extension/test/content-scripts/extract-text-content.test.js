@@ -14,8 +14,22 @@ import { dirname, resolve } from 'path';
 import { loadFunction } from '../load-content-script.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
+/*
+ * One bridge, and the loop stays.
+ *
+ * These cases used to run against `gemini-bridge.js` and `chatgpt-bridge.js`
+ * both, so a divergence between two near-identical scrapes failed the build —
+ * which was the whole argument for keeping ~600 duplicated lines rather than
+ * collapsing them. ChatGPT was removed on 2026-09-19 and that argument went
+ * with it. The cases still earn their place: they pin the scrape itself, which
+ * is the thing that breaks when the site changes its DOM.
+ *
+ * **Do not restore a second bridge to make this loop mean something again.**
+ * The comparison was a side-effect of having two targets, never the reason to
+ * have them.
+ */
 const GEMINI = resolve(here, '../../content-scripts/gemini-bridge.js');
-const CHATGPT = resolve(here, '../../content-scripts/chatgpt-bridge.js');
+const BRIDGES = [['gemini', GEMINI]];
 
 /** Render a fixture and run the shipped `extractTextContent` over it. */
 function scrape(file, html) {
@@ -50,7 +64,7 @@ const BARE = `
   </code-block>
   <p>TRAILING PROSE.</p>`;
 
-for (const [label, file] of [['gemini', GEMINI], ['chatgpt', CHATGPT]]) {
+for (const [label, file] of BRIDGES) {
   test(`${label}: the fence carries the language from the inner <code>`, () => {
     assert.match(scrape(file, WRAPPED), /```javascript\n/);
     assert.match(scrape(file, BARE), /```javascript\n/);
@@ -128,7 +142,7 @@ const NESTED = '<ul>'
 
 const ORDERED = `<ol><li>First step</li><li>Second step</li></ol>`;
 
-for (const [label, file] of [['gemini', GEMINI], ['chatgpt', CHATGPT]]) {
+for (const [label, file] of BRIDGES) {
   test(`${label}: a table survives as a table`, () => {
     const out = scrape(file, TABLE);
     // The cells must not be run together — that is the reported bug.
@@ -189,7 +203,7 @@ for (const [label, file] of [['gemini', GEMINI], ['chatgpt', CHATGPT]]) {
  * could not have: **a tag this does not know still comes out readable**, because
  * block elements are separated and inline ones flow.
  */
-for (const [label, file] of [['gemini', GEMINI], ['chatgpt', CHATGPT]]) {
+for (const [label, file] of BRIDGES) {
   const md = (html) => scrape(file, html);
 
   test(`${label}: a blockquote keeps its marker`, () => {

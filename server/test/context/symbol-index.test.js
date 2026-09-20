@@ -127,6 +127,60 @@ describe('a reference is a use, which is not a match', () => {
     assert.ok(!referencesIn(SRC, 'logError').some((r) => r.line === 7));
   });
 
+  /**
+   * The other question, and the one `find_references` was getting wrong.
+   *
+   * Excluding `obj.name` is right for a *binding* — `fs.logError` does not use
+   * a `logError` variable, which the test above pins. It is wrong for a
+   * *method*, where `x.name()` is the only way to call it at all. Measured on
+   * this repo before the fix: `buildToolResultBatch` **0** references against
+   * 2 real call sites, `acceptDiff` 0 against 3 — under a message reading "It
+   * may be dead code", which is an invitation to delete something called
+   * everywhere.
+   */
+  test('member uses are found when asked for', () => {
+    const src = 'a.logError({});\nthis.x.logError();\nlogError();';
+    const refs = referencesIn(src, 'logError', { includeMembers: true });
+
+    assert.equal(refs.length, 3, `expected the two member calls and the bare one, got ${refs.length}`);
+    assert.deepEqual(refs.map((r) => r.line), [1, 2, 3]);
+  });
+
+  test('and they are tagged, because they are ambiguous', () => {
+    const refs = referencesIn('a.logError();\nlogError();', 'logError', { includeMembers: true });
+
+    assert.equal(refs.find((r) => r.line === 1).member, true,
+      'a member use is indistinguishable from a same-named method elsewhere; it has to say so');
+    assert.equal(refs.find((r) => r.line === 2).member, undefined,
+      'a bare identifier was mislabelled as a member use');
+  });
+
+  /*
+   * The control that keeps the old behaviour honest. Off by default, or every
+   * `find_references` for a common name becomes a wall of `Array.prototype`:
+   * measured on this repo, `map` is 165 member uses and `join` 180.
+   */
+  test('they are excluded by default, exactly as before', () => {
+    assert.equal(referencesIn('a.logError();', 'logError').length, 0);
+    assert.equal(referencesIn(SRC, 'logError').length, 2, 'the default answer changed');
+  });
+
+  // A key is a key however the flag is set: `{ logError: 1 }` declares one.
+  test('an object key is still not a use', () => {
+    const refs = referencesIn(SRC, 'logError', { includeMembers: true });
+    assert.ok(!refs.some((r) => r.line === 5), 'an object key was counted as a member use');
+    assert.ok(!refs.some((r) => r.line === 3), 'a comment was counted');
+    assert.ok(!refs.some((r) => r.line === 4), 'a string was counted');
+  });
+
+  // `a['logError']` is already visited as an ordinary expression. Counting it
+  // again on the member branch would double it.
+  test('a computed member is counted once', () => {
+    const refs = referencesIn("a['logError'];\na.logError;", 'logError', { includeMembers: true });
+    assert.equal(refs.length, 1, `a computed access is a string, not an identifier; got ${refs.length}`);
+    assert.equal(refs[0].line, 2);
+  });
+
   test('a renamed import is found under both names', () => {
     const src = "import { InputBar as Bar } from './x.js';\nBar();";
     assert.equal(referencesIn(src, 'InputBar').length, 1, 'searching the real name missed the import');

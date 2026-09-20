@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.17.0**
+## Current version: **1.25.0**
 
 The panel prints its own version in the status bar, read from the manifest at
 load — so it is the build Chrome actually has, not a number someone forgot to
@@ -47,7 +47,7 @@ Chrome runs the bundle, not the sources.
 ## Layout
 
 ```
-manifest.json              MV3, side panel, three content scripts
+manifest.json              MV3, side panel, one content script
 service-worker.js          committed build artifact — do not edit by hand
 src/background/            the sources it is built from
   main.js                  message router: panel ⇄ worker ⇄ server
@@ -57,16 +57,33 @@ src/background/            the sources it is built from
   state.js  policy.js
 content-scripts/
   gemini-bridge.js         type into Gemini, scrape the reply
-  chatgpt-bridge.js        the same for ChatGPT (subagents)
-  github-bridge.js         PR comments
 side-panel/                panel.html / panel.js / panel.css
 test/                      jsdom tests, run by `npm test` from the repo root
 ```
 
-**The two bridges are deliberately not merged.** ~600 duplicated lines, and
-collapsing them was considered and declined: the jsdom tests run against *both*
-files, so a scraping divergence fails the build — most of the value, none of the
-risk of breaking both at once.
+**There is one content script, and one bridge.** `github-bridge.js` read PR
+comment bodies off github.com and went with the GitHub agent on 2026-09-19;
+`chatgpt-bridge.js` went the same day. Both are gone from `manifest.json` too —
+and that matters more than it sounds, because emptying an entry's `matches`
+rather than deleting the entry makes Chrome refuse **the whole extension**,
+which is how a one-line edit took out the bridge, the side panel and the worker
+at once. `test/manifest.test.js` exists for that.
+
+This used to say the two bridges were deliberately not merged
+— ~600 duplicated lines kept apart because the jsdom tests ran against *both*
+files, so a scraping divergence failed the build. `chatgpt-bridge.js` was
+deleted on 2026-09-19 and took that argument with it. The tests still run,
+against the one bridge, and say in a comment **not** to restore a second target
+to make the comparison mean something again: it was a side-effect of having two,
+never a reason to have two.
+
+**Every bridge is wrapped in an IIFE, and that is load-bearing.** The
+content-script world outlives the script that created it, so a top-level `const`
+makes a second injection throw `Identifier … has already been declared` before
+a single statement runs. That is not a rare case: `sendWithRepairs` re-injects
+precisely when a copy is already in the page. A new copy also calls
+`window.__agentBridgeStop` first, so the orphan it replaces disconnects its
+observers and clears its timers instead of ticking on.
 
 ---
 
@@ -74,6 +91,202 @@ risk of breaking both at once.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.25.0 — 2026-09-20
+
+Two latency bugs, both reported from use and both measured against
+`.agent/logs/traces.jsonl` (237 recorded turns).
+
+- **A reply that ends in a code block is finished, not mid-construct.**
+  `looksUnfinished` gives the content a veto the page cannot give — an odd
+  number of ``` fences, or a trailing unclosed inline backtick, means the
+  silence was a pause. The fence half is right. The inline half read the last
+  line of the *whole* reply, and `extractTextContent` ends with `.trim()`, so a
+  reply ending in a code block ends **on its closing fence** — three backticks,
+  an odd count.
+
+  That is every tool call, and therefore every round of the agent loop. Each
+  veto reset the quiet streak, six times over. It shows in the traces as
+  bimodality rather than a distribution: a fast mode at **3,176ms** (n=70) and a
+  slow one at **13,936ms** (n=11), ~10.8s apart — a near-fixed penalty is a
+  bug's fingerprint, not model variance.
+
+  Reported as *"a considerable delay between Gemini sending the JSON block and
+  us sending back the tool result"*, at 28 seconds on a `list_directory` call.
+
+  The existing test passed against it: its fixture ended ``` ...```\nDone. ``` —
+  the block followed by prose, so the last line was never the fence. Real
+  replies end on it.
+
+- **`waitForSendButton` no longer sleeps 500ms before looking.** An
+  unconditional half second on every round, waiting for a button that is
+  usually already enabled — `send` was 698ms median and 1,383ms p90 across 237
+  turns, and that line was most of it.
+
+  It was guarding something real: the empty-composer test means "the user
+  pressed send themselves", and that reading only holds once our text has been
+  *seen* there. `sawText` answers the same question directly and cannot be wrong
+  in either direction, which is the trade this bridge already made for tabs when
+  fixed sleeps became `waitForBridge`.
+
+### 1.24.0 — 2026-09-19
+
+- **One bridge.** `chatgpt-bridge.js` is gone, with its host permissions and its
+  content-script registration. A second Gemini tab is what *duo* means now.
+- **The bridge survives a second injection, and replaces what it finds.** Its
+  constants sat at the top level of a world that outlives the script, so
+  re-injecting threw `Identifier 'RESPONSE_IDLE_TIMEOUT' has already been
+  declared` on line one and the fresh copy never evaluated. That silently
+  disabled `sendWithRepairs`'s `reinject` rung — written for an orphaned script,
+  which is exactly the case where a copy is already there to collide with. The
+  rung did nothing and `waitForBridge` then spent its whole budget waiting for a
+  script that had failed to load; the only evidence was an entry on
+  `chrome://extensions`. Wrapped in an IIFE, plus a `window.__agentBridgeStop`
+  handover so the orphan's observers and timers stop at once rather than when
+  something next happens to call `safeSend`.
+- **`new_chat` is acknowledged.** `/compact` is a handover — it summarises the
+  old thread and sends the summary into a new one — and it cannot do that
+  blindly. Without an ack, a new chat that never happened means the summary goes
+  into the thread that already holds every turn it summarises.
+
+### 1.23.0 — 2026-09-17
+
+- **The end of a turn is noticed in a quarter second, not on the next tick.**
+  Measured over 74 real turns from one machine's `traces.jsonl`, every
+  `complete` landed on a ~2000ms boundary — 6004, 8966, 10001, 16002, 30064 —
+  because a finished reply is only seen when the poll next fires. A reply that
+  genuinely ended at 4.2s was delivered at 6s, and requiring two consecutive
+  quiet checks (1.22.0, which stopped replies arriving truncated) added a
+  second whole interval on top of that.
+
+  Two independent observations is the right rule; waiting a *slow* interval for
+  the second one is not. The cadence is now slow while the model is writing —
+  where a fast poll buys nothing and just burns messages — and the tab reports
+  `confirmSoon` the moment it goes quiet, so the worker comes back at a quarter
+  of the interval for the confirming look.
+
+- **`first_token` was measuring nothing, and it is the number that matters.**
+  It was marked one line after the send, so it timed the gap between two
+  adjacent statements: 0ms or 1ms on all 74 recorded turns. Everything real
+  went into `complete`, which meant *Gemini thinking* and *our detection lag*
+  could not be told apart — exactly the distinction needed to make turns faster
+  without touching reasoning. It is now marked when the observer first sees
+  response text.
+
+### 1.22.0 — 2026-09-17
+
+- **A reply is no longer cut off mid-sentence.** The turn ended on a single
+  observation — no Stop button, and one second since the observer last saw the
+  text change — and that was only ever safe because the check was being
+  throttled. In a hidden tab it ran roughly once a minute, so a transient gap
+  was almost never *sampled*. Moving the clock into the service worker (1.19.0)
+  made the cadence reliable at 2s and the transients started getting caught: a
+  reply arrived truncated mid-token while Gemini was still writing. Gemini
+  pauses longer than a second between sections, and the Stop button is briefly
+  absent while the composer re-renders; either alone looks exactly like
+  "finished". The condition now has to hold across consecutive checks.
+
+### 1.21.0 — 2026-09-17
+
+- **The A/B modal is actually dismissed now.** Gemini's "Which response is more
+  helpful?" holds two complete replies and resolves to neither until a button
+  is pressed, so a turn that meets it never finishes — it waits out the
+  five-minute cap and reports a timeout. The dismissal existed and never fired,
+  for two reasons: it read `document.querySelector('h2, .title')`, which is the
+  first such node in the *document* rather than the dialog's own heading, and
+  it hunted for a button reading `Choice A` when the real control says **"This
+  response is more helpful"** with its text two spans deep. An earlier repair
+  here fixed a `:has-text()` SyntaxError and stopped, because nobody had seen
+  the real DOM. Tests now run against that markup, and the previous
+  implementation fails them.
+
+  It **chooses** rather than retries: re-sending costs a whole turn, can raise
+  the same modal again, and leaves two half-answers in the thread. It takes the
+  first choice deterministically — there is no signal here that would make a
+  quality judgement anything but a coin toss.
+
+### 1.20.0 — 2026-09-17
+
+- **A failing send now repairs the tab instead of giving up on it.** A failed
+  send reaches the server as `tab_unreachable`, and the server's only answer is
+  to abort the turn — yet nearly everything that breaks a send is transient and
+  local to the tab: an orphaned content script, a discarded tab, a page that
+  navigated, an interstitial. The ladder is send → re-inject → reload, cheapest
+  repair first. **It stops there deliberately.** A reload returns to the same
+  `/app/<id>` and Gemini still has the thread; a fresh tab is a fresh
+  conversation, and an incremental prompt sent into one gets a confident answer
+  to a question the model never saw.
+
+- **A prompt that never reached the composer is sent again, once.** The content
+  script already knew the difference and threw it away. If it saw Gemini
+  generating, the model has an answer we failed to read, and resending would
+  ask the same question twice into a thread that already holds the first reply.
+  If generation never started and nothing was scraped, the submit did not
+  happen — the model has no idea the turn exists, so sending it is the first
+  attempt landing rather than a repeat. Only the second case retries, it
+  retries once, and it resends the **verbatim** bytes: rebuilding the prompt
+  would mark the system prompt as already seen and hand the model a bare
+  question with no tools.
+
+### 1.19.0 — 2026-09-17
+
+- **A turn no longer needs the tab in front.** Completion was detected by a 2s
+  `setInterval` in the content script, and Chrome throttles page timers in a
+  hidden tab — which is the entire reason this extension activated the model
+  tab and held your focus for the length of a turn. Measured on example.com in
+  a genuinely hidden tab, Chrome 152, over 334 seconds:
+
+  | mechanism | delivered | expected |
+  | --- | --- | --- |
+  | page `setInterval(100ms)` | 63 | 3340 (**1.9%**) |
+  | Worker `setInterval(100ms)` | 3344 | 3340 (100%) |
+  | `MutationObserver` | 10/s throughout | 10/s |
+  | `getBoundingClientRect()` | 3213 real boxes | 0 empty |
+
+  So the scrape was never the problem and neither was layout — only the clock
+  was, and it degraded to roughly one tick per minute within 60 seconds of the
+  tab being hidden, holding there past the five-minute intensive-throttling
+  boundary. A service worker is not a tab and is not throttled, and
+  `chrome.tabs.sendMessage` is an event rather than a timer, so the worker now
+  drives the check over `tick_completion` at full rate while the evidence
+  stays in the page. The local interval remains as a backstop for a worker
+  that has been evicted mid-turn.
+
+- **Focus comes back when the prompt lands, not when the reply does.** It was
+  held for the whole turn because giving it back early meant completion took a
+  minute to notice. With the clock outside the tab, the tab only has to be in
+  front long enough to accept the paste.
+
+- **Model tabs are opted out of discarding, and repaired if they were.** Chrome
+  discards background tabs under memory pressure: the tab stays in the strip
+  and looks fine while the page and its content script are gone.
+  `autoDiscardable: false` asks Chrome not to, and a tab found already
+  discarded is reloaded and re-handshaked rather than reported unreachable.
+
+### 1.18.0 — 2026-09-17
+
+- **The reconnect alarm now outlives the connection.** It was created on retry
+  and cleared on `onopen`, so a *healthy* bridge had no alarm at all. Chrome
+  can still evict a service worker that believes it is connected, and when it
+  does the socket dies with it: `onclose` never runs inside a worker that is
+  already gone, no timer survives it, and nothing outside the browser can wake
+  it. What actually revived it was the user focusing a tab and
+  `chrome.tabs.onUpdated` starting the worker to deliver the event — which is
+  exactly the reported symptom, "the prompt only sends once I open Chrome".
+  The alarm is periodic and permanent now; while connected it costs nothing,
+  because the heartbeat already keeps the worker resident.
+
+- **The send path asks the tab whether it is ready instead of sleeping.**
+  4000ms after opening a subagent tab, 1500ms after a new main tab loaded and
+  1000ms after re-injecting were flat `setTimeout`s — 6.5 seconds of
+  unconditional waiting per new tab, and wrong in both directions: seconds
+  wasted on a warm machine, and still too early on a cold one, where the send
+  lands before the listener exists and is reported as an unreachable tab. A
+  `ping` the content script answers replaces the guess with the fact. It
+  reports two things, because they fail differently: `ready` (this script is
+  listening and not orphaned) and `canType` (the composer is actually in the
+  DOM). The tail of the budget accepts `ready` alone, so a changed composer
+  selector still produces a real send error rather than burning the budget.
 
 ### 1.17.0 — 2026-09-17
 
@@ -332,8 +545,8 @@ The side panel stopped being a half-finished surface.
 
 ### 1.1.0 — the browser half made reliable
 
-- **Per-model tab lanes** (`main:<model>` / `sub:<requestId>`), so a ChatGPT
-  review and a Gemini prompt genuinely overlap instead of racing for one tab.
+- **Per-tab lanes** (`main:<model>` / `sub:<requestId>`), so a subagent review
+  and your own prompt genuinely overlap instead of racing for one tab.
 - **Batch sessions hold one tab across a task's turns.** Every turn used to open
   a fresh tab that closed when it ended, so turn 2 had never seen turn 1 —
   measured at **81% of characters resent** over ten turns.

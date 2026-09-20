@@ -56,14 +56,5 @@ export function describeDestructive(command, args = [], ctx = {}) {
     };
   }
 
-  if (command === 'github' && sub === 'clear-state') {
-    return {
-      title: 'Clear the GitHub poller state?',
-      detail: 'The watermarks go with it, so every comment already on every watched '
-        + 'PR looks new again — and each one it decides to analyse is a browser turn.',
-      confirmLabel: 'Yes, clear it',
-    };
-  }
-
   return null;
 }

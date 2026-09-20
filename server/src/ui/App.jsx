@@ -1,16 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useStdout, Static } from 'ink';
-import { GithubTab } from './components/GithubTab.jsx';
 import { Menus, DiffApproval } from './components/Menus.jsx';
 import { Banner } from './components/Banner.jsx';
-import { TranscriptTurn } from './components/TranscriptTurn.jsx';
+import { TranscriptTurn, UserBar, TurnSummary, TurnRow } from './components/TranscriptTurn.jsx';
 import { AgentTerminal } from './components/AgentTerminal.jsx';
 import { Dots } from './components/RunningLine.jsx';
 import { InputBar } from './components/InputBar.jsx';
 import { clampForDisplay, extractCodeBlocks } from './format.js';
 import { SLASH_COMMANDS, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES, reservedRows, isCompactHeight } from './constants.js';
 import { resolveEffort } from '../core/effort.js';
-import { groupTurns } from './transcript.js';
+import { modelMismatch } from '../core/model-match.js';
+import { groupTurns, parseTurnActions } from './transcript.js';
 import { expandPastes, attachedPastes } from './paste.js';
 import { drainChatQueue } from './chat-queue.js';
 import { drainTerminalQueue } from './terminal-queue.js';
@@ -18,12 +18,12 @@ import { useKeyBindings } from './hooks/use-key-bindings.js';
 import { useHotkeys } from './hooks/use-hotkeys.js';
 import { canCopy, copyToClipboard } from './clipboard.js';
 import { checkForUpdate, readPendingReload } from '../core/update.js';
-import { useGithubTab } from './hooks/use-github-tab.js';
 import { handleSlashCommand } from './hooks/use-slash-commands.js';
+import { SLOW_COMMANDS } from '../core/slash-commands.js';
 import { buildAgentCallbacks } from './hooks/use-agent-callbacks.js';
 import fs from 'fs';
 import { exec } from 'child_process';
-import figlet from 'figlet';
+import { bannerText } from './banner-text.js';
 import * as paths from '../core/paths.js';
 
 /**
@@ -41,46 +41,78 @@ import * as paths from '../core/paths.js';
  * leaves alone in the scrollback, and the live frame holds only the in-flight
  * turn, the input and the status bar — bounded by `liveBudget` rows.
  */
+/**
+ * When this process started.
+ *
+ * Module scope so it cannot move, and so a remount cannot reset it. The
+ * artifact panel compares file mtimes against it to tell "this
+ * conversation's task list" from "the last one's, still on disk".
+ */
+const SESSION_STARTED_AT = Date.now();
+
 export function App({ agentLoop, wsServer }) {
   const [input, setInput] = useState('');
   const [history, setHistory] = useState([...agentLoop.conversationHistory]);
+
+
   const [activeToolCalls, setActiveToolCalls] = useState([]);
-  const [agentNameAscii, setAgentNameAscii] = useState(() => {
+  /**
+   * The wordmark, rendered once.
+   *
+   * This was two reads of the same config and two renders of the same string
+   * — a synchronous one to seed the state and an async `figlet.text` in an
+   * effect that recomputed it on mount and set it again. The async half was
+   * pure duplicate work: the value was already correct before it ran.
+   *
+   * `figlet` itself is gone; `ui/figfont.js` renders the one font this app
+   * uses, verified byte-for-byte against figlet across 25,110 strings.
+   */
+  const [agentNameAscii] = useState(() => {
     let name = 'Agent CLI';
     try {
       const configPath = paths.configPath(agentLoop.workspace);
       if (fs.existsSync(configPath)) {
         const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        /**
+         * The name as given, with nothing glued on.
+         *
+         * This appended " Agent", so `/name Jarvis` drew **Jarvis Agent** —
+         * while the command that set it had just replied "The agent is called
+         * Jarvis". The two disagreed, and the default never went through this
+         * path, so `Agent CLI` stayed `Agent CLI` while every chosen name got
+         * a suffix. Reported after setting the name to "AGENT CLI" and
+         * watching the banner read **AGENT CLI Agent**.
+         */
         const custom = config.agentName || config.agent_name;
-        if (custom) name = `${custom} Agent`;
+        if (custom) name = custom;
       }
     } catch (e) {}
     try {
-      return figlet.textSync(name, { font: 'Standard' }) || name;
+      return bannerText(name) || name;
     } catch (e) {
       return name;
     }
   });
 
-  useEffect(() => {
-    let name = 'Agent CLI';
-    try {
-      const configPath = paths.configPath(agentLoop.workspace);
-      if (fs.existsSync(configPath)) {
-        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        const custom = config.agentName || config.agent_name;
-        if (custom) name = `${custom} Agent`;
-      }
-    } catch (e) {}
-    figlet.text(name, { font: 'Standard' }, (err, data) => {
-      if (!err && data) setAgentNameAscii(data);
-      else setAgentNameAscii(name);
-    });
-  }, [agentLoop.workspace]);
-
   const [isProcessing, setIsProcessing] = useState(false);
   const [status, setStatus] = useState('');
   const [diffRequest, setDiffRequest] = useState(null);
+  /**
+   * Prompts typed while a turn was running.
+   *
+   * `AgentLoop.handleUserMessage` returns early when it is busy, having only
+   * pushed a transient status line that the thinking-message cycle paints
+   * over — so the message was **discarded**. By then `handleSubmit` had
+   * already echoed it into the transcript and cleared the input box, which is
+   * the worst combination available: it looks sent, the text is gone, and
+   * nothing will ever answer it. Reported after typing four prompts and
+   * getting one reply.
+   *
+   * Held here rather than in the loop because this is where the transcript
+   * and the "queued" marker live, and because the loop's contract — one turn
+   * at a time — is the thing that makes the rest of it tractable.
+   */
+  const [queued, setQueued] = useState([]);
   const [tasks, setTasks] = useState([]);
 
   // Extension Connection Polling
@@ -130,7 +162,19 @@ export function App({ agentLoop, wsServer }) {
   const [activeMenu, setActiveMenu] = useState(null);
   const [planReviewReady, setPlanReviewReady] = useState(false);
   const [walkthroughReady, setWalkthroughReady] = useState(false);
-  const [artifacts, setArtifacts] = useState({ task: null, walkthrough: null });
+  const [artifacts, setArtifacts] = useState({ task: null, review: null, walkthrough: null });
+
+  /**
+   * The artifact panel opens on its own key, and does not clear the screen.
+   *
+   * It used to ride on `verbose` — the *transcript* toggle — so seeing your
+   * task list meant expanding every tool result in the history, and vice
+   * versa. Worse, `toggleVerbose` clears and reprints the whole transcript
+   * (the only `ESC[2J` this app writes, because `<Static>` cannot be
+   * repainted). This panel is in the **live** frame, so it needs no reprint
+   * at all: React redraws it and nothing else moves.
+   */
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
 
   /**
    * Whether this agent is behind its own remote, and what a past `/update`
@@ -179,10 +223,6 @@ export function App({ agentLoop, wsServer }) {
   // Set by the key bindings when Enter carried a modifier, read by InputBar's
   // deferred submit. A ref because the two run in the same event dispatch.
   const newlineRef = useRef(false);
-  const [activeTab, setActiveTab] = useState('agent'); // 'agent' | 'github'
-  // The whole GitHub screen — state, polling and actions — lives in its own
-  // hook. See hooks/use-github-tab.js for why.
-  const github = useGithubTab({ agentLoop, wsServer, activeTab, setHistory });
 
   const { stdout } = useStdout();
 
@@ -237,10 +277,6 @@ export function App({ agentLoop, wsServer }) {
     return () => clearInterval(id);
   }, [isProcessing]);
 
-  // How many turns <Static> has already been handed. Monotonic on purpose: a
-  // turn Ink has committed is on the screen for good, so moving it back into
-  // the live frame would draw it a second time.
-  const committedRef = useRef(0);
 
   const resetScreen = React.useCallback(() => {
     try {
@@ -249,7 +285,10 @@ export function App({ agentLoop, wsServer }) {
     } catch {
       /* non-TTY: nothing painted to discard */
     }
-    committedRef.current = 0;
+    // The rows have to be forgotten too: <Static> starts from index 0 again on
+    // remount, and rows we still believe are emitted would simply never print.
+    emittedRef.current = new Map();
+    staticRowsRef.current = [{ id: 'app-banner', isBanner: true }];
     setStaticEpoch((n) => n + 1);
   }, [stdout]);
 
@@ -310,11 +349,101 @@ export function App({ agentLoop, wsServer }) {
   // Only the turn that is still running stays in the live frame. Everything
   // else is committed to <Static>, where it becomes ordinary scrollback the
   // terminal can scroll and select like any other command's output.
-  const target = isProcessing ? Math.max(0, turns.length - 1) : turns.length;
-  if (target > committedRef.current) committedRef.current = target;
-  const staticCount = Math.min(committedRef.current, turns.length);
-  const staticTurns = turns.slice(0, staticCount);
-  const liveTurns = turns.slice(staticCount);
+  /*
+   * Committed a **row** at a time, not a turn at a time.
+   *
+   * `<Static>` advances on `items.length` and never redraws an item — its own
+   * doc says it is for "things that don't change after they're rendered". A
+   * turn does change: rows keep arriving for as long as the loop runs. Handing
+   * it one anyway left exactly one repair, remounting `<Static>` so the whole
+   * transcript prints again — and Ink cannot un-write what it already wrote, so
+   * the new copy lands *below* the old one. Reported at 210x64 as the banner
+   * and the turn drawn three times, once per tool round.
+   *
+   * A row, by contrast, is final as soon as the next one exists. So rows are
+   * committed as they settle and the live frame holds only the unsettled tail —
+   * which is at most the newest row and the summary. That is why this also
+   * fixes short terminals instead of breaking them: the earlier attempt held
+   * the *whole turn* live to avoid the reprint, and a multi-round turn does not
+   * fit a 13-row viewport.
+   *
+   * The last item is excluded while the loop runs because it is the one that
+   * can still change: a `tool` item is created by its call and rewritten when
+   * its result arrives, and nothing follows it in between.
+   */
+  const turnInFlight = isProcessing || !!agentLoop?.isProcessing;
+  const emittedRef = useRef(new Map());
+  const staticRowsRef = useRef([{ id: 'app-banner', isBanner: true }]);
+
+  /*
+   * Appended into a **new array**, never pushed into the old one.
+   *
+   * `<Static>` memoises `items.slice(index)` on `[items, index]`, so an array
+   * mutated in place is an array it never looks at again: the first attempt
+   * here pushed onto `staticRowsRef.current` and the transcript rendered
+   * nothing at all — banner included, 2,284 bytes for a whole session.
+   */
+  const parsedTurns = turns.map((turn) => ({ turn, items: parseTurnActions(turn) }));
+  const fresh = [];
+  for (let i = 0; i < parsedTurns.length; i++) {
+    const { turn, items: parsed } = parsedTurns[i];
+    const settled = !(i === parsedTurns.length - 1 && turnInFlight);
+    const ready = settled ? parsed.items : parsed.items.slice(0, -1);
+    const seen = emittedRef.current.get(turn.id) || { user: false, items: 0, summary: false };
+
+    if (!seen.user && turn.userMsg) {
+      fresh.push({ id: `row_user_${turn.id}`, kind: 'user', content: turn.userMsg.content });
+      seen.user = true;
+    }
+    for (let n = seen.items; n < ready.length; n++) {
+      fresh.push({ id: `row_${ready[n].id}`, kind: 'item', item: ready[n], previous: ready[n - 1] });
+    }
+    if (ready.length > seen.items) seen.items = ready.length;
+    if (settled && !seen.summary && parsed.actions.length > 0) {
+      const timed = typeof turn.startTime === 'number' && typeof turn.endTime === 'number'
+        && turn.endTime >= turn.startTime;
+      fresh.push({
+        id: `row_sum_${turn.id}`,
+        kind: 'summary',
+        duration: timed ? ((turn.endTime - turn.startTime) / 1000).toFixed(1) : null,
+        worked: parsed.actions.filter((a) => a.type !== 'fs_event').length,
+        touched: parsed.actions.reduce((n, a) => (a.type === 'fs_event' ? n + a.paths.length : n), 0),
+      });
+      seen.summary = true;
+    }
+    emittedRef.current.set(turn.id, seen);
+  }
+  if (fresh.length > 0) staticRowsRef.current = [...staticRowsRef.current, ...fresh];
+
+  // What is left to draw live: the tail of the newest turn, if it has one.
+  const tail = parsedTurns[parsedTurns.length - 1];
+  const tailSeen = tail ? emittedRef.current.get(tail.turn.id) : null;
+  const liveTurns = tail && !tailSeen?.summary ? [tail.turn] : [];
+  const liveFrom = tailSeen?.items || 0;
+  /*
+   * Whether the live turn still owes its prompt bar.
+   *
+   * `TranscriptTurn` used to decide this from `fromItem === 0`, and that is not
+   * the same question: the bar is committed to <Static> the moment the turn
+   * exists, while `fromItem` stays 0 until the first *row* settles. Between
+   * those two — which is the whole of the thinking phase — the bar was drawn
+   * twice, once committed and once live. Reported from use with both `❯ can you
+   * list files` rows on screen at `Analyzing syntax… (7s)`.
+   */
+  const liveNeedsBar = !!tail && !tailSeen?.user;
+
+  /*
+   * There is no "a committed turn grew" case any more, and the effect that
+   * handled it is gone with it.
+   *
+   * It watched the committed turns for a change of shape and bumped
+   * `staticEpoch`, remounting `<Static>` so the whole transcript printed
+   * again. That was the only repair available while a Static item was a
+   * *turn*, and it is why the transcript duplicated on a terminal tall
+   * enough to show both copies. A row cannot grow, so nothing needs
+   * reprinting and the epoch now moves only for `resetScreen` — ctrl+e and
+   * the clears that deliberately start the screen over.
+   */
 
   // Rows the live frame may spend on the in-flight turn. Everything below it —
   // the spinner, the input box, the mode chip and the status bar — is fixed
@@ -350,7 +479,32 @@ export function App({ agentLoop, wsServer }) {
 
   // One line each, and charged for. A row that draws without being budgeted is
   // how the frame outgrows the viewport.
-  const noticeRows = (update.available ? 1 : 0) + (pendingReload ? 1 : 0);
+  /*
+   * The browser is on a different model from the one this rung is written for.
+   *
+   * Reported from use: the status bar read PRO while the Gemini tab's picker
+   * read Flash. `/effort` switches the picker when it runs, but the user can
+   * change it back, a new tab can open on something else, and the plan's
+   * default is Google's to choose — so the disagreement has to be *watched*,
+   * not assumed away at the moment of setting it.
+   *
+   * Read straight off the loop, like the effort in the status bar at `:1312`:
+   * these are live values, and a React copy of them is a second thing that can
+   * disagree. `modelMismatch` is silent unless it knows both halves.
+   *
+   * **Shed below `COMPACT_BELOW_ROWS`, and that is arithmetic rather than
+   * taste.** Three notice rows do not fit a 9-row terminal: 6 reserved + 3
+   * notices + the floored 1 for the turn is 10, and a frame taller than the
+   * viewport is the clear-and-repaint path — the single most important rule in
+   * `ui/`. `frame-budget.test.js` fails on exactly that height without this.
+   * It is the right one of the three to drop: `/update`'s two rows are about
+   * work in progress, and the effort is still on the status bar.
+   */
+  const mismatch = isCompactHeight(terminalHeight) ? null : modelMismatch(
+    agentLoop.modelConfig?.effort,
+    agentLoop.modelOptions || [],
+  );
+  const noticeRows = (update.available ? 1 : 0) + (pendingReload ? 1 : 0) + (mismatch ? 1 : 0);
 
   /**
    * What is left after the furniture — floored at one row, never at three.
@@ -372,6 +526,27 @@ export function App({ agentLoop, wsServer }) {
     - (extensionConnected ? 0 : 1)
     - (isThinkingTooLong ? 1 : 0)
     - noticeRows);
+
+  /**
+   * How many lines the expanded artifact panel may draw.
+   *
+   * It was not budgeted at all, and it is in the live frame. Measured at
+   * 13x80 with a six-item task list: **0 clears closed, 6 open** — two of
+   * those the deliberate cost of the two toggles, four the frame overflowing.
+   * `RESERVED_ROWS` is the furniture and never included this panel, so an
+   * expanded `task.md` plus `walkthrough.md` asked for 9 + 14 rows of a
+   * 13-row terminal.
+   *
+   * Budgeted against the terminal rather than `liveBudget`, because the two
+   * never coexist: the panel draws only when `!isProcessing`, and the live
+   * turn only when processing. Capped at 12 so a tall terminal does not turn
+   * the prompt area into a document viewer — the file is on disk, and the
+   * row names it.
+   */
+  const artifactLines = Math.max(
+    1,
+    Math.min(12, terminalHeight - reservedRows(terminalHeight) - 2),
+  );
 
   // Shown in the status bar rather than under the prompt: it is rare, it is one
   // short field, and a conditional row under the input is a row RESERVED_ROWS
@@ -416,14 +591,52 @@ export function App({ agentLoop, wsServer }) {
       } catch (e) {}
     }
 
+    /**
+     * The three documents the panel tracks, read as a set.
+     *
+     * `review.md` joined `task.md` and `walkthrough.md` because the agent
+     * started writing one — the checks it intends to run, written *before*
+     * the work rather than claimed after it. That ordering is the whole
+     * value: a handover that reports `3/3` against a list invented in the
+     * same sentence is the failure already recorded in
+     * `plans/verified-handover.md`.
+     *
+     * Compared field by field rather than by identity, so a render that
+     * changes nothing returns the previous object and React can skip it.
+     */
     try {
-      const taskPath = paths.artifactPath(agentLoop.workspace, 'task.md');
-      const walkPath = paths.artifactPath(agentLoop.workspace, 'walkthrough.md');
-      const taskContent = fs.existsSync(taskPath) ? fs.readFileSync(taskPath, 'utf8') : null;
-      const walkContent = fs.existsSync(walkPath) ? fs.readFileSync(walkPath, 'utf8') : null;
-      setArtifacts((prev) => (prev.task === taskContent && prev.walkthrough === walkContent
-        ? prev
-        : { task: taskContent, walkthrough: walkContent }));
+      /**
+       * An artifact belongs to a conversation, and the files outlive it.
+       *
+       * On a brand-new chat the panel was drawing the *last* session's
+       * `review.md` — reported that way, and it is a lie in the one place
+       * that is supposed to say what the agent is working on now. The files
+       * are deliberately durable (they are written for the user to read and
+       * survive a restart), so the panel has to be the thing that decides.
+       *
+       * The rule is just the mtime: **written during this session, or not
+       * shown**. Two looser rules were tried and both leaked the same lie a
+       * beat later — `history.length > 0` is true within seconds of launch
+       * because the file watcher appends a turn whenever anything on disk
+       * moves, and "has a user turn" brings the stale file back the moment
+       * you say anything at all.
+       *
+       * The file is not hidden, only unclaimed: it is on disk, `/plans` lists
+       * it, and the moment the agent writes to it this session the panel
+       * picks it up. What the panel must not do is present the last
+       * conversation's checklist as this one's.
+       */
+      const read = (name) => {
+        const at = paths.artifactPath(agentLoop.workspace, name);
+        if (!fs.existsSync(at)) return null;
+        if (fs.statSync(at).mtimeMs < SESSION_STARTED_AT) return null;
+        return fs.readFileSync(at, 'utf8');
+      };
+      const next = { task: read('task.md'), review: read('review.md'), walkthrough: read('walkthrough.md') };
+      setArtifacts((prev) => (
+        prev.task === next.task && prev.review === next.review && prev.walkthrough === next.walkthrough
+          ? prev
+          : next));
     } catch (err) {
       /* ignore fs errors */
     }
@@ -556,6 +769,9 @@ export function App({ agentLoop, wsServer }) {
       setActiveMenu(null);
       setIsProcessing(false);
       setStatus('');
+      // Stopping means stopping. A queue that outlives the stop would start
+      // the next prompt the moment the user thought they had halted it.
+      setQueued([]);
       // `:stop` never reaches the model, so its echo is local — counting it as
       // loop history would shift the merge by one and cost a turn on screen.
       setHistory(prev => [
@@ -566,25 +782,59 @@ export function App({ agentLoop, wsServer }) {
       return;
     }
 
-    setIsProcessing(true);
-    setStatus('Thinking...');
-    setActiveToolCalls([]);
+    /**
+     * A local command must not disturb a turn that is still running.
+     *
+     * Every submit used to `setIsProcessing(true)` and `setActiveToolCalls([])`
+     * before looking at what it was, and every slash handler ends with
+     * `setIsProcessing(false)`. So typing anything starting with `/` while the
+     * agent was mid-turn wiped the live turn's tool rows and then declared the
+     * turn finished — while the loop carried on working.
+     *
+     * Reported exactly that way: `/efforttt` typed during a turn, and the CLI
+     * "stopped responding and did not output the result". It had not stopped.
+     * Gemini ran the tool calls and produced the answer, and the terminal was
+     * left with no spinner, no rows, and no reason to believe anything was
+     * still happening.
+     *
+     * A local command is local: it answers in the transcript and leaves the
+     * turn's state alone. `setIsProcessing` is swapped for a no-op while the
+     * loop is busy, because the handlers are many and each one calls it.
+     */
+    const turnInFlight = Boolean(agentLoop.isProcessing);
 
     if (query.startsWith('/')) {
+      // Only the ones that actually wait. A spinner for a command that answers
+      // in the same tick is drawn and erased around a `<Static>` write, and the
+      // row it leaves behind is permanent — see `SLOW_COMMANDS`.
+      if (!turnInFlight && SLOW_COMMANDS.has(query.slice(1).split(/\s+/)[0].toLowerCase())) {
+        setIsProcessing(true);
+        setStatus('Thinking...');
+        setActiveToolCalls([]);
+      }
       await handleSlashCommand(query, {
         agentLoop,
         wsServer,
         resetScreen,
         setActiveMenu,
         setHistory,
-        setIsProcessing,
+        setIsProcessing: turnInFlight ? () => {} : setIsProcessing,
         setPendingImage,
-        // So `/github …` can answer on the GitHub screen instead of filling
-        // the agent's transcript with polling notices.
-        github,
+        pendingImage,
       });
       return;
     }
+
+    // Busy? Queue it rather than letting the loop drop it on the floor.
+    // Read from the loop, not from React's copy, which this function sets.
+    if (agentLoop.isProcessing) {
+      setQueued((q) => [...q, query]);
+      return;
+    }
+
+    setIsProcessing(true);
+    setStatus('Thinking...');
+    setActiveToolCalls([]);
 
     // The prompt carries markers; the model gets what was actually pasted. The
     // transcript keeps the marker form, so a 500-line paste never becomes a
@@ -600,7 +850,10 @@ export function App({ agentLoop, wsServer }) {
     // no timestamp, and that fallback is re-evaluated on every render — so an
     // unstamped user message gave the turn a start time that crept forward
     // while its end time stayed put, and "Worked for" counted backwards.
-    setHistory(prev => [...prev, { role: 'user', content: query, timestamp: Date.now() }]);
+    // `__echo` marks this as the optimistic copy of a prompt the loop is about
+    // to record too. `mergeLoopHistory` claims it when the loop's own copy
+    // arrives, instead of drawing the prompt twice.
+    setHistory(prev => [...prev, { role: 'user', content: query, timestamp: Date.now(), __echo: true }]);
 
     const callbacks = buildAgentCallbacks({
       agentLoop,
@@ -621,9 +874,46 @@ export function App({ agentLoop, wsServer }) {
     await agentLoop.handleUserMessage(messageContent, callbacks);
   };
 
+  /**
+   * Send the next queued prompt once the loop is genuinely idle.
+   *
+   * Gated on `agentLoop.isProcessing` rather than React's `isProcessing`: the
+   * two disagree during a diff approval, and draining then would inject a
+   * prompt into a turn that is parked on a decision.
+   */
+  useEffect(() => {
+    if (queued.length === 0) return;
+    if (isProcessing || agentLoop.isProcessing || diffRequest || activeMenu) return;
+    const [next, ...rest] = queued;
+    setQueued(rest);
+    handleSubmit(next);
+  }, [queued, isProcessing, diffRequest, activeMenu]);
+
+  /**
+   * Answer the diff prompt — and, on one of the three answers, stop asking.
+   *
+   * The mode switch belongs here rather than on a banner of its own. In plan
+   * mode the model can already call `edit_file`; it just gets a diff first.
+   * So "let me write without asking" is not a question that needs its own
+   * screen — it is a third answer to the question already on screen, offered
+   * at the one moment the user has the evidence to answer it: they are
+   * looking at the change.
+   *
+   * Deliberately not a timed prompt. A countdown is right for a notice with a
+   * safe default; this is a decision about whether later edits apply
+   * unreviewed, and expiring it either picks silently or makes the user race
+   * a clock while reading the diff it is about. It would also re-render the
+   * live frame once a second forever, which is the one thing this UI is built
+   * not to do — App's existing tick runs only while a turn does.
+   */
   const handleDiffResponse = (action) => {
     if (!diffRequest) return;
-    agentLoop.handleDiffResponse(Date.now().toString(), { diffId: diffRequest.diffId, action });
+    if (action === 'accept-auto') {
+      agentLoop.mode = 'auto';
+      setMode('auto');
+    }
+    const resolved = action === 'accept-auto' ? 'accept' : action;
+    agentLoop.handleDiffResponse(Date.now().toString(), { diffId: diffRequest.diffId, action: resolved });
     setDiffRequest(null);
   };
 
@@ -632,16 +922,16 @@ export function App({ agentLoop, wsServer }) {
   // answered yet.
   useHotkeys({
     expand: toggleVerbose,
-    tabs: () => setActiveTab((prev) => {
-      const next = prev === 'agent' ? 'github' : 'agent';
-      if (next === 'github') github.clearNewEvent();
-      return next;
-    }),
+    artifacts: () => setArtifactsOpen((open) => !open),
     terminal: () => setTerminalOpen((prev) => {
       setFocus(prev ? FOCUS_INPUT : FOCUS_TERMINAL);
       return !prev;
     }),
     'paste-image': () => handleSubmit('/paste-image'),
+
+    // The model picker, a stalled turn, a tab that was minimised — the three
+    // times you need that tab and have to go hunting through windows for it.
+    'focus-browser': () => agentLoop.focusModelTab?.(),
 
     // ctrl+u and ctrl+w are what every readline prompt has bound for decades,
     // and they have to come through this channel rather than useInput:
@@ -710,19 +1000,19 @@ export function App({ agentLoop, wsServer }) {
   }, !diffRequest && !activeMenu);
 
   useKeyBindings({
+    input,
+    queued,
+    setQueued,
     activeMenu,
-    activeTab,
     agentLoop,
     cycleMode,
     diffRequest,
     focus,
-    github,
     handleSubmit,
     historyIdx,
     inputHistory,
     isProcessing,
     newlineRef,
-    setActiveTab,
     setHistoryIdx,
     setInput,
     setInputAtEnd,
@@ -802,7 +1092,7 @@ export function App({ agentLoop, wsServer }) {
   // The banner is committed with the rest of the scrollback rather than living
   // in the live frame: it is ten rows of figlet that would otherwise be
   // repainted on every tick and eat the whole budget on a short terminal.
-  const staticItems = [{ id: 'app-banner', isBanner: true }, ...staticTurns];
+  const staticItems = staticRowsRef.current;
 
   return (
     <Box flexDirection="column" width="100%" overflow="hidden">
@@ -812,62 +1102,44 @@ export function App({ agentLoop, wsServer }) {
         Mounted unconditionally, *outside* the tab switch. <Static> only writes
         the items it has not written before, and it tracks that in component
         state — so unmounting it and mounting it again reprints the entire
-        transcript, banner included. Putting it inside the `activeTab` branch
-        meant a trip to the GitHub tab and back reprinted everything, which is
+        transcript, banner included. Putting it inside a tab branch meant a
+        trip away and back reprinted everything, which is
         where the second banner came from.
       */}
       <Static key={staticEpoch} items={staticItems}>
-        {(item) => (item.isBanner
-          ? <Banner key={item.id} agentLoop={agentLoop} agentNameAscii={agentNameAscii} />
-          : (
-            <TranscriptTurn
-              key={item.id}
-              turn={item}
+        {(row) => {
+          if (row.isBanner) {
+            return <Banner key={row.id} agentLoop={agentLoop} agentNameAscii={agentNameAscii} />;
+          }
+          if (row.kind === 'user') {
+            return (
+              <UserBar key={row.id} content={row.content} isLive={false} terminalWidth={terminalWidth} />
+            );
+          }
+          if (row.kind === 'summary') {
+            return (
+              <Box key={row.id} flexDirection="column" marginBottom={1} width="100%">
+                <TurnSummary
+                  isLive={false}
+                  duration={row.duration}
+                  worked={row.worked}
+                  touched={row.touched}
+                />
+              </Box>
+            );
+          }
+          return (
+            <TurnRow
+              key={row.id}
+              item={row.item}
+              previous={row.previous}
               isLive={false}
               verbose={verbose}
-              status={status}
-              liveBudget={liveBudget}
               terminalWidth={terminalWidth}
             />
-          ))}
+          );
+        }}
       </Static>
-
-      {activeTab === 'github' ? (
-        /*
-          The GitHub screen gets everything the status bar does not.
-
-          `RESERVED_ROWS` is the *agent* tab's furniture — the thinking line,
-          the prompt box, the palette, the notices. None of it is drawn here:
-          on this tab the frame is the screen and the status bar, and nothing
-          else. Budgeting it at `terminalHeight - 8` left four rows at the top
-          still showing the tail of the figlet banner, which is scrollback and
-          can never be repainted away — the screen has to be tall enough to
-          push it off instead.
-
-          `GithubTab` sets `height` with `overflow="hidden"`, so its height is
-          exactly what this says and cannot grow — the usual reason to keep a
-          spare row, a line that wraps and is charged one but drawn as two,
-          cannot happen inside a box that clips. The status bar below is one
-          row plus a margin that `compact` drops.
-
-          So the arithmetic looks like it should be `- 2`, and `- 2` is wrong:
-          measured, it costs exactly one `ESC[2J` + `ESC[3J` on the way *back*
-          to the agent tab, because Ink's frame carries a trailing newline that
-          the row count does not. `- 3` is zero clears at every size tested
-          (40x100, 24x90, 24x72, 13x80, 13x72, 10x80, 9x72, 40x60), and the row
-          it gives up is the one the banner's last line sits on — a visible
-          cost, where a clear-and-repaint is an invisible one that eats the
-          scrollback.
-        */
-        <GithubTab
-          agentLoop={agentLoop}
-          wsServer={wsServer}
-          github={github}
-          maxRows={Math.max(6, terminalHeight - (compact ? 2 : 3))}
-          width={terminalWidth}
-        />
-      ) : (
-        <>
 
           {/*
             Notices, at the top of everything Ink can repaint.
@@ -896,6 +1168,19 @@ export function App({ agentLoop, wsServer }) {
               <Text dimColor>{'  —  /update to pull'}</Text>
             </Text>
           )}
+          {/*
+            The model the prompt is written for, against the one the tab is on.
+            Both names, because "wrong model" without saying which is a warning
+            you cannot act on — and `ctrl+b` is the key that shows the tab, so
+            the row carries the fix rather than only the complaint.
+          */}
+          {mismatch && (
+            <Text color="yellow" wrap="truncate">
+              {'⚠ browser is on '}<Text bold>{mismatch.current}</Text>
+              {', this rung wants '}<Text bold>{mismatch.wanted}</Text>
+              <Text dimColor>{'  —  ctrl+b shows the tab'}</Text>
+            </Text>
+          )}
 
           {/* The in-flight turn — the only transcript rows Ink repaints. */}
           {liveTurns.map((turn) => (
@@ -903,6 +1188,8 @@ export function App({ agentLoop, wsServer }) {
               key={turn.id}
               turn={turn}
               isLive
+              fromItem={liveFrom}
+              showUserBar={liveNeedsBar}
               verbose={verbose}
               status={status}
               liveBudget={liveBudget}
@@ -939,9 +1226,12 @@ export function App({ agentLoop, wsServer }) {
             diffRequest={diffRequest}
             handleDiffResponse={handleDiffResponse}
             setFocus={setFocus}
+            mode={mode}
+            terminalHeight={terminalHeight}
           />
 
           <InputBar
+            queued={queued}
             filedSession={agentLoop.filedSession}
             history={history}
             setPaletteSuppressed={setPaletteSuppressed}
@@ -973,6 +1263,8 @@ export function App({ agentLoop, wsServer }) {
             terminalOpen={terminalOpen}
             thinkingText={thinkingText}
             artifacts={artifacts}
+            artifactsOpen={artifactsOpen}
+            artifactLines={artifactLines}
             verbose={verbose}
             compact={compact}
           />
@@ -984,7 +1276,6 @@ export function App({ agentLoop, wsServer }) {
             terminalWidth={terminalWidth}
             handleSubmit={handleSubmit}
             mode={mode}
-            setActiveTab={setActiveTab}
             setFocus={setFocus}
             setHistory={setHistory}
             setInput={setInput}
@@ -1001,8 +1292,6 @@ export function App({ agentLoop, wsServer }) {
             focus={focus}
             agentLoop={agentLoop}
           />
-        </>
-      )}
 
       {/*
         The status bar: one row, fixed columns.
@@ -1025,21 +1314,11 @@ export function App({ agentLoop, wsServer }) {
       <Box marginTop={compact ? 0 : 1} paddingX={1} flexDirection="row" justifyContent="space-between" width="100%">
         <Box flexShrink={1} overflow="hidden">
         <Text wrap="truncate">
-          {activeTab === 'agent' ? (
-            <>
-              {isProcessing
-                ? <Text color="cyan"><Dots tick={animTick} /> agent</Text>
-                : <Text color={extensionConnected ? 'cyan' : 'yellow'} bold>
-                    {extensionConnected ? '●' : '○'} agent
-                  </Text>}
-              <Text dimColor>{'  ·  '}github{github.hasNewEvent ? '*' : ''} ^o</Text>
-            </>
-          ) : (
-            <>
-              <Text color="cyan" bold>● github</Text>
-              <Text dimColor>{'  ·  '}agent ^o</Text>
-            </>
-          )}
+          {isProcessing
+            ? <Text color="cyan"><Dots tick={animTick} /> agent</Text>
+            : <Text color={extensionConnected ? 'cyan' : 'yellow'} bold>
+                {extensionConnected ? '●' : '○'} agent
+              </Text>}
           {activeScope ? <Text dimColor>{'  ·  '}{activeScope}</Text> : null}
           <Text dimColor>{'  ·  '}/help</Text>
         </Text>
@@ -1057,6 +1336,15 @@ export function App({ agentLoop, wsServer }) {
             </Text>
           ) : ''}
           {attachedCount > 0 ? `${attachedCount} paste${attachedCount === 1 ? '' : 's'}  ·  ` : ''}
+          {/*
+            An attached image had no representation anywhere. The transcript
+            said so once and scrolled away, so the only way to know one was
+            armed was to remember attaching it — and the only way to find out
+            was to send it. Same shape as the pastes beside it: one field in a
+            row that is already drawn and already budgeted, costing nothing
+            when there is no image.
+          */}
+          {pendingImage ? <Text color="yellow">{'1 image  ·  '}</Text> : ''}
           {runningTasks > 0 ? <Text color="yellow">{runningTasks} bg{'  ·  '}</Text> : ''}
           <Text color={mode === 'plan' ? 'yellow' : 'cyan'}>{mode}</Text>
           <Text dimColor> ⇥{'  ·  '}</Text>

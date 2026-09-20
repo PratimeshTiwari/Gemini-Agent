@@ -10,11 +10,12 @@ import { oneLine } from '../format.js';
 import { canPickFolder, pickFolder } from '../../core/folder-picker.js';
 import { readCommands, listCommandDays } from '../../core/command-log.js';
 import { EFFORT_LEVELS, resolveEffort } from '../../core/effort.js';
-import { describeSettings, filterSettings, settingsChanged, SETTING_GROUPS } from '../../core/settings.js';
+import { describeSettings, filterSettings, settingsChanged, settingsColumns, SETTING_GROUPS, VALUE_MAX } from '../../core/settings.js';
 import { listWorkspaceCandidates } from '../../core/workspaces.js';
 import { skillsDir, agentDir } from '../../core/paths.js';
 import { skillSearchPath, listSkills } from '../../core/skills.js';
 import { FOCUS_INPUT } from '../constants.js';
+import { MAX_AGENT_NAME } from '../../core/slash-commands.js';
 
 /**
  * Every modal the agent can raise: questions, command approval, plan review,
@@ -41,6 +42,14 @@ import { FOCUS_INPUT } from '../constants.js';
  * belongs when nothing is covering it.
  */
 const TOGGLES = new Set(['/plan', '/auto', '/memory on', '/memory off', '/allowlist enable', '/allowlist disable']);
+
+/** A session's own timestamp, formatted, or '' when it has none. */
+function stampOf(session) {
+  const ms = session?.updated ?? session?.started;
+  if (!ms) return '';
+  const when = new Date(ms);
+  return Number.isNaN(when.getTime()) ? '' : localStamp(when);
+}
 
 /** `2026-09-10 14:32`, in the reader's own timezone. */
 function localStamp(when) {
@@ -287,41 +296,90 @@ export function Menus({
           );
         })()}
 
+        {activeMenu?.type === 'name' && (() => {
+          /*
+           * Renaming the agent, where the row that names it is.
+           *
+           * The row ran `/name`, and `/name` with no argument prints. So the
+           * one row on the settings page that reads as directly editable was
+           * the one that could not be edited — the plan-mode-markdown shape in
+           * miniature: an interface that says one thing and does another.
+           *
+           * The length is checked *here* as well as in the handler, and that
+           * is not belt and braces. `applyAndReturn` drops the handler's
+           * message whenever there is a `returnTo`, which there always is from
+           * this page — so a name that is too long would return to the settings
+           * screen with nothing changed and nothing said, which is the failure
+           * this whole row is being fixed for. `MAX_AGENT_NAME` is imported so
+           * the two cannot drift apart.
+           *
+           * Empty clears the name, because that is what the field being empty
+           * means; the handler spells it `default`.
+           */
+          const draft = activeMenu.draft ?? '';
+          const wanted = draft.trim();
+          const over = wanted.length - MAX_AGENT_NAME;
+
+          return (
+            <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+              <Text bold color="cyan">Agent name</Text>
+              <Box>
+                <Text dimColor>{'  '}</Text>
+                <TextInput
+                  value={draft}
+                  placeholder="Agent CLI"
+                  onChange={(value) => setActiveMenu((m) => ({ ...m, draft: value }))}
+                  onSubmit={async () => {
+                    if (over > 0) return;
+                    await applyAndReturn(activeMenu, 'name', [wanted || 'default']);
+                  }}
+                />
+              </Box>
+              <Text dimColor wrap="truncate">
+                {'  ↳ '}
+                {over > 0
+                  ? `${wanted.length}/${MAX_AGENT_NAME} — too long for the banner, drop ${over}`
+                  : (wanted
+                    ? 'drawn as the banner wordmark · restart to see it'
+                    : 'empty clears it — the banner reads “Agent CLI”')}
+              </Text>
+              <Text dimColor wrap="truncate">
+                {'  '}enter {over > 0 ? '· fix the length first' : 'save'} · esc cancel
+              </Text>
+            </Box>
+          );
+        })()}
+
         {/*
-          One screen, not three. It used to be a role picker, then a model
-          picker, with "View Current Config" as a third row that navigated away
-          to print what the screen could have shown. The topology is just
-          whether these two models differ, so both states are on the list and
-          the current one is the heading.
+          One screen, and now one question. It used to be a role picker, then a
+          model picker, then Solo-or-Duo — a chain that existed because there
+          were two models to arrange. With one, the only thing left to decide is
+          whether this session can fan work out to parallel tabs of itself.
         */}
         {activeMenu?.type === 'config' && (() => {
-          const main = agentLoop.modelConfig?.main || 'gemini';
-          const reviewer = agentLoop.modelConfig?.reviewer || null;
-          const other = main === 'gemini' ? 'chatgpt' : 'gemini';
-          const isDuo = Boolean(reviewer) && reviewer !== main;
+          const on = agentLoop.subagentsEnabled;
           const run = async (args) => { await applyAndReturn(activeMenu, 'config', args); };
 
           return (
             <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
               <Text bold color="cyan">
-                🌐 {isDuo ? 'Duo' : 'Solo'} — {main} implements
-                {isDuo ? `, ${reviewer} reviews` : ' and reviews its own work'}
+                🌐 Subagents {on ? 'on' : 'off'}
               </Text>
               <Text dimColor wrap="wrap">
-                A second tab is worth it only on the other model: the same model reviewing
-                itself has the same blind spots.
+                A subagent is a second tab of this model with an empty context — it has never
+                seen this conversation. That is the point of the review role and the cost of
+                the others: it knows only what it is sent.
               </Text>
               <SelectInput
                 items={[
                   {
-                    label: `👤  Solo — ${main} alone, start to finish${isDuo ? '' : '  ← current'}`,
-                    value: 'reviewer none',
+                    label: `🔭  On — ask_subagent can research, review and run errands${on ? '  ← current' : ''}`,
+                    value: 'subagents on',
                   },
                   {
-                    label: `Duo — ${other} reviews ${main}${isDuo ? '  ← current' : ''}`,
-                    value: `reviewer ${other}`,
+                    label: `👤  Off — one tab, start to finish${on ? '' : '  ← current'}`,
+                    value: 'subagents off',
                   },
-                  { label: `Swap the main model to ${other}`, value: `main ${other}` },
                 ]}
                 onSelect={(item) => run(item.value.split(' '))}
               />
@@ -400,8 +458,10 @@ export function Menus({
           // how much it is not showing. See ui/constants.js.
           const LIMIT = 8;
           const hidden = Math.max(0, matches.length - LIMIT);
-          const width = Math.max(...rows.map((r) => r.label.length), 0);
-          const vwidth = Math.min(30, Math.max(...rows.map((r) => r.value.length), 0));
+          // Over `matches`, not `rows`. See `settingsColumns`: measuring the
+          // whole set and padding the filtered one is where the gap in
+          // `Effort              deep` came from.
+          const { width, vwidth } = settingsColumns(matches);
           const selected = matches[Math.min(activeMenu.at || 0, matches.length - 1)];
 
           return (
@@ -435,7 +495,7 @@ export function Menus({
                     // here and was truncated mid-word at every width — it is
                     // only ever wanted for the row you are looking at, so it
                     // moved below the list where it has the whole line.
-                    label: `${row.label.padEnd(width)}   ${oneLine(row.value, 30).padEnd(vwidth)}`,
+                    label: `${row.label.padEnd(width)}   ${oneLine(row.value, VALUE_MAX).padEnd(vwidth)}`,
                     value: row.run || '',
                     key: row.label,
                   }))}
@@ -452,6 +512,17 @@ export function Menus({
                     // change — and never returning — is why the summary on the
                     // way out could never fire: there was no way out that still
                     // knew what you had come in with.
+                    // A row that edits a value in place opens its editor.
+                    // `/name` with no argument only prints the current name,
+                    // so running it from here promised a change and delivered
+                    // a paragraph — in the transcript, behind the page.
+                    const picked = matches.find((r) => r.label === item.key);
+                    if (picked?.edits === 'name') {
+                      setActiveMenu({
+                        type: 'name', draft: agentLoop.agentName || '', returnTo: back,
+                      });
+                      return;
+                    }
                     if (item.value === '/effort') {
                       setActiveMenu({ type: 'effort', returnTo: back });
                       return;
@@ -502,11 +573,24 @@ export function Menus({
                 />
               )}
               {hidden > 0 ? <Text dimColor>{`  ↓ ${hidden} more — type to narrow`}</Text> : null}
+              {/*
+                `↳` and a matching indent, rather than a blank row between.
+
+                The hint sat flush under the last row at the same indent and
+                read as one more setting. A separator row is the obvious fix
+                and is the wrong one here: this list is drawn inside Ink's
+                repainted frame, where a row spent on spacing is a row the
+                viewport does not have — the settings page is already border,
+                padding, tabs, filter, eight rows, trim notice, hint and keys.
+                The marker costs nothing and says the same thing.
+
+                The key hints take the same indent, which they did not before.
+              */}
               {selected?.hint
-                ? <Text dimColor wrap="truncate">{'  '}{selected.hint}</Text>
+                ? <Text dimColor wrap="truncate">{'  ↳ '}{selected.hint}</Text>
                 : null}
-              <Text dimColor>
-                type to filter · tab switches · ↑↓ move · enter change · esc {query ? 'clear' : 'close'}
+              <Text dimColor wrap="truncate">
+                {'  '}type to filter · tab switches · ↑↓ move · enter change · esc {query ? 'clear' : 'close'}
               </Text>
             </Box>
           );
@@ -538,6 +622,53 @@ export function Menus({
               key="commands-days"
             />
             <Text dimColor>↑↓ move · enter open · esc cancel</Text>
+          </Box>
+        )}
+
+        {activeMenu?.type === 'history' && (
+          <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
+            <Text bold color="cyan">
+              {activeMenu.sessions.length} past conversation{activeMenu.sessions.length === 1 ? '' : 's'}
+            </Text>
+            {/*
+              The disposition is said per row, before the choice is made,
+              because "continue" and "replay" are different promises and
+              collapsing them is how a picker silently does the second while
+              looking like the first. `continue` means the tab is still on that
+              Gemini thread and the model genuinely remembers; `replay` means it
+              is not, so the next message has to carry a recap.
+            */}
+            <Text dimColor wrap="wrap">
+              Enter reopens one. ↩ continue = the tab still has that thread ·
+              ↻ replay = the model gets a recap first.
+            </Text>
+            <SelectInput
+              limit={10}
+              items={activeMenu.sessions.map((session) => ({
+                // Date first because that is how you look for one, then what
+                // it was about — a column of timestamps says nothing about
+                // which conversation you actually want back.
+                // `localStamp` takes a Date; a session record carries
+                // `updated`/`started` as millisecond numbers. Copying the
+                // plans row verbatim left this reading `session.when`, which
+                // does not exist — the column rendered blank, and only a pty
+                // run showed it.
+                label: `${stampOf(session) || '                '}`
+                  + `  ${session.resume === 'continue' ? '↩' : '↻'}`
+                  + `  ${String(session.turns ?? '?').padStart(3)} turns`
+                  + `  ${oneLine(session.title || session.id, 44)}`,
+                value: session.id,
+                key: session.id,
+              }))}
+              onSelect={(item) => {
+                setActiveMenu(null);
+                setFocus(FOCUS_INPUT);
+                // Back through the command, not into the loop from here: the
+                // slash-command path already owns restoring the transcript.
+                handleSubmit(`/history ${item.value}`);
+              }}
+            />
+            <Text dimColor>↑↓ move · enter reopen · esc cancel</Text>
           </Box>
         )}
 
@@ -874,34 +1005,6 @@ export function Menus({
           </Box>
         )}
 
-        {activeMenu?.type === 'github' && (
-          <Box flexDirection="column" borderStyle="single" borderColor="cyan" padding={1}>
-            <Text bold color="cyan">GitHub integration</Text>
-            <SelectInput
-              items={[
-                { label: 'Refresh PR Activity Now', value: 'refresh' },
-                { label: `CI Failure Watch [Currently: ${agentLoop.githubHandler?.config?.enableCIWatch ? 'ON' : 'OFF'}]`, value: 'ci-watch' },
-                { label: 'Clear Poller State & Rescan', value: 'clear-state' },
-                { label: 'Open PR Dashboard (Ctrl+O)', value: 'dashboard' },
-                { label: 'Remove/Update GitHub Token', value: 'remove-token' },
-              ]}
-              onSelect={(item) => {
-                setActiveMenu(null);
-                if (item.value === 'dashboard') {
-                  setActiveTab('github');
-                  setFocus(FOCUS_INPUT);
-                } else if (item.value === 'ci-watch') {
-                  const current = agentLoop.githubHandler?.config?.enableCIWatch;
-                  handleSubmit(`/github ci-watch ${current ? 'off' : 'on'}`);
-                } else if (item.value === 'remove-token') {
-                  handleSubmit('/github remove-token');
-                } else {
-                  handleSubmit(`/github ${item.value}`);
-                }
-              }}
-            />
-          </Box>
-        )}
     </>
   );
 }
@@ -917,11 +1020,57 @@ export function Menus({
  * cannot see is not approval. The preview is capped so a large edit cannot push
  * the buttons off screen.
  */
+/** Collapsed: enough to see the shape of the change without filling the box. */
+const DIFF_ROWS_COLLAPSED = 16;
+
+/**
+ * Furniture around the diff rows: the box border, the heading, the risk line,
+ * the margin, the choices and the hint. Subtracted so an expanded diff grows
+ * into the room that is actually there and no further.
+ *
+ * Counted from the choices rather than fixed at 12, because plan mode has a
+ * third one ("Approve, and stop asking"). A row you draw is a row you budget
+ * — a constant that silently stopped matching the rows underneath it is how
+ * an expanded diff would push the buttons off the screen it exists to show.
+ */
+const DIFF_BOX_FURNITURE_BASE = 10;
+const diffBoxFurniture = (choices) => DIFF_BOX_FURNITURE_BASE + choices;
+
 export function DiffApproval({
   diffRequest,
   handleDiffResponse,
   setFocus,
+  mode = 'plan',
+  terminalHeight = 24,
 }) {
+  const [expanded, setExpanded] = React.useState(false);
+
+  // Collapsed again for the next file, or this one would open expanded
+  // because the previous decision left the flag set.
+  const requestKey = diffRequest?.diffId ?? null;
+  const lastKey = React.useRef(requestKey);
+  if (lastKey.current !== requestKey) {
+    lastKey.current = requestKey;
+    if (expanded) setExpanded(false);
+  }
+
+  /**
+   * `d` opens the rest of the diff.
+   *
+   * A letter rather than a chord: `ctrl+e` is already transcript verbosity and
+   * is pulled off stdin before Ink sees it, so it would toggle the wrong thing
+   * from here. And a third `SelectInput` row was the other option — rejected,
+   * because this list is a safety decision and putting a *view* action in it
+   * is how someone approves a write while meaning to look at it.
+   *
+   * Registered before the early return would be a conditional hook, so the
+   * guard is inside the handler.
+   */
+  useInput((input) => {
+    if (!diffRequest) return;
+    if (input === 'd' || input === 'D') setExpanded((v) => !v);
+  });
+
   if (!diffRequest) return null;
 
   // Built from the patch, not from `diffRequest.hunks`.
@@ -934,7 +1083,57 @@ export function DiffApproval({
   // diff at all, on the one screen whose entire job is showing you the change
   // before you approve it.
   const hunks = diffRequest.hunks ?? [];
-  const rows = rowsFromPatch(diffRequest.patch, { maxLines: 16 });
+  /**
+   * Bounded even when expanded — this box is in Ink's live frame.
+   *
+   * "Show me the whole diff" is the obvious request and the obvious
+   * implementation of it (drop the cap) is the single most reliable way to
+   * bring back the full-screen repaint: a frame taller than the viewport makes
+   * Ink write `ESC[2J ESC[3J` on every render and the scrollback goes with it.
+   * So expanding grows into the room the terminal actually has, and the
+   * `… N more lines` row keeps saying what is still hidden.
+   */
+  const choices = [
+    { label: `Approve — write ${(diffRequest.hunks ?? []).length === 1 ? 'it' : 'all of it'} to disk`, value: 'accept' },
+    /**
+     * The mode switch, offered where the evidence is.
+     *
+     * The model asks for it in prose — "Ready to exit PLAN MODE?" — which the
+     * tool catalog already forbids ("do NOT ask for permission to continue;
+     * that is what plan mode and the approval prompts are for") and which
+     * spends a whole turn on a question the user cannot answer with a
+     * keypress. This is the same question, asked by the thing that actually
+     * enforces the mode, at the one moment the user is looking at a change
+     * and can judge whether they want to keep seeing them.
+     *
+     * Not a timed prompt. A countdown suits a notice with a safe default;
+     * this decides whether later edits apply unreviewed, and expiring it
+     * either picks silently or makes the user race a clock while reading the
+     * diff it is about. It would also re-render the live frame once a second
+     * for as long as it was up.
+     */
+    { label: 'Reject — discard the change', value: 'reject' },
+    /**
+     * Last, and that position is the whole of it.
+     *
+     * Putting it between Approve and Reject moved Reject down one, so
+     * `↓ enter` — which every existing habit and the harness both mean as
+     * "reject" — approved the write *and* turned approval off for the rest of
+     * the session. The harness caught it as `nope.js WAS written`.
+     *
+     * A choice that widens permissions never sits between the two people
+     * press without looking.
+     */
+    ...(mode === 'plan'
+      ? [{ label: 'Approve, and stop asking — switch to auto mode', value: 'accept-auto' }]
+      : []),
+  ];
+
+  const maxLines = expanded
+    ? Math.max(DIFF_ROWS_COLLAPSED, terminalHeight - diffBoxFurniture(choices.length))
+    : DIFF_ROWS_COLLAPSED;
+  const rows = rowsFromPatch(diffRequest.patch, { maxLines });
+  const hidden = rows.some((r) => r.type === 'more');
   const added = rows.filter((r) => r.type === 'add').length;
   const removed = rows.filter((r) => r.type === 'del').length;
   const critical = diffRequest.riskLevel === 'critical';
@@ -973,15 +1172,20 @@ export function DiffApproval({
       )}
 
       <SelectInput
-        items={[
-          { label: `Approve — write ${hunks.length === 1 ? 'it' : 'all of it'} to disk`, value: 'accept' },
-          { label: 'Reject — discard the change', value: 'reject' },
-        ]}
+        items={choices}
         onSelect={(item) => {
           handleDiffResponse(item.value);
           setFocus(FOCUS_INPUT);
         }}
       />
+
+      {(hidden || expanded) && (
+        <Text dimColor wrap="truncate">
+          {expanded
+            ? '  d — collapse'
+            : '  d — show the rest of the diff'}
+        </Text>
+      )}
     </Box>
   );
 }

@@ -58,12 +58,11 @@ export function describeSettings(agentLoop) {
   ), {});
   const effort = resolveEffort(mc.effort);
   const main = mc.main || 'gemini';
-  const reviewer = mc.reviewer && mc.reviewer !== main ? mc.reviewer : null;
+  const subagents = mc.subagents !== false;
   const rules = agentLoop?.commandRules || { enabled: true, allow: [], block: [] };
   const memoryOn = agentLoop?.memoryManager?.isMemoryEnabled?.() !== false;
   const facts = memoryOn ? (agentLoop?.memoryManager?.getAllMemories?.() || []).length : 0;
   const scope = safe(() => paths.getActiveScope(agentLoop.workspace), '');
-  const github = agentLoop?.githubHandler?.getStatus?.() || {};
   const commandsToday = safe(() => countToday(agentLoop.workspace), 0);
 
   const history = agentLoop?.conversationHistory || [];
@@ -93,11 +92,13 @@ export function describeSettings(agentLoop) {
     },
     {
       group: 'Settings',
-      label: 'Reviewer',
-      value: reviewer || 'none',
-      hint: reviewer ? 'duo — audits every non-trivial change' : 'solo — nothing reviews the work',
+      label: 'Subagents',
+      value: subagents ? 'on' : 'off',
+      hint: subagents
+        ? 'parallel tabs with empty context — research, review, errands'
+        : 'one tab, start to finish — nothing can be delegated',
       run: '/config',
-      restore: (value) => `/config reviewer ${value}`,
+      restore: (value) => `/config subagents ${value}`,
     },
     {
       group: 'Settings',
@@ -134,13 +135,6 @@ export function describeSettings(agentLoop) {
     },
     {
       group: 'Status',
-      label: 'GitHub',
-      value: github.username ? `@${github.username}` : 'not connected',
-      hint: github.username ? 'PR dashboard on ctrl+o' : 'ctrl+o to add a token',
-      run: '/github',
-    },
-    {
-      group: 'Status',
       label: 'Workspace',
       value: agentLoop?.workspace || '',
       hint: scope ? `scope: ${scope} — set at launch with --scope` : 'the files the agent reads and edits',
@@ -153,8 +147,12 @@ export function describeSettings(agentLoop) {
       // read `modelConfig.agentName` — a key nothing has ever written — so the
       // screen reported "Agent CLI" while the banner said something else.
       value: cfg?.agentName || 'Agent CLI',
-      hint: 'shown in the banner — `/name <text>` to change it',
+      hint: 'shown in the banner — enter to rename, empty to clear',
+      // `/name` with no argument only *prints* the current name, so this row
+      // promised a change and delivered a paragraph. It opens an editor now;
+      // `Menus.jsx` runs `/name <text>` with what you type.
       run: '/name',
+      edits: 'name',
     },
     {
       group: 'Status',
@@ -227,8 +225,8 @@ export function describeSettings(agentLoop) {
  * Rows matching what has been typed.
  *
  * Matches the label, the value and the hint, because people look for a setting
- * by any of the three — "duo" is not in any label but it is exactly what
- * someone types when they want to know whether a reviewer is on.
+ * by any of the three — "review" is not in any label but it is exactly what
+ * someone types when they want to know whether subagents are on.
  */
 /**
  * What changed between two readings of the page.
@@ -241,12 +239,26 @@ export function describeSettings(agentLoop) {
  * Only rows that know how to restore themselves are offered; the rest are
  * reported and left alone, which is honest about what an undo can reach.
  *
+ * **Only the Settings group is compared.** Reported from use: opening the page,
+ * changing nothing and closing it announced "2 settings changed — Turns 18 → 19,
+ * Session 18 turns kept → 19 turns kept". Those are in the Context group, and
+ * everything there is a *readout* — turns, tokens, diffs — which moves on its
+ * own while the page is open. So the screen fired on every exit during an active
+ * session, reporting things the person had not done and could not undo, which is
+ * the fastest way to teach someone to ignore a screen that will one day have
+ * something real on it.
+ *
+ * The group is the honest test rather than `restore`: `Skill folders` and
+ * `Agent name` are genuine settings with no undo, and they should still be
+ * reported when they change.
+ *
  * @returns {Array<{label: string, from: string, to: string, restore?: string}>}
  */
 export function settingsChanged(before, after) {
   const was = new Map((before || []).map((row) => [row.label, row.value]));
   const changes = [];
   for (const row of after || []) {
+    if (row.group !== 'Settings') continue;
     const from = was.get(row.label);
     if (from === undefined || from === row.value) continue;
     changes.push({
@@ -270,6 +282,37 @@ export function filterSettings(rows, query, group = null) {
   const pool = q ? rows : inGroup;
   return pool.filter((row) =>
     `${row.label} ${row.value} ${row.hint || ''}`.toLowerCase().includes(q));
+}
+
+/**
+ * The two column widths the settings list pads to.
+ *
+ * It is given the rows being **drawn**, and that is the whole of the fix: the
+ * page computed these over every row it knew about and then padded the
+ * filtered ones to them. Filter to two short rows and they were still spaced
+ * for the widest label in the entire set, which is where
+ * `Effort              deep` came from — a gap wide enough to read as a
+ * missing column, on a screen whose whole job is showing what is set to what.
+ *
+ * `VALUE_MAX` is the same clamp the caller applies with `oneLine`, and the
+ * width is measured on the clamped text rather than the raw value, because
+ * padding to a length nothing will occupy is the same bug one column over.
+ *
+ * @param {Array<{label: string, value: string}>} rows - the rows being drawn
+ * @returns {{ width: number, vwidth: number }}
+ */
+export const VALUE_MAX = 30;
+
+export function settingsColumns(rows) {
+  const drawn = Array.isArray(rows) ? rows : [];
+  const longest = (pick) => drawn.reduce((n, row) => Math.max(n, pick(row).length), 0);
+  return {
+    width: longest((row) => String(row?.label ?? '')),
+    // Collapsed the way `oneLine` collapses it: a value carrying a newline or a
+    // run of spaces is drawn shorter than it measures.
+    vwidth: Math.min(VALUE_MAX, longest((row) =>
+      String(row?.value ?? '').replace(/\s+/g, ' ').trim().slice(0, VALUE_MAX))),
+  };
 }
 
 function safe(fn, fallback) {

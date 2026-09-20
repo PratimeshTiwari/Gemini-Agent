@@ -192,20 +192,39 @@ export function definitionsIn(source) {
  * keys are excluded for the same reason — `{ readFile: 1 }` is not a use of
  * `readFile` — except when computed, where they genuinely are.
  *
- * @returns {Array<{line: number, column: number}>}
+ * **`includeMembers` is the answer to a different question, and the caller has
+ * to say which one it is asking.** Excluding `obj.name` is right for a
+ * *binding*: `fs.readFile` does not use a `readFile` variable. It is wrong for
+ * a *method*, where `x.buildToolResultBatch()` is the only way to call it —
+ * and that made `find_references` return **0** for every method in the repo,
+ * under a message reading "It may be dead code". Measured before the fix:
+ * `buildToolResultBatch` 0 references against 2 real call sites, `acceptDiff`
+ * 0 against 3. A tool that confidently answers "nothing calls this" about a
+ * method called everywhere is the `semantic_search` failure exactly — the
+ * model reaches for it and concludes the code is not there, and here the next
+ * step it invites is deletion.
+ *
+ * Hits found that way are tagged `member: true` rather than mixed in, because
+ * they carry real ambiguity: a same-named method on some other object looks
+ * identical. Saying which is which is what lets the answer be used.
+ *
+ * @param {string} source
+ * @param {string} name
+ * @param {{includeMembers?: boolean}} [options]
+ * @returns {Array<{line: number, column: number, member?: boolean}>}
  */
-export function referencesIn(source, name) {
+export function referencesIn(source, name, { includeMembers = false } = {}) {
   const ast = JsxParser.parse(source, PARSE_OPTIONS);
   const out = [];
   // `import { X }` gives `imported` and `local` the same position, and visiting
   // both is how the import is found at all — so the duplicate is deduped here
   // rather than by not looking.
   const seen = new Set();
-  const hit = (node) => {
+  const hit = (node, member = false) => {
     const at = `${node.loc.start.line}:${node.loc.start.column}`;
     if (seen.has(at)) return;
     seen.add(at);
-    out.push({ line: node.loc.start.line, column: node.loc.start.column + 1 });
+    out.push({ line: node.loc.start.line, column: node.loc.start.column + 1, ...(member ? { member: true } : {}) });
   };
 
   walk.full(ast, (node) => {
@@ -222,6 +241,10 @@ export function referencesIn(source, name) {
     MemberExpression(node, state, c) {
       c(node.object, state, 'Expression');
       if (node.computed) c(node.property, state, 'Expression');
+      // `x.name` — a use of the *method* `name`, not of a binding called
+      // `name`. Only when the caller asked, and never for a computed property,
+      // which the line above already visited as an ordinary expression.
+      else if (includeMembers && node.property?.name === name) hit(node.property, true);
     },
     Property(node, state, c) {
       if (node.computed) c(node.key, state, 'Expression');
@@ -348,11 +371,32 @@ export class SymbolIndex {
   }
 
   /**
+   * One line of an indexed file, by its workspace-relative path.
+   *
+   * `find` returns a definition's file and line but not its text, and a
+   * definition the caller has to go and read separately is one it will render
+   * as a bare line number.
+   *
+   * @returns {string} the trimmed line, or '' if it is not indexed
+   */
+  sourceLine(relFile, line) {
+    for (const [abs, entry] of this.files) {
+      if (relative(this.workspace, abs) !== relFile) continue;
+      return (entry.source.split('\n')[line - 1] || '').trim();
+    }
+    return '';
+  }
+
+  /**
    * Where `name` is used, with the line of source at each point.
    *
-   * @returns {Array<{file: string, line: number, column: number, text: string}>}
+   * `includeMembers` adds `x.name` uses, tagged `member: true` — see
+   * `referencesIn`. Off by default because for a plain binding they are noise;
+   * on, for a method, they are the whole answer.
+   *
+   * @returns {Array<{file: string, line: number, column: number, text: string, member?: boolean}>}
    */
-  references(name) {
+  references(name, { includeMembers = false } = {}) {
     const out = [];
     for (const [abs, entry] of this.files) {
       if (entry.unparsed) continue;
@@ -361,7 +405,7 @@ export class SymbolIndex {
       if (!entry.source.includes(name)) continue;
       let hits;
       try {
-        hits = referencesIn(entry.source, name);
+        hits = referencesIn(entry.source, name, { includeMembers });
       } catch {
         continue;
       }
@@ -372,6 +416,7 @@ export class SymbolIndex {
           line: hit.line,
           column: hit.column,
           text: (lines[hit.line - 1] || '').trim(),
+          ...(hit.member ? { member: true } : {}),
         });
       }
     }

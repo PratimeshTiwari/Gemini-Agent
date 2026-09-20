@@ -160,3 +160,37 @@ describe('nested lists and copyable code blocks, which fought over one setting',
     assert.ok(child.startsWith(' '), 'the nested item lost its indent');
   });
 });
+
+
+/**
+ * A code block looks the same however it was written.
+ *
+ * `renderMarkdown` lifts **fenced** blocks out before `marked` sees them and
+ * draws them with `renderBlock` — no colour, dim rules, copy-clean. An
+ * **indented** block never matched that lift and fell through to
+ * `marked-terminal`, which syntax-highlights it. The result was backwards:
+ * the shape this project controls and designed for came out plain, while the
+ * rare untagged four-space shape came out coloured.
+ *
+ * Measured with colour forced on before the fix: fenced gave 6 ANSI spans,
+ * all of them the rules with an uncoloured body; indented gave 14, with the
+ * number green and the keywords blue.
+ */
+describe('indented code blocks are drawn like fenced ones', () => {
+  const ANSI = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g');
+  const spans = (s) => (s.match(ANSI) || []).length;
+  const body = (s) => s.replace(ANSI, '');
+
+  test('gets the same dim rules, not syntax colour', () => {
+    const out = renderMarkdown('Here:\n\n    const answer = 42;\n    return answer;\n');
+    assert.match(body(out), /\u2500/, 'a rule above and below, the same as a fence');
+    assert.match(body(out), /const answer = 42;/);
+  });
+
+  test('leaves the code itself uncoloured', () => {
+    const fenced = renderMarkdown('```js\nconst answer = 42;\n```\n');
+    const indented = renderMarkdown('Here:\n\n    const answer = 42;\n');
+    assert.ok(spans(indented) <= spans(fenced) + 2,
+      `indented ${spans(indented)} spans vs fenced ${spans(fenced)} — it is being highlighted`);
+  });
+});

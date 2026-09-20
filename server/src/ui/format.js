@@ -65,6 +65,91 @@ marked.use(markedTerminal({
  */
 marked.use({
   renderer: {
+    /**
+     * Code blocks are drawn plainly, whichever way they were written.
+     *
+     * `renderMarkdown` lifts **fenced** blocks out before `marked` sees them
+     * and draws them with `renderBlock` — no colour, dim rules top and
+     * bottom, copy-clean. An **indented** block never matched that lift, so
+     * it fell through to `marked-terminal`, which syntax-highlights it. The
+     * result was backwards: the shape this project controls and has a
+     * deliberate design for came out plain, while the rare untagged
+     * four-space shape came out coloured, with auto-detected language.
+     *
+     * Measured with colour forced on: a fenced block rendered 6 ANSI spans,
+     * all of them `renderBlock`'s rules with an uncoloured body; an indented
+     * one rendered 14, with `42` green and `function` blue.
+     *
+     * Drawing it here rather than lifting it out is deliberate. Four-space
+     * indentation is also how a list continues, and a regex that hunts for
+     * indented blocks cannot tell the two apart — `marked` already can, so
+     * the fix belongs where `marked` hands the block over.
+     */
+    code(token) {
+      return renderBlock(String(token.lang || '').trim(), String(token.text ?? ''));
+    },
+
+    /**
+     * Tables are drawn here, for the reason code blocks are.
+     *
+     * `marked-terminal` hands them to `cli-table3`, which sizes to **content**
+     * and ignores the `width` option entirely. Measured on a three-column
+     * table from a real reply: **158 visible columns**, whatever the terminal
+     * is. At 90 columns every one of those lines wraps, and a wrapped border
+     * is not a narrow table — it is the top-left corner of a box on one line
+     * and the rest of it on the next, which is what was reported.
+     *
+     * Asking the model to emit a custom tag instead was considered and is the
+     * wrong half of the system to change: it costs prompt budget on every
+     * refresh turn, it is ignored some fraction of the time, and a markdown
+     * table is what the model writes unprompted. **The renderer is ours to
+     * control; the output format is not.** Same argument that moved code
+     * blocks off `marked-terminal`.
+     *
+     * A table is also the one element that must never be wrapped by Ink —
+     * `wrap="truncate"` would cut the right border off and `wrap="wrap"`
+     * destroys the box — so this is the only renderer that has to know the
+     * terminal width.
+     */
+    table(token) {
+      const cell = (c) => this.parser.parseInline(c.tokens).replace(/\n+/g, ' ').trim();
+      const header = (token.header || []).map(cell);
+      const rows = (token.rows || []).map((r) => r.map(cell));
+      if (header.length === 0) return '';
+
+      const natural = header.map((h, i) => Math.max(
+        visibleWidth(h),
+        ...rows.map((r) => visibleWidth(r[i] ?? '')),
+      ));
+      const widths = fitColumns(natural, renderWidth);
+
+      const rule = (l, mid, r) => DIM + l + widths.map((w) => '─'.repeat(w + 2)).join(mid) + r + RESET;
+      const line = (cells) => {
+        const wrapped = cells.map((c, i) => wrapAnsi(c ?? '', widths[i]));
+        const height = Math.max(1, ...wrapped.map((w) => w.length));
+        const out = [];
+        for (let i = 0; i < height; i += 1) {
+          const parts = wrapped.map((w, c) => {
+            const text = w[i] ?? '';
+            return ` ${text}${' '.repeat(Math.max(0, widths[c] - visibleWidth(text)))} `;
+          });
+          out.push(`${DIM}│${RESET}${parts.join(`${DIM}│${RESET}`)}${DIM}│${RESET}`);
+        }
+        return out.join('\n');
+      };
+
+      return [
+        '',
+        rule('┌', '┬', '┐'),
+        line(header.map((h) => `${BOLD}${h}${RESET}`)),
+        rule('├', '┼', '┤'),
+        ...rows.map((r) => line(r)),
+        rule('└', '┴', '┘'),
+        '',
+        '',
+      ].join('\n');
+    },
+
     list(token) {
       let n = Number(token.start || 1);
       const lines = token.items.map((item) => {
@@ -126,6 +211,9 @@ export function extractCodeBlocks(content) {
 /** Dim, so the rules read as furniture rather than as part of the code. */
 const DIM = '\x1b[2m';
 const RESET = '\x1b[22m';
+// `22m` is "normal intensity", which ends bold and dim alike — one reset for
+// both, and it does not clobber a colour the way `0m` would.
+const BOLD = '\x1b[1m';
 
 /**
  * A block, bounded by rules that a drag does not pick up.
@@ -144,6 +232,103 @@ function renderBlock(lang, code) {
   return `${DIM}${top}${RESET}\n${code}\n${DIM}${bottom}${RESET}`;
 }
 
+/**
+ * How many columns a string occupies, ignoring the escapes that colour it.
+ *
+ * Every alignment bug in this file has been the same one: `padEnd` counts
+ * code units, and a coloured string is mostly escape bytes. The box was drawn
+ * by padding strings that carried chalk's output, so every row came out a
+ * different width and the right border zig-zagged.
+ */
+/**
+ * The width the next render should fit into.
+ *
+ * Module state rather than a threaded parameter because `marked.use` installs
+ * the renderers once, at import, and they take only their token. Set by
+ * `renderMarkdown` before it parses; the render cache is keyed on it, so two
+ * widths cannot serve each other's output.
+ */
+let renderWidth = 80;
+
+const ANSI = /\x1b\[[0-9;]*m/g;
+export const visibleWidth = (s) => String(s).replace(ANSI, '').length;
+
+/**
+ * Wrap to `width` columns without cutting an escape sequence in half.
+ *
+ * Walks the string rather than wrapping the stripped copy, because a cell can
+ * contain an inline code span and re-emitting it uncoloured to make the
+ * arithmetic easy would lose the one thing that marks it as code. Escapes
+ * cost zero columns and travel with the text.
+ *
+ * Breaks at the last space that fits; a token longer than the column is cut,
+ * because the alternative is a row wider than the table claims to be.
+ */
+export function wrapAnsi(text, width) {
+  const w = Math.max(1, width);
+  const out = [];
+  let line = '';
+  let col = 0;
+  let lastSpace = -1;
+
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '\x1b') {
+      const m = /^\x1b\[[0-9;]*m/.exec(text.slice(i));
+      if (m) { line += m[0]; i += m[0].length - 1; continue; }
+    }
+    const ch = text[i];
+    if (ch === '\n') { out.push(line); line = ''; col = 0; lastSpace = -1; continue; }
+    if (ch === ' ') lastSpace = line.length;
+    // A break can land just before a space — the hard-cut path especially —
+    // and a continuation line that opens with one is off by a column against
+    // every other row in the cell.
+    if (ch === ' ' && col === 0) continue;
+    line += ch;
+    col += 1;
+    if (col >= w) {
+      // Break at the last space if there was one, so words stay whole.
+      if (lastSpace > 0) {
+        out.push(line.slice(0, lastSpace));
+        line = line.slice(lastSpace + 1);
+        col = visibleWidth(line);
+      } else {
+        out.push(line);
+        line = '';
+        col = 0;
+      }
+      lastSpace = -1;
+    }
+  }
+  if (line.length > 0 || out.length === 0) out.push(line);
+  return out;
+}
+
+/**
+ * Fit column widths into the terminal, taking from the widest first.
+ *
+ * Proportional shrinking is the obvious approach and is wrong here: it takes
+ * as much from a 6-column `Status` as from a 70-column `Verdict`, and the
+ * narrow columns are the ones that cannot afford it. Taking from the widest
+ * each round converges on "every column as wide as it needs, and the prose
+ * column absorbs the shortfall", which is what a person does by hand.
+ */
+export function fitColumns(natural, budget, min = 6) {
+  const cols = [...natural];
+  // Two border columns per cell (`│ ` and ` `), plus the closing `│`.
+  const chrome = cols.length * 3 + 1;
+  let total = cols.reduce((a, b) => a + b, 0) + chrome;
+  // A guard, not a loop bound: every round removes a column from the widest,
+  // so it terminates — but a bug here would hang the renderer, and this is on
+  // the path that draws every reply.
+  for (let guard = 0; total > budget && guard < 10000; guard += 1) {
+    const widest = cols.indexOf(Math.max(...cols));
+    if (cols[widest] <= min) break;
+    cols[widest] -= 1;
+    total -= 1;
+  }
+  return cols;
+}
+
 /** Collapse any value to a single line of at most `max` characters. */
 export function oneLine(value, max = 60) {
   const text = String(typeof value === 'string' ? value : JSON.stringify(value ?? {}))
@@ -156,6 +341,82 @@ export function oneLine(value, max = 60) {
  * One-line description of a tool result, for the collapsed transcript row.
  * Falls back to a hard-clamped snippet for tools without a specific shape.
  */
+/**
+ * What a tool row is *about*, from the arguments the model sent.
+ *
+ * `⏺ read_file · 134 lines · 4.9 KB` does not say which file, and two identical
+ * rows in one turn are indistinguishable — reported from use, looking at a turn
+ * with a 134-line read and a 1,155-line read and no way to tell what either was.
+ *
+ * From `args` rather than the result, because the request is the thing that is
+ * always there: a call that failed has no result to name a path, and that is
+ * exactly the row you most want to read.
+ *
+ * Paths truncate from the **left**, keeping the basename. A row in the live
+ * frame is cut from the right by `wrap="truncate"`, so anything that must
+ * survive goes on the left of the row — but within the path itself the end is
+ * the informative half, and `…/ui/transcript.js` beats `server/src/ui/tra…`.
+ *
+ * @param {string} toolName
+ * @param {object} args - what the model sent
+ * @param {number} [max] - characters this may occupy
+ * @returns {string} '' when there is nothing worth naming
+ */
+export function subjectOf(toolName, args, max = 44) {
+  const a = args || {};
+  const pick = (...keys) => {
+    for (const k of keys) {
+      const v = a[k];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+      if (Array.isArray(v) && v.length) return v.filter(Boolean).join(', ');
+    }
+    return '';
+  };
+
+  let raw = '';
+  let isPath = false;
+  switch (toolName) {
+    case 'read_file':
+    case 'edit_file':
+    case 'create_file':
+    case 'list_directory':
+    case 'open_in_editor':
+    case 'undo_edit':
+      raw = pick('path', 'filePath', 'file');
+      isPath = true;
+      break;
+    case 'grep_search':
+      raw = pick('pattern', 'patterns', 'query');
+      break;
+    case 'search_files':
+      raw = pick('query', 'pattern', 'name');
+      break;
+    case 'find_symbol':
+    case 'find_references':
+      raw = pick('symbol', 'name', 'query');
+      break;
+    case 'run_command':
+    case 'run_background':
+      raw = pick('command', 'cmd');
+      break;
+    case 'ask_subagent':
+      // The role, not the prompt: the prompt is a paragraph and the role is
+      // the thing that distinguishes two otherwise identical rows.
+      raw = pick('role');
+      break;
+    default:
+      return '';
+  }
+
+  if (!raw) return '';
+  const flat = raw.replace(/\s+/g, ' ').trim();
+  if (flat.length <= max) return flat;
+
+  // A path keeps its tail; anything else keeps its head, because a command or
+  // a pattern is read left to right and its start is what identifies it.
+  return isPath ? `…${flat.slice(-(max - 1))}` : `${flat.slice(0, max - 1)}…`;
+}
+
 export function summarizeResult(toolName, result) {
   const plural = (n, word, many) => `${n} ${n === 1 ? word : many || word + 's'}`;
   try {
@@ -194,6 +455,19 @@ export function summarizeResult(toolName, result) {
       }
       case 'edit_file':
       case 'create_file': {
+        /*
+         * The approval outcome, when there is one.
+         *
+         * A rejected edit used to summarise as the whole sentence the *model*
+         * was sent — "User REJECTED the edit to AGENT.md. Do not retry the same
+         * edit — ask what they want changed." That is an instruction to the
+         * model, not a description for the person who just pressed reject and
+         * knows perfectly well what they did.
+         */
+        if (typeof r === 'string') {
+          if (/REJECTED/.test(r)) return 'rejected — nothing written';
+          if (/APPROVED/.test(r)) return 'approved — written to disk';
+        }
         // { diffId, filePath, hunkCount, status }
         if (r?.filePath) {
           const name = String(r.filePath).split('/').pop();
@@ -334,10 +608,14 @@ export function formatCommandResult(result, maxLines = 20) {
 const RENDER_CACHE = new Map();
 const RENDER_CACHE_MAX = 200;
 
-export function renderMarkdown(content) {
+export function renderMarkdown(content, width = 80) {
   const source = content || '';
-  const hit = RENDER_CACHE.get(source);
+  // Keyed on the width too: the table renderer fits itself to it, so the same
+  // markdown has a different correct answer at 72 columns and at 200.
+  const key = `${width}\u0000${source}`;
+  const hit = RENDER_CACHE.get(key);
   if (hit !== undefined) return hit;
+  renderWidth = Math.max(20, width);
 
   let out;
   try {
@@ -388,7 +666,7 @@ export function renderMarkdown(content) {
   if (RENDER_CACHE.size >= RENDER_CACHE_MAX) {
     RENDER_CACHE.delete(RENDER_CACHE.keys().next().value);
   }
-  RENDER_CACHE.set(source, out);
+  RENDER_CACHE.set(key, out);
   return out;
 }
 
@@ -439,4 +717,78 @@ export function blockLines(text, width, indent = 0) {
     out.push(line.padEnd(inner));
   }
   return out;
+}
+
+/**
+ * The agent's reply, bounded while the turn is still in the live frame.
+ *
+ * **This row was unbounded, and it is the one rule this directory has.** A
+ * live turn lives in Ink's repainted frame, and a frame taller than the
+ * viewport makes Ink write `ESC[2J ESC[3J` and repaint on *every* render —
+ * which destroys the terminal's scrollback. `shown` in `TranscriptTurn`
+ * carefully caps the action rows at `liveBudget`; the reply underneath then
+ * rendered in full regardless.
+ *
+ * Reported as "it gave me much more output but I received only a portion of
+ * it". The text was never lost — `history.jsonl` held all of it and
+ * `renderMarkdown` returns all of it, both checked — it was never drawn.
+ *
+ * **The first version of this counted `\n`, and that was the same bug again.**
+ * A 1,450-character reply is 18 source lines and **26 rendered rows at 100
+ * columns**, so an 18-line clamp against a 14-row budget passed untouched
+ * while the frame still overflowed by twelve rows. This file's own rule says
+ * it: a row that wraps is two. So the budget is spent in *wrapped* rows, at
+ * the width the terminal actually is.
+ *
+ * Clamped only while live. The committed copy goes to `<Static>`, is written
+ * once and never repainted, and is the one the user reads — so it stays
+ * whole, and the rest of the reply appears there a moment later.
+ */
+export function liveMessageText(text, budget, width = 80) {
+  const maxRows = Math.max(3, (Number(budget) || 12) - 2);
+  const cols = Math.max(20, Number(width) || 80);
+  const source = String(text ?? '');
+  const lines = source.split('\n');
+
+  // How many rows each source line will actually occupy once wrapped.
+  const rowsFor = (line) => Math.max(1, Math.ceil(line.length / cols));
+
+  let used = 0;
+  let kept = 0;
+  for (const line of lines) {
+    const next = used + rowsFor(line);
+    // The marker costs a row of its own, so stop while there is room for it.
+    if (kept > 0 && next > maxRows - 1) break;
+    used = next;
+    kept += 1;
+  }
+  if (kept >= lines.length) return source;
+
+  return `${lines.slice(0, kept).join('\n')}\n… +${lines.length - kept} more lines`;
+}
+
+/**
+ * The `∙` row for files that changed on disk under the turn.
+ *
+ * It used to read `∙ 3 files changed on disk — a.js, b.js, c.js` directly
+ * beneath a summary line already reading `Worked for 8.1s · 2 actions · 3
+ * files changed on disk`. The same count, twice, four rows apart — and the
+ * count is the half the summary is *for*, aggregated across every group in
+ * the turn, while the paths are the half only this row can carry.
+ *
+ * So the row drops the number and keeps the names. It is also shorter, which
+ * matters more here than it looks: the row is drawn `wrap="truncate"` inside
+ * the live frame, cut from the right, and the characters it stops spending on
+ * a number it is repeating are characters a path gets instead.
+ *
+ * With no path parsed there is nothing to name and the summary shows nothing
+ * either — `touched` counts paths, not events — so the row has to be
+ * self-sufficient in that one case, and says so in words.
+ *
+ * @param {string[]} paths
+ */
+export function fsEventRow(paths) {
+  const named = (Array.isArray(paths) ? paths : []).filter(Boolean);
+  if (named.length === 0) return '∙ a file changed on disk';
+  return `∙ changed on disk — ${named.join(', ')}`;
 }
