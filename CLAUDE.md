@@ -562,6 +562,36 @@ handler) with handlers in `mcp/tools/`. To add a tool: write the handler, add on
 array, **and one to `core/tool-catalog.js`** — that is what the prompt is rendered from, and
 `toolCatalogDrift()` fails the build if the two disagree. The description *is* the contract.
 
+**A name on every turn is not a trigger, and there is now a number for it.** `_buildToolAnchor`
+rides every turn — 18 names, 250 characters — and exists because the model does not gradually
+forget its tools, it forgets them completely. It works for that. It does **not** make a tool
+fire. Across 41 sessions and 529 calls, **eight of the eighteen have never been called once**:
+
+    find_symbol 0 · find_references 0 · open_in_editor 0 · run_background 0
+    manage_task 0 · get_editor_state 0 · recall_history 0 · get_diagnostics 0
+
+Some of those are fine — `get_editor_state` needs the companion running, `run_background` is
+rare by design. `find_symbol` and `find_references` are not: "who calls this?" comes up
+constantly and `grep_search` answers it worse, 58 times. So the lever for an unused tool is
+never "name it again" — it is a trigger at the moment of relevance, which a standing list cannot
+be. `_turnEvidence` already counts what has run this turn and is the place a nudge belongs.
+
+**And an untagged code fence was parsed as a tool call.** `_extractToolCalls`'s regex made the
+language tag optional and asked only that the body open with `[` or `{` and close with `]` or
+`}`. Gemini labels an *untagged* fence "Plaintext" in its own UI and writes one whenever it
+shows you something that is not code — so a reply illustrating a proposed reminder,
+`[SYSTEM REMINDER: …]` … `{user_input}`, matched. Measured: `plaintext`, `text` and `bash` all
+escape; **untagged is the one that matches**.
+
+The throw is inside the `replace` callback, so it discarded the **whole reply**, correct prose
+included — and the loop then sent *"Please correct the previous JSON formatting error."* into
+the thread about a tool call that was never made. Models comply with false premises: it invented
+one and spent the turn investigating a question it had already answered. The tag is captured now
+— ```` ```json ```` is a claim the model got wrong and still earns a repair round; a bare fence
+needs `LOOKS_LIKE_TOOL_CALL`, the `"name"` key the contract requires. A block that yields no call
+is also no longer deleted: it returned `''` unconditionally, so a model answering "your config
+should be:" had the answer removed from its own reply.
+
 **`find_references` answered 0 for every method in the repo, and said "It may be dead code".**
 A method is only ever called as `x.name()`, and `referencesIn` excluded member properties —
 correctly, for a *binding*: `fs.readFile` does not use a `readFile` variable. Nothing
@@ -684,10 +714,26 @@ closed — anything unresolvable, or outside, needs approval.
 
 ### Subagents
 
-`AgentLoop.topology` is `single` | `duo`, derived from whether a reviewer is set.
-`ask_reviewer` / `ask_researcher` / `ask_subagent` run **in parallel** (see the `isParallel`
-list in `_executeToolCalls`), each in a *different browser tab* on its own `sub:<requestId>`
-lane. `_runSubAgentSession` gives subagents a restricted tool set.
+**There is one delegation tool and one switch.** `AgentLoop.topology` is gone — it survives
+only in `_loadConfig`'s legacy folding, where a stored `topology: 'duo'` is read and discarded.
+What remains is `subagentsEnabled`, derived from `modelConfig.subagents !== false`: absent means
+**on**, because a config written before the toggle existed had the subagent tools available and
+reading it as "off" would silently take a capability away from every existing workspace.
+
+`ask_reviewer` and `ask_researcher` are gone too. They were the same tool three times —
+`buildSubagentWrapper(role)` took the role and ignored it, so all three got one generic wrapper
+and only the names implied otherwise. One `ask_subagent` with `role: "review" | "research" |
+"task"` replaces them, and `isParallel` is now `call.name === 'ask_subagent'` rather than a list
+of three. Calls run **in parallel**, each in a *different browser tab* on its own
+`sub:<requestId>` lane. `_runSubAgentSession` gives subagents a restricted tool set.
+
+**A description is a routing rule, not a capability list.** Of the three old descriptions only
+`ask_researcher`'s said *when* to reach for it; `ask_subagent`'s said "Delegate a task to a
+generic parallel Gemini subagent" — a capability with no trigger, which is the documented reason
+auto-delegation never happened. Every role in `tool-catalog.js` now leads with its trigger.
+Measured across 41 sessions and 529 tool calls: `read_file` 187, `grep_search` 58,
+`ask_subagent` 8, `ask_reviewer` 4 (pre-collapse) — **delegation at 2.3%**. That figure spans
+both sides of the rewrite, so split it by date before concluding the triggers did not work.
 
 **Duo is two Gemini tabs, not two models,** since ChatGPT was removed. What the reviewer
 contributes is not different weights: it is a reader with **no memory of the conversation that
@@ -857,6 +903,37 @@ walking at `$HOME`; `paths.test.js` covers it.
 | `<ws>/.agent/backups/`, `context/`, `logs/`, `tmp/` | see `paths.js` |
 | `<ws>/.agent/sessions/history.jsonl` | conversation history, local copy |
 | `~/.agent/workspaces/<name>-<hash>/history.jsonl` | the durable copy of the same history |
+
+**Resuming has two doors, and one of them used to skip the browser.** The model's memory is not
+`history.jsonl` — that is the *human's* record. It is the chat thread in the tab, and Gemini keeps
+that thread's id in the URL (`/app/<id>`), which `session-meta.json` stores. `resumeSessionById`
+restores all four halves: the transcript, `chatThread`, an `open_thread` to the extension, and —
+only when there is no thread — `pendingRecap`.
+
+`/history` and the side panel called it. **`--resume` and `--continue` called
+`sessionStore.resumeSession(id)`, the storage method, and stopped.** So the transcript came back,
+the tab opened a *new* conversation, and the model was told nothing about either — the exact
+failure `chat-thread.js` exists to prevent, reached through the one door that skipped it.
+`resumeSessionById`'s own comment had warned why: *"Two copies of 'restore a conversation' is how
+one of them ends up forgetting."* It was lifted out for the panel and the picker; the launch flags
+were the copy left behind.
+
+They cannot simply call it: the constructor runs before the WebSocket server exists, so there is
+nowhere to send `open_thread`. The constructor records `_resumeOnConnect` and reads `chatThread`
+from `session-meta.json`; `resumeThreadOnConnect()` drains it when a client **identifies as an
+extension** — the same event `flushPendingInjects` hangs off, and for the same reason. It holds
+rather than clears the flag when neither callback set exists yet, because `_toExtension` drops
+silently the way `_notify` once did. **The invariant is a reopened thread or a recap, never
+neither**, and `resume-thread.test.js` asserts exactly that.
+
+**The stored chat id can only move forward, and that is the next bug.** `setThread` opens with
+`if (!thread?.id) return`, so passing null is a no-op; `startNewChat()` nulls `this.chatThread` in
+memory and never touches disk; and a fresh chat is `/app` with **no id until its first exchange**,
+so there is nothing to overwrite it with. Between `startNewChat()` and the first reply, memory says
+"no thread" and disk says the old one — and both resume paths read disk. `/compact` and `/new` call
+`startNewChat()` today, so this is live. It needs a third state (`left`) that `planResume` can turn
+into `replay`, and an explicit `clearThread()` — *not* a relaxed `setThread`, whose guard stops a
+bad URL wiping a good record.
 
 **A session with no user turn is not filed.** `watcher/file-watcher.js` appends
 `[System Event] File X was modified` turns whenever anything on disk changes, so leaving
@@ -1705,11 +1782,30 @@ ago.
   `<Static>` in between, then shrank the live frame, stranding the row above the
   static write where Ink can never repaint it. **Above** the command, because it
   was drawn before the rows it ends up sitting on. `SLOW_COMMANDS`
-  (`core/slash-commands.js`) is the gate, and `/compact` is its only member:
-  it asks the model for a summary, `/new` fires `startNewChat` without awaiting
-  it, and the rest is arithmetic on state already in memory. A set beside the
-  commands rather than a literal at the call site, because the literal is what
-  drifts.
+  (`core/slash-commands.js`) is the gate. A set beside the commands rather than
+  a literal at the call site, because the literal is what drifts.
+
+  **But a set can only answer for a whole command, and `/update` is two
+  commands wearing one name.** Bare `/update` runs `checkForUpdate`, which is
+  `git fetch origin` — **1,086ms measured warm, bounded by `FETCH_TIMEOUT_MS`
+  at 10s cold** — while `/update done` reads a file. It was in neither the set
+  nor anything else, so the input box cleared and nothing happened for up to
+  ten seconds: reported as *"/update seems glitched out, its loading is a bit
+  late and no loading animation"*. The comment in `use-slash-commands.js` had
+  asserted a spinner was "not available, because `SLOW_COMMANDS` is keyed on
+  the first word and `/update` on its own answers instantly" — the keying was
+  the real obstacle, and the second clause was never measured and is false.
+  `isSlowCommand(command, args)` takes the args, so `/update` and
+  `/update pull` wait and `/update done` stays instant, which is what keeps the
+  stranded row from returning through the new door.
+
+  **Prompt length is not what a turn costs.** Measured over 265 real turns:
+  `type` — the synthetic paste, where length is paid — is **23ms median, 410ms
+  p90, 2,450ms max**, against a **4,673ms median round trip** (14,913ms p90).
+  Even the worst paste of a full 26,268-character turn-0 prompt is half of one
+  median round trip, so **splitting a prompt across messages costs 3× the wait
+  and saves nothing**: the context is identical when the task arrives, plus the
+  model's acknowledgements. Make turn 0 smaller; do not spread it out.
 
 - **An attached image can be taken off again, and says that it is on.**
   Reported from use: *"there is no option to remove image? how to do that?"* —

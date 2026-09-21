@@ -670,18 +670,78 @@ missing one**, since the model reaches for it and concludes the code is not ther
 
 ---
 
-### Unreleased — `fix/bridge-speed-and-stability`
+### Unreleased — `v2.1`
 
-Not yet through a PR, and **most of it is `fix`** — this release is mostly the
-product being made to do what it already said it did.
+Three faults reported from use, each reproduced before it was touched. What they
+have in common: the product was measured rather than reasoned about, and in two
+of the three the written explanation of the behaviour was itself wrong.
 
 ```bash
-git rev-list --left-right --count main...fix/bridge-speed-and-stability
+git log --oneline main..v2.1
+npm test 2>&1 | grep -E "^not ok|^# (tests|pass|fail)"
 ```
 
-The count is deliberately not written out in prose. It said "113 commits ahead"
-for about a day, during which it was wrong roughly forty times — and "82" for
-another, which is the same mistake made by the paragraph warning about it.
+#### Prose is not a malformed tool call
+
+Asked whether the system prompt should be re-sent in chunks, the model answered
+correctly and illustrated it with a **bare** code fence. Gemini labels an
+untagged fence "Plaintext" in its own UI, so nothing on screen suggested JSON —
+but the parser's language tag was optional and the body only had to open with
+`[` and close with `}`. Measured: `plaintext`, `text` and `bash` all escape;
+untagged is the one that matches.
+
+The throw sits inside the `replace` callback, so it discarded the **entire
+reply**. The loop then sent *"Please correct the previous JSON formatting
+error."* into the thread — about a tool call that was never made. Models comply
+with false premises: it invented one and spent the turn investigating a question
+it had already answered. Preserved in `.agent/logs/errors.jsonl`.
+
+A block that yields no call is also no longer deleted from the reply, so a model
+answering "your config should be:" keeps its answer.
+
+#### `--resume` and `--continue` reach the browser
+
+The model's memory is the Gemini chat thread, not `history.jsonl`, and the whole
+chain to reopen it existed — `open_thread` → `chrome.tabs.update(/app/<id>)`.
+Only `/history` and the side panel called it. The launch flags called the
+*storage* method and stopped, so the transcript came back while the tab opened a
+new conversation and the model was told nothing about either.
+
+The invariant is now asserted directly: a reopened thread **or** a recap, never
+neither. Verified end-to-end against a fake extension over the real bridge.
+
+#### `/update` says it is working
+
+Bare `/update` runs `git fetch origin` — **1,086ms warm, up to 10s cold** — and
+raised no spinner, so the input box cleared and nothing happened. Reported as
+*"/update seems glitched out."* The comment in the source claiming a spinner was
+unavailable "because `/update` on its own answers instantly" had never been
+measured and was false.
+
+#### Measured while looking
+
+- A turn costs **4,673ms median** (14,913ms p90) over 265 real turns, of which
+  typing the prompt is **23ms — 0.5%**. Prompt length is nearly free; round
+  trips are not.
+- Turn 0 on `pro` is **26,268 characters ≈ 6,557 tokens**; turn 1 is **370**.
+- **Eight of eighteen tools have never been called**, despite being named on
+  every turn. A name is not a trigger.
+
+---
+
+### v2 — 2026-09-20 · PR #17 · `fix/bridge-speed-and-stability`
+
+**Most of it is `fix`** — this release is mostly the product being made to do
+what it already said it did.
+
+```bash
+git show --stat fb2c955
+```
+
+The count was deliberately never written out in prose. It said "113 commits
+ahead" for about a day, during which it was wrong roughly forty times — and "82"
+for another, which is the same mistake made by the paragraph warning about it.
+That rule still stands for every entry above: print the command, not the number.
 
 #### What this branch is
 
