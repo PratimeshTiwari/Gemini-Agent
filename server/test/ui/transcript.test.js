@@ -4,6 +4,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
+import { readFileSync } from 'node:fs';
 import { groupTurns, parseTurnActions, parseFsEventPath, describeArtifactWrite, mergeLoopHistory } from '../../src/ui/transcript.js';
 
 describe('groupTurns', () => {
@@ -554,5 +555,89 @@ describe('parseTurnActions — items are in source order', () => {
       steps: [{ role: 'assistant', content: '<thought>weighing it up</thought>The answer.' }],
     });
     assert.deepStrictEqual(items.map((i) => i.type), ['think', 'text']);
+  });
+});
+
+/**
+ * `/compact` rebuilt the transcript without the pointer the merge runs on.
+ *
+ * `mergeLoopHistory` works out how far the screen has been drawn from
+ * `__loopIndex` carried on the rows — *"a pointer cannot drift from what it
+ * points at"*. The `clear | undo | compact` branch rebuilt the array straight
+ * from `agentLoop.conversationHistory`, where nothing carries one, so `consumed`
+ * fell back to 0 and the next real turn appended the whole history again on top
+ * of the copy already on screen.
+ *
+ * Measured before the fix: 6 rows on screen, **11** after one merge, with `q3`
+ * present twice.
+ */
+describe('the transcript after a /compact', () => {
+  const loop = [
+    { role: 'system', type: 'compaction_summary', content: '[Context Summary]' },
+    { role: 'user', content: 'q3' },
+    { role: 'assistant', content: 'a3' },
+    { role: 'user', content: 'q4' },
+    { role: 'assistant', content: 'a4' },
+  ];
+  // Exactly what the fixed branch builds: the loop's rows tagged with their
+  // position, then the CLI's own confirmation, which belongs to no loop turn.
+  const rebuilt = () => {
+    const rows = loop.map((turn, i) => ({ ...turn, __loopIndex: i }));
+    rows.push({ role: 'assistant', content: '✓ Compacted 12 turns…', isLocal: true });
+    return rows;
+  };
+
+  it('a merge straight after it appends nothing', () => {
+    const shown = rebuilt();
+    const after = mergeLoopHistory(shown, loop);
+    assert.equal(after.length, shown.length,
+      'the loop history was drawn a second time on top of itself');
+    assert.equal(after.filter((r) => r.content === 'q3').length, 1);
+  });
+
+  it('the local confirmation survives, unindexed', () => {
+    const after = mergeLoopHistory(rebuilt(), loop);
+    const local = after.filter((r) => r.isLocal);
+    assert.equal(local.length, 1);
+    assert.equal(Number.isInteger(local[0].__loopIndex), false,
+      'the CLI message was claimed by a loop turn it does not belong to');
+  });
+
+  it('a genuinely new turn still lands, once', () => {
+    const shown = rebuilt();
+    const grown = [...loop, { role: 'user', content: 'q5' }];
+    const after = mergeLoopHistory(shown, grown);
+    assert.equal(after.length, shown.length + 1);
+    assert.equal(after[after.length - 1].content, 'q5');
+  });
+
+  /*
+   * And the assertion that actually pins the fix.
+   *
+   * Everything above builds the tagged array itself, so it exercises
+   * `mergeLoopHistory` — which never changed — and passes against the broken
+   * code. The negative control caught that: 53 passing against the pre-fix
+   * tree. The behaviour lives in the slash-command branch that rebuilds the
+   * transcript, and only reading that source can tell whether it tags.
+   */
+  it('the /compact branch tags the rows it rebuilds', () => {
+    const src = readFileSync(
+      new URL('../../src/ui/hooks/use-slash-commands.js', import.meta.url), 'utf8',
+    );
+    const branch = src.slice(src.indexOf("if (command === 'clear' || command === 'undo'"));
+    assert.match(
+      branch.slice(0, 1400),
+      /agentLoop\.conversationHistory\.map\(\(t, i\) => \(\{ \.\.\.t, __loopIndex: i \}\)\)/,
+      'the rebuild dropped __loopIndex again, so the next merge draws it all twice',
+    );
+  });
+
+  // The control: without the index it is broken in the documented way, so this
+  // suite cannot pass against a rebuild that quietly drops the tagging again.
+  it('an untagged rebuild duplicates everything — the old behaviour', () => {
+    const untagged = [...loop, { role: 'assistant', content: '✓ Compacted…', isLocal: true }];
+    const after = mergeLoopHistory(untagged, loop);
+    assert.equal(after.length, 11);
+    assert.equal(after.filter((r) => r.content === 'q3').length, 2);
   });
 });

@@ -989,7 +989,22 @@ export async function handleSlashCommand(query, {
         const result = await agentLoop.handleSlashCommand(command, args);
 
         if (command === 'clear' || command === 'undo' || command === 'compact') {
-          const newHistory = [...agentLoop.conversationHistory];
+          /*
+           * The rows carry their position, or the next merge draws everything twice.
+           *
+           * `mergeLoopHistory` works out how far the screen has been drawn from
+           * `__loopIndex` on the rows — *"a pointer cannot drift from what it
+           * points at"* — and this rebuilt the array straight from
+           * `agentLoop.conversationHistory`, where nothing carries one. So
+           * `consumed` fell back to 0 and the next real turn appended the entire
+           * loop history on top of the copy already on screen.
+           *
+           * Measured after a `/compact`: 6 rows on screen, 11 after one merge,
+           * with `q3` present twice. The local row keeps no index deliberately —
+           * it is the CLI's own message and belongs to no loop turn, which is
+           * exactly what `isLocal` marks.
+           */
+          const newHistory = agentLoop.conversationHistory.map((t, i) => ({ ...t, __loopIndex: i }));
           if (result && result.message) {
             newHistory.push({ role: 'assistant', content: result.message, isLocal: true });
           }

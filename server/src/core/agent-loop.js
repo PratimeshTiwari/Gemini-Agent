@@ -9,7 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
-import { looksLikeMultipleDrafts, looksLikeCapabilityDenial, looksLikeProviderError } from './drift-detector.js';
+import { looksLikeMultipleDrafts, looksLikeCapabilityDenial, looksLikeProviderError, looksLikeCodeQuestion } from './drift-detector.js';
 import { logError } from './error-log.js';
 import { describeInstructionSources } from './instruction-sources.js';
 import { logCommand } from './command-log.js';
@@ -58,6 +58,15 @@ const MAX_FAILED_ROUNDS = 4;
  * turn ends and says where it got to, and you can tell it to carry on.
  */
 const MAX_ROUNDS_PER_TURN = 30;
+
+/**
+ * How stale the browser's model picker may be before we re-read it.
+ *
+ * A minute: the picker changes at human speed, and the only cost of being out
+ * of date is one late mismatch warning. Asking every turn would be a message
+ * per turn forever, for a value that almost never moves.
+ */
+const MODEL_POLL_INTERVAL_MS = 60000;
 
 /** The first useful line of a failed tool result, for the give-up message. */
 function oneLineError(result) {
@@ -749,6 +758,17 @@ export class AgentLoop {
      * is told next turn to answer from the results. What reaches the user is
      * either evidence-backed or nothing.
      */
+    /*
+     * Whether this is the session's first answer, captured before it is pushed.
+     *
+     * Turn 0 is the only turn where the model has just been handed the whole
+     * system prompt and every tool definition, so it is the one turn where
+     * "answered without opening anything" means the framing did not take.
+     */
+    const isFirstReply = !this.conversationHistory.some(
+      (t) => t.role === 'agent' || t.role === 'assistant',
+    );
+
     const premature = toolCalls.length > 0 && hasHandoverBlock(cleanContent);
     if (premature) {
       this._withheldConclusion = true;
@@ -804,7 +824,63 @@ export class AgentLoop {
       // The turn is over, so its handover block can be checked against what it
       // actually did. Only here: mid-turn there is still work to come, and a
       // claim made in passing is not the closing report.
+      /*
+       * Turn 0 answered a question about the code without opening anything.
+       *
+       * The failure reported most often from use — *"on the very first prompt
+       * Gemini hallucinates and does not act as an agent"* — and it was recorded
+       * nowhere. `looksLikeCapabilityDenial` catches an *explicit* refusal and
+       * sits at 0.38%; a model that simply answers from priors, denying nothing
+       * and opening nothing, produced no log line at all. So the complaint could
+       * not be told from noise, and any change to turn 0 was a guess.
+       *
+       * Both halves are needed and neither is sufficient. "Answered with no
+       * tools" is correct and common — "what does MVC mean" deserves no
+       * `read_file`. "Asked about the code" is fine if it then went and looked.
+       * It is the pair that is the failure.
+       *
+       * Recorded, never acted on. A first answer from memory is sometimes right,
+       * and re-asking on suspicion would spend a turn to second-guess the model.
+       * This exists to produce a number; what to do about the number is a
+       * decision to make once it exists.
+       */
+      if (isFirstReply && !premature && looksLikeCodeQuestion(this.currentObjective)) {
+        logError(this.workspace, {
+          flow: 'agent',
+          op: 'turn0_no_tools',
+          message: 'Turn 0 asked about the code and answered without opening anything',
+          detail: `asked: ${String(this.currentObjective || '').slice(0, 200)}`,
+          meta: { effort: this.modelConfig?.effort || null },
+        });
+      }
+
       this._auditHandover(cleanContent);
+      /*
+       * Re-read the picker, because the user can change it and we would never know.
+       *
+       * `modelMismatch` compares the rung against `modelOptions`, and that list
+       * was requested **once**, 1.5s after the extension identified, and never
+       * again. So the one case the warning exists for — the person switching the
+       * browser to Flash while the agent is on `pro`, which is the documented
+       * worst pairing: a long prompt to the model that handles long prompts worst
+       * — is the case it could not see. The stale list still said Pro was
+       * selected, `planModelSwitch` answered `none`, and `modelMismatch` returned
+       * null. Reported from use, with the tab on Flash and the status bar on PRO.
+       *
+       * At the end of a turn, not during one: this is a message to the extension
+       * rather than a prompt, so it does not take the lane, but a discovery
+       * racing an inject is a tab doing two things at once.
+       *
+       * Throttled, because a turn can be seconds long and the picker changes at
+       * human speed. The cost of being a minute out of date is one late warning;
+       * the cost of asking every turn is a message per turn forever.
+       */
+      const now = Date.now();
+      if (!this._lastModelPoll || now - this._lastModelPoll > MODEL_POLL_INTERVAL_MS) {
+        this._lastModelPoll = now;
+        this.requestModelOptions();
+      }
+
       // No tool calls — agent is done
       this.isProcessing = false;
       // Restore background callbacks so GitHub tasks still work

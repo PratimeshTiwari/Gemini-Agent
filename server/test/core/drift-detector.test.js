@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { looksLikeMultipleDrafts, looksLikeCapabilityDenial, looksLikeProviderError } from '../../src/core/drift-detector.js';
+import { looksLikeMultipleDrafts, looksLikeCapabilityDenial, looksLikeProviderError, looksLikeCodeQuestion } from '../../src/core/drift-detector.js';
 
 describe('looksLikeMultipleDrafts', () => {
   test('catches a reply offering two drafts', () => {
@@ -128,5 +128,65 @@ describe('looksLikeProviderError — the tab failed, not the model', () => {
     assert.equal(looksLikeProviderError('I cannot help with that request.'), false);
     assert.equal(looksLikeProviderError(''), false);
     assert.equal(looksLikeProviderError(undefined), false);
+  });
+});
+
+/**
+ * The fourth detector, and the only one that reads the *user's* words.
+ *
+ * It exists because the failure reported most often from use — "on the very
+ * first prompt Gemini hallucinates and does not act as an agent" — was recorded
+ * nowhere. `looksLikeCapabilityDenial` catches an *explicit* refusal and sits at
+ * 0.38%; a model that answers from priors, denying nothing and opening nothing,
+ * produced no log line at all. `turn0_no_tools` pairs this with "and nothing was
+ * opened", which is the pair that is the failure — neither half alone is.
+ */
+describe('looksLikeCodeQuestion', () => {
+  test('the prompts that actually produced the reported failure', () => {
+    // Verbatim from the incident. The first cut of this detector returned false
+    // for it — a detector that cannot see its own founding case is measuring
+    // something else, which is why these two are pinned first.
+    assert.ok(looksLikeCodeQuestion('can you help me improve the effort tiers?'));
+    assert.ok(looksLikeCodeQuestion('should we send system prompt in chunks again to remind model ?'));
+  });
+
+  test('a path, a filename or a repo noun', () => {
+    for (const q of [
+      'read server/src/core/agent-loop.js',
+      'what is in App.jsx',
+      'explain the parser module',
+      'where is buildPrompt defined',
+      'who calls handleGeminiResponse',
+      'how does this codebase handle retries',
+    ]) assert.ok(looksLikeCodeQuestion(q), `missed: ${q}`);
+  });
+
+  test('first person plural is someone talking about their own system', () => {
+    for (const q of [
+      'should we restrict this',
+      'can we fix our agent loop',
+      'do we have a test for that',
+      'refactor this',
+    ]) assert.ok(looksLikeCodeQuestion(q), `missed: ${q}`);
+  });
+
+  // A false positive costs one log row a human reads; a false negative costs
+  // the measurement. But it must not fire on everything, or the rate is 100%
+  // and says nothing — these are the control.
+  test('ordinary questions that deserve no tool call', () => {
+    for (const q of [
+      'hi', 'thanks!', 'ok', 'tell me a joke',
+      'write me a haiku about autumn',
+      'what is the capital of France',
+      'translate good morning into japanese',
+      'summarise this article for me',
+    ]) assert.equal(looksLikeCodeQuestion(q), false, `fired on: ${q}`);
+  });
+
+  test('nothing is not a question', () => {
+    assert.equal(looksLikeCodeQuestion(''), false);
+    assert.equal(looksLikeCodeQuestion(null), false);
+    assert.equal(looksLikeCodeQuestion(undefined), false);
+    assert.equal(looksLikeCodeQuestion('   '), false);
   });
 });
