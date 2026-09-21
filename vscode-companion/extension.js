@@ -173,16 +173,24 @@ function activate(context) {
         const document = editor.document;
         const selection = editor.selection;
 
-        // Approximate the viewport as ±50 lines around the cursor.
-        const startLine = Math.max(0, selection.active.line - 50);
-        const endLine = Math.min(document.lineCount - 1, selection.active.line + 50);
-        const range = new vscode.Range(startLine, 0, endLine, document.lineAt(endLine).text.length);
-
+        /*
+         * The pointer, never the contents.
+         *
+         * This also wrote `visibleText` — the ±50 lines around the cursor —
+         * and measured on a live session that was **2,501 of 2,630 bytes,
+         * 95.1% of the file**, rewritten every time the cursor moved.
+         *
+         * Nothing reads it. `get_editor_state` stopped returning it on
+         * 2026-09-21, because what those bytes bought the model was a worse
+         * read than it already had: viewport-cropped to whatever happened to
+         * be on screen, with no line numbers, of a file `read_file` returns
+         * whole and numbered. Writing it on every keystroke to be read by
+         * nobody is the same cost with none of the excuse.
+         */
         writeState('editor.json', {
             activeFile: document.uri.fsPath.replace(root, ''),
             cursorLine: selection.active.line + 1,
             cursorChar: selection.active.character + 1,
-            visibleText: document.getText(range),
             timestamp: Date.now(),
         });
     }
