@@ -8,12 +8,16 @@ session. No API key, no hosted backend, no telemetry.
 
 ## ✨ What it does
 
-- **Two topologies.** *Solo* — one tab plans, implements and reviews. *Duo* — a reviewer
-  subagent audits the work from **a second Gemini tab that has never seen the
-  conversation**. What it contributes is not different weights, it is missing context: it
-  has nothing to check against but the code it is sent, so it reads the file instead of
-  reasoning from a citation. Each subagent turn gets its own tab and its own lane, so it
-  genuinely runs alongside your turn rather than queueing behind it.
+- **Subagents, which are one switch rather than a topology.** `ask_subagent` hands work to
+  **a second Gemini tab that has never seen the conversation** — `role: "review"` to have a
+  change read by someone who does not share your assumptions, `"research"` instead of a long
+  chain of your own reads, `"task"` for a self-contained errand. What a cold reader
+  contributes is not different weights, it is missing context: it has nothing to check
+  against but the code it is sent, so it opens the file instead of reasoning from a citation.
+  Each subagent turn gets its own tab and its own lane, so it genuinely runs alongside your
+  turn rather than queueing behind it. *Solo* and *Duo* were retired with the `topology`
+  setting they named — a derived value in a config file is one someone edits and is ignored
+  for editing.
 - **Every write is a diff you approve.** Per-hunk accept/reject, backups, atomic writes, and
   `/undo`. Commands are risk-classified before they run, and `/allowlist` remembers the
   answers you have already given.
@@ -58,20 +62,20 @@ extension and signing into a chat tab are things no installer can do for you.
 curl -fsSL https://raw.githubusercontent.com/PratimeshTiwari/Gemini-Agent/main/setup.sh | bash
 ```
 
-> **Which branch — read this before pasting the command above.**
+> **`main` is the released branch, and the command above is the right one.**
 >
-> Everything is developed on `v1-stable` and reaches `main` through a PR. **Until the first
-> such merge lands, `main` does not contain `setup.sh` at all and the command above returns
-> 404.** Use this one meanwhile — same script, same result:
+> This used to carry a warning that `main` did not contain `setup.sh` yet and the command
+> would 404. That was true before the first merge and stopped being true at **PR #13**,
+> fifteen merges ago. Work is developed on a branch and reaches `main` through a PR, so
+> `main` is always the last thing that passed review.
+>
+> To install a development branch instead, use `AGENT_BRANCH` from the table below rather
+> than a different URL. How far any branch is from `main` is a question to ask git, never
+> a number written here — it goes stale on the next commit:
 >
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/PratimeshTiwari/Gemini-Agent/v1-stable/setup.sh | bash
+> git rev-list --left-right --count main...<branch>
 > ```
->
-> After the merge, the `main` command is the right one: it is the released branch, and the
-> `v1-stable` form then tracks development instead. `git rev-list --left-right --count
-> main...v1-stable` says how far apart they currently are — never a number written down here,
-> because that goes stale on the next commit.
 
 Clones to `~/Gemini-Agent`, installs both workspaces, builds the extension bundle, puts
 `agent` on your `PATH`, runs the tests, and offers to add a line to your `~/.zshrc` so the
@@ -86,7 +90,7 @@ checkout, it stops rather than writing over it.
 | Knob | |
 | --- | --- |
 | `AGENT_INSTALL_DIR=~/src/agent` | clone somewhere else |
-| `AGENT_BRANCH=v1-stable` | a branch other than `main` |
+| `AGENT_BRANCH=<branch>` | a branch other than `main` |
 | `AGENT_REPO=<url>` | a fork |
 | `--yes` (or `AGENT_YES=1`) | take the default on every question, ask nothing |
 
@@ -466,7 +470,7 @@ model. The list says which is which.
 
 Once the agent is running, you can use built-in slash commands to manage your session:
 - Type `/help` in the CLI to see all available commands.
-- Type `/config` to turn the reviewer on or off. With one on, a second Gemini tab audits the work without having seen the conversation that produced it — which is the point of it, and why the tab is worth opening. There is no separate `/mode` screen any more, though the name still answers.
+- Type `/config` to turn **subagents** on or off — one switch, and it is on by default. With them on, `ask_subagent` can hand work to a second Gemini tab that has not seen the conversation: a cold review of a change, a search you would otherwise do as a long chain of reads, or a self-contained errand. `/config off` works as well as `/config subagents off`, and `solo` / `duo` are still accepted as words for off and on. There is no separate `/mode` screen, though the name still answers.
 - Type `/effort` to pick how hard the agent works — one ladder, `lite` · `flash` · `pro`. Changing it mid-chat says so: the next message resends the whole system prompt into
   the thread, and the row names `/compact` as the way to start a fresh one instead. It sets
   the prompt profile **and switches the browser's mode picker to match**, so a prompt written
@@ -670,18 +674,95 @@ missing one**, since the model reaches for it and concludes the code is not ther
 
 ---
 
-### Unreleased — `fix/bridge-speed-and-stability`
+### Unreleased — `v2.1`
 
-Not yet through a PR, and **most of it is `fix`** — this release is mostly the
-product being made to do what it already said it did.
+Three faults reported from use, each reproduced before it was touched. What they
+have in common: the product was measured rather than reasoned about, and in two
+of the three the written explanation of the behaviour was itself wrong.
 
 ```bash
-git rev-list --left-right --count main...fix/bridge-speed-and-stability
+git log --oneline main..v2.1
+npm test 2>&1 | grep -E "^not ok|^# (tests|pass|fail)"
 ```
 
-The count is deliberately not written out in prose. It said "113 commits ahead"
-for about a day, during which it was wrong roughly forty times — and "82" for
-another, which is the same mistake made by the paragraph warning about it.
+#### Prose is not a malformed tool call
+
+Asked whether the system prompt should be re-sent in chunks, the model answered
+correctly and illustrated it with a **bare** code fence. Gemini labels an
+untagged fence "Plaintext" in its own UI, so nothing on screen suggested JSON —
+but the parser's language tag was optional and the body only had to open with
+`[` and close with `}`. Measured: `plaintext`, `text` and `bash` all escape;
+untagged is the one that matches.
+
+The throw sits inside the `replace` callback, so it discarded the **entire
+reply**. The loop then sent *"Please correct the previous JSON formatting
+error."* into the thread — about a tool call that was never made. Models comply
+with false premises: it invented one and spent the turn investigating a question
+it had already answered. Preserved in `.agent/logs/errors.jsonl`.
+
+A block that yields no call is also no longer deleted from the reply, so a model
+answering "your config should be:" keeps its answer.
+
+#### `--resume` and `--continue` reach the browser
+
+The model's memory is the Gemini chat thread, not `history.jsonl`, and the whole
+chain to reopen it existed — `open_thread` → `chrome.tabs.update(/app/<id>)`.
+Only `/history` and the side panel called it. The launch flags called the
+*storage* method and stopped, so the transcript came back while the tab opened a
+new conversation and the model was told nothing about either.
+
+The invariant is now asserted directly: a reopened thread **or** a recap, never
+neither. Verified end-to-end against a fake extension over the real bridge.
+
+#### `/update` says it is working
+
+Bare `/update` runs `git fetch origin` — **1,086ms warm, up to 10s cold** — and
+raised no spinner, so the input box cleared and nothing happened. Reported as
+*"/update seems glitched out."* The comment in the source claiming a spinner was
+unavailable "because `/update` on its own answers instantly" had never been
+measured and was false.
+
+#### Removed: `open_in_editor`
+
+Opened a file in your editor at a line. Deleted because the terminal already
+does it better and for free: paths printed as `file.js:12` are clickable in
+every terminal this runs in, so the tool spent a browser round trip to reach a
+worse version of a thing that was one click away.
+
+It had also never been called — not once in 41 sessions — which is the evidence
+that decided it. Seven other tools share that zero and are **kept**: four are
+useful and need a trigger rather than a reminder, and three are correctly idle
+(`manage_task` has nothing to manage while `run_background` is unused;
+`recall_history` has nothing to recall until `/compact` stops stalling).
+
+`isVSCodeFamily` in `core/host-editor.js` is now unreferenced outside its own
+test. Left in place and flagged rather than swept up with this, because an
+audit of dead exports is its own pass.
+
+#### Measured while looking
+
+- A turn costs **4,673ms median** (14,913ms p90) over 265 real turns, of which
+  typing the prompt is **23ms — 0.5%**. Prompt length is nearly free; round
+  trips are not.
+- Turn 0 on `pro` is **26,268 characters ≈ 6,557 tokens**; turn 1 is **370**.
+- **Eight of eighteen tools have never been called**, despite being named on
+  every turn. A name is not a trigger.
+
+---
+
+### v2 — 2026-09-20 · PR #17 · `fix/bridge-speed-and-stability`
+
+**Most of it is `fix`** — this release is mostly the product being made to do
+what it already said it did.
+
+```bash
+git show --stat fb2c955
+```
+
+The count was deliberately never written out in prose. It said "113 commits
+ahead" for about a day, during which it was wrong roughly forty times — and "82"
+for another, which is the same mistake made by the paragraph warning about it.
+That rule still stands for every entry above: print the command, not the number.
 
 #### What this branch is
 

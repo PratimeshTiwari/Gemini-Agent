@@ -94,16 +94,3 @@ export function hostEditor(env = process.env) {
   return null;
 }
 
-/**
- * Does this editor take VS Code's flags — `--goto file:line:col`?
- *
- * Matched on shape rather than a list of names, because the list is the thing
- * that keeps being out of date: every fork is a new binary name, and the reason
- * this module exists is a fork nobody had heard of.
- */
-export function isVSCodeFamily(command) {
-  const name = String(command || '').split(/[\\/]/).pop().replace(/\.(exe|cmd|bat)$/i, '');
-  return /^(code|codium|vscodium)(-insiders)?$/i.test(name)
-    || /(^|-)(cursor|windsurf|positron|trae)(-|$)/i.test(name)
-    || /-ide$/i.test(name);
-}

@@ -499,7 +499,7 @@ describe('PromptBuilder — the prompt may not name a tool that does not exist',
   const REAL_TOOLS = new Set([
     // mcp/mcp-server.js TOOL_DEFINITIONS
     'search_files', 'grep_search', 'read_file', 'edit_file', 'create_file',
-    'list_directory', 'run_command', 'open_in_editor', 'run_background',
+    'list_directory', 'run_command', 'run_background',
     'manage_task', 'get_editor_state', 'get_diagnostics',
     // dispatched inside core/agent-loop.js, declared in no array (P2)
     'ask_question', 'ask_subagent', 'ask_researcher', 'ask_reviewer',

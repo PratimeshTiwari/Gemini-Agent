@@ -232,19 +232,6 @@ run_background instead. This will time out and tell you nothing.
 `,
   },
   {
-    name: 'open_in_editor',
-    dispatch: 'mcp',
-    flash: ` — Open file in editor. Args: path (string), line? (number)
-`,
-    pro: `
-Open a file in the user's code editor.
-Parameters:
-  - path (string, required): File path to open
-  - line (number, optional): Line number to jump to
-
-`,
-  },
-  {
     name: 'manage_memory',
     dispatch: 'loop',
     flash: ` — Remember/forget a durable fact. Args: action ("add"|"remove"), fact? (string), index? (number, the number shown in <memory>)
@@ -304,10 +291,18 @@ Parameters:
   {
     name: 'get_editor_state',
     dispatch: 'mcp',
-    flash: ` — Get current editor state. No args.
+    flash: ` — Which file the user has open and where the cursor is. Location only, not contents. No args.
 `,
     pro: `
-Gets the user's current editor state (active file, cursor position, and visible text) if the VS Code companion extension is installed. Use this to understand what the user is currently looking at.
+Which file the user has open in their editor and where the cursor is, from the VS Code companion.
+
+Ask when the request points at something without naming it — "fix this function", "why is this
+failing" — and you would otherwise have to guess which file they mean.
+
+It returns the **location only, never the file contents**: use read_file for those, which gives
+you the whole file with line numbers rather than whatever happened to be on screen. The answer
+carries its age, and you should use it: the editor moves independently of this conversation, so
+a reading from several minutes ago is a guess about the user's attention, not a fact.
 Parameters: None
 
 `,

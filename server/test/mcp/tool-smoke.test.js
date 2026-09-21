@@ -75,7 +75,6 @@ const HAPPY_PATH = {
   recall_history: { query: 'hello' },
   get_editor_state: {},
   get_diagnostics: {},
-  open_in_editor: null, // launches a real editor; the shim for it is the pty harness
 };
 
 describe('every registered tool runs', () => {

@@ -20,7 +20,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { SLOW_COMMANDS, AGENT_COMMANDS } from '../../src/core/slash-commands.js';
+import { SLASH_COMMANDS } from '../../src/ui/constants.js';
+import { SLOW_COMMANDS, AGENT_COMMANDS, isSlowCommand } from '../../src/core/slash-commands.js';
 
 const appSrc = readFileSync(new URL('../../src/ui/App.jsx', import.meta.url), 'utf8');
 
@@ -29,7 +30,7 @@ describe('the spinner is gated', () => {
     const branch = appSrc.slice(appSrc.indexOf("if (query.startsWith('/'))"),
       appSrc.indexOf('await handleSlashCommand('));
 
-    assert.match(branch, /SLOW_COMMANDS\.has\(/,
+    assert.match(branch, /isSlowCommand\(/,
       'every local command raises a spinner again; the stranded Thinking… row is back');
     assert.match(branch, /setIsProcessing\(true\)/,
       'the fixture no longer matches the code it is pinning');
@@ -49,14 +50,36 @@ describe('the spinner is gated', () => {
   test('the instant ones are not', () => {
     for (const c of ['image', 'paste-image', 'help', 'effort', 'plan', 'auto', 'context']) {
       assert.equal(SLOW_COMMANDS.has(c), false, `${c} answers immediately and would strand a row`);
+      assert.equal(isSlowCommand(c), false, `${c} answers immediately and would strand a row`);
     }
   });
 
+  /*
+   * `/update` is two commands wearing one name, which is why the gate takes the
+   * args. Bare `/update` is `git fetch origin` — 1,086 ms measured warm, capped
+   * at FETCH_TIMEOUT_MS (10 s) cold — and it had no spinner at all: reported as
+   * "/update seems glitched out, its loading is a bit late and no loading
+   * animation". `/update done` reads a file and must stay instant, or the
+   * stranded row this whole file exists for comes back through the new door.
+   */
+  test('/update waits, except when it does not', () => {
+    assert.equal(isSlowCommand('update', []), true, 'bare /update runs git fetch');
+    assert.equal(isSlowCommand('update', ['pull']), true);
+    assert.equal(isSlowCommand('update', ['now']), true);
+    assert.equal(isSlowCommand('update', ['done']), false, 'it reads a file; a spinner would strand');
+    assert.equal(isSlowCommand('update', ['DONE']), false, 'the args are lower-cased too');
+  });
+
   // Every slow command must be a real one, or the gate is checking a typo.
+  // `SLOW_COMMANDS` holds only loop commands; `/update` is answered in the UI
+  // hook and never reaches `AGENT_COMMANDS`, which is why it is named by
+  // `isSlowCommand` rather than added to the set.
   test('it names commands that exist', () => {
     for (const c of SLOW_COMMANDS) {
       assert.ok(AGENT_COMMANDS.has(c), `${c} is not a command, so the gate never matches it`);
     }
+    const listed = new Set(SLASH_COMMANDS.map((c) => c.name));
+    assert.ok(listed.has('update'), '/update is gated but is not a command anyone can type');
   });
 });
 

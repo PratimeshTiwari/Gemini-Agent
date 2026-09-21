@@ -274,11 +274,19 @@ export async function handleSlashCommand(query, {
        * recover from.
        *
        * Announced *before* it runs, as a committed row. A bare wait of half a
-       * minute with nothing on screen reads as a hang — and a spinner is not
-       * available, because `SLOW_COMMANDS` is keyed on the first word and
-       * `/update` on its own answers instantly, so raising one would strand
-       * exactly the row CLAUDE.md warns about. A committed row costs nothing
-       * in the live frame.
+       * minute with nothing on screen reads as a hang.
+       *
+       * This used to add that a spinner was "not available, because
+       * `SLOW_COMMANDS` is keyed on the first word and `/update` on its own
+       * answers instantly". The second clause was never measured and is false —
+       * bare `/update` runs `git fetch origin`, 1,086 ms warm and up to
+       * `FETCH_TIMEOUT_MS`, which is what "no loading animation" was reported
+       * about. `isSlowCommand` takes the args now, so both are true at once:
+       * `/update` and `/update pull` raise a spinner, `/update done` does not.
+       *
+       * The committed row stays regardless, and is not redundant with it: a
+       * spinner lives in the live frame and is gone the moment the frame
+       * shrinks, while this survives in scrollback for the length of an install.
        *
        * `stdio: 'pipe'`, never `inherit`: npm's progress written straight to a
        * terminal that has a live Ink frame on it is a frame regression.
@@ -363,9 +371,10 @@ export async function handleSlashCommand(query, {
        * The old version ran `editor || open || xdg-open` and reported
        * "Opened <path>" whatever happened — so when `code` was not installed
        * and macOS handed a `.md` to RStudio, the message read exactly the same
-       * as success. Same fault as `open_in_editor` claiming a line number it
-       * had not sent: the report has to describe what happened, or it is worse
-       * than no report.
+       * as success. The rule it breaks: a report has to describe what
+       * happened, or it is worse than no report. The deleted `open_in_editor`
+       * tool had the same fault from the other side — it claimed a line number
+       * it had not managed to send.
        */
       exec(`"${editor}" "${abs}"`, (err) => {
         if (!err) {
@@ -581,7 +590,7 @@ export async function handleSlashCommand(query, {
         // and "replay" are different promises: one carries on in a thread the
         // model still has, the other has to re-explain itself to a model that
         // was never there.
-        resume: planResume(session.thread, live).action,
+        resume: planResume(session.thread, live, session.leftThread).action,
       }));
 
       if (sessions.length === 0) {

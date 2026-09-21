@@ -380,7 +380,6 @@ export function subjectOf(toolName, args, max = 44) {
     case 'edit_file':
     case 'create_file':
     case 'list_directory':
-    case 'open_in_editor':
     case 'undo_edit':
       raw = pick('path', 'filePath', 'file');
       isPath = true;
