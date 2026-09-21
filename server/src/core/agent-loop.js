@@ -9,7 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
-import { looksLikeMultipleDrafts, looksLikeCapabilityDenial, looksLikeProviderError } from './drift-detector.js';
+import { looksLikeMultipleDrafts, looksLikeCapabilityDenial, looksLikeProviderError, looksLikeCodeQuestion } from './drift-detector.js';
 import { logError } from './error-log.js';
 import { describeInstructionSources } from './instruction-sources.js';
 import { logCommand } from './command-log.js';
@@ -59,6 +59,26 @@ const MAX_FAILED_ROUNDS = 4;
  */
 const MAX_ROUNDS_PER_TURN = 30;
 
+/**
+ * How stale the browser's model picker may be before we re-read it.
+ *
+ * A minute: the picker changes at human speed, and the only cost of being out
+ * of date is one late mismatch warning. Asking every turn would be a message
+ * per turn forever, for a value that almost never moves.
+ */
+const MODEL_POLL_INTERVAL_MS = 60000;
+
+/**
+ * Tools that name a single file, so a claim about that file can be checked.
+ *
+ * Reading it verifies it; editing or creating it means the model knows its
+ * contents. `grep_search` and `list_directory` are deliberately absent: they
+ * yield paths the model has seen *mentioned*, which is the difference between
+ * a citation and a guess, and citing from a search result without opening the
+ * file is the exact failure this exists to catch.
+ */
+const PATH_TOOLS = new Set(['read_file', 'edit_file', 'create_file']);
+
 /** The first useful line of a failed tool result, for the give-up message. */
 function oneLineError(result) {
   if (typeof result === 'string') return result.split('\n')[0].slice(0, 160);
@@ -68,7 +88,7 @@ function oneLineError(result) {
 }
 import * as paths from './paths.js';
 import { threadFromUrl } from './chat-thread.js';
-import { auditHandover, describeFindings, countChecklist } from './handover-audit.js';
+import { auditHandover, describeFindings, countChecklist, hasHandoverBlock } from './handover-audit.js';
 import { compactHistory } from './compaction.js';
 import { runSubAgentSession } from './subagent-session.js';
 import { MUTATING_TOOLS, SHELL_TOOLS } from './tool-catalog.js';
@@ -407,6 +427,15 @@ export class AgentLoop {
        * *before* it writes the claim rather than after.
        */
       this._turnEvidence = new Map();
+      /*
+       * Which files this turn actually touched, not just how many times.
+       *
+       * The counts answer "did anything get read"; a handover that lists five
+       * paths needs "was *this one* read". Without it a block could cite four
+       * files it never opened and pass on the strength of a single unrelated
+       * `read_file` somewhere else in the turn.
+       */
+      this._turnFiles = new Set();
       // The handover rides the round that first changes something — see
       // `_dueHandover`. One per user turn, not one per round.
       this._handoverSent = false;
@@ -721,8 +750,60 @@ export class AgentLoop {
       }
     }
 
+    /**
+     * A conclusion written before its own evidence is not shown.
+     *
+     * A tool call is a question. A handover block is "I am done". A reply
+     * carrying both has concluded before the results exist, and the prose is
+     * therefore about what the model expected to find rather than what it
+     * found. Reported with screenshots: a `## Review` listing five **Verified
+     * Files** — two of which did not exist, one in a directory deleted wholesale
+     * in `e375aed` — landing above the `<tool_results>` that were meant to
+     * support it, with an invented architecture attached.
+     *
+     * **The model had already been told.** Every tool-result turn ends with
+     * *"Reply once, with exactly one of: the next tool call, or your final
+     * answer to the user"*, and that is the turn this happened on. The prompt
+     * rule in `tool-call-format-full.md` closes the same gap on turn 0 and is
+     * the weaker half of this: an instruction can be ignored, and was. The loop
+     * declining to print the conclusion cannot be.
+     *
+     * Detected on the handover block alone, not on length or tone. Ordinary
+     * narration beside a tool call — "Let me look at the parser." — is correct
+     * and common, and a heuristic that ate it would cost far more than this
+     * buys. The block is the model's own unambiguous marker for a closing
+     * report, which is why `_dueHandover` asks for one at the end of a turn.
+     *
+     * Withheld rather than rewritten: the text is logged whole, and the model
+     * is told next turn to answer from the results. What reaches the user is
+     * either evidence-backed or nothing.
+     */
+    /*
+     * Whether this is the session's first answer, captured before it is pushed.
+     *
+     * Turn 0 is the only turn where the model has just been handed the whole
+     * system prompt and every tool definition, so it is the one turn where
+     * "answered without opening anything" means the framing did not take.
+     */
+    const isFirstReply = !this.conversationHistory.some(
+      (t) => t.role === 'agent' || t.role === 'assistant',
+    );
+
+    const premature = toolCalls.length > 0 && hasHandoverBlock(cleanContent);
+    if (premature) {
+      this._withheldConclusion = true;
+      logError(this.workspace, {
+        flow: 'agent',
+        op: 'premature_conclusion',
+        message: `Withheld a handover block sent alongside ${toolCalls.length} `
+          + `tool call${toolCalls.length === 1 ? '' : 's'}; it was written before the results`,
+        detail: cleanContent.trim().slice(0, 1000),
+      });
+      this._notify('⏸ Held a conclusion that arrived with its own tool calls — re-asking after the results.');
+    }
+
     // Show the response text (without tool call blocks) in the side panel
-    if (cleanContent.trim()) {
+    if (cleanContent.trim() && !premature) {
       /**
        * The rung this reply was produced at.
        *
@@ -763,7 +844,63 @@ export class AgentLoop {
       // The turn is over, so its handover block can be checked against what it
       // actually did. Only here: mid-turn there is still work to come, and a
       // claim made in passing is not the closing report.
+      /*
+       * Turn 0 answered a question about the code without opening anything.
+       *
+       * The failure reported most often from use — *"on the very first prompt
+       * Gemini hallucinates and does not act as an agent"* — and it was recorded
+       * nowhere. `looksLikeCapabilityDenial` catches an *explicit* refusal and
+       * sits at 0.38%; a model that simply answers from priors, denying nothing
+       * and opening nothing, produced no log line at all. So the complaint could
+       * not be told from noise, and any change to turn 0 was a guess.
+       *
+       * Both halves are needed and neither is sufficient. "Answered with no
+       * tools" is correct and common — "what does MVC mean" deserves no
+       * `read_file`. "Asked about the code" is fine if it then went and looked.
+       * It is the pair that is the failure.
+       *
+       * Recorded, never acted on. A first answer from memory is sometimes right,
+       * and re-asking on suspicion would spend a turn to second-guess the model.
+       * This exists to produce a number; what to do about the number is a
+       * decision to make once it exists.
+       */
+      if (isFirstReply && !premature && looksLikeCodeQuestion(this.currentObjective)) {
+        logError(this.workspace, {
+          flow: 'agent',
+          op: 'turn0_no_tools',
+          message: 'Turn 0 asked about the code and answered without opening anything',
+          detail: `asked: ${String(this.currentObjective || '').slice(0, 200)}`,
+          meta: { effort: this.modelConfig?.effort || null },
+        });
+      }
+
       this._auditHandover(cleanContent);
+      /*
+       * Re-read the picker, because the user can change it and we would never know.
+       *
+       * `modelMismatch` compares the rung against `modelOptions`, and that list
+       * was requested **once**, 1.5s after the extension identified, and never
+       * again. So the one case the warning exists for — the person switching the
+       * browser to Flash while the agent is on `pro`, which is the documented
+       * worst pairing: a long prompt to the model that handles long prompts worst
+       * — is the case it could not see. The stale list still said Pro was
+       * selected, `planModelSwitch` answered `none`, and `modelMismatch` returned
+       * null. Reported from use, with the tab on Flash and the status bar on PRO.
+       *
+       * At the end of a turn, not during one: this is a message to the extension
+       * rather than a prompt, so it does not take the lane, but a discovery
+       * racing an inject is a tab doing two things at once.
+       *
+       * Throttled, because a turn can be seconds long and the picker changes at
+       * human speed. The cost of being a minute out of date is one late warning;
+       * the cost of asking every turn is a message per turn forever.
+       */
+      const now = Date.now();
+      if (!this._lastModelPoll || now - this._lastModelPoll > MODEL_POLL_INTERVAL_MS) {
+        this._lastModelPoll = now;
+        this.requestModelOptions();
+      }
+
       // No tool calls — agent is done
       this.isProcessing = false;
       // Restore background callbacks so GitHub tasks still work
@@ -988,7 +1125,27 @@ export class AgentLoop {
         if (fs.existsSync(file)) checklist = countChecklist(fs.readFileSync(file, 'utf-8'));
       } catch { /* an unreadable artifact proves nothing either way */ }
 
-      const { findings } = auditHandover(reply, { evidence: this._turnEvidence, checklist });
+      /*
+       * The workspace is what makes a path claim checkable, and only the loop
+       * knows it — `handover-audit.js` stays pure so a test can hand it a set.
+       *
+       * Resolved against the workspace and refused if it escapes: the model
+       * supplies these strings, and `../../../etc/passwd` is a path that very
+       * much exists. A claim that points outside the workspace is not one this
+       * can honestly confirm, so it counts as unverified rather than true.
+       */
+      const exists = (rel) => {
+        try {
+          const abs = path.resolve(this.workspace, rel);
+          const root = path.resolve(this.workspace);
+          if (abs !== root && !abs.startsWith(root + path.sep)) return false;
+          return fs.existsSync(abs);
+        } catch { return false; }
+      };
+
+      const { findings } = auditHandover(reply, {
+        evidence: this._turnEvidence, checklist, exists, opened: this._turnFiles,
+      });
       if (!findings.length) return;
 
       logError(this.workspace, {
@@ -1724,6 +1881,26 @@ export class AgentLoop {
       if (!this._turnEvidence) this._turnEvidence = new Map();
       this._turnEvidence.set(call.name, (this._turnEvidence.get(call.name) || 0) + 1);
 
+      /*
+       * And which file, for the tools that name one.
+       *
+       * Recorded at dispatch like the counts, and for the same reason: a read
+       * that failed is still a read the model performed, and a set that only
+       * held successes would call an honest citation unsupported.
+       *
+       * `create_file` counts because a file the model just wrote is one it
+       * knows the contents of. `grep_search` does not — it names a pattern, not
+       * a path, and the paths it returns are ones the model has seen listed
+       * rather than opened.
+       */
+      if (PATH_TOOLS.has(call.name)) {
+        const p = call.args?.path;
+        if (typeof p === 'string' && p.trim()) {
+          if (!this._turnFiles) this._turnFiles = new Set();
+          this._turnFiles.add(p.trim());
+        }
+      }
+
       const executePromise = (async () => {
         // Notify side panel about tool call
         this.callbacks.sendToPanel({
@@ -1973,8 +2150,20 @@ export class AgentLoop {
     // many results it carries — the refresh cadence counts messages pushed to
     // the tab, and a parallel fan-out is still one push.
     this.promptBuilder.noteMessageSent();
+    /*
+     * If a conclusion was withheld, say so where the evidence now is. Without
+     * this the model has no idea its answer never landed, and simply repeats it.
+     */
+    const withheld = this._withheldConclusion
+      ? 'Your previous reply concluded while still calling tools, so it was not shown to the '
+        + 'user. Answer now from the results below, and cite only what they contain.'
+      : '';
+    this._withheldConclusion = false;
+
     this._sendToGemini(
-      this.promptBuilder.buildToolResultBatch(toolResults, this.turnEvidence, this._dueHandover()),
+      this.promptBuilder.buildToolResultBatch(
+        toolResults, this.turnEvidence, this._dueHandover(), withheld,
+      ),
       this.callbacks,
     );
   }

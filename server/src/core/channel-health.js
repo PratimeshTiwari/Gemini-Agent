@@ -62,6 +62,32 @@ export const CHANNEL_OPS = [
     label: 'Unverified handover claim',
     detail: 'the closing block reported work the turn has no record of',
   },
+  /*
+   * The two added 2026-09-21, both for failures that were happening and were
+   * being counted nowhere.
+   *
+   * `premature_conclusion` is the reply that answered while still calling
+   * tools — reported with screenshots, and structurally invisible before:
+   * `_auditHandover` runs only on a turn's *final* reply, so a claim made
+   * mid-turn was neither audited nor blocked.
+   *
+   * `turn0_no_tools` is the one described from use and never once recorded.
+   * `tool_amnesia` catches an *explicit* denial — "I cannot read your files" —
+   * and sits at 0.38%. A model that simply answers from priors, denying
+   * nothing, produced no log line at all, so "it hallucinates on the first
+   * prompt" could not be told from noise. Until this has a number, changing
+   * turn 0 is a guess.
+   */
+  {
+    op: 'premature_conclusion',
+    label: 'Concluded before its evidence',
+    detail: 'the reply closed with a handover block while still calling tools',
+  },
+  {
+    op: 'turn0_no_tools',
+    label: 'First turn answered blind',
+    detail: 'turn 0 asked about the code and answered without opening anything',
+  },
 ];
 
 /**

@@ -222,3 +222,58 @@ export function looksLikeProviderError(text) {
     /\bcan I help you with something else\b/i,
   ].some((re) => re.test(trimmed));
 }
+
+/**
+ * Is this request about the code in front of us?
+ *
+ * The fourth detector, and the only one that reads the **user's** words rather
+ * than the model's. It exists because the failure reported most often from use
+ * — *"on the very first prompt Gemini hallucinates and does not act as an
+ * agent"* — was recorded nowhere. `looksLikeCapabilityDenial` catches a model
+ * that says it cannot read files, and that sits at 0.38%. A model that simply
+ * answers from priors, denying nothing and opening nothing, produced no log
+ * line at all, so the complaint could not be told from noise.
+ *
+ * It cannot be answered from the reply alone: "here is how the UI works" is a
+ * perfectly good answer to a question about UI design and a fabrication when
+ * the question was about *this* UI. What separates them is whether the request
+ * pointed at the repository — so this reads the request, and the caller pairs
+ * it with "and nothing was opened".
+ *
+ * Deliberately generous about what counts as pointing at code, and deliberately
+ * ignorant of tone. A false positive costs one log row that a human reads; a
+ * false negative costs the measurement this exists to produce.
+ */
+const CODE_QUESTION = [
+  // A path, or a bare filename with an extension.
+  /(?:^|[\s`'"(])(?:[\w.@-]+\/)+[\w.@-]+/,
+  /\b[\w-]+\.(?:js|jsx|ts|tsx|md|json|css|html|py|sh|yml|yaml)\b/i,
+  // The nouns of a codebase question.
+  /\b(codebase|repo|repository|workspace|module|function|class|method|component|handler|parser|test suite)\b/i,
+  // Asking about this project's own behaviour.
+  /\b(how does (it|this|the)|where is|what calls|who calls|why does (it|this)|explain (the|this|how))\b/i,
+  /*
+   * First-person-plural about the system.
+   *
+   * "should we send the system prompt in chunks", "can we fix our parser",
+   * "what do we do about X" — someone saying *we* and *our* is talking about
+   * the thing in front of them, and it is the strongest available signal that a
+   * question is about this repository without naming a file.
+   *
+   * Added after the first probe missed the very prompt this detector was
+   * written for: **"can you help me improve the effort tiers?"** has no path, no
+   * extension and none of the nouns above. A detector that cannot see its own
+   * founding case is measuring something else.
+   */
+  /\b(should|shall|can|could|do|did|would) we\b/i,
+  /\bour (agent|code|codebase|repo|project|parser|prompt|system|tool|setup|implementation)\b/i,
+  // Verbs of change aimed at a system rather than at prose.
+  /\b(refactor|implement|debug|optimi[sz]e)\b/i,
+  /\b(improve|fix|add|remove|change|update|rewrite)\b[^.!?]{0,40}\b(tier|prompt|tool|flag|agent|loop|bridge|handler|config|schema|branch|test)/i,
+];
+
+export function looksLikeCodeQuestion(text) {
+  const t = String(text || '').trim();
+  if (t.length < 8) return false;
+  return CODE_QUESTION.some((re) => re.test(t));
+}

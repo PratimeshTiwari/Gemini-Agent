@@ -674,7 +674,84 @@ missing one**, since the model reaches for it and concludes the code is not ther
 
 ---
 
-### Unreleased — `v2.1`
+### Unreleased — `v2.2`
+
+**Evidence discipline.** An answer that arrives before its own evidence, and an
+audit that could not see the claim it was written to check.
+
+```bash
+git log --oneline v2.1..v2.2
+```
+
+#### The audit could not see a claim about files
+
+Reported with screenshots. A `## Review` block closed a turn with five
+**Verified Files**, two of which did not exist — one of them in
+`server/src/github/`, a directory deleted wholesale in `e375aed`. The
+architecture above it was invented too: an `agentLoop.on(...)` event API, `F2`
+navigation and three dialog components, none of which exist.
+
+`handover-audit.js` exists for exactly this and passed it clean, twice over. Its
+label table could return `ran`, `callers` or `checklist` and nothing else, while
+carrying a `read` entry no label could ever reach — dead the day it was written,
+and invisible because a detector that never fires looks identical to one with
+nothing to report. And its parser required `- Label: value`, skipping any line
+whose value was empty — which is the shape real blocks use, with the paths
+nested beneath.
+
+A path either exists or it does not, which makes this the one claim in a
+handover that can be settled rather than weighed. It now is, twice: the path has
+to exist, **and** the turn has to have opened it. The count alone only answered
+"did anything get read", which a block citing five files passes on the strength
+of one unrelated read elsewhere in the turn — so the per-turn record now keeps
+which files were touched, not just how many times. `grep_search` and
+`list_directory` deliberately do not count: they yield paths the model has seen
+*mentioned*, and citing from a search result without opening the file is the
+exact failure this exists to catch.
+
+Unsupported is still not false. A model may legitimately cite something it read
+three turns ago, so a finding says what *this turn* has no record of — a fact
+that can be checked — and never that the claim is a lie. It still fails open on
+prose, on an honest "none", and on a bare directory, because a detector that
+punishes an unusual format teaches the model to stop emitting the format.
+
+#### A conclusion written before its evidence is not shown
+
+A tool call is a question; a handover block is "I am done". A reply carrying both
+concluded before the results existed.
+
+**The model had already been told** — every tool-result turn ends with *"Reply
+once, with exactly one of: the next tool call, or your final answer to the
+user"*, and that is the turn this happened on. So the matching prompt rule, now
+added for the `flash` and `pro` rungs, is the weaker half. The loop declining to
+print the conclusion is the fix; an instruction can be ignored, and was.
+
+Detected on the handover block alone, never on length or tone: ordinary
+narration beside a tool call is correct and common.
+
+#### Three things that were happening and counted nowhere
+
+- **`turn0_no_tools`** — turn 0 asked about the code and answered without
+  opening anything. The most-reported failure here, and it had no log row at
+  all: the existing detector catches an *explicit* refusal, which sits at
+  0.38%, while a model answering from priors and denying nothing produced
+  silence.
+- **`premature_conclusion`** — the reply above, as a rate.
+- **The picker mismatch could not see its own case.** The warning for "your tab
+  is on Flash while the agent is on `pro`" compares against a model list
+  requested **once**, 1.5s after the extension connects. Change the picker
+  mid-session — which is exactly when people change it — and the stale list
+  still said Pro. Re-read at the end of a turn now, throttled to a minute.
+
+#### Also
+
+- **`/compact` no longer draws the transcript twice.** The rebuild dropped the
+  position marker the merge runs on, so the next real turn appended the whole
+  history again: measured at 6 rows on screen, **11** after one merge.
+
+---
+
+### In review — `v2.1` · [PR #19](https://github.com/PratimeshTiwari/Gemini-Agent/pull/19)
 
 Three faults reported from use, each reproduced before it was touched. What they
 have in common: the product was measured rather than reasoned about, and in two

@@ -14,6 +14,7 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { auditHandover, describeFindings, countChecklist } from '../../src/core/handover-audit.js';
 
 const claims = (text, turn) => auditHandover(text, turn).findings.map((f) => f.claim);
@@ -223,5 +224,251 @@ describe('the transcript row', () => {
     assert.match(describeFindings(
       [{ because: 'x'.repeat(200) }, { because: 'y'.repeat(200) }], 60,
     ), /^2 unverified/);
+  });
+});
+
+/**
+ * Reported from use with three screenshots, 2026-09-21.
+ *
+ * A `## Review` block closed a turn with five **Verified Files**, two of which
+ * did not exist: `TasksPane.jsx`, and `server/src/github/poller.js` in a
+ * directory deleted wholesale in `e375aed`. The prose above it described an
+ * `agentLoop.on(...)` event API, `F2` navigation and three dialog components,
+ * none of which exist either — an invented architecture with a citation list
+ * attached, which is the shape that gets believed.
+ *
+ * The audit written for exactly this passed it clean, twice over:
+ *
+ *  - `claimFor` returned `ran`, `callers`, `checklist` or null, so
+ *    "Verified Files" matched nothing. `SUPPORTED_BY` carried a `read` entry
+ *    that no label could ever reach — dead by construction.
+ *  - and the parser required `- Label: value`, skipping any line whose value
+ *    was empty. The real block puts nothing after the colon and the paths
+ *    beneath as deeper list items, so the one shape that occurs was the one
+ *    shape not read.
+ */
+test('a file claim is checked against the filesystem', async (t) => {
+  const REPLY = [
+    'triggering the review agent loop when changes occur.',
+    '',
+    '## Review',
+    '- Verified Files:',
+    '    - server/src/ui/App.jsx',
+    '    - server/src/ui/components/TasksPane.jsx',
+    '    - server/src/mcp/tools/run-background.js',
+    '    - server/src/mcp/tools/manage-task.js',
+    '    - server/src/github/poller.js',
+    '- Findings:',
+    '    - The UI uses Ink with strict viewport boundaries.',
+  ].join('\n');
+
+  const REAL = new Set([
+    'server/src/ui/App.jsx',
+    'server/src/mcp/tools/run-background.js',
+    'server/src/mcp/tools/manage-task.js',
+  ]);
+  const exists = (p) => REAL.has(p);
+  const read4 = new Map([['read_file', 4]]);
+
+  await t.test('the two invented paths are named, and only those', () => {
+    const { findings } = auditHandover(REPLY, { evidence: read4, exists });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].claim, 'files');
+    assert.match(findings[0].because, /TasksPane\.jsx/);
+    assert.match(findings[0].because, /github\/poller\.js/);
+    assert.doesNotMatch(findings[0].because, /App\.jsx/,
+      'a file that does exist was reported as invented');
+  });
+
+  await t.test('a list where every path is real reports nothing', () => {
+    const clean = REPLY
+      .replace('    - server/src/ui/components/TasksPane.jsx\n', '')
+      .replace('    - server/src/github/poller.js\n', '');
+    assert.deepEqual(auditHandover(clean, { evidence: read4, exists }).findings, []);
+  });
+
+  // The paths are real but nothing was opened this turn — the old `read` check,
+  // finally reachable. A model may legitimately cite an earlier turn's reads, so
+  // this says what the turn has no record of, never that the claim is false.
+  await t.test('real paths with no read this turn are still unverified', () => {
+    const clean = REPLY
+      .replace('    - server/src/ui/components/TasksPane.jsx\n', '')
+      .replace('    - server/src/github/poller.js\n', '');
+    const { findings } = auditHandover(clean, { evidence: new Map(), exists });
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].because, /no file was read this turn/);
+  });
+
+  await t.test('an inline list is read the same as a nested one', () => {
+    const inline = '## Review\n- Files: `server/src/ui/App.jsx`, `server/src/nope.js`';
+    const { findings } = auditHandover(inline, { evidence: read4, exists });
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].because, /nope\.js/);
+  });
+
+  // Fail open. A detector that punishes an unusual format teaches the model to
+  // stop emitting the format, and then the thing being measured disappears.
+  await t.test('prose under the label is not guessed at', () => {
+    const prose = '## Review\n- Verified Files:\n    - everything under the ui directory';
+    assert.deepEqual(auditHandover(prose, { evidence: read4, exists }).findings, []);
+  });
+
+  await t.test('an honest disclaimer is not a finding', () => {
+    const none = '## Review\n- Verified Files: none — I answered from the earlier reads';
+    assert.deepEqual(auditHandover(none, { evidence: new Map(), exists }).findings, []);
+  });
+
+  // The model supplies these strings, and `../` reaches real files in a sibling
+  // project that say nothing about this claim. The caller's `exists` resolves
+  // against the workspace and refuses anything that escapes it, so such a path
+  // is reported unverified rather than silently confirmed.
+  await t.test('a path outside the workspace is unverified, not true', () => {
+    const escape = '## Review\n- Verified Files: `../other-project/src/main.js`';
+    const { findings } = auditHandover(escape, { evidence: read4, exists: () => false });
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].because, /other-project/);
+  });
+
+  /*
+   * An extensionless path is not recognised, and that is the fail-open choice.
+   *
+   * `server/src/github/` — a directory, which the original reported failure also
+   * contained — cannot be told from prose by shape alone, and guessing wrong
+   * means reporting an honest block as a lie. Written down because the gap is
+   * deliberate and would otherwise read as an oversight.
+   */
+  await t.test('a bare directory is not treated as a path claim', () => {
+    const dir = '## Review\n- Verified Files: `server/src/github/`';
+    assert.deepEqual(auditHandover(dir, { evidence: read4, exists: () => false }).findings, []);
+  });
+
+  await t.test('with no exists predicate it degrades to the read check', () => {
+    assert.deepEqual(auditHandover(REPLY, { evidence: read4 }).findings, []);
+    assert.equal(auditHandover(REPLY, { evidence: new Map() }).findings.length, 1);
+  });
+});
+
+/**
+ * The second half of a file claim: was *this* one opened, or merely named?
+ *
+ * The count alone answers "did anything get read", which a block citing five
+ * files passes on the strength of one unrelated `read_file` somewhere else in
+ * the turn. That is the shape of the reported failure with the invented paths
+ * removed — every path real, and four of them never opened.
+ *
+ * `_turnEvidence` could not answer it: it is `Map<toolName, count>` and carries
+ * no arguments. `_turnFiles` is the set of paths the turn actually touched,
+ * recorded at dispatch beside the counts and for the same reason — a read that
+ * failed is still a read the model performed.
+ */
+test('a file claim is checked against what the turn opened', async (t) => {
+  const THREE = [
+    '## Review',
+    '- Verified Files:',
+    '    - server/src/ui/App.jsx',
+    '    - server/src/mcp/tools/run-background.js',
+    '    - server/src/mcp/tools/manage-task.js',
+  ].join('\n');
+  const allReal = () => true;
+  const read1 = new Map([['read_file', 1]]);
+
+  await t.test('a path cited but never opened is named', () => {
+    const { findings } = auditHandover(THREE, {
+      evidence: read1, exists: allReal, opened: new Set(['server/src/ui/App.jsx']),
+    });
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].because, /no record of opening 2 of 3/);
+    assert.match(findings[0].because, /run-background\.js/);
+    assert.doesNotMatch(findings[0].because, /App\.jsx/, 'the one it did open was reported');
+  });
+
+  await t.test('opening all of them is clean', () => {
+    assert.deepEqual(auditHandover(THREE, {
+      evidence: read1,
+      exists: allReal,
+      opened: new Set([
+        'server/src/ui/App.jsx',
+        'server/src/mcp/tools/run-background.js',
+        'server/src/mcp/tools/manage-task.js',
+      ]),
+    }).findings, []);
+  });
+
+  // The model writes one spelling and the tool call may have used another. The
+  // same file twice is not two files, and matching loosely errs toward believing
+  // the model — the right direction for a check that reports rather than blocks.
+  await t.test('./ and absolute spellings are the same file', () => {
+    assert.deepEqual(auditHandover(THREE, {
+      evidence: read1,
+      exists: allReal,
+      opened: new Set([
+        './server/src/ui/App.jsx',
+        '/Users/x/repo/server/src/mcp/tools/run-background.js',
+        'server/src/mcp/tools/manage-task.js',
+      ]),
+    }).findings, []);
+  });
+
+  // Unsupported is not false: a model may legitimately cite a file it read three
+  // turns ago, so the wording is about this turn's record and never about lying.
+  await t.test('it reports the turn, not the truth of the claim', () => {
+    const { findings } = auditHandover(THREE, {
+      evidence: read1, exists: allReal, opened: new Set(['server/src/ui/App.jsx']),
+    });
+    assert.match(findings[0].because, /this turn has no record/);
+    assert.doesNotMatch(findings[0].because, /false|lie|wrong|invented/i);
+  });
+
+  // An invented path is the worse fault and must not be buried under the other.
+  await t.test('a missing file outranks an unopened one', () => {
+    const { findings } = auditHandover(THREE, {
+      evidence: read1,
+      exists: (p) => !p.includes('manage-task'),
+      opened: new Set(),
+    });
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].because, /does not exist/);
+    assert.doesNotMatch(findings[0].because, /no record of opening/);
+  });
+
+  // Degrades rather than breaking: with no path record it is the old any-read
+  // check, which is what a caller that has not been updated still gets.
+  await t.test('with no path record it falls back to the count', () => {
+    assert.deepEqual(
+      auditHandover(THREE, { evidence: read1, exists: allReal, opened: new Set() }).findings, [],
+    );
+    assert.equal(
+      auditHandover(THREE, { evidence: new Map(), exists: allReal }).findings.length, 1,
+    );
+  });
+});
+
+test('the loop records which files a turn touched', async (t) => {
+  const src = readFileSync(new URL('../../src/core/agent-loop.js', import.meta.url), 'utf8');
+
+  await t.test('paths are recorded at dispatch, beside the counts', () => {
+    assert.match(src, /PATH_TOOLS\.has\(call\.name\)/);
+    assert.match(src, /this\._turnFiles\.add\(/);
+  });
+
+  await t.test('the set is reset per user turn, like the counts', () => {
+    assert.match(src, /this\._turnFiles = new Set\(\);/);
+  });
+
+  /*
+   * grep_search and list_directory are deliberately absent. They yield paths the
+   * model has seen *mentioned*, and citing from a search result without opening
+   * the file is the exact failure this exists to catch — including them would
+   * make the check pass on the evidence of the mistake.
+   */
+  await t.test('only tools that name a single file count', () => {
+    const decl = src.slice(src.indexOf('const PATH_TOOLS'), src.indexOf('const PATH_TOOLS') + 200);
+    assert.match(decl, /'read_file'/);
+    assert.match(decl, /'edit_file'/);
+    assert.doesNotMatch(decl, /grep_search|list_directory|search_files/);
+  });
+
+  await t.test('it is handed to the audit', () => {
+    assert.match(src, /opened: this\._turnFiles/);
   });
 });
