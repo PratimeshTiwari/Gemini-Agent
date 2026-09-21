@@ -700,8 +700,19 @@ whose value was empty — which is the shape real blocks use, with the paths
 nested beneath.
 
 A path either exists or it does not, which makes this the one claim in a
-handover that can be settled rather than weighed. It now is. It still fails open
-on prose, on an honest "none", and on a bare directory, because a detector that
+handover that can be settled rather than weighed. It now is, twice: the path has
+to exist, **and** the turn has to have opened it. The count alone only answered
+"did anything get read", which a block citing five files passes on the strength
+of one unrelated read elsewhere in the turn — so the per-turn record now keeps
+which files were touched, not just how many times. `grep_search` and
+`list_directory` deliberately do not count: they yield paths the model has seen
+*mentioned*, and citing from a search result without opening the file is the
+exact failure this exists to catch.
+
+Unsupported is still not false. A model may legitimately cite something it read
+three turns ago, so a finding says what *this turn* has no record of — a fact
+that can be checked — and never that the claim is a lie. It still fails open on
+prose, on an honest "none", and on a bare directory, because a detector that
 punishes an unusual format teaches the model to stop emitting the format.
 
 #### A conclusion written before its evidence is not shown

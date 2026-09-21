@@ -68,6 +68,17 @@ const MAX_ROUNDS_PER_TURN = 30;
  */
 const MODEL_POLL_INTERVAL_MS = 60000;
 
+/**
+ * Tools that name a single file, so a claim about that file can be checked.
+ *
+ * Reading it verifies it; editing or creating it means the model knows its
+ * contents. `grep_search` and `list_directory` are deliberately absent: they
+ * yield paths the model has seen *mentioned*, which is the difference between
+ * a citation and a guess, and citing from a search result without opening the
+ * file is the exact failure this exists to catch.
+ */
+const PATH_TOOLS = new Set(['read_file', 'edit_file', 'create_file']);
+
 /** The first useful line of a failed tool result, for the give-up message. */
 function oneLineError(result) {
   if (typeof result === 'string') return result.split('\n')[0].slice(0, 160);
@@ -416,6 +427,15 @@ export class AgentLoop {
        * *before* it writes the claim rather than after.
        */
       this._turnEvidence = new Map();
+      /*
+       * Which files this turn actually touched, not just how many times.
+       *
+       * The counts answer "did anything get read"; a handover that lists five
+       * paths needs "was *this one* read". Without it a block could cite four
+       * files it never opened and pass on the strength of a single unrelated
+       * `read_file` somewhere else in the turn.
+       */
+      this._turnFiles = new Set();
       // The handover rides the round that first changes something — see
       // `_dueHandover`. One per user turn, not one per round.
       this._handoverSent = false;
@@ -1124,7 +1144,7 @@ export class AgentLoop {
       };
 
       const { findings } = auditHandover(reply, {
-        evidence: this._turnEvidence, checklist, exists,
+        evidence: this._turnEvidence, checklist, exists, opened: this._turnFiles,
       });
       if (!findings.length) return;
 
@@ -1860,6 +1880,26 @@ export class AgentLoop {
       // successes would call it unsupported.
       if (!this._turnEvidence) this._turnEvidence = new Map();
       this._turnEvidence.set(call.name, (this._turnEvidence.get(call.name) || 0) + 1);
+
+      /*
+       * And which file, for the tools that name one.
+       *
+       * Recorded at dispatch like the counts, and for the same reason: a read
+       * that failed is still a read the model performed, and a set that only
+       * held successes would call an honest citation unsupported.
+       *
+       * `create_file` counts because a file the model just wrote is one it
+       * knows the contents of. `grep_search` does not — it names a pattern, not
+       * a path, and the paths it returns are ones the model has seen listed
+       * rather than opened.
+       */
+      if (PATH_TOOLS.has(call.name)) {
+        const p = call.args?.path;
+        if (typeof p === 'string' && p.trim()) {
+          if (!this._turnFiles) this._turnFiles = new Set();
+          this._turnFiles.add(p.trim());
+        }
+      }
 
       const executePromise = (async () => {
         // Notify side panel about tool call

@@ -124,6 +124,11 @@ function claimFor(label) {
  */
 const PATH = /(?:^|[\s`'"(\[,])((?:[\w.@-]+\/)+[\w.@-]+\.[A-Za-z]\w*)/g;
 
+/** `./a/b.js`, `/root/a/b.js` and `a/b.js` are the same file, not three. */
+function normalisePath(p) {
+  return String(p || '').trim().replace(/^\.\//, '').replace(/^\/+/, '');
+}
+
 function pathsIn(lines) {
   const out = [];
   for (const line of lines) {
@@ -159,7 +164,7 @@ function ranAny(evidence, tools) {
  *   Empty findings means "nothing to report" — including when there was no
  *   block to read, which is not a failure.
  */
-export function auditHandover(text, { evidence = null, checklist = null, exists = null } = {}) {
+export function auditHandover(text, { evidence = null, checklist = null, exists = null, opened = null } = {}) {
   const findings = [];
   if (typeof text !== 'string' || !text) return { findings };
 
@@ -222,7 +227,46 @@ export function auditHandover(text, { evidence = null, checklist = null, exists 
             ? `${missing[0]} does not exist`
             : `${missing.length} of ${paths.length} do not exist: ${missing.join(', ')}`,
         });
-      } else if (!ranAny(evidence, SUPPORTED_BY.files)) {
+        continue;
+      }
+
+      /*
+       * The path is real. Was *this* one opened, or merely named?
+       *
+       * The count alone answers "did anything get read", which a block citing
+       * five files passes on the strength of one unrelated read somewhere else
+       * in the turn. `opened` is the set of paths the turn actually touched, so
+       * each citation is checked against its own evidence.
+       *
+       * Compared on the tail rather than exactly: the model writes
+       * `server/src/ui/App.jsx` where the call may have said `./server/src/ui/App.jsx`
+       * or an absolute path, and the same file under two spellings is not two
+       * files. Matching loosely errs toward believing the model, which is the
+       * right direction for a check that reports rather than blocks.
+       *
+       * **Unsupported is not false.** A model may legitimately cite something it
+       * read three turns ago, so the finding says what *this turn* has no record
+       * of — a fact that can be checked — and never that the claim is a lie.
+       */
+      if (opened && opened.size > 0) {
+        const touched = [...opened].map(normalisePath);
+        const unopened = paths.filter((f) => {
+          const n = normalisePath(f);
+          return !touched.some((t) => t === n || t.endsWith('/' + n) || n.endsWith('/' + t));
+        });
+        if (unopened.length) {
+          findings.push({
+            claim: 'files',
+            said: unopened.join(', '),
+            because: unopened.length === 1
+              ? `this turn has no record of opening ${unopened[0]}`
+              : `this turn has no record of opening ${unopened.length} of ${paths.length}: ${unopened.join(', ')}`,
+          });
+        }
+        continue;
+      }
+
+      if (!ranAny(evidence, SUPPORTED_BY.files)) {
         findings.push({
           claim: 'files',
           said,

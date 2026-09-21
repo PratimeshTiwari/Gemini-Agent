@@ -14,6 +14,7 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { auditHandover, describeFindings, countChecklist } from '../../src/core/handover-audit.js';
 
 const claims = (text, turn) => auditHandover(text, turn).findings.map((f) => f.claim);
@@ -344,5 +345,130 @@ test('a file claim is checked against the filesystem', async (t) => {
   await t.test('with no exists predicate it degrades to the read check', () => {
     assert.deepEqual(auditHandover(REPLY, { evidence: read4 }).findings, []);
     assert.equal(auditHandover(REPLY, { evidence: new Map() }).findings.length, 1);
+  });
+});
+
+/**
+ * The second half of a file claim: was *this* one opened, or merely named?
+ *
+ * The count alone answers "did anything get read", which a block citing five
+ * files passes on the strength of one unrelated `read_file` somewhere else in
+ * the turn. That is the shape of the reported failure with the invented paths
+ * removed — every path real, and four of them never opened.
+ *
+ * `_turnEvidence` could not answer it: it is `Map<toolName, count>` and carries
+ * no arguments. `_turnFiles` is the set of paths the turn actually touched,
+ * recorded at dispatch beside the counts and for the same reason — a read that
+ * failed is still a read the model performed.
+ */
+test('a file claim is checked against what the turn opened', async (t) => {
+  const THREE = [
+    '## Review',
+    '- Verified Files:',
+    '    - server/src/ui/App.jsx',
+    '    - server/src/mcp/tools/run-background.js',
+    '    - server/src/mcp/tools/manage-task.js',
+  ].join('\n');
+  const allReal = () => true;
+  const read1 = new Map([['read_file', 1]]);
+
+  await t.test('a path cited but never opened is named', () => {
+    const { findings } = auditHandover(THREE, {
+      evidence: read1, exists: allReal, opened: new Set(['server/src/ui/App.jsx']),
+    });
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].because, /no record of opening 2 of 3/);
+    assert.match(findings[0].because, /run-background\.js/);
+    assert.doesNotMatch(findings[0].because, /App\.jsx/, 'the one it did open was reported');
+  });
+
+  await t.test('opening all of them is clean', () => {
+    assert.deepEqual(auditHandover(THREE, {
+      evidence: read1,
+      exists: allReal,
+      opened: new Set([
+        'server/src/ui/App.jsx',
+        'server/src/mcp/tools/run-background.js',
+        'server/src/mcp/tools/manage-task.js',
+      ]),
+    }).findings, []);
+  });
+
+  // The model writes one spelling and the tool call may have used another. The
+  // same file twice is not two files, and matching loosely errs toward believing
+  // the model — the right direction for a check that reports rather than blocks.
+  await t.test('./ and absolute spellings are the same file', () => {
+    assert.deepEqual(auditHandover(THREE, {
+      evidence: read1,
+      exists: allReal,
+      opened: new Set([
+        './server/src/ui/App.jsx',
+        '/Users/x/repo/server/src/mcp/tools/run-background.js',
+        'server/src/mcp/tools/manage-task.js',
+      ]),
+    }).findings, []);
+  });
+
+  // Unsupported is not false: a model may legitimately cite a file it read three
+  // turns ago, so the wording is about this turn's record and never about lying.
+  await t.test('it reports the turn, not the truth of the claim', () => {
+    const { findings } = auditHandover(THREE, {
+      evidence: read1, exists: allReal, opened: new Set(['server/src/ui/App.jsx']),
+    });
+    assert.match(findings[0].because, /this turn has no record/);
+    assert.doesNotMatch(findings[0].because, /false|lie|wrong|invented/i);
+  });
+
+  // An invented path is the worse fault and must not be buried under the other.
+  await t.test('a missing file outranks an unopened one', () => {
+    const { findings } = auditHandover(THREE, {
+      evidence: read1,
+      exists: (p) => !p.includes('manage-task'),
+      opened: new Set(),
+    });
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].because, /does not exist/);
+    assert.doesNotMatch(findings[0].because, /no record of opening/);
+  });
+
+  // Degrades rather than breaking: with no path record it is the old any-read
+  // check, which is what a caller that has not been updated still gets.
+  await t.test('with no path record it falls back to the count', () => {
+    assert.deepEqual(
+      auditHandover(THREE, { evidence: read1, exists: allReal, opened: new Set() }).findings, [],
+    );
+    assert.equal(
+      auditHandover(THREE, { evidence: new Map(), exists: allReal }).findings.length, 1,
+    );
+  });
+});
+
+test('the loop records which files a turn touched', async (t) => {
+  const src = readFileSync(new URL('../../src/core/agent-loop.js', import.meta.url), 'utf8');
+
+  await t.test('paths are recorded at dispatch, beside the counts', () => {
+    assert.match(src, /PATH_TOOLS\.has\(call\.name\)/);
+    assert.match(src, /this\._turnFiles\.add\(/);
+  });
+
+  await t.test('the set is reset per user turn, like the counts', () => {
+    assert.match(src, /this\._turnFiles = new Set\(\);/);
+  });
+
+  /*
+   * grep_search and list_directory are deliberately absent. They yield paths the
+   * model has seen *mentioned*, and citing from a search result without opening
+   * the file is the exact failure this exists to catch — including them would
+   * make the check pass on the evidence of the mistake.
+   */
+  await t.test('only tools that name a single file count', () => {
+    const decl = src.slice(src.indexOf('const PATH_TOOLS'), src.indexOf('const PATH_TOOLS') + 200);
+    assert.match(decl, /'read_file'/);
+    assert.match(decl, /'edit_file'/);
+    assert.doesNotMatch(decl, /grep_search|list_directory|search_files/);
+  });
+
+  await t.test('it is handed to the audit', () => {
+    assert.match(src, /opened: this\._turnFiles/);
   });
 });
