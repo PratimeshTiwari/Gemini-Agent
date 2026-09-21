@@ -274,11 +274,19 @@ export async function handleSlashCommand(query, {
        * recover from.
        *
        * Announced *before* it runs, as a committed row. A bare wait of half a
-       * minute with nothing on screen reads as a hang — and a spinner is not
-       * available, because `SLOW_COMMANDS` is keyed on the first word and
-       * `/update` on its own answers instantly, so raising one would strand
-       * exactly the row CLAUDE.md warns about. A committed row costs nothing
-       * in the live frame.
+       * minute with nothing on screen reads as a hang.
+       *
+       * This used to add that a spinner was "not available, because
+       * `SLOW_COMMANDS` is keyed on the first word and `/update` on its own
+       * answers instantly". The second clause was never measured and is false —
+       * bare `/update` runs `git fetch origin`, 1,086 ms warm and up to
+       * `FETCH_TIMEOUT_MS`, which is what "no loading animation" was reported
+       * about. `isSlowCommand` takes the args now, so both are true at once:
+       * `/update` and `/update pull` raise a spinner, `/update done` does not.
+       *
+       * The committed row stays regardless, and is not redundant with it: a
+       * spinner lives in the live frame and is gone the moment the frame
+       * shrinks, while this survives in scrollback for the length of an install.
        *
        * `stdio: 'pipe'`, never `inherit`: npm's progress written straight to a
        * terminal that has a live Ink frame on it is a frame regression.

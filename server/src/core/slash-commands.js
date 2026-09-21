@@ -72,14 +72,45 @@ export const AGENT_COMMANDS = new Set([
  * stop)` sitting above `❯ /image` forever, one per command, frozen at 0s.
  * Above, because it was drawn before the rows it now sits on top of.
  *
- * `/compact` is the only one that genuinely waits — it asks the model for a
- * summary. `/new` fires `startNewChat` without awaiting it, and the rest are
- * arithmetic on state already in memory.
+ * `/compact` asks the model for a summary, so it waits on a browser round trip.
+ * `/new` fires `startNewChat` without awaiting it, and the rest are arithmetic
+ * on state already in memory.
  *
  * A set beside the commands rather than a literal at the call site, for the
  * same reason `MUTATING_TOOLS` is: the literal is what drifts.
  */
 export const SLOW_COMMANDS = new Set(['compact']);
+
+/**
+ * Whether *this invocation* is worth a spinner.
+ *
+ * A set could only answer for a whole command, and `/update` is two commands
+ * wearing one name. Bare `/update` runs `checkForUpdate`, which is
+ * `git fetch origin` — measured at **1,086 ms** on a warm connection and
+ * bounded by `FETCH_TIMEOUT_MS` at **10 s** on a cold one. `/update done` reads
+ * a file and answers instantly.
+ *
+ * Reported from use as *"/update seems glitched out, its loading is a bit late
+ * and no loading animation"*, which is exactly what a second to ten seconds of
+ * nothing looks like after the input box has already cleared.
+ *
+ * `use-slash-commands.js` used to say a spinner was "not available, because
+ * `SLOW_COMMANDS` is keyed on the first word and `/update` on its own answers
+ * instantly". The second half of that was never true — it was measured only
+ * after the report — and keying on the first word is the part this fixes. The
+ * committed announcement row before `npm install` stays either way: it survives
+ * in scrollback, where a spinner cannot.
+ *
+ * @param {string} command - the word after the slash, lower-cased
+ * @param {string[]} [args]
+ */
+export function isSlowCommand(command, args = []) {
+  if (SLOW_COMMANDS.has(command)) return true;
+  // Every form but `done` reaches the network: bare reports, `pull`/`now` also
+  // merge and may `npm install`.
+  if (command === 'update') return (args[0] || '').toLowerCase() !== 'done';
+  return false;
+}
 
 export async function handleSlashCommand(loop, command, args) {
   switch (command) {

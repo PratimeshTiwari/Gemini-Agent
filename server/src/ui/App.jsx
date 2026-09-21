@@ -19,7 +19,7 @@ import { useHotkeys } from './hooks/use-hotkeys.js';
 import { canCopy, copyToClipboard } from './clipboard.js';
 import { checkForUpdate, readPendingReload } from '../core/update.js';
 import { handleSlashCommand } from './hooks/use-slash-commands.js';
-import { SLOW_COMMANDS } from '../core/slash-commands.js';
+import { isSlowCommand } from '../core/slash-commands.js';
 import { buildAgentCallbacks } from './hooks/use-agent-callbacks.js';
 import fs from 'fs';
 import { exec } from 'child_process';
@@ -806,8 +806,12 @@ export function App({ agentLoop, wsServer }) {
     if (query.startsWith('/')) {
       // Only the ones that actually wait. A spinner for a command that answers
       // in the same tick is drawn and erased around a `<Static>` write, and the
-      // row it leaves behind is permanent — see `SLOW_COMMANDS`.
-      if (!turnInFlight && SLOW_COMMANDS.has(query.slice(1).split(/\s+/)[0].toLowerCase())) {
+      // row it leaves behind is permanent — see `isSlowCommand`.
+      //
+      // The args go too: `/update` reaches the network and `/update done` reads
+      // a file, so the first word cannot answer this on its own.
+      const [slashWord, ...slashArgs] = query.slice(1).split(/\s+/);
+      if (!turnInFlight && isSlowCommand(slashWord.toLowerCase(), slashArgs)) {
         setIsProcessing(true);
         setStatus('Thinking...');
         setActiveToolCalls([]);

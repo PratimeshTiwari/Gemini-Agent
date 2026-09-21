@@ -93,8 +93,20 @@ import { resolveDiff } from './diff-approval.js';
 // script's own 5-minute cap so its `timedOut` report wins whenever it is alive.
 const EXTENSION_RESPONSE_TIMEOUT = 7 * 60 * 1000;
 
-// Regex to extract tool calls from Gemini's response (handles json code blocks)
-const TOOL_CALL_REGEX = /```(?:json|tool_call)?\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n```/gi;
+/**
+ * Evidence that an unparseable block was *meant* to be a tool call.
+ *
+ * The contract renders every call as an object with a `name`, so the key is the
+ * one thing a mangled attempt still carries. It gates nothing that parses — a
+ * block that is valid JSON is judged on whether it actually has a `name` — only
+ * the decision to spend a repair round on a block that does not.
+ *
+ * There used to be a second `TOOL_CALL_REGEX` here, shadowed by the local one
+ * inside `_extractToolCalls` and read by nothing. It had already drifted: it
+ * lacked the `[ \t]*` that lets an indented fence match, so anyone fixing the
+ * "regex at the top of the file" would have changed no behaviour at all.
+ */
+const LOOKS_LIKE_TOOL_CALL = /"\s*name\s*"\s*:/;
 
 
 // Moved to core/artifact-guard.js — re-exported so the many call sites and
@@ -170,9 +182,29 @@ export class AgentLoop {
     this.memoryManager = new MemoryManager(workspace);
     this.contextManager = new ContextManager(workspace, this.memoryManager);
 
+    /**
+     * Resuming at launch is the same act as resuming from the picker.
+     *
+     * For a long time it was a different, smaller one. This branch called the
+     * *storage* method and stopped — so `--resume` and `--continue` restored
+     * `history.jsonl` and nothing else: `chatThread` stayed null, no
+     * `open_thread` reached the browser, and `pendingRecap` was never set. The
+     * transcript came back, the tab opened a brand-new conversation, and the
+     * model was told nothing about either. That is precisely the failure
+     * `chat-thread.js` was written to prevent — a model answering confidently
+     * about work it never did — arrived at through the one door that skipped it.
+     *
+     * `resumeSessionById` already does all four halves, and its own comment
+     * warns why: *"Two copies of 'restore a conversation' is how one of them
+     * ends up forgetting."* It was lifted out for the panel and the CLI picker;
+     * the launch flags were the copy left behind. They cannot simply call it
+     * here, because there is no WebSocket server yet and nothing to send
+     * `open_thread` to — hence the flag, drained when an extension identifies.
+     */
     if (resumeSessionId) {
       // Named explicitly, so it becomes the current conversation.
       this.sessionStore.resumeSession(resumeSessionId);
+      this._resumeOnConnect = true;
     } else if (!continueSession) {
       // File the old one before starting fresh. It used to be wiped outright,
       // which is why `--sessions` had nothing to list and `--resume` had
@@ -189,6 +221,11 @@ export class AgentLoop {
         const record = this.sessionStore.listSessions().find((r) => r.id === filedId);
         this.filedSession = record || { id: filedId };
       }
+    } else {
+      // `--continue`. Nothing is filed and nothing is cleared, so the history
+      // is already the right one — but the browser still has to be pointed back
+      // at the thread it was on, which is the half that was missing.
+      this._resumeOnConnect = true;
     }
 
     // State defaults
@@ -220,6 +257,22 @@ export class AgentLoop {
     
     this._loadConfig();
     this.conversationHistory = this.sessionStore.loadHistory();
+
+    /**
+     * Which browser conversation this history belongs to.
+     *
+     * Read here rather than left undefined until the first reply, because
+     * `_recordThread` only learns the thread *from* a reply — and on a resumed
+     * session the whole question is what the tab should be pointed at before
+     * one is asked for. `session-meta.json` has held it all along; nothing read
+     * it at startup.
+     *
+     * Only when resuming. A fresh session that adopted the filed session's
+     * thread would reopen a conversation the user just chose to leave.
+     */
+    this.chatThread = this._resumeOnConnect
+      ? (this.sessionStore.getThread?.() || null)
+      : null;
     this.pendingGeminiResponse = null;
     this.callbacks = null;
     this.isProcessing = false;
@@ -1565,6 +1618,50 @@ export class AgentLoop {
     };
   }
 
+  /**
+   * The launch-time half of `resumeSessionById`, run when a browser shows up.
+   *
+   * `--resume` and `--continue` are decided in the constructor, where there is
+   * no WebSocket server and therefore nowhere to send `open_thread`. So the
+   * constructor records the intent and this drains it from the one event that
+   * means a browser is listening: a client identifying as an extension.
+   *
+   * It must be **exactly one of** two outcomes, never neither — which is what
+   * the launch path did. Either the tab goes back to `/app/<id>`, where the
+   * model has the real history including everything a summary would drop, or
+   * the next prompt carries `<resumed_conversation>`. A failure to navigate is
+   * caught by `thread_opened`, which falls back to the recap.
+   *
+   * Idempotent: the flag is cleared on the first drain, because the extension
+   * reconnects freely and reopening the thread mid-session would throw away
+   * whatever the tab had moved on to.
+   *
+   * @returns {'thread'|'recap'|null} what it armed, for the caller to log
+   */
+  resumeThreadOnConnect() {
+    if (!this._resumeOnConnect) return null;
+
+    // Held, not cleared, when there is no way to speak yet: `_toExtension`
+    // writes to whichever callbacks exist and silently drops the message when
+    // neither does, which is how `_notify` used to lose the same class of
+    // message. The next identify tries again.
+    if (!this.callbacks && !this._backgroundCallbacks) return null;
+
+    this._resumeOnConnect = false;
+
+    // Nothing to resume into. Saying "resumed" about an empty transcript would
+    // point the tab at an old conversation for no reason.
+    if (!this.conversationHistory?.length) return null;
+
+    if (this.chatThread?.id) {
+      this._toExtension('open_thread', { thread: this.chatThread });
+      return 'thread';
+    }
+
+    if (this.promptBuilder) this.promptBuilder.pendingRecap = this.conversationHistory;
+    return 'recap';
+  }
+
   async _sendToGemini(prompt, callbacks) {
     // Create a promise that will be resolved when we get the Gemini response
     this.pendingGeminiResponse = true;
@@ -1880,27 +1977,66 @@ export class AgentLoop {
     // brace-matching fallback below picks the call up instead — it finds the
     // JSON, but it cannot know the backticks around it were part of the same
     // thing, so the bare fence is left behind in the visible reply.
-    const TOOL_CALL_REGEX = /```(?:json|tool_call)?[ \t]*\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n[ \t]*```/gi;
-    cleanContent = cleanContent.replace(TOOL_CALL_REGEX, (fullMatch, jsonGroup) => {
+    //
+    // The language tag is **captured**, not discarded, and that is the whole
+    // fix for 2026-09-20. An *untagged* fence matches here — Gemini writes one
+    // whenever it shows the user a block that is not code, and labels it
+    // "Plaintext" in its own UI — so the only thing standing between prose and
+    // `JSON.parse` was that the body starts with `[` or `{` and ends with `]`
+    // or `}`. Asked to design a reminder, the model answered with:
+    //
+    //     [SYSTEM REMINDER: You are in PRO effort tier. …]
+    //
+    //     User Request: {user_input}
+    //
+    // which satisfies both ends, threw `Unexpected token 'S'`, and — because
+    // the throw is inside this callback — **discarded the entire reply**,
+    // correct prose and all. The loop then told the model to "fix the JSON
+    // formatting of your tool calls", about a tool call it had never made.
+    // Models comply with false premises: it invented one, and the turn became
+    // an investigation of a question that had already been answered.
+    const TOOL_CALL_REGEX = /```(json|tool_call)?[ \t]*\n\s*(?:json\s*|tool_call\s*)?([{\[][\s\S]*?[}\]])\s*\n[ \t]*```/gi;
+    cleanContent = cleanContent.replace(TOOL_CALL_REGEX, (fullMatch, tag, jsonGroup) => {
       let parsed;
       try {
         const cleaned = this._cleanJsonString(jsonGroup.trim());
         parsed = JSON.parse(cleaned);
       } catch (err) {
+        /*
+         * An untagged fence is prose until it says otherwise.
+         *
+         * ```json is a claim — the model named the format and got it wrong, so
+         * a repair round is the right answer and the old behaviour stands. A
+         * bare fence claims nothing, so the only evidence that a call was
+         * *meant* is the one key the contract requires. Without it, leaving the
+         * block where the model put it costs nothing; parsing it costs the
+         * turn.
+         */
+        if (!tag && !LOOKS_LIKE_TOOL_CALL.test(jsonGroup)) return fullMatch;
         throw new Error(`Failed to parse JSON block: ${err.message}\nRaw block: ${jsonGroup}`);
       }
 
       const items = Array.isArray(parsed) ? parsed : [parsed];
+      let taken = 0;
       for (const item of items) {
-        if (item.name) {
+        if (item && item.name) {
           const validated = toolSchema.safeParse(item);
           if (!validated.success) {
             throw new Error(`Schema validation failed: ${validated.error.message}\nItem: ${JSON.stringify(item)}`);
           }
           calls.push(validated.data);
+          taken++;
         }
       }
-      return '';
+      /*
+       * A block that held no call is the user's to read.
+       *
+       * This returned `''` unconditionally, so a model answering "your config
+       * should be:" followed by valid JSON had the answer deleted out of its
+       * own reply — parsed, found to contain no `name`, and dropped anyway.
+       * Only a block that actually became a call has earned its removal.
+       */
+      return taken > 0 ? '' : fullMatch;
     });
 
     // Fallback: Robust brace-matching to find any JSON object hidden in the text

@@ -273,6 +273,32 @@ export class WebSocketServer {
             message: `Extension reconnected; re-sent ${resumed} prompt(s) held while it was away`,
           });
         }
+
+        /*
+         * `--resume` / `--continue` finish here.
+         *
+         * They are decided in the AgentLoop constructor, which runs before
+         * this server exists — so the loop records the intent and the first
+         * extension to identify is what can act on it. `/history` and the side
+         * panel already ran the full path; only the launch flags restored the
+         * transcript and left the browser on a new conversation with no recap.
+         *
+         * Self-clearing on the first drain, so a later reconnect does not pull
+         * the tab back to where the session started.
+         */
+        const armed = this.agentLoop?.resumeThreadOnConnect?.();
+        if (armed) {
+          this.broadcast('extension', {
+            id: randomUUID(),
+            type: 'status',
+            payload: {
+              message: armed === 'thread'
+                ? '↺ Reopening the conversation this session was using…'
+                : '↺ Resumed — the next message carries a recap of it.',
+            },
+            timestamp: Date.now(),
+          });
+        }
       }
 
       /**

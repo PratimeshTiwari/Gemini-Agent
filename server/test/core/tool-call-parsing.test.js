@@ -130,3 +130,100 @@ test('_cleanJsonString', async (t) => {
     assert.deepEqual(JSON.parse(out), { a: 1 });
   });
 });
+
+/**
+ * Reported from use, 2026-09-20, with the reply preserved in
+ * `.agent/logs/errors.jsonl` under `op: 'parse_tool_calls'`.
+ *
+ * Asked whether the system prompt should be re-sent in chunks, the model
+ * answered the question — correctly — and illustrated its answer with a bare
+ * fence. Gemini labels an untagged fence "Plaintext" in its own UI, so nothing
+ * on screen suggested JSON; the parser matched it only because the body opens
+ * with `[` and closes with `}`.
+ *
+ * The cost was not one bad block. The throw is inside the `replace` callback,
+ * so the whole reply died with it, and the loop then sent "Please correct the
+ * previous JSON formatting error." into the thread — about a tool call that was
+ * never made. The model complied, invented one, and spent the turn
+ * investigating a question it had already answered.
+ */
+test('prose is not a malformed tool call', async (t) => {
+  const REPORTED = [
+    'Improving the effort tiers by actively reminding the model of its instructions',
+    'is a highly effective approach.',
+    '',
+    '- **Pro/High Effort:** The agent loop intercepts the prompt and wraps it:',
+    '',
+    '```',
+    '[SYSTEM REMINDER: You are in PRO effort tier. You MUST plan first, investigate',
+    'using read_file, and use <thought> before any action.]',
+    '',
+    'User Request: {user_input}',
+    '```',
+    '',
+    'That is the cheapest version.',
+  ].join('\n');
+
+  await t.test('the reported reply parses to no calls and does not throw', () => {
+    const { toolCalls } = parse(REPORTED);
+    assert.deepEqual(toolCalls, []);
+  });
+
+  await t.test('and the answer survives intact, block included', () => {
+    const { cleanContent } = parse(REPORTED);
+    assert.match(cleanContent, /Improving the effort tiers/);
+    assert.match(cleanContent, /That is the cheapest version/);
+    assert.match(cleanContent, /SYSTEM REMINDER/,
+      'the illustration was deleted out of the reply that was explaining it');
+  });
+
+  // The negative control. Without it this suite would pass against a parser
+  // that had simply stopped throwing, which is a different and worse bug: a
+  // genuinely mangled call would be silently swallowed as prose.
+  await t.test('an untagged fence that names a tool is still repaired', () => {
+    assert.throws(
+      () => parse('```\n{"name": "read_file", "args": {"path": "a.js",}\n```'),
+      /Failed to parse JSON block/,
+    );
+  });
+
+  await t.test('a ```json fence still claims JSON, so a broken one is repaired', () => {
+    assert.throws(
+      () => parse('```json\n{not json at all}\n```'),
+      /Failed to parse JSON block/,
+    );
+  });
+
+  await t.test('other untagged prose shapes that open and close like JSON', () => {
+    for (const body of [
+      '[TODO] finish the parser {see above}',
+      '{{ template }} renders to [value]',
+      '[1] see footnote {2}',
+    ]) {
+      const text = '```\n' + body + '\n```';
+      assert.deepEqual(parse(text).toolCalls, [], `parsed a call out of: ${body}`);
+      assert.match(parse(text).cleanContent, /```/, `dropped the block: ${body}`);
+    }
+  });
+});
+
+test('a block that is not a call stays in the reply', async (t) => {
+  // It was parsed, found to hold no `name`, and deleted anyway — so a model
+  // answering "your config should be:" had the answer removed from its own
+  // reply and the user read the sentence with nothing after it.
+  await t.test('a json config the model is showing the user survives', () => {
+    const text = 'Your config should be:\n```json\n{"compilerOptions": {"strict": true}}\n```';
+    const { toolCalls, cleanContent } = parse(text);
+    assert.deepEqual(toolCalls, []);
+    assert.match(cleanContent, /compilerOptions/);
+  });
+
+  await t.test('but a block that did become a call is still removed', () => {
+    const { toolCalls, cleanContent } = parse(
+      'Reading it.\n' + block('{"name":"read_file","args":{"path":"a.js"}}'),
+    );
+    assert.equal(toolCalls.length, 1);
+    assert.doesNotMatch(cleanContent, /read_file/);
+    assert.doesNotMatch(cleanContent, /```/);
+  });
+});
