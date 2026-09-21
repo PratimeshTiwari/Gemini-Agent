@@ -43,6 +43,24 @@
 /** The closing block, however much prose precedes it. */
 const BLOCK = /^[ \t]*#{1,4}[ \t]*Review[ \t]*$/im;
 
+/**
+ * Is there a closing report in this text at all?
+ *
+ * Exported because the loop needs the question *before* it decides whether the
+ * reply may be shown. A handover block is the model saying "I am done" — so one
+ * sitting in the same reply as a tool call is a conclusion written before its
+ * own evidence arrived, and `auditHandover` deliberately never sees it: the
+ * audit runs only on a turn's final reply, because a claim made in passing is
+ * not the closing report.
+ *
+ * That left the shape unguarded in both directions, which is what was reported
+ * with screenshots — a Review block listing five verified files landing *before*
+ * the `<tool_results>` that were supposed to support it.
+ */
+export function hasHandoverBlock(text) {
+  return typeof text === 'string' && BLOCK.test(text);
+}
+
 /** `- Label: value`, tolerant of `*`, missing space, and bold markers. */
 const LINE = /^[ \t]*[-*][ \t]*\*{0,2}([A-Za-z][A-Za-z /]*?)\*{0,2}[ \t]*:[ \t]*(.*)$/;
 

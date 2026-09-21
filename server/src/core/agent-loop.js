@@ -68,7 +68,7 @@ function oneLineError(result) {
 }
 import * as paths from './paths.js';
 import { threadFromUrl } from './chat-thread.js';
-import { auditHandover, describeFindings, countChecklist } from './handover-audit.js';
+import { auditHandover, describeFindings, countChecklist, hasHandoverBlock } from './handover-audit.js';
 import { compactHistory } from './compaction.js';
 import { runSubAgentSession } from './subagent-session.js';
 import { MUTATING_TOOLS, SHELL_TOOLS } from './tool-catalog.js';
@@ -721,8 +721,49 @@ export class AgentLoop {
       }
     }
 
+    /**
+     * A conclusion written before its own evidence is not shown.
+     *
+     * A tool call is a question. A handover block is "I am done". A reply
+     * carrying both has concluded before the results exist, and the prose is
+     * therefore about what the model expected to find rather than what it
+     * found. Reported with screenshots: a `## Review` listing five **Verified
+     * Files** — two of which did not exist, one in a directory deleted wholesale
+     * in `e375aed` — landing above the `<tool_results>` that were meant to
+     * support it, with an invented architecture attached.
+     *
+     * **The model had already been told.** Every tool-result turn ends with
+     * *"Reply once, with exactly one of: the next tool call, or your final
+     * answer to the user"*, and that is the turn this happened on. The prompt
+     * rule in `tool-call-format-full.md` closes the same gap on turn 0 and is
+     * the weaker half of this: an instruction can be ignored, and was. The loop
+     * declining to print the conclusion cannot be.
+     *
+     * Detected on the handover block alone, not on length or tone. Ordinary
+     * narration beside a tool call — "Let me look at the parser." — is correct
+     * and common, and a heuristic that ate it would cost far more than this
+     * buys. The block is the model's own unambiguous marker for a closing
+     * report, which is why `_dueHandover` asks for one at the end of a turn.
+     *
+     * Withheld rather than rewritten: the text is logged whole, and the model
+     * is told next turn to answer from the results. What reaches the user is
+     * either evidence-backed or nothing.
+     */
+    const premature = toolCalls.length > 0 && hasHandoverBlock(cleanContent);
+    if (premature) {
+      this._withheldConclusion = true;
+      logError(this.workspace, {
+        flow: 'agent',
+        op: 'premature_conclusion',
+        message: `Withheld a handover block sent alongside ${toolCalls.length} `
+          + `tool call${toolCalls.length === 1 ? '' : 's'}; it was written before the results`,
+        detail: cleanContent.trim().slice(0, 1000),
+      });
+      this._notify('⏸ Held a conclusion that arrived with its own tool calls — re-asking after the results.');
+    }
+
     // Show the response text (without tool call blocks) in the side panel
-    if (cleanContent.trim()) {
+    if (cleanContent.trim() && !premature) {
       /**
        * The rung this reply was produced at.
        *
@@ -1993,8 +2034,20 @@ export class AgentLoop {
     // many results it carries — the refresh cadence counts messages pushed to
     // the tab, and a parallel fan-out is still one push.
     this.promptBuilder.noteMessageSent();
+    /*
+     * If a conclusion was withheld, say so where the evidence now is. Without
+     * this the model has no idea its answer never landed, and simply repeats it.
+     */
+    const withheld = this._withheldConclusion
+      ? 'Your previous reply concluded while still calling tools, so it was not shown to the '
+        + 'user. Answer now from the results below, and cite only what they contain.'
+      : '';
+    this._withheldConclusion = false;
+
     this._sendToGemini(
-      this.promptBuilder.buildToolResultBatch(toolResults, this.turnEvidence, this._dueHandover()),
+      this.promptBuilder.buildToolResultBatch(
+        toolResults, this.turnEvidence, this._dueHandover(), withheld,
+      ),
       this.callbacks,
     );
   }

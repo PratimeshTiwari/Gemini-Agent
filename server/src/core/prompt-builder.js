@@ -367,7 +367,7 @@ export class PromptBuilder {
     return prompt('pro-handover-review');
   }
 
-  buildToolResultBatch(results = [], turnEvidence = '', handover = '') {
+  buildToolResultBatch(results = [], turnEvidence = '', handover = '', withheld = '') {
     const failures = results.filter((r) => r.failed);
 
     /**
@@ -445,12 +445,24 @@ export class PromptBuilder {
     // the review is a condition on finishing, not the next action.
     const review = handover ? ['', handover] : [];
 
+    /*
+     * The loop withheld the last reply, and the model cannot know that.
+     *
+     * A conclusion sent alongside its own tool calls is never shown to the user
+     * — see `premature_conclusion` in `agent-loop.js`. Without a word here the
+     * model believes it has answered and either repeats itself verbatim or moves
+     * on, and the user sees neither version. It goes directly above the closing
+     * instruction because it *is* an instruction about this turn.
+     */
+    const held = withheld ? ['', withheld] : [];
+
     return [
       '<tool_results>',
       ...body,
       '</tool_results>',
       ...evidence,
       ...review,
+      ...held,
       '',
       instruction,
     ].join('\n');
