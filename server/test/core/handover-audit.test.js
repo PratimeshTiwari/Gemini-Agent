@@ -225,3 +225,124 @@ describe('the transcript row', () => {
     ), /^2 unverified/);
   });
 });
+
+/**
+ * Reported from use with three screenshots, 2026-09-21.
+ *
+ * A `## Review` block closed a turn with five **Verified Files**, two of which
+ * did not exist: `TasksPane.jsx`, and `server/src/github/poller.js` in a
+ * directory deleted wholesale in `e375aed`. The prose above it described an
+ * `agentLoop.on(...)` event API, `F2` navigation and three dialog components,
+ * none of which exist either — an invented architecture with a citation list
+ * attached, which is the shape that gets believed.
+ *
+ * The audit written for exactly this passed it clean, twice over:
+ *
+ *  - `claimFor` returned `ran`, `callers`, `checklist` or null, so
+ *    "Verified Files" matched nothing. `SUPPORTED_BY` carried a `read` entry
+ *    that no label could ever reach — dead by construction.
+ *  - and the parser required `- Label: value`, skipping any line whose value
+ *    was empty. The real block puts nothing after the colon and the paths
+ *    beneath as deeper list items, so the one shape that occurs was the one
+ *    shape not read.
+ */
+test('a file claim is checked against the filesystem', async (t) => {
+  const REPLY = [
+    'triggering the review agent loop when changes occur.',
+    '',
+    '## Review',
+    '- Verified Files:',
+    '    - server/src/ui/App.jsx',
+    '    - server/src/ui/components/TasksPane.jsx',
+    '    - server/src/mcp/tools/run-background.js',
+    '    - server/src/mcp/tools/manage-task.js',
+    '    - server/src/github/poller.js',
+    '- Findings:',
+    '    - The UI uses Ink with strict viewport boundaries.',
+  ].join('\n');
+
+  const REAL = new Set([
+    'server/src/ui/App.jsx',
+    'server/src/mcp/tools/run-background.js',
+    'server/src/mcp/tools/manage-task.js',
+  ]);
+  const exists = (p) => REAL.has(p);
+  const read4 = new Map([['read_file', 4]]);
+
+  await t.test('the two invented paths are named, and only those', () => {
+    const { findings } = auditHandover(REPLY, { evidence: read4, exists });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].claim, 'files');
+    assert.match(findings[0].because, /TasksPane\.jsx/);
+    assert.match(findings[0].because, /github\/poller\.js/);
+    assert.doesNotMatch(findings[0].because, /App\.jsx/,
+      'a file that does exist was reported as invented');
+  });
+
+  await t.test('a list where every path is real reports nothing', () => {
+    const clean = REPLY
+      .replace('    - server/src/ui/components/TasksPane.jsx\n', '')
+      .replace('    - server/src/github/poller.js\n', '');
+    assert.deepEqual(auditHandover(clean, { evidence: read4, exists }).findings, []);
+  });
+
+  // The paths are real but nothing was opened this turn — the old `read` check,
+  // finally reachable. A model may legitimately cite an earlier turn's reads, so
+  // this says what the turn has no record of, never that the claim is false.
+  await t.test('real paths with no read this turn are still unverified', () => {
+    const clean = REPLY
+      .replace('    - server/src/ui/components/TasksPane.jsx\n', '')
+      .replace('    - server/src/github/poller.js\n', '');
+    const { findings } = auditHandover(clean, { evidence: new Map(), exists });
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].because, /no file was read this turn/);
+  });
+
+  await t.test('an inline list is read the same as a nested one', () => {
+    const inline = '## Review\n- Files: `server/src/ui/App.jsx`, `server/src/nope.js`';
+    const { findings } = auditHandover(inline, { evidence: read4, exists });
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].because, /nope\.js/);
+  });
+
+  // Fail open. A detector that punishes an unusual format teaches the model to
+  // stop emitting the format, and then the thing being measured disappears.
+  await t.test('prose under the label is not guessed at', () => {
+    const prose = '## Review\n- Verified Files:\n    - everything under the ui directory';
+    assert.deepEqual(auditHandover(prose, { evidence: read4, exists }).findings, []);
+  });
+
+  await t.test('an honest disclaimer is not a finding', () => {
+    const none = '## Review\n- Verified Files: none — I answered from the earlier reads';
+    assert.deepEqual(auditHandover(none, { evidence: new Map(), exists }).findings, []);
+  });
+
+  // The model supplies these strings, and `../` reaches real files in a sibling
+  // project that say nothing about this claim. The caller's `exists` resolves
+  // against the workspace and refuses anything that escapes it, so such a path
+  // is reported unverified rather than silently confirmed.
+  await t.test('a path outside the workspace is unverified, not true', () => {
+    const escape = '## Review\n- Verified Files: `../other-project/src/main.js`';
+    const { findings } = auditHandover(escape, { evidence: read4, exists: () => false });
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].because, /other-project/);
+  });
+
+  /*
+   * An extensionless path is not recognised, and that is the fail-open choice.
+   *
+   * `server/src/github/` — a directory, which the original reported failure also
+   * contained — cannot be told from prose by shape alone, and guessing wrong
+   * means reporting an honest block as a lie. Written down because the gap is
+   * deliberate and would otherwise read as an oversight.
+   */
+  await t.test('a bare directory is not treated as a path claim', () => {
+    const dir = '## Review\n- Verified Files: `server/src/github/`';
+    assert.deepEqual(auditHandover(dir, { evidence: read4, exists: () => false }).findings, []);
+  });
+
+  await t.test('with no exists predicate it degrades to the read check', () => {
+    assert.deepEqual(auditHandover(REPLY, { evidence: read4 }).findings, []);
+    assert.equal(auditHandover(REPLY, { evidence: new Map() }).findings.length, 1);
+  });
+});

@@ -988,7 +988,27 @@ export class AgentLoop {
         if (fs.existsSync(file)) checklist = countChecklist(fs.readFileSync(file, 'utf-8'));
       } catch { /* an unreadable artifact proves nothing either way */ }
 
-      const { findings } = auditHandover(reply, { evidence: this._turnEvidence, checklist });
+      /*
+       * The workspace is what makes a path claim checkable, and only the loop
+       * knows it — `handover-audit.js` stays pure so a test can hand it a set.
+       *
+       * Resolved against the workspace and refused if it escapes: the model
+       * supplies these strings, and `../../../etc/passwd` is a path that very
+       * much exists. A claim that points outside the workspace is not one this
+       * can honestly confirm, so it counts as unverified rather than true.
+       */
+      const exists = (rel) => {
+        try {
+          const abs = path.resolve(this.workspace, rel);
+          const root = path.resolve(this.workspace);
+          if (abs !== root && !abs.startsWith(root + path.sep)) return false;
+          return fs.existsSync(abs);
+        } catch { return false; }
+      };
+
+      const { findings } = auditHandover(reply, {
+        evidence: this._turnEvidence, checklist, exists,
+      });
       if (!findings.length) return;
 
       logError(this.workspace, {
