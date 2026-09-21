@@ -18,9 +18,50 @@
 import { randomUUID } from 'crypto';
 import { archiveTurns } from './session-recall.js';
 
+/**
+ * How long to wait for the model's summary before condensing locally.
+ *
+ * A person typed `/compact` and is watching a spinner, so this is a UX budget
+ * rather than a watchdog. The fallback below is deterministic and always
+ * available, which is what makes a short deadline safe: the worst case is a
+ * blunter summary, not a lost turn.
+ */
+const SUMMARY_TIMEOUT_MS = 30000;
+
+/** Rows, not exchanges — three short Q&A pairs is already eight rows. */
+const MIN_ROWS = 6;
+
+/**
+ * Below this, the round trip costs more than the summary saves.
+ *
+ * `/compact` exists to free room in the browser thread. Asking the model to
+ * summarise a few hundred characters spends a full inject → think → scrape
+ * cycle — 4,673ms median, 14,913ms p90 — to save almost nothing, and the reply
+ * is longer than the input as often as not.
+ *
+ * Reproduced: at eight rows the old guard passed and `slice(0, -5)` left
+ * **three rows** to summarise. The guard counted rows and the cost is in
+ * characters, so it was measuring the wrong thing.
+ */
+const MIN_COMPACT_CHARS = 2000;
+
+const charsOf = (turns) => turns.reduce((n, t) => n + (t.content?.length || 0), 0);
+
 export async function compactHistory(loop, focus) {
-  if (loop.conversationHistory.length <= 5) {
+  if (loop.conversationHistory.length < MIN_ROWS) {
     return { message: 'Conversation is too short to compact.' };
+  }
+
+  const pending = loop.conversationHistory.slice(0, -5);
+  const pendingChars = charsOf(pending);
+  if (pendingChars < MIN_COMPACT_CHARS) {
+    return {
+      message: `Nothing worth compacting yet — the older turns are only `
+        + `${pendingChars.toLocaleString()} characters, and summarising them would cost a `
+        + `browser round trip to save less than it spends.\n\n`
+        + `_Context is ~${loop.contextTokens.toLocaleString()} tokens; `
+        + `auto-compaction runs past 80% of the rung's budget._`,
+    };
   }
 
   loop.isCompacting = true;
@@ -40,7 +81,10 @@ export async function compactHistory(loop, focus) {
       return `[${turn.role.toUpperCase()}]: ${turn.content}`;
     }).join('\n\n');
 
-    loop._notify('🧠 Summarising the older turns in a browser tab…');
+    loop._notify(
+      `🧠 Summarising ${toCompact.length} older turns in a browser tab — `
+      + `up to ${SUMMARY_TIMEOUT_MS / 1000}s, then it condenses them locally instead.`,
+    );
 
     const summaryPrompt = `You are a context compactor for an AI coding agent.
 Your job is to read the following conversation history and summarize it into a tight, dense block of text.
@@ -53,7 +97,17 @@ CRITICAL RULES:
 HISTORY TO SUMMARIZE:
 ${compactedSummary}`;
 
-    const llmResponse = await loop._executeSubagent('gemini', summaryPrompt);
+    /*
+     * A deadline the user is actually willing to wait out.
+     *
+     * This inherited `_executeSubagent`'s five-minute watchdog, and nothing else
+     * could settle the promise — so with no extension answering, `/compact` sat
+     * silent for five minutes before the fallback ran. Nothing threw, so the
+     * UI's try/catch never fired and it read as a hang.
+     */
+    const llmResponse = await loop._executeSubagent('gemini', summaryPrompt, {
+      timeoutMs: SUMMARY_TIMEOUT_MS,
+    });
     let finalSummaryText = compactedSummary;
     
     if (llmResponse.success && llmResponse.result) {

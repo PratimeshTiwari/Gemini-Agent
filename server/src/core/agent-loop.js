@@ -69,6 +69,14 @@ const MAX_ROUNDS_PER_TURN = 30;
 const MODEL_POLL_INTERVAL_MS = 60000;
 
 /**
+ * How long a subagent nobody is waiting on may run before it is abandoned.
+ *
+ * A watchdog, not a UX budget — it exists so a background task cannot hold a
+ * lane forever. Anything a person is watching passes its own, shorter deadline.
+ */
+const SUBAGENT_WATCHDOG_MS = 5 * 60 * 1000;
+
+/**
  * Tools that name a single file, so a claim about that file can be checked.
  *
  * Reading it verifies it; editing or creating it means the model knows its
@@ -89,6 +97,7 @@ function oneLineError(result) {
 import * as paths from './paths.js';
 import { threadFromUrl } from './chat-thread.js';
 import { auditHandover, describeFindings, countChecklist, hasHandoverBlock } from './handover-audit.js';
+import { diagnosticsAfterEdit } from './edit-diagnostics.js';
 import { compactHistory } from './compaction.js';
 import { runSubAgentSession } from './subagent-session.js';
 import { MUTATING_TOOLS, SHELL_TOOLS } from './tool-catalog.js';
@@ -2052,9 +2061,36 @@ export class AgentLoop {
       // The edit is still only a diff at this point — `core/diff-approval.js`
       // is what decides, applies and corrects all three records of it.
       if (result.success && (call.name === 'edit_file' || call.name === 'create_file')) {
+        const editedAt = Date.now();
         toolResults[i] = await resolveDiff(this, {
           call, diffResult: result.result, needsApproval, risk, resultTurn,
         });
+
+        /*
+         * What the editor thinks of the file we just wrote, attached to the
+         * edit rather than left for the model to think of asking.
+         *
+         * `get_diagnostics` has been named in the anchor on every turn and
+         * called **zero times in 41 sessions**. That is not forgetting: it is a
+         * tool answering a question the model has to think to ask, and "did my
+         * edit just break something?" is one it does not think to ask exactly
+         * when it matters. Cursor's answer is to put the lint result in the
+         * edit's own tool result, and this is that.
+         *
+         * Only on an edit that actually landed. A rejected diff changed nothing,
+         * so the panel has nothing new to say about it, and attaching stale
+         * problems to a rejection would read as the rejection having caused them.
+         */
+        const applied = toolResults[i]?.result?.status === 'applied';
+        if (applied) {
+          const note = await diagnosticsAfterEdit(this.workspace, call.args?.path, editedAt);
+          if (note) {
+            const r = toolResults[i].result;
+            toolResults[i].result = typeof r === 'string'
+              ? `${r}\n${note}`
+              : { ...r, diagnostics: note };
+          }
+        }
       }
       })();
 
@@ -2305,7 +2341,23 @@ export class AgentLoop {
    * incremental prompt in an empty conversation gets a confident answer to a
    * question the model never saw.
    */
-  async _executeSubagent(targetModel, prompt, { session = null, continuing = false } = {}) {
+  /**
+   * One subagent turn, with a deadline the caller chooses.
+   *
+   * `timeoutMs` used to be a fixed five minutes and nothing else could settle
+   * this promise — no throw, no rejection, no shorter path. That is a *watchdog*
+   * for a background task nobody is waiting on, and it was also the deadline for
+   * `/compact`, which a person is watching. Reproduced: eight history rows, no
+   * extension answering, one transient status line and then **silence for five
+   * minutes** before the deterministic fallback finally ran. The UI's try/catch
+   * never fires because nothing throws, so it reads as a hang.
+   *
+   * A caller that a person is waiting on passes its own budget; a background
+   * task keeps the watchdog.
+   */
+  async _executeSubagent(targetModel, prompt, {
+    session = null, continuing = false, timeoutMs = SUBAGENT_WATCHDOG_MS,
+  } = {}) {
     return new Promise((resolve, reject) => {
       const requestId = randomUUID();
       this.pendingSubagents.set(requestId, { resolve, reject, targetModel });
@@ -2323,14 +2375,18 @@ export class AgentLoop {
         ...(session ? { sessionId: session, continuing } : {}),
       });
       
-      // Safety timeout (5 minutes)
+      // Resolves rather than rejects: every caller has to carry on either way,
+      // and a promise nobody settles is the hang this exists to prevent.
       setTimeout(() => {
         if (this.pendingSubagents.has(requestId)) {
           this.pendingSubagents.delete(requestId);
           this._releaseExtension(subLane(requestId));
-          resolve({ success: false, error: `${targetModel} timeout after 5 minutes.` });
+          resolve({
+            success: false,
+            error: `${targetModel} did not answer within ${Math.round(timeoutMs / 1000)}s.`,
+          });
         }
-      }, 300000);
+      }, timeoutMs);
     });
   }
 
