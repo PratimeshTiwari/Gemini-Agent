@@ -590,7 +590,7 @@ export async function handleSlashCommand(query, {
         // and "replay" are different promises: one carries on in a thread the
         // model still has, the other has to re-explain itself to a model that
         // was never there.
-        resume: planResume(session.thread, live).action,
+        resume: planResume(session.thread, live, session.leftThread).action,
       }));
 
       if (sessions.length === 0) {

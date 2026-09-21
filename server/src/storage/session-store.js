@@ -141,21 +141,79 @@ export class SessionStore {
    */
   setThread(thread) {
     if (!thread?.id) return;
+    this._writeThreadMeta({ thread, leftThread: null });
+  }
+
+  /**
+   * We walked away from that conversation, and there is not a new one yet.
+   *
+   * The third state, and it was missing. Stored thread was either **an id** or
+   * **absent**, where absent means "this session never reached a thread" — so
+   * there was no way to say "it reached one and we deliberately left it".
+   *
+   * Nothing could write that state even by accident. `setThread` opens with
+   * `if (!thread?.id) return`, so passing null is a no-op; `startNewChat()`
+   * nulled `chatThread` in memory and never touched disk; and a fresh chat is
+   * `/app` with **no id until its first exchange**, so `_recordThread` had
+   * nothing to overwrite the old id with. Between the handover and the first
+   * reply, memory said "no thread" and disk said the abandoned one — and both
+   * resume paths read disk. `/compact` and `/new` call `startNewChat()` today,
+   * so the window is real and not hypothetical.
+   *
+   * A separate method rather than relaxing `setThread`. That guard is
+   * load-bearing: it stops a URL with no id — which is every brand-new chat —
+   * from wiping a good record. Clearing is something a caller has to ask for.
+   *
+   * `leftThread` is kept rather than discarded for the reason `previousThread`
+   * is kept in memory: a handover you cannot look back from is a reset with a
+   * nicer name.
+   *
+   * @param {{model: string, id: string}|null} [previous] the one being left
+   */
+  clearThread(previous = null) {
+    this._writeThreadMeta({
+      thread: null,
+      leftThread: previous?.id ? previous : null,
+    });
+  }
+
+  /** One writer for both, so the two states cannot be written inconsistently. */
+  _writeThreadMeta(fields) {
     this._writeBoth((file) => {
       const meta = path.join(path.dirname(file), 'session-meta.json');
       let existing = {};
       try { existing = JSON.parse(fs.readFileSync(meta, 'utf-8')); } catch { /* first write */ }
-      fs.writeFileSync(meta, JSON.stringify({ ...existing, thread, updated: Date.now() }, null, 2));
+      fs.writeFileSync(
+        meta,
+        JSON.stringify({ ...existing, ...fields, updated: Date.now() }, null, 2),
+      );
     });
   }
 
-  /** The conversation this session was held in, or `null`. */
+  /** The conversation this session is held in **now**, or `null`. */
   getThread() {
+    return this._threadMeta().thread || null;
+  }
+
+  /**
+   * The conversation this session was in before a handover, or `null`.
+   *
+   * Only meaningful when `getThread()` is null: together they are the third
+   * state. A caller that reads only `getThread()` sees "no thread" and does
+   * the safe thing anyway, which is why this is additive rather than a
+   * breaking change.
+   */
+  getLeftThread() {
+    const meta = this._threadMeta();
+    return meta.thread ? null : (meta.leftThread || null);
+  }
+
+  _threadMeta() {
     try {
       const meta = path.join(path.dirname(this.localFile), 'session-meta.json');
-      return JSON.parse(fs.readFileSync(meta, 'utf-8')).thread || null;
+      return JSON.parse(fs.readFileSync(meta, 'utf-8')) || {};
     } catch {
-      return null;
+      return {};
     }
   }
 
@@ -258,6 +316,12 @@ export class SessionStore {
       started: turns[0]?.timestamp ?? null,
       updated: turns[turns.length - 1]?.timestamp ?? Date.now(),
       thread: this.getThread(),
+      // Null unless the session ended after a handover with no new thread yet.
+      // Without it a filed session that was deliberately left is indistinguish-
+      // able from one that never reached a browser at all, and `planResume`
+      // offers "view" — which is safe, and wrong: there *is* a transcript worth
+      // replaying into a fresh chat.
+      leftThread: this.getLeftThread(),
     };
 
     const body = turns.map((t) => JSON.stringify(t)).join('\n') + '\n';

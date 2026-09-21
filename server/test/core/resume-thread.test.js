@@ -169,3 +169,140 @@ test('the bridge is what drains it', () => {
     'the drain must hang off an extension identifying, not off socket open',
   );
 });
+
+/**
+ * The other half: a thread we walked away from.
+ *
+ * The stored chat id could only move forward. `setThread(null)` is a no-op by
+ * design, `startNewChat()` nulled memory and never touched disk, and a brand-new
+ * chat is `/app` with no id until its first exchange — so nothing could record
+ * "we left that conversation" even by accident. Between a handover and the next
+ * reply, memory said "no thread" and `session-meta.json` still named the
+ * abandoned one, and both resume paths read the disk.
+ *
+ * `/compact` and `/new` call `startNewChat()` today, so this was live before any
+ * bootstrap ladder existed to make it common.
+ */
+import { SessionStore } from '../../src/storage/session-store.js';
+import { planResume } from '../../src/core/chat-thread.js';
+
+const OLD = { model: 'gemini', id: 'OLD_abandoned_chat' };
+const NEW = { model: 'gemini', id: 'NEW_live_chat' };
+
+function store(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'thread-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return new SessionStore(dir);
+}
+
+test('the stored chat id', async (t) => {
+  await t.test('clearThread forgets the id and remembers that we left it', (t) => {
+    const s = store(t);
+    s.setThread(OLD);
+    assert.deepEqual(s.getThread(), OLD);
+
+    s.clearThread(OLD);
+    assert.equal(s.getThread(), null, 'the abandoned id is still being reported as current');
+    assert.deepEqual(s.getLeftThread(), OLD, 'the handover cannot be looked back from');
+  });
+
+  // The guard is load-bearing: a brand-new chat's URL has no id, and letting
+  // that wipe a good record is the opposite bug. Clearing must be asked for.
+  await t.test('setThread(null) is still a no-op', (t) => {
+    const s = store(t);
+    s.setThread(OLD);
+    s.setThread(null);
+    s.setThread({ model: 'gemini' });          // a /app URL, no id
+    s.setThread(undefined);
+    assert.deepEqual(s.getThread(), OLD, 'the guard was weakened');
+  });
+
+  await t.test('a new id supersedes the left one', (t) => {
+    const s = store(t);
+    s.setThread(OLD);
+    s.clearThread(OLD);
+    s.setThread(NEW);
+    assert.deepEqual(s.getThread(), NEW);
+    assert.equal(s.getLeftThread(), null, 'left is only meaningful while there is no current thread');
+  });
+
+  await t.test('a session that never had one reports neither', (t) => {
+    const s = store(t);
+    assert.equal(s.getThread(), null);
+    assert.equal(s.getLeftThread(), null);
+  });
+});
+
+test('startNewChat keeps disk and memory in step', async (t) => {
+  await t.test('the abandoned id is cleared before the handover is attempted', (t) => {
+    const s = store(t);
+    s.setThread(OLD);
+
+    const loop = Object.create(AgentLoop.prototype);
+    Object.assign(loop, {
+      chatThread: { ...OLD },
+      sessionStore: s,
+      _toExtension() {},
+      _pendingNewChat: null,
+    });
+    loop.startNewChat({ timeoutMs: 10 });
+
+    assert.equal(loop.chatThread, null);
+    assert.equal(s.getThread(), null, 'disk still named the conversation we just left');
+    assert.deepEqual(s.getLeftThread(), OLD);
+    assert.deepEqual(loop.previousThread, OLD);
+  });
+
+  /*
+   * The assertion that would have caught the whole thing.
+   *
+   * A handover, then the process ends before any reply carries a new id back.
+   * Resuming must not point the tab at the conversation that was abandoned —
+   * and it must still reach the model, by recap.
+   */
+  await t.test('resuming after a handover with no reply does not reopen it', (t) => {
+    const s = store(t);
+    s.setThread(OLD);
+    s.clearThread(OLD);
+
+    const sent = [];
+    const loop = Object.create(AgentLoop.prototype);
+    Object.assign(loop, {
+      _resumeOnConnect: true,
+      conversationHistory: TURNS,
+      chatThread: s.getThread(),          // what the constructor reads
+      promptBuilder: { pendingRecap: null },
+      callbacks: null,
+      _backgroundCallbacks: { sendToPanel: (m) => sent.push(m) },
+    });
+
+    assert.equal(loop.resumeThreadOnConnect(), 'recap');
+    assert.equal(sent.filter((m) => m.type === 'open_thread').length, 0,
+      'reopened a conversation the session had deliberately left');
+    assert.deepEqual(loop.promptBuilder.pendingRecap, TURNS,
+      'left the model with no idea what happened either');
+  });
+});
+
+test('planResume tells the two empty states apart', async (t) => {
+  await t.test('left is a replay, never a view', () => {
+    const r = planResume(null, null, OLD);
+    assert.equal(r.action, 'replay');
+    assert.match(r.reason, /OLD_abandoned_chat/);
+  });
+
+  await t.test('never reached one is still a view', () => {
+    assert.equal(planResume(null, null, null).action, 'view');
+  });
+
+  // The regression that matters most: matching ids must not out-rank the fact
+  // that we walked away, or resume answers `continue` into a dead conversation
+  // and suppresses the recap as well.
+  await t.test('a live tab on the abandoned thread is not a continue', () => {
+    assert.equal(planResume(null, OLD, OLD).action, 'replay');
+  });
+
+  await t.test('an unchanged thread is still a continue', () => {
+    assert.equal(planResume(OLD, OLD, null).action, 'continue');
+  });
+});

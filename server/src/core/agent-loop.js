@@ -1353,6 +1353,23 @@ export class AgentLoop {
     // and a handover you cannot look back from is a reset with a nicer name.
     if (previous?.id) this.previousThread = previous;
 
+    /*
+     * And the disk follows, now, rather than when the next reply lands.
+     *
+     * `setThread(null)` is a no-op by design, `_recordThread` only fires on a
+     * reply, and a brand-new chat has no id until its first exchange — so
+     * between here and that reply, memory said "no thread" while
+     * `session-meta.json` still named the one we just abandoned. Both resume
+     * paths read the disk. A process that ended in that window came back and
+     * reopened the conversation the user had just walked away from, and because
+     * the ids matched, `planResume` answered `continue` and suppressed the recap
+     * as well.
+     *
+     * Before the handover is attempted, not after: if this dies mid-way the
+     * safe answer is "we do not know where we are", not a stale id.
+     */
+    this.sessionStore?.clearThread?.(previous);
+
     // A second request supersedes the first, which is then answered `false`
     // rather than left pending. A promise nobody ever settles is the hang this
     // whole ack exists to remove, and adding one here would be a poor joke.

@@ -72,10 +72,27 @@ export function sameThread(recorded, live) {
  * are different promises to the user, and collapsing them is how a picker ends
  * up silently doing the second while looking like the first.
  *
+ * `left` is the third state, and without it the first branch below was wrong
+ * about half the sessions it described. A session whose thread was deliberately
+ * abandoned — `/compact`'s handover, `/new`, a failed bootstrap — has no current
+ * thread, and so was reported as one that "never reached a browser thread" and
+ * offered as `view`. That is safe and false: it *did* reach one, there is a real
+ * transcript, and the honest offer is `replay` into a fresh chat. The two look
+ * identical from `thread` alone, which is why the store records which happened.
+ *
+ * @param {{model: string, id: string} | null} recorded - what the session used
+ * @param {{model: string, id: string} | null} live - what the tab is on now
+ * @param {{model: string, id: string} | null} [left] - the thread it walked away from
  * @returns {{action: 'continue'|'replay'|'view', reason: string}}
  */
-export function planResume(recorded, live) {
+export function planResume(recorded, live, left = null) {
   if (!recorded?.id) {
+    if (left?.id) {
+      return {
+        action: 'replay',
+        reason: `this session left conversation ${left.id} and never started another`,
+      };
+    }
     return {
       action: 'view',
       reason: 'this session never reached a browser thread, so there is nothing to continue',

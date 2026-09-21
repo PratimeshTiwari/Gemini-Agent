@@ -468,7 +468,7 @@ export class WebSocketServer {
           // Said per row, before the choice is made, because the two are
           // different promises: one carries on, the other has to re-explain
           // itself to a model that was never there.
-          resume: planResume(s.thread, live).action,
+          resume: planResume(s.thread, live, s.leftThread).action,
         }));
         this.broadcast('extension', {
           id: randomUUID(), type: 'sessions',
