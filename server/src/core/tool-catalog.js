@@ -232,19 +232,6 @@ run_background instead. This will time out and tell you nothing.
 `,
   },
   {
-    name: 'open_in_editor',
-    dispatch: 'mcp',
-    flash: ` — Open file in editor. Args: path (string), line? (number)
-`,
-    pro: `
-Open a file in the user's code editor.
-Parameters:
-  - path (string, required): File path to open
-  - line (number, optional): Line number to jump to
-
-`,
-  },
-  {
     name: 'manage_memory',
     dispatch: 'loop',
     flash: ` — Remember/forget a durable fact. Args: action ("add"|"remove"), fact? (string), index? (number, the number shown in <memory>)

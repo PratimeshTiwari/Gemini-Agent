@@ -14,7 +14,6 @@ import { editFile } from './tools/edit-file.js';
 import { createFile } from './tools/create-file.js';
 import { listDirectory } from './tools/list-directory.js';
 import { runCommand } from './tools/run-command.js';
-import { openInEditor } from './tools/open-in-editor.js';
 import { runBackground } from './tools/run-background.js';
 import { manageTask } from './tools/manage-task.js';
 import getEditorState from './tools/get-editor-state.js';
@@ -122,15 +121,6 @@ const TOOL_DEFINITIONS = [
       timeout: { type: 'number', description: 'Timeout in seconds (default: 30)', required: false },
     },
     handler: runCommand,
-  },
-  {
-    name: 'open_in_editor',
-    description: 'Open a file in the user\'s code editor. Use this to show plans, files for review, or navigate the user to a specific location.',
-    parameters: {
-      path: { type: 'string', description: 'File path to open', required: true },
-      line: { type: 'number', description: 'Line number to jump to', required: false },
-    },
-    handler: openInEditor,
   },
   {
     name: 'run_background',

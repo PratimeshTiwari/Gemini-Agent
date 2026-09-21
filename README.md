@@ -718,6 +718,23 @@ raised no spinner, so the input box cleared and nothing happened. Reported as
 unavailable "because `/update` on its own answers instantly" had never been
 measured and was false.
 
+#### Removed: `open_in_editor`
+
+Opened a file in your editor at a line. Deleted because the terminal already
+does it better and for free: paths printed as `file.js:12` are clickable in
+every terminal this runs in, so the tool spent a browser round trip to reach a
+worse version of a thing that was one click away.
+
+It had also never been called — not once in 41 sessions — which is the evidence
+that decided it. Seven other tools share that zero and are **kept**: four are
+useful and need a trigger rather than a reminder, and three are correctly idle
+(`manage_task` has nothing to manage while `run_background` is unused;
+`recall_history` has nothing to recall until `/compact` stops stalling).
+
+`isVSCodeFamily` in `core/host-editor.js` is now unreferenced outside its own
+test. Left in place and flagged rather than swept up with this, because an
+audit of dead exports is its own pass.
+
 #### Measured while looking
 
 - A turn costs **4,673ms median** (14,913ms p90) over 265 real turns, of which

@@ -88,10 +88,6 @@ export class RiskClassifier {
       case 'list_directory':
         return { level: 'safe', reason: 'Read-only operation' };
 
-      // Always safe — opening files in editor
-      case 'open_in_editor':
-        return { level: 'safe', reason: 'Opens file in editor (no modifications)' };
-
       // Conditional — shell commands. `run_background` runs the same shell, and
       // its effects outlive the turn, so it is classified the same way — it used
       // to fall through to "Unknown tool", which is `risky` by luck rather than

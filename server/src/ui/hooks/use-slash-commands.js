@@ -371,9 +371,10 @@ export async function handleSlashCommand(query, {
        * The old version ran `editor || open || xdg-open` and reported
        * "Opened <path>" whatever happened — so when `code` was not installed
        * and macOS handed a `.md` to RStudio, the message read exactly the same
-       * as success. Same fault as `open_in_editor` claiming a line number it
-       * had not sent: the report has to describe what happened, or it is worse
-       * than no report.
+       * as success. The rule it breaks: a report has to describe what
+       * happened, or it is worse than no report. The deleted `open_in_editor`
+       * tool had the same fault from the other side — it claimed a line number
+       * it had not managed to send.
        */
       exec(`"${editor}" "${abs}"`, (err) => {
         if (!err) {
