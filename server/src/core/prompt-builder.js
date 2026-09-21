@@ -610,9 +610,33 @@ There are no subagents available in this session, so planning, research, impleme
 review are all yours. Nothing can be delegated; say what you have not checked rather than
 implying it was checked elsewhere.`;
 
+    /*
+     * The opening line used to read "You are the only agent on this task", and
+     * with subagents on it was contradicted by the very next sentence — which
+     * says work can be fanned out to parallel tabs. Two consecutive sentences,
+     * disagreeing, in the block whose job is to tell the model what it is.
+     *
+     * It was written when there was no delegation, and survived the toggle by
+     * being outside the branch that knows about it. The line now states what is
+     * true on both settings — the *writing* is yours — and the branch below
+     * says what may be delegated, which is the part that actually varies.
+     */
+    /*
+     * Three of the five bullets here were said better elsewhere and are gone.
+     *
+     * The `task.md` one was the worst: STEP 1 already explains the checklist,
+     * how `<task_checklist>` carries it back, and how to tick a line — and this
+     * repeated all of it, adding only "similar to Antigravity IDE", a
+     * comparison to a product the model has no reason to know. "Self-review:
+     * re-read the edited files" is PHASE 4 point 1. "If you're not confident,
+     * tell the user" is Phase 1's "if you would not bet on it, stop".
+     *
+     * What is left is the two artifacts nothing else mentions.
+     */
     const topologyInstructions = `
 ## Role: Coding Agent
-You are the only agent on this task — planning, implementation, review and testing are yours.
+Every edit, command and decision on this task is yours: planning, implementation, review and
+testing are your responsibility to see done.
 ${subagentParagraph}
 
 - When tasks are complex, create a plan first (save it to \`.agent/artifacts/implementation_plan.md\`)
@@ -794,24 +818,20 @@ ${modelTier === 'pro' ? `## 4. Communication
         return this._getFlashThinkingInstructions();
       case 'pro':
       default:
-        return this._getProInstructions(this._normalizeLevel(level), subagents);
+        return this._getProInstructions(subagents);
     }
   }
 
-  /**
-   * Reasoning levels only mean anything for the pro tier — the flash tiers are
-   * defined by *not* having room for the scaffolding.
+  /*
+   * `_normalizeLevel()` is gone. It took no argument and returned the string
+   * `'standard'`, to fold a `brief` or `deep` from an older config into the one
+   * pro level — but `effortFromConfig` in `core/effort.js` already does that on
+   * read, *before* the tier branch, and it is tested there. This was the same
+   * fold a second time, on a value that could no longer be anything else.
    *
-   * There is one pro level since 2026-09-20, so this now has one job: turn
-   * whatever it is handed — including a `brief` or `deep` left in a config
-   * written by an older version — into the one level that exists. Kept as a
-   * function rather than inlined because every caller reaching it is a caller
-   * that would otherwise branch on a level, which is the thing being removed.
+   * It went with the `Reasoning level: **standard**.` line that was its only
+   * consumer, and with `_getProInstructions`' `level` parameter.
    */
-  // eslint-disable-next-line class-methods-use-this
-  _normalizeLevel() {
-    return 'standard';
-  }
 
   /** One-line protocol reminder. One level, so one line. */
   // eslint-disable-next-line class-methods-use-this
@@ -868,7 +888,7 @@ ${modelTier === 'pro' ? `## 4. Communication
    *   standard — restate and decompose first, then the 4-phase protocol. (default)
    *   deep     — standard, plus approach enumeration and adversarial self-review.
    */
-  _getProInstructions(level = 'standard', subagents = true) {
+  _getProInstructions(subagents = true) {
     /*
      * `isBrief` and `isDeep` used to live here, gating the blocks that told
      * three pro rungs apart. One rung since 2026-09-20, so both were constants:
@@ -886,11 +906,22 @@ ${modelTier === 'pro' ? `## 4. Communication
     // A second *model*, not a second persona. See the review step below.
     const hasReviewer = Boolean(subagents);
 
+    /*
+     * `Reasoning level: **standard**.` is gone, and it was worse than filler.
+     *
+     * `_normalizeLevel()` took no argument and returned the string `'standard'`
+     * — so the line was a constant dressed as a variable, a fossil of the old
+     * brief/standard/deep ladder that became one pro rung on 2026-09-20.
+     *
+     * It did not merely say nothing. On the rung whose entire purpose is
+     * maximum effort, the last line of the persona header told the model it was
+     * operating at **standard** — the one word there that could be read as an
+     * instruction, pointing the wrong way. Reported by the owner on sight.
+     */
     const header = `## Cognitive Mode: PRINCIPAL ENGINEER
 
 You are operating as a SENIOR PRINCIPAL ENGINEER. Every action is deliberate, verified, and
-defensible in review. You DO NOT guess. You VERIFY.
-Reasoning level: **${level}**.`;
+defensible in review. You DO NOT guess. You VERIFY.`;
 
     // The heart of it: decide what you are doing before you touch anything.
     const planFirst = `\n${prompt('pro-plan-first')}\n`;
