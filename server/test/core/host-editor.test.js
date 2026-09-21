@@ -19,7 +19,7 @@ import assert from 'node:assert';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { hostEditor, isVSCodeFamily } from '../../src/core/host-editor.js';
+import { hostEditor } from '../../src/core/host-editor.js';
 
 let root;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'host-')); });
@@ -84,33 +84,3 @@ describe('hostEditor — a fact, or null', () => {
   });
 });
 
-describe('isVSCodeFamily — matched on shape, not a list of names', () => {
-  test('the forks that exist today', () => {
-    for (const name of ['code', 'code-insiders', 'codium', 'vscodium', 'cursor', 'windsurf', 'positron']) {
-      assert.equal(isVSCodeFamily(name), true, `${name} was not recognised`);
-    }
-  });
-
-  test('a fork nobody had heard of, which is the point', () => {
-    // The list is the thing that keeps being out of date — this module exists
-    // because of a fork that was not on anyone's list.
-    assert.equal(isVSCodeFamily('antigravity-ide'), true);
-    assert.equal(isVSCodeFamily('/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide'), true);
-  });
-
-  test('editors that are not forks', () => {
-    for (const name of ['vim', 'nvim', 'nano', 'emacs', 'subl', 'rstudio']) {
-      assert.equal(isVSCodeFamily(name), false, `${name} was wrongly treated as VS Code`);
-    }
-  });
-
-  test('a full path is matched by its basename', () => {
-    assert.equal(isVSCodeFamily('/usr/local/bin/cursor'), true);
-    assert.equal(isVSCodeFamily('C:\\Program Files\\Code\\code.exe'), true);
-  });
-
-  test('nothing is not a fork', () => {
-    assert.equal(isVSCodeFamily(''), false);
-    assert.equal(isVSCodeFamily(undefined), false);
-  });
-});

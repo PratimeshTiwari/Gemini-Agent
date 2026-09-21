@@ -26,13 +26,22 @@ import fs from 'fs';
 import path from 'path';
 import * as paths from './paths.js';
 
-/** The flows a failure can belong to. Keep this list short enough to scan. */
+/**
+ * The flows a failure can belong to. Keep this list short enough to scan.
+ *
+ * `github` names a product that was deleted in `e375aed` and is kept
+ * deliberately, marked. Nothing writes it any more, but log files written
+ * before the removal still hold `github/poll` rows — ten in this workspace —
+ * and dropping the label would render that history under a bare key instead of
+ * a sentence. Saying "removed" is what stops a reader concluding from a `/logs`
+ * heading that the poller is still running and still failing.
+ */
 export const FLOWS = {
   bridge: 'WebSocket bridge to the browser',
   extension: 'Chrome extension / content script',
   agent: 'Agent loop, prompts and responses',
   tool: 'MCP tool execution',
-  github: 'GitHub PR agent',
+  github: 'GitHub PR agent (removed — only old logs carry this)',
   task: 'Background tasks',
   diff: 'Edits and diff approval',
   context: 'Indexing, memory and context',
