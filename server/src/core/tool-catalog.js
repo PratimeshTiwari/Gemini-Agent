@@ -43,37 +43,23 @@ export const TOOL_CATALOG = [
     flash: ` — Ask the user to choose. Blocks until they answer. Args: question (string), options (string[], 2-4 concrete choices), header (string, 2-3 word topic). Several at once: questions ([{question, options, header}], max 4)
 `,
     pro: `
-Put a decision to the user. Execution blocks until they answer, so this is the ONLY way to reach
-them mid-task — a question written in prose is not a question, it just ends your turn.
+Put a decision to the user; execution blocks until they answer, so this is the ONLY way to reach
+them mid-task — a question written in prose is not a question, it just ends your turn. Ask when
+the answer changes what you build and the code cannot settle it; do not ask what read_file would
+tell you, and do not ask permission to continue.
 
-Ask when the answer changes what you build and you cannot settle it from the code: which of two
-designs they want, which of several files they meant, whether a destructive step is intended.
-Do NOT ask what you could find out yourself with read_file or grep_search, and do NOT ask for
-permission to continue — that is what plan mode and the approval prompts are for.
-
-Write options the user can choose between without reading your mind: each one a concrete course
-of action ("Rewrite the parser to stream"), never a bare yes/no restatement of the question. Two
-to four is the useful range. The user can always type an answer you didn't list, or dismiss the
-question — if they dismiss it, pick the most reasonable reading, say which assumption you made,
-and carry on.
-
-If you have more than one thing to settle, ask them ALL IN ONE CALL via \`questions\`. Asking
-them one at a time costs a full round trip each and makes the user answer, wait, answer again.
-
-Parameters — one question:
-  - question (string, required): The decision, in one sentence
+Options are concrete courses of action ("Rewrite the parser to stream"), never yes/no. Ask
+everything you need in ONE call via \`questions\` — one at a time costs a round trip each.
+Parameters:
+  - questions (array, max 4, preferred): [{ question, options, header }], same fields as below
+  - question (string, required): the decision, in one sentence
   - options (array of strings, required): 2-4 concrete choices
   - header (string, optional): 2-3 words naming the topic, shown as the prompt's title
-
-Parameters — several at once (preferred whenever you have more than one):
-  - questions (array, max 4): [{ question, options, header }] — same fields as above.
-    The user answers them in sequence and you get every answer back in a single result.
 
 Example:
 \`\`\`json
 {"name": "ask_question", "args": {"questions": [
-  {"header": "Storage", "question": "Where should the cache live?", "options": ["In .agent/cache", "In the system temp dir"]},
-  {"header": "Eviction", "question": "How should it be bounded?", "options": ["By age", "By total size"]}
+  {"header": "Storage", "question": "Where should the cache live?", "options": ["In .agent/cache", "In the system temp dir"]}
 ]}}
 \`\`\`
 
@@ -85,10 +71,11 @@ Example:
     flash: ` — Find files by name. Args: query (string), maxResults? (number)
 `,
     pro: `
-Search for files by name or path pattern using fuzzy matching.
+Find files by name or path, fuzzy-matched. Use it when you know roughly what a file is called
+but not where it lives; use grep_search to search file *contents*.
 Parameters:
-  - query (string, required): File name or path pattern to search for
-  - maxResults (number, optional): Max results to return (default: 20)
+  - query (string, required): file name or path fragment
+  - maxResults (number, optional): default 20
 
 `,
   },
@@ -98,22 +85,16 @@ Parameters:
     flash: ` — Search text across files, grouped by file. Args: pattern (string or string[] — pass several terms when unsure of the wording), isRegex? (bool), includes? (string[]), contextLines? (number), maxResults? (number)
 `,
     pro: `
-Search file contents across the codebase, like ripgrep. Results come back grouped by file,
-the file with the most matches first.
-
-When you do not know what *this* codebase calls something, search several names at once:
-\`{"pattern": ["rate limit", "throttle", "quota"]}\` is one search, not three. Guessing one
-term at a time costs a full round trip per guess.
-
+Search file contents across the codebase, grouped by file with the busiest first. When you do
+not know what *this* codebase calls something, pass several names at once —
+\`{"pattern": ["rate limit", "throttle", "quota"]}\` is one search, not three round trips.
 Parameters:
-  - pattern (string or array of strings, required): term(s) to find; an array searches for
-    any of them
+  - pattern (string or string[], required): an array matches any of them
   - isRegex (boolean, optional): treat every pattern as a regex
-  - includes (array of strings, optional): globs to restrict the search (e.g. ["*.js"])
-  - maxResults (number, optional): max matches (default 50, max 500)
-  - contextLines (number, optional): lines of surrounding code per match (0-5, default 0).
-    Use it when a bare line would not tell you whether the match is the right one — it is
-    cheaper than reading the whole file to find out.
+  - includes (string[], optional): globs to restrict the search, e.g. ["*.js"]
+  - maxResults (number, optional): default 50, max 500
+  - contextLines (number, optional): 0-5, default 0 — cheaper than opening the file to find out
+    whether a match is the right one
 
 `,
   },
@@ -123,18 +104,14 @@ Parameters:
     flash: ` — Where a symbol is DEFINED (parses the code, not the text). Args: name (string, exact, case-sensitive)
 `,
     pro: `
-Find where a symbol is **defined** — a class, function, method or const.
+Find where a symbol is **defined** — class, function, method or const. Parses the code, so it
+returns the definition rather than forty call sites, and never a match inside a comment or
+string: reach for this instead of grep_search whenever you know the exact name.
 
-This parses the code, so it returns the definition and not the forty call sites, and never the
-name inside a comment or a string. Whenever you know the exact name and want to see how something
-is written, this is one call where grep_search is a page of matches you then have to read.
-
-JavaScript and JSX only. If a file could not be parsed the result says so — "no definition found"
-plus a note about what was skipped means *not found here*, not "does not exist", and the next move
-is grep_search.
-
+JavaScript and JSX only. "No definition found" plus a note about skipped files means *not found
+here*, not "does not exist" — follow up with grep_search.
 Parameters:
-  - name (string, required): the exact symbol name, case-sensitive
+  - name (string, required): exact symbol name, case-sensitive
 
 `,
   },
@@ -144,15 +121,12 @@ Parameters:
     flash: ` — Every place a symbol is USED — calls, imports, JSX tags. Args: name (string, exact), includeDefinition? (bool)
 `,
     pro: `
-Find every place a symbol is **used** — calls, imports, JSX tags.
-
-"Who calls this?" and "what breaks if I change this?" are the questions grep_search answers worst:
-it cannot tell a call from the same word in a comment, or from an object key that happens to
-match. This can. Results are grouped by file, busiest first, and the definition is marked.
-
+Find every place a symbol is **used** — calls, imports, JSX tags. This is what answers "who calls
+this?" and "what breaks if I change it?", which grep_search answers worst because it cannot tell
+a call from the same word in a comment or an object key. Grouped by file, definition marked.
 Parameters:
-  - name (string, required): the exact symbol name, case-sensitive
-  - includeDefinition (boolean, optional): list the definition too (default true)
+  - name (string, required): exact symbol name, case-sensitive
+  - includeDefinition (boolean, optional): default true
 
 `,
   },
@@ -162,11 +136,12 @@ Parameters:
     flash: ` — Read a file. Args: path (string), startLine? (number), endLine? (number)
 `,
     pro: `
-Read the contents of a file with optional line range.
+Read a file, optionally one line range of it. Read before you edit — \`edit_file\` matches exact
+text and fails if you guessed it.
 Parameters:
-  - path (string, required): File path relative to workspace root
-  - startLine (number, optional): Start line (1-indexed)
-  - endLine (number, optional): End line (1-indexed)
+  - path (string, required): relative to the workspace root
+  - startLine (number, optional): 1-indexed
+  - endLine (number, optional): 1-indexed
 
 `,
   },
@@ -177,11 +152,12 @@ Parameters:
     flash: ` — Edit a file. Args: path (string), edits ([{oldText, newText}])
 `,
     pro: `
-Propose edits to an existing file. Generates a diff for user approval.
+Propose edits to an existing file; the user sees a diff and approves or rejects it per hunk.
+\`oldText\` must match the file exactly, so read it first — on a mismatch, re-read and retry
+rather than guessing.
 Parameters:
-  - path (string, required): File path to edit
-  - edits (array, required): Array of { oldText: string, newText: string } objects.
-    oldText is the exact text to find, newText is what to replace it with.
+  - path (string, required)
+  - edits (array, required): [{ oldText, newText }] — oldText is found, newText replaces it
 
 `,
   },
@@ -192,10 +168,10 @@ Parameters:
     flash: ` — Create a file. Args: path (string), content (string)
 `,
     pro: `
-Create a new file with specified content.
+Create a new file. Use edit_file for one that already exists; this replaces the whole thing.
 Parameters:
-  - path (string, required): File path to create
-  - content (string, required): Full file content
+  - path (string, required)
+  - content (string, required): the complete file
 
 `,
   },
@@ -205,11 +181,11 @@ Parameters:
     flash: ` — List dir contents. Args: path? (string), recursive? (bool), maxDepth? (number)
 `,
     pro: `
-List directory contents.
+List what is in a directory. Use it to orient in an unfamiliar tree before guessing at paths.
 Parameters:
-  - path (string, optional): Directory path (default: workspace root)
-  - recursive (boolean, optional): List recursively
-  - maxDepth (number, optional): Max depth for recursive listing (default: 3)
+  - path (string, optional): default the workspace root
+  - recursive (boolean, optional)
+  - maxDepth (number, optional): default 3
 
 `,
   },
@@ -221,13 +197,13 @@ Parameters:
     flash: ` — Run shell command (needs approval). Args: command (string), cwd? (string), timeout? (number, ms)
 `,
     pro: `
-Execute a shell command. Always requires user approval.
+Run a shell command; always needs user approval. For anything that does not finish on its own —
+a dev server, a watcher, a \`--watch\` build — use run_background instead, or this will time out
+and tell you nothing.
 Parameters:
-  - command (string, required): Shell command to execute
-  - cwd (string, optional): Working directory
-  - timeout (number, optional): Timeout in seconds (default: 30)
-For anything that does not finish on its own — a dev server, a watcher, a --watch build — use
-run_background instead. This will time out and tell you nothing.
+  - command (string, required)
+  - cwd (string, optional)
+  - timeout (number, optional): seconds, default 30
 
 `,
   },
@@ -237,20 +213,14 @@ run_background instead. This will time out and tell you nothing.
     flash: ` — Remember/forget a durable fact. Args: action ("add"|"remove"), fact? (string), index? (number, the number shown in <memory>)
 `,
     pro: `
-Remember a fact about this project, or forget one. Stored in \`.agent/memory.md\` and given
-back to you in the \`<memory>\` block at the start of a session.
-
-Remember something you had to *work out* and would have to work out again: that the tests
-run with pnpm, that a directory is generated. Not what you can read at any time — a file's
-contents, a function's signature — and not anything about this one task, which ends with it.
-Verify it against the code before storing it: a wrong memory is worse than no memory,
-because it will be believed.
-
+Remember a durable fact about this project, or forget one. Store what you had to *work out* and
+would work out again — that the tests run with pnpm, that a directory is generated — never a
+file's contents or anything about this one task. Verify it first: a wrong memory is worse than
+none, because it will be believed.
 Parameters:
   - action (string, required): "add" or "remove"
-  - fact (string, optional): the fact, as one sentence (required for "add")
-  - index (number, optional): which fact to forget, numbered as \`<memory>\` shows them
-    (required for "remove")
+  - fact (string): one sentence, for "add"
+  - index (number): which fact to forget, numbered as \`<memory>\` shows them
 
 `,
   },
@@ -263,11 +233,11 @@ Parameters:
     flash: ` — Spawn background process. Args: command (string), cwd? (string)
 `,
     pro: `
-Spawn a long-running background process (dev servers, watchers, builds). Returns immediately with a taskId.
-Use manage_task to monitor, read logs, send input, or kill the background process.
+Spawn a long-running process — dev server, watcher, build — and return a taskId immediately.
+Use manage_task to read its logs, send it input or kill it.
 Parameters:
-  - command (string, required): The shell command to execute
-  - cwd (string, optional): Working directory (default: workspace root)
+  - command (string, required)
+  - cwd (string, optional): default the workspace root
 
 `,
   },
@@ -277,14 +247,14 @@ Parameters:
     flash: ` — Manage background tasks. Args: action ("status"|"read_logs"|"send_input"|"kill"|"list"|"watch"|"unwatch"), taskId? (string), lines? (number), pattern? (string, for watch)
 `,
     pro: `
-Interact with background tasks spawned by run_background.
+Inspect or control a process started by run_background. \`watch\` has the agent woken when that
+process logs a failure, with the failing lines already in hand.
 Parameters:
-  - action (string, required): "status" | "read_logs" | "send_input" | "kill" | "list"
-  - taskId (string, optional): Task ID (required for all actions except list)
-  - lines (number, optional): Number of log lines to read (default: 50, for read_logs)
-  - input (string, optional): Text to send to stdin (required for send_input)
-  - pattern (string, optional): for watch — a regex to look for in the output. Omit to use the
-    built-in failure patterns (error, failed, exception, traceback, EADDRINUSE, Cannot find module).
+  - action (string, required): "status" | "read_logs" | "send_input" | "kill" | "list" | "watch" | "unwatch"
+  - taskId (string): required for everything except "list"
+  - lines (number, optional): for read_logs, default 50
+  - input (string): for send_input
+  - pattern (string, optional): for watch — a regex; omit for the built-in failure patterns
 
 `,
   },
@@ -294,15 +264,10 @@ Parameters:
     flash: ` — Which file the user has open and where the cursor is. Location only, not contents. No args.
 `,
     pro: `
-Which file the user has open in their editor and where the cursor is, from the VS Code companion.
-
-Ask when the request points at something without naming it — "fix this function", "why is this
-failing" — and you would otherwise have to guess which file they mean.
-
-It returns the **location only, never the file contents**: use read_file for those, which gives
-you the whole file with line numbers rather than whatever happened to be on screen. The answer
-carries its age, and you should use it: the editor moves independently of this conversation, so
-a reading from several minutes ago is a guess about the user's attention, not a fact.
+Which file the user has open and where the cursor is. Ask when the request points at something
+without naming it — "fix this function", "why is this failing" — and you would otherwise guess
+which file they mean. Returns the location only, never contents; the answer carries its age, and
+the editor moves independently of this conversation.
 Parameters: None
 
 `,
@@ -313,13 +278,13 @@ Parameters: None
     flash: ` — Search earlier turns of this conversation, including ones a summary replaced. Args: query (string), limit? (number)
 `,
     pro: `
-Search earlier turns of this conversation, including ones that a summary replaced and that you can
-no longer see. When the context refers to a decision, a filename, an error or a preference whose
-detail you no longer have, look it up here rather than asking the user to repeat it or guessing.
-Matching is literal and case-insensitive, so search for the exact term.
+Search earlier turns of this conversation, including ones a summary replaced and that you can no
+longer see. When the context refers to a decision, filename or error whose detail you no longer
+have, look it up here instead of asking the user to repeat it. Matching is literal and
+case-insensitive.
 Parameters:
-  - query (string, required): The exact term to look for.
-  - limit (number, optional): How many matches to return. Default 5, maximum 10.
+  - query (string, required): the exact term
+  - limit (number, optional): default 5, max 10
 
 `,
   },
@@ -329,12 +294,12 @@ Parameters:
     flash: ` — The editor's errors and warnings (VS Code Problems panel). Args: path? (string), severity? ("error"|"warning")
 `,
     pro: `
-Read the editor's current errors and warnings — the VS Code Problems panel — for the workspace.
-Use it after editing a file to check the change compiles and lints, and before starting work to see
-what is already broken. Requires the VS Code companion extension.
+The editor's current errors and warnings — the VS Code Problems panel. Worth a call before
+starting, to see what is already broken and not blame your change for it. Needs the companion
+extension.
 Parameters:
-  - path (string, optional): Only report problems for this file.
-  - severity (string, optional): "error" to exclude warnings.
+  - path (string, optional): only this file
+  - severity (string, optional): "error" to exclude warnings
 
 `,
   },
@@ -361,26 +326,16 @@ Parameters:
     flash: ` — Delegate to a parallel tab. Args: role ("review"|"research"|"task"), prompt (string)
 `,
     pro: `
-Hand work to a subagent — a second tab of this model with its **own empty context**. It has not
-seen this conversation and cannot see your files, so it knows only what you put in \`prompt\`.
-It has read-only tools and returns one answer. Several run at once.
+Hand work to a second tab of this model with its **own empty context** — it has not seen this
+conversation and cannot see your files, so it knows only what you put in \`prompt\`. Read-only
+tools, one answer back, several run at once.
 
-Reach for it when:
-  - **role "research"** — you are about to make a long serial chain of read_file calls to answer
-    one question ("where is X implemented", "what depends on Y"). Say what to find and where you
-    have already looked.
-  - **role "review"** — you have finished a non-trivial change and want it read by someone who
-    does not share your assumptions. Send the diff, the file paths, and what the change is meant
-    to do. Its value is that it has no memory of why you chose any of it, so paste the code —
-    a reference to "the fix above" means nothing to it.
-  - **role "task"** — a self-contained side errand whose result you need but whose working you
-    do not.
-
-Do NOT use it for anything that writes: it cannot edit files or run commands, and the approval
-path for those is yours.
+\`role: "research"\` instead of a long serial chain of read_file calls; \`role: "review"\` to have a
+finished change read by someone who does not share your assumptions — paste the diff and the
+paths, "the fix above" means nothing to it; \`role: "task"\` for a self-contained errand.
 Parameters:
   - role (string, required): "review", "research" or "task"
-  - prompt (string, required): everything it needs — it has no other context.
+  - prompt (string, required): everything it needs — it has no other context
 
 `,
   },
