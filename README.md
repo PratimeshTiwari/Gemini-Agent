@@ -8,12 +8,16 @@ session. No API key, no hosted backend, no telemetry.
 
 ## ✨ What it does
 
-- **Two topologies.** *Solo* — one tab plans, implements and reviews. *Duo* — a reviewer
-  subagent audits the work from **a second Gemini tab that has never seen the
-  conversation**. What it contributes is not different weights, it is missing context: it
-  has nothing to check against but the code it is sent, so it reads the file instead of
-  reasoning from a citation. Each subagent turn gets its own tab and its own lane, so it
-  genuinely runs alongside your turn rather than queueing behind it.
+- **Subagents, which are one switch rather than a topology.** `ask_subagent` hands work to
+  **a second Gemini tab that has never seen the conversation** — `role: "review"` to have a
+  change read by someone who does not share your assumptions, `"research"` instead of a long
+  chain of your own reads, `"task"` for a self-contained errand. What a cold reader
+  contributes is not different weights, it is missing context: it has nothing to check
+  against but the code it is sent, so it opens the file instead of reasoning from a citation.
+  Each subagent turn gets its own tab and its own lane, so it genuinely runs alongside your
+  turn rather than queueing behind it. *Solo* and *Duo* were retired with the `topology`
+  setting they named — a derived value in a config file is one someone edits and is ignored
+  for editing.
 - **Every write is a diff you approve.** Per-hunk accept/reject, backups, atomic writes, and
   `/undo`. Commands are risk-classified before they run, and `/allowlist` remembers the
   answers you have already given.
@@ -58,20 +62,20 @@ extension and signing into a chat tab are things no installer can do for you.
 curl -fsSL https://raw.githubusercontent.com/PratimeshTiwari/Gemini-Agent/main/setup.sh | bash
 ```
 
-> **Which branch — read this before pasting the command above.**
+> **`main` is the released branch, and the command above is the right one.**
 >
-> Everything is developed on `v1-stable` and reaches `main` through a PR. **Until the first
-> such merge lands, `main` does not contain `setup.sh` at all and the command above returns
-> 404.** Use this one meanwhile — same script, same result:
+> This used to carry a warning that `main` did not contain `setup.sh` yet and the command
+> would 404. That was true before the first merge and stopped being true at **PR #13**,
+> fifteen merges ago. Work is developed on a branch and reaches `main` through a PR, so
+> `main` is always the last thing that passed review.
+>
+> To install a development branch instead, use `AGENT_BRANCH` from the table below rather
+> than a different URL. How far any branch is from `main` is a question to ask git, never
+> a number written here — it goes stale on the next commit:
 >
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/PratimeshTiwari/Gemini-Agent/v1-stable/setup.sh | bash
+> git rev-list --left-right --count main...<branch>
 > ```
->
-> After the merge, the `main` command is the right one: it is the released branch, and the
-> `v1-stable` form then tracks development instead. `git rev-list --left-right --count
-> main...v1-stable` says how far apart they currently are — never a number written down here,
-> because that goes stale on the next commit.
 
 Clones to `~/Gemini-Agent`, installs both workspaces, builds the extension bundle, puts
 `agent` on your `PATH`, runs the tests, and offers to add a line to your `~/.zshrc` so the
@@ -86,7 +90,7 @@ checkout, it stops rather than writing over it.
 | Knob | |
 | --- | --- |
 | `AGENT_INSTALL_DIR=~/src/agent` | clone somewhere else |
-| `AGENT_BRANCH=v1-stable` | a branch other than `main` |
+| `AGENT_BRANCH=<branch>` | a branch other than `main` |
 | `AGENT_REPO=<url>` | a fork |
 | `--yes` (or `AGENT_YES=1`) | take the default on every question, ask nothing |
 
@@ -466,7 +470,7 @@ model. The list says which is which.
 
 Once the agent is running, you can use built-in slash commands to manage your session:
 - Type `/help` in the CLI to see all available commands.
-- Type `/config` to turn the reviewer on or off. With one on, a second Gemini tab audits the work without having seen the conversation that produced it — which is the point of it, and why the tab is worth opening. There is no separate `/mode` screen any more, though the name still answers.
+- Type `/config` to turn **subagents** on or off — one switch, and it is on by default. With them on, `ask_subagent` can hand work to a second Gemini tab that has not seen the conversation: a cold review of a change, a search you would otherwise do as a long chain of reads, or a self-contained errand. `/config off` works as well as `/config subagents off`, and `solo` / `duo` are still accepted as words for off and on. There is no separate `/mode` screen, though the name still answers.
 - Type `/effort` to pick how hard the agent works — one ladder, `lite` · `flash` · `pro`. Changing it mid-chat says so: the next message resends the whole system prompt into
   the thread, and the row names `/compact` as the way to start a fresh one instead. It sets
   the prompt profile **and switches the browser's mode picker to match**, so a prompt written
