@@ -44,6 +44,44 @@ function stubChrome(reply = () => ({ watching: true })) {
 const TICK = 40;
 const elapse = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Wait for the thing to have happened, not for a length of time.
+ *
+ * `await elapse(TICK * 2.5)` then `assert.ok(ticks.length >= 2)` leaves **20ms**
+ * of margin at a 40ms cadence, and under a full-suite run a 40ms timer drifts
+ * further than that. This file failed roughly one run in five on load and passed
+ * 3/3 in isolation — which is the signature of an assertion measuring the
+ * machine rather than the code.
+ *
+ * `CLAUDE.md` records the same lesson twice: the frame-budget harness was
+ * rewritten to wait on observed output for exactly this reason, and an earlier
+ * version of this very file asserted `>= 3` ticks four milliseconds before the
+ * deadline. The generous ceiling costs nothing when the code is right — it
+ * returns on the first satisfying observation — and only a slow failure when it
+ * is wrong.
+ */
+async function until(predicate, { timeoutMs = TICK * 40, everyMs = 5 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await elapse(everyMs);
+  }
+  return predicate();
+}
+
+/**
+ * The count settled on, after giving a wrong one time to appear.
+ *
+ * For "exactly N" the hazard runs the other way: asserting too early passes
+ * against a ticker that was about to fire again. So wait for N, then hold long
+ * enough that an N+1 would have landed.
+ */
+async function settledCount(list, expected) {
+  await until(() => list.length >= expected);
+  await elapse(TICK * 2);
+  return list.length;
+}
+
 let mod;
 beforeEach(async () => {
   stubChrome();
@@ -54,10 +92,10 @@ afterEach(() => { mod.stopCompletionTicks(7); });
 test('ticks the tab on the service worker\'s own clock', async () => {
   const ticks = stubChrome();
   mod.startCompletionTicks(7, TICK);
-  await elapse(TICK * 2.5);
 
-  const mine = ticks.filter((t) => t.tabId === 7 && t.type === 'tick_completion');
-  assert.ok(mine.length >= 2, `expected at least 2 ticks, got ${mine.length}`);
+  const mine = () => ticks.filter((t) => t.tabId === 7 && t.type === 'tick_completion');
+  assert.ok(await until(() => mine().length >= 2),
+    `expected at least 2 ticks, got ${mine().length}`);
 });
 
 test('stops as soon as the tab says the turn is over', async () => {
@@ -68,17 +106,15 @@ test('stops as soon as the tab says the turn is over', async () => {
   // time. At 5s it would not have, and this assertion passed against a
   // mutant with the stop removed — it was measuring the interval, not the
   // stop.
-  await elapse(TICK * 3.75);
-
-  assert.equal(ticks.length, 2, `should stop on the first "not watching", got ${ticks.length}`);
+  assert.equal(await settledCount(ticks, 2), 2,
+    `should stop on the first "not watching", got ${ticks.length}`);
 });
 
 test('stops when the tab stops answering at all', async () => {
   const ticks = stubChrome(() => new Error('Receiving end does not exist'));
   mod.startCompletionTicks(7, TICK);
-  await elapse(TICK * 2.5);
 
-  assert.equal(ticks.length, 1, 'a dead tab is not worth ticking');
+  assert.equal(await settledCount(ticks, 1), 1, 'a dead tab is not worth ticking');
 });
 
 test('keeps ticking an older content script that answers undefined', async () => {
@@ -86,18 +122,21 @@ test('keeps ticking an older content script that answers undefined', async () =>
   // throttled path there is exactly the wrong response.
   const ticks = stubChrome(() => undefined);
   mod.startCompletionTicks(7, TICK);
-  await elapse(TICK * 2.5);
 
-  assert.ok(ticks.length >= 2, `should keep ticking, got ${ticks.length}`);
+  assert.ok(await until(() => ticks.length >= 2),
+    `should keep ticking, got ${ticks.length}`);
 });
 
 test('starting twice does not double the cadence', async () => {
   const ticks = stubChrome();
   mod.startCompletionTicks(7, TICK);
   mod.startCompletionTicks(7, TICK);
-  await elapse(TICK * 2.5);
+  // An upper bound needs the interval to actually have run, or it passes
+  // against a doubled cadence that simply had not fired yet.
+  await until(() => ticks.length >= 2);
+  await elapse(TICK);
 
-  assert.ok(ticks.length <= 3, `one ticker per tab, got ${ticks.length}`);
+  assert.ok(ticks.length <= 4, `one ticker per tab, got ${ticks.length}`);
 });
 
 test('stopCompletionTicks is safe for a tab that was never started', () => {
