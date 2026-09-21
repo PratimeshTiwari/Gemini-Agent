@@ -592,14 +592,20 @@ ${reasoningInstructions}
      * paragraph below: give the reviewer the specific paths and the purpose.
      * That is what makes a reader with no context useful rather than decorative.
      */
+    /*
+     * The three roles, the empty context and the "paste the diff" warning all
+     * live in `ask_subagent`'s own description in `<available_tools>`, at
+     * greater length and with the parameters attached. Describing a capability
+     * twice does not describe it better; it spends the middle of the prompt
+     * saying something the reader will meet again further down.
+     *
+     * What stays is the one sentence the tool definition does *not* contain,
+     * because it is about the agent's authority rather than the tool's shape.
+     */
     const subagentParagraph = subagents ? `
-You can fan work out to parallel tabs of yourself with \`ask_subagent\` — \`role: "research"\` for
-read-only exploration you would otherwise do with a long serial chain of read_file calls,
-\`role: "review"\` to have a finished change read by someone who does not share your assumptions,
-\`role: "task"\` for a self-contained errand. Each one starts empty: it has not seen this
-conversation, so send the specific file paths, the change itself, and what it is meant to do.
-A reference to "the fix above" means nothing to it. They run in parallel and return to you.
-Delegating judgement about what to *write* is what you cannot do — every edit is yours.` : `
+You can fan read-only work out to parallel tabs of yourself with \`ask_subagent\` (see its entry
+below for the roles). Delegating judgement about what to *write* is what you cannot do — every
+edit is yours.` : `
 There are no subagents available in this session, so planning, research, implementation and
 review are all yours. Nothing can be delegated; say what you have not checked rather than
 implying it was checked elsewhere.`;
@@ -706,16 +712,39 @@ underspecified, say what you assumed rather than guessing silently.
    * Full core instructions for the flash and pro tiers.
    */
   _buildFullCoreInstructions(modelTier) {
+    /*
+     * Two principles, not nine.
+     *
+     * This was a numbered list of nine, and seven of them were restated further
+     * down the same prompt — measured by stripping this block and re-testing
+     * each rule against what remained:
+     *
+     *   1 ask_question / prose does not reach   -> the ask_question tool's own text
+     *   2 read before edit                      -> Phase 1, verbatim
+     *   3 verify after                          -> Phase 4, verbatim
+     *   4 one step at a time                    -> STEP 1's checklist
+     *   5 be surgical                           -> Phase 3, "the SMALLEST change"
+     *   6 never guess paths or names            -> anti-hallucination guardrails
+     *   7 tool retry                            -> Self-Correction Guardrails, fuller
+     *
+     * "Do not guess" alone was stated **seven times** across the pro prompt.
+     * Past the second statement that is not reinforcement, it is more middle for
+     * everything else to be lost in.
+     *
+     * The two that survive are the two that nothing else says. **8 is the only
+     * rule in the whole prompt with no restatement anywhere** — the tool-call
+     * format block forbids a *conclusion* beside a tool call, which is a
+     * different thing from narrating one. And 9 is restated only in `AGENT.md`,
+     * which belongs to the user and can change under us, so a behavioural rule
+     * cannot rest on it.
+     *
+     * An earlier audit had this backwards and proposed keeping 9 alone. The
+     * check above is what corrected it, and is worth re-running before cutting
+     * anything else here: strip the block, then test each rule against the rest.
+     */
     return `## Core Principles
-1. **DON'T GUESS WHEN GUESSING IS EXPENSIVE.** If a requirement is ambiguous and the wrong reading would cost real work — deleting data, rewriting a file, committing to an architecture — call the \`ask_question\` tool. It blocks until the user answers. Asking in prose does NOT reach the user; it just ends your turn. When the ambiguity is cheap to get wrong, state your reading as **⚠️ ASSUMPTION** and keep working.
-2. **INVESTIGATE BEFORE ACTING.** Always read relevant files before making edits. Never edit blind.
-3. **VERIFY YOUR WORK.** After making changes, re-read the file or run tests to confirm correctness.
-4. **ONE STEP AT A TIME.** Break complex tasks into atomic steps. Execute them sequentially.
-5. **BE SURGICAL.** Make the smallest edit that solves the problem. Don't refactor unrelated code.
-6. **NEVER GUESS PATHS OR NAMES.** If you're unsure about a file path, function name, or API, use search_files or grep_search to find out.
-7. **Tool Retry Logic**: If a tool call fails, analyze the error and retry with different arguments. Don't give up.
-8. **NO FLUFF AROUND TOOL CALLS**: Don't narrate them ("I will now run the command", "Let me check"). Emit the JSON block plainly. A \`<thought>\` block is the one thing that may precede a tool call — it is reasoning, not fluff. Save prose for when you are actually answering the user.
-9. **ONE ANSWER PER TURN.** Give a single, definitive response. Where two approaches are both reasonable, choose one, say in a line why you chose it, and name the alternative — do not hand the user a menu of drafts to pick between. If the choice is genuinely theirs to make, that is what \`ask_question\` is for.
+1. **NO FLUFF AROUND TOOL CALLS**: Don't narrate them ("I will now run the command", "Let me check"). Emit the JSON block plainly. A \`<thought>\` block is the one thing that may precede a tool call — it is reasoning, not fluff. Save prose for when you are actually answering the user.
+2. **ONE ANSWER PER TURN.** Give a single, definitive response. Where two approaches are both reasonable, choose one, say in a line why you chose it, and name the alternative — do not hand the user a menu of drafts to pick between. If the choice is genuinely theirs to make, that is what \`ask_question\` is for.
 
 ## 2. Source Code and Execution
 - ONLY reference code that you have explicitly read using \`read_file\` or \`grep_search\`.

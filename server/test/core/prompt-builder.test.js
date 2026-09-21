@@ -284,12 +284,29 @@ describe('PromptBuilder — the pro rung', () => {
 });
 
 describe('PromptBuilder — the prompt tells the truth about delegation', () => {
+  /*
+   * Asserted on the contract, not on one wording.
+   *
+   * This used to match `role: "research"` exactly — a string that lived in the
+   * Role block's description of `ask_subagent`, which duplicated the tool's own
+   * entry further down. Removing that duplication broke the test while leaving
+   * the capability fully described, which is a test failing for the wrong
+   * reason: it was pinning a sentence rather than a promise.
+   *
+   * What the prompt has to do is name the tool, name the three roles, and say
+   * the subagent starts empty — the last one being what stops a caller sending
+   * "review the fix above" to something that has never seen it.
+   */
   test('with subagents on it says they exist and what they are for', () => {
     const pb = new PromptBuilder(ws, ws);
     const p = build(pb, { subagents: true });
     assert.doesNotMatch(p, /There are no other models to delegate to/);
     assert.match(p, /ask_subagent/);
-    assert.match(p, /role: "research"/);
+    for (const role of ['review', 'research', 'task']) {
+      assert.match(p, new RegExp(`"${role}"`), `the ${role} role is never named`);
+    }
+    assert.match(p, /own empty context|has not seen this conversation/,
+      'nothing tells the caller the subagent starts with nothing');
   });
 
   /*
