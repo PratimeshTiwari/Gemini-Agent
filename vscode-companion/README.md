@@ -57,6 +57,16 @@ is how someone installs the wrong one.
 
 ## Version history
 
+### 1.6.0 — 2026-09-21
+
+- **Stops writing `visibleText`.** The editor state carried the ±50 lines around
+  the cursor, rewritten every time the cursor moved — measured on a live session
+  at **2,501 of 2,630 bytes, 95.1% of the file**. Nothing reads it: the CLI's
+  `get_editor_state` stopped returning it on the same day, because those bytes
+  bought the model a worse read than it already had — viewport-cropped, without
+  line numbers, of a file `read_file` returns whole and numbered. What is left
+  is the pointer: active file, cursor position, timestamp.
+
 ### 1.5.0 — 2026-09-16
 **Terminal forwarding became opt-in, per terminal.** Right-click a terminal →
 *Agent CLI: Watch This Terminal for Failures*.
