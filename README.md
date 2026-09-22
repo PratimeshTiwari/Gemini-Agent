@@ -674,6 +674,62 @@ missing one**, since the model reaches for it and concludes the code is not ther
 
 ---
 
+### v2.5.1 — 2026-09-22 · PR #25 · `v2.5.1/echo-and-guardrails`
+
+**Four small fixes, each reported from use in the same session, none changing
+behavior outside its own narrow case.**
+
+```bash
+git log --oneline v2.5..v2.5.1
+```
+
+#### `/compact` and `/undo` answered with nothing saying what caused it
+
+Both rewrite the transcript instead of appending to it — `/undo` removes a
+turn, `/compact` replaces the older ones with a summary — and only `/clear`'s
+rewrite had reason to skip the `❯ /command` row that every other slash command
+pushes before its reply. The other two glued their answer onto the end of
+whatever the model last said, so a `/compact` refusal read as part of the
+model's own reply. `/clear` is unaffected: it takes its own early-return path
+above this branch and never reaches it.
+
+#### `/compact`'s refusal mixed two units and read as self-contradictory
+
+*"the older turns are only 114 characters"* sat directly above *"Context is
+~23,248 tokens"* — both true, measuring different things, and side by side
+they read as the tool contradicting itself. The first is
+`conversationHistory.slice(0, -5)`, only what `/compact` would actually
+summarise; the second is everything ever typed into the browser tab, system
+prompt included, which is what auto-compaction actually watches. The message
+now says which is which.
+
+#### The model-picker warning couldn't tell "agrees" from "can't tell"
+
+`modelMismatch` returned the same `null` whether the browser genuinely agreed
+with the active rung or no picker read had ever succeeded — reported twice
+from use, status bar on `PRO`, browser on a different model, no warning row
+either time. `explainModelMismatch` exposes the real state, and a picker read
+that comes back with a list but nothing marked selected is now logged
+(`op: model_picker_unreadable`) instead of being silently indistinguishable
+from agreement.
+
+Confirmed live, not yet fixed: `discover_models` itself has no timeout, so a
+request that never gets an answer leaves the picker's state unknown forever —
+the warning cannot be shown, because it never receives anything to compare
+against. Tracked for a follow-up.
+
+#### Pro guessed file paths the terse rungs already refuse to
+
+Reported from use: a `pro`-tier turn called `read_file` on an unverified path
+with no search first. The guess was right, which is precisely why nothing
+caught it — `core-terse.md` (the `lite` rung) and `reasoning-lite.md` both
+say never to guess a path, and `pro-guardrails.md` did not, despite a code
+comment claiming the rule had been folded into it. It hadn't: the guardrails
+covered file *content* and function signatures already read, never path
+*existence*. Restored, in pro's voice — `+261` characters, pro rung only.
+
+---
+
 ### Unreleased — `v2.2`
 
 **Evidence discipline.** An answer that arrives before its own evidence, and an
