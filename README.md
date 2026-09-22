@@ -478,9 +478,36 @@ Once the agent is running, you can use built-in slash commands to manage your se
   hardcoded — the names and the list differ by subscription, so it reads your picker and
   matches on what each option is *for*.
 
+  **If it picks the wrong one, pin it.** The match is a scored word match against labels
+  Google writes and renames, so it can be wrong — and the only remedy used to be editing the
+  source. Add `browserModels` under `modelConfig` in `.agent/config.json` and name the picker
+  entry you want, one per rung:
+
+  ```json
+  "modelConfig": {
+    "effort": "pro",
+    "browserModels": { "lite": "Fast", "flash": "Thinking", "pro": "Pro" }
+  }
+  ```
+
+  Partial is fine — pin one rung and the rest keep matching by intent, which is also what
+  every existing config does. The label is checked against what your picker is offering *right
+  now*, exact first and then as a substring, so `"Pro"` keeps working when `3.1 Pro` becomes
+  `3.2 Pro`. A pin naming something your plan does not offer, or matching two entries at once,
+  is deliberately **not** used: `/effort` falls back to the intent match and says
+  `⚠ config pins "…", which this plan does not offer`, rather than stranding the rung on a
+  model that is not there. `/effort` and `/settings` both mark a pinned choice as pinned, so a
+  pin never looks like a lucky guess.
+
   This needs the current extension. If `/effort` says it is switching and the browser does not
   move, reload the extension at `chrome://extensions` and hard-refresh the Gemini tab — the
   page holds the old content script until you do.
+
+  If the browser never answers at all — a changed selector on the picker, a tab that never got
+  the message — that is now written to `/logs agent` as `model_options_unanswered`, and
+  `/effort` follows its `asked the browser for …` row with a second row saying nothing came
+  back. It used to do neither, so an unreadable picker was indistinguishable from one that
+  agreed with you.
 - Type `/allowlist` to view and manage your auto-approved and auto-rejected command rules.
 - Type `/settings` for one page of everything that is set, including the Context tab above.
 - Type `/open <path>` to open a file in your editor.

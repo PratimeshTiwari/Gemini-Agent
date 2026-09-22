@@ -69,6 +69,26 @@ const MAX_ROUNDS_PER_TURN = 30;
 const MODEL_POLL_INTERVAL_MS = 60000;
 
 /**
+ * How long `discover_models` may go unanswered before it is written down.
+ *
+ * `requestModelOptions` was fire-and-forget: it posted the message and nothing
+ * anywhere noticed if no answer came. So a broken selector on Gemini's picker,
+ * or a tab that never received the message, left `modelOptions` empty for the
+ * rest of the session — `explainModelMismatch` then sat in `unknown` forever
+ * and the mismatch row had nothing to compare against. It was not choosing
+ * silence; there was no data, and no record that there was no data.
+ *
+ * Reported from use with two screenshots: status bar on `LITE`, the tab still
+ * on `Pro`, no warning row, on a terminal tall enough that height-shedding was
+ * not the explanation.
+ *
+ * Generous, because the ask crosses a WebSocket to a service worker that may
+ * need waking, then a `chrome.tabs.sendMessage` into a page that has to open a
+ * menu. This is the outer bound of "nobody is coming", not a latency budget.
+ */
+const MODEL_OPTIONS_TIMEOUT_MS = 8000;
+
+/**
  * How long a subagent nobody is waiting on may run before it is abandoned.
  *
  * A watchdog, not a UX budget — it exists so a background task cannot hold a
@@ -102,7 +122,7 @@ import { compactHistory } from './compaction.js';
 import { runSubAgentSession } from './subagent-session.js';
 import { MUTATING_TOOLS, SHELL_TOOLS } from './tool-catalog.js';
 import { resolveEffort, effortFromConfig } from './effort.js';
-import { planModelSwitch } from './model-match.js';
+import { planModelSwitch, browserModelPin } from './model-match.js';
 import { archiveTurns } from './session-recall.js';
 import { handleSlashCommand as runSlashCommand } from './slash-commands.js';
 import { stripImageData } from './prompt-builder.js';
@@ -1443,6 +1463,11 @@ export class AgentLoop {
    */
   noteModelOptions(models, switchedTo, requested = null) {
     if (!Array.isArray(models)) return;
+    // An answer arrived, so the watchdog has nothing left to report. Cleared
+    // before the early returns below, not after: a malformed list is still an
+    // answer, and leaving the timer armed would log silence that did not happen.
+    clearTimeout(this._modelOptionsWatchdog);
+    this._modelOptionsWatchdog = null;
     this.modelOptions = models;
 
     /*
@@ -1498,7 +1523,7 @@ export class AgentLoop {
     this._pendingEffortSwitch = null;
     if (!wanted) return;
 
-    const plan = planModelSwitch(wanted, models);
+    const plan = planModelSwitch(wanted, models, browserModelPin(this.modelConfig, wanted));
     if (plan.action === 'switch') this.switchModelTo(plan.model.label);
   }
 
@@ -1586,6 +1611,48 @@ export class AgentLoop {
 
   requestModelOptions() {
     this._toExtension('discover_models');
+
+    /*
+     * One watchdog at a time, and it is about *silence*, not about being slow.
+     *
+     * A second ask while one is outstanding must not start a second timer:
+     * `/effort` can ask, and the once-a-turn poll can ask a moment later, and
+     * two timers would log the same silence twice and then leave one running
+     * past the answer. The existing timer already covers the window.
+     *
+     * `unref` so a pending watchdog cannot hold the process open — this fires
+     * long after most commands are done, and an 8s hang on exit would be a
+     * worse bug than the one it reports.
+     */
+    if (this._modelOptionsWatchdog) return;
+    this._modelOptionsWatchdog = setTimeout(() => {
+      this._modelOptionsWatchdog = null;
+      logError(this.workspace, {
+        flow: 'agent',
+        op: 'model_options_unanswered',
+        message: 'Asked the browser for its model list and nothing came back',
+        detail: `waited ${MODEL_OPTIONS_TIMEOUT_MS}ms — the picker cannot be read, `
+          + 'so the effort/browser mismatch warning has nothing to compare against',
+        meta: { effort: this.modelConfig?.effort || null },
+      });
+
+      /*
+       * And the user hears about it, but only if they asked.
+       *
+       * `/effort` says "asked the browser for X" and then, until now, never
+       * mentioned it again — so the one row on screen about the picker was a
+       * record of an attempt that reads like a status. The once-a-turn poll
+       * gets no row: it is background, nobody is waiting on it, and a notice
+       * per minute about a picker you are not currently setting is the kind of
+       * warning people learn to scroll past.
+       */
+      if (this._pendingEffortSwitch) {
+        this._pendingEffortSwitch = null;
+        this._notify('! The browser never answered with its model list — the tab '
+          + 'may need a reload (ctrl+b opens it). The effort here already changed.');
+      }
+    }, MODEL_OPTIONS_TIMEOUT_MS);
+    this._modelOptionsWatchdog.unref?.();
   }
 
   /** Bring the model's own tab to the front. ctrl+b. */

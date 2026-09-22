@@ -63,14 +63,70 @@ const INTENT = {
 const haystack = (m) => `${m.label || ''} ${m.description || ''}`.toLowerCase();
 
 /**
+ * The label this rung is pinned to in `config.json`, or `''`.
+ *
+ * `modelConfig.browserModels` is `{ lite, flash, pro }` — one picker label per
+ * rung. Absent means "decide by intent", which is the default and what every
+ * existing config does.
+ *
+ * Read by rung id rather than stored on the rung, because `effort.js` describes
+ * the ladder and this is a property of one user's Google plan.
+ */
+export function browserModelPin(modelConfig, effortId) {
+  const key = String(effortId ?? '').toLowerCase().trim();
+  const pinned = modelConfig?.browserModels?.[key];
+  return typeof pinned === 'string' ? pinned.trim() : '';
+}
+
+/**
  * @param {string} effortId  a rung id: lite | flash | pro
  * @param {Array<{label: string, description?: string, selected?: boolean}>} models
  *        what the picker actually offers, in the order it offers it
- * @returns {{model: object, why: string}|null} null when there is nothing to pick
+ * @param {string} [pin]  a label from `browserModels`, which wins over the
+ *        intent match when the picker is really offering it
+ * @returns {{model: object, why: string, pinned?: boolean, pinMissed?: string}|null}
+ *        null when there is nothing to pick
  */
-export function pickModelFor(effortId, models = []) {
+export function pickModelFor(effortId, models = [], pin = '') {
   const options = (models || []).filter((m) => m && m.label);
   if (options.length === 0) return null;
+
+  /*
+   * The pin is checked against the **live list**, never assumed.
+   *
+   * Everything below decides by what an option is *for*, which is what makes it
+   * survive a rename. But it is a scored word match over labels Google writes,
+   * and when it is wrong there has been no way to correct it short of editing
+   * this file. `browserModels` is that correction: name the label you want.
+   *
+   * What it must not become is a second way to be silently wrong. A pin this
+   * plan does not offer — a rename, a different subscription, another machine's
+   * config — would otherwise strand the rung on nothing for the life of the
+   * install, which is worse than the occasional bad match it exists to fix. So
+   * a pin is honoured only when it resolves to exactly one option that is on
+   * screen *now*; otherwise the intent match runs as usual and the result
+   * carries `pinMissed`, so the caller can say the pin was ignored rather than
+   * dropping it in silence.
+   *
+   * Exact label first, substring second. Version numbers move (`3.1 Pro` →
+   * `3.2 Pro`), so pinning `Pro` has to keep working — but `Flash` matches both
+   * `3.8 Flash` and `3.5 Flash-Lite`, and resolving that by position is exactly
+   * how you land on a model nobody chose. Ambiguous is treated as missed.
+   */
+  const wanted = String(pin || '').trim().toLowerCase();
+  let pinMissed;
+  if (wanted) {
+    const exact = options.filter((m) => m.label.trim().toLowerCase() === wanted);
+    const hits = exact.length
+      ? exact
+      : options.filter((m) => m.label.toLowerCase().includes(wanted));
+    if (hits.length === 1) {
+      return { model: hits[0], pinned: true, why: `${hits[0].label} — pinned by config` };
+    }
+    pinMissed = hits.length === 0
+      ? `config pins "${pin}", which this plan does not offer`
+      : `config pins "${pin}", which matches ${hits.length} of the options offered`;
+  }
 
   const intent = INTENT[effortId];
   if (!intent) return null;
@@ -94,7 +150,10 @@ export function pickModelFor(effortId, models = []) {
   if (!best) return null;
   return {
     model: best.model,
-    why: `${best.model.label} — closest to ${effortId} among ${options.length} offered`,
+    pinned: false,
+    ...(pinMissed ? { pinMissed } : {}),
+    why: `${best.model.label} — closest to ${effortId} among ${options.length} offered`
+      + (pinMissed ? ` (${pinMissed})` : ''),
   };
 }
 
@@ -124,8 +183,11 @@ export function pickModelFor(effortId, models = []) {
  *
  * @returns {{current: string, wanted: string} | null}
  */
-export function modelMismatch(effortId, models = []) {
-  const explained = explainModelMismatch(effortId, models);
+export function modelMismatch(effortId, models = [], pin = '') {
+  const explained = explainModelMismatch(effortId, models, pin);
+  // Two fields, still. The status row only needs "warn or don't", and every
+  // extra key here is one more thing a caller can start depending on — whether
+  // the wanted model came from a pin is `explainModelMismatch`'s business.
   return explained.state === 'mismatch'
     ? { current: explained.current, wanted: explained.wanted }
     : null;
@@ -146,7 +208,7 @@ export function modelMismatch(effortId, models = []) {
  *
  * @returns {{state: 'agree'|'unknown'|'mismatch'|'unavailable', current?: string, wanted?: string, reason?: string}}
  */
-export function explainModelMismatch(effortId, models = []) {
+export function explainModelMismatch(effortId, models = [], pin = '') {
   const options = (models || []).filter((m) => m && m.label);
   const current = options.find((m) => m.selected);
   if (!current) {
@@ -157,19 +219,24 @@ export function explainModelMismatch(effortId, models = []) {
         : 'the browser reported a model list with nothing marked selected',
     };
   }
-  const plan = planModelSwitch(effortId, options);
+  const plan = planModelSwitch(effortId, options, pin);
   if (plan.action === 'unavailable') return { state: 'unavailable', reason: plan.reason };
   if (plan.action === 'none') return { state: 'agree', current: current.label };
-  return { state: 'mismatch', current: current.label, wanted: plan.model.label };
+  return {
+    state: 'mismatch',
+    current: current.label,
+    wanted: plan.model.label,
+    pinned: Boolean(plan.pinned),
+  };
 }
 
-export function planModelSwitch(effortId, models = []) {
+export function planModelSwitch(effortId, models = [], pin = '') {
   const options = (models || []).filter((m) => m && m.label);
   if (options.length === 0) {
     return { action: 'unavailable', reason: 'the browser has not reported a model list yet' };
   }
 
-  const pick = pickModelFor(effortId, options);
+  const pick = pickModelFor(effortId, options, pin);
   if (!pick) {
     const offered = options.map((m) => m.label).join(', ');
     return {
@@ -178,10 +245,21 @@ export function planModelSwitch(effortId, models = []) {
     };
   }
 
+  // `pinned` and `pinMissed` ride along so the caller can tell "you asked for
+  // this" from "I guessed this", and can say when a pin was skipped. Collapsing
+  // those into one message is the defect `explainModelMismatch` was split out
+  // of: one value doing two jobs reads as silence.
+  const pinFields = {
+    pinned: Boolean(pick.pinned),
+    ...(pick.pinMissed ? { pinMissed: pick.pinMissed } : {}),
+  };
+
   const current = options.find((m) => m.selected);
   if (current && current.label === pick.model.label) {
-    return { action: 'none', model: pick.model, reason: `already on ${pick.model.label}` };
+    return {
+      action: 'none', model: pick.model, ...pinFields, reason: `already on ${pick.model.label}`,
+    };
   }
 
-  return { action: 'switch', model: pick.model, reason: pick.why };
+  return { action: 'switch', model: pick.model, ...pinFields, reason: pick.why };
 }
