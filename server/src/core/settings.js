@@ -20,6 +20,7 @@
 
 import fs from 'fs';
 import { resolveEffort } from './effort.js';
+import { browserModelPin } from './model-match.js';
 import * as paths from './paths.js';
 import { countToday } from './command-log.js';
 import { describeInstructionSources } from './instruction-sources.js';
@@ -78,7 +79,13 @@ export function describeSettings(agentLoop) {
       group: 'Settings',
       label: 'Effort',
       value: effort.id,
-      hint: `browser tab: ${effort.browser}`,
+      // The pin wins the hint when there is one: `effort.browser` is what the
+      // rung is written for, and the pin is what this install actually asks
+      // the picker for. Showing the first while the second is in force is how
+      // a settings page starts lying about itself.
+      hint: browserModelPin(mc, effort.id)
+        ? `browser tab: ${browserModelPin(mc, effort.id)} (pinned)`
+        : `browser tab: ${effort.browser}`,
       run: '/effort',
       restore: (value) => `/effort ${value}`,
     },

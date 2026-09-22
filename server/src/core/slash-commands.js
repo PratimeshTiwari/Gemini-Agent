@@ -21,7 +21,7 @@ import path from 'path';
 import * as paths from './paths.js';
 import { EFFORT_LEVELS, resolveEffort, isEffort } from './effort.js';
 import { logError } from './error-log.js';
-import { planModelSwitch } from './model-match.js';
+import { planModelSwitch, browserModelPin } from './model-match.js';
 
 /**
  * How long a name the banner can take.
@@ -415,21 +415,40 @@ export async function handleSlashCommand(loop, command, args) {
          * `⚙` is phase 4.2's marker for "this program said it", scoped to this
          * one call site rather than all 67.
          */
-        const plan = planModelSwitch(chosen.id, loop.modelOptions || []);
+        const plan = planModelSwitch(
+          chosen.id, loop.modelOptions || [], browserModelPin(loop.modelConfig, chosen.id),
+        );
+
+        // "pinned" is said out loud because a pin and a lucky intent match look
+        // identical in the result, and only one of them is something you chose.
+        const pinned = plan.pinned ? ' _(pinned)_' : '';
 
         let browser;
         if (plan.action === 'switch') {
           loop.switchModelTo(plan.model.label);
-          browser = `switching the browser to **${plan.model.label}**`;
+          browser = `switching the browser to **${plan.model.label}**${pinned}`;
         } else if (plan.action === 'none') {
-          browser = `browser already on **${plan.model.label}**`;
+          browser = `browser already on **${plan.model.label}**${pinned}`;
         } else {
           loop._pendingEffortSwitch = chosen.id;
           loop.requestModelOptions?.();
-          // The one branch that cannot confirm anything: there is no model list
-          // to match against, so say so and offer the key that shows the tab.
-          browser = `asking the browser for **${chosen.browser}** — \`ctrl+b\` shows the tab`;
+          /*
+           * The one branch that cannot confirm anything: there is no model list
+           * to match against, so say so and offer the key that shows the tab.
+           *
+           * Past tense deliberately. This row goes into `<Static>` the moment
+           * the command runs and is never repainted, so "asking the browser"
+           * read as live status for the rest of the session — reported from use
+           * with a screenshot of it sitting above a stale picker. It is a record
+           * of an attempt; the follow-up comes from `requestModelOptions`'s
+           * watchdog, which now says something when nothing comes back.
+           */
+          browser = `asked the browser for **${chosen.browser}** — \`ctrl+b\` shows the tab`;
         }
+
+        // A pin naming something this plan does not offer is the single way
+        // this feature can fail quietly, so it is the one thing always said.
+        if (plan.pinMissed) browser += ` · ⚠ ${plan.pinMissed}`;
 
         /*
          * What the change actually costs, said once and only when it applies.

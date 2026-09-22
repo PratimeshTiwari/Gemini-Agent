@@ -9,7 +9,7 @@ import { InputBar } from './components/InputBar.jsx';
 import { clampForDisplay, extractCodeBlocks } from './format.js';
 import { SLASH_COMMANDS, FOCUS_INPUT, FOCUS_TERMINAL, THINKING_MESSAGES, reservedRows, isCompactHeight } from './constants.js';
 import { resolveEffort } from '../core/effort.js';
-import { modelMismatch } from '../core/model-match.js';
+import { modelMismatch, browserModelPin } from '../core/model-match.js';
 import { groupTurns, parseTurnActions } from './transcript.js';
 import { expandPastes, attachedPastes } from './paste.js';
 import { drainChatQueue } from './chat-queue.js';
@@ -503,6 +503,9 @@ export function App({ agentLoop, wsServer }) {
   const mismatch = isCompactHeight(terminalHeight) ? null : modelMismatch(
     agentLoop.modelConfig?.effort,
     agentLoop.modelOptions || [],
+    // Resolved here rather than inside: `browserModels` is keyed by rung id and
+    // `modelConfig.effort` can still be a pre-2026-09-20 word on an old config.
+    browserModelPin(agentLoop.modelConfig, resolveEffort(agentLoop.modelConfig?.effort).id),
   );
   const noticeRows = (update.available ? 1 : 0) + (pendingReload ? 1 : 0) + (mismatch ? 1 : 0);
 
