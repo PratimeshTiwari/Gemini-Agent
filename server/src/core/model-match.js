@@ -125,14 +125,42 @@ export function pickModelFor(effortId, models = []) {
  * @returns {{current: string, wanted: string} | null}
  */
 export function modelMismatch(effortId, models = []) {
+  const explained = explainModelMismatch(effortId, models);
+  return explained.state === 'mismatch'
+    ? { current: explained.current, wanted: explained.wanted }
+    : null;
+}
+
+/**
+ * `modelMismatch`'s reasoning, without collapsing "they agree" and "I have no
+ * idea" into the same `null`.
+ *
+ * Reported from use, twice: the warning row disagreed with what the CLI
+ * believed the rest of the time, and there was no way to tell — from the
+ * outside or from the logs — whether that was because the picker genuinely
+ * agreed or because nothing had told it who was selected. Both read as
+ * silence. `modelMismatch` still returns a bare `null` for both, because the
+ * status row only ever needs "show a warning or don't" — but a caller that
+ * wants to know *why* it went quiet, or wants to log the unreadable case, has
+ * this instead.
+ *
+ * @returns {{state: 'agree'|'unknown'|'mismatch'|'unavailable', current?: string, wanted?: string, reason?: string}}
+ */
+export function explainModelMismatch(effortId, models = []) {
   const options = (models || []).filter((m) => m && m.label);
   const current = options.find((m) => m.selected);
-  if (!current) return null;
+  if (!current) {
+    return {
+      state: 'unknown',
+      reason: options.length === 0
+        ? 'the browser has not reported a model list yet'
+        : 'the browser reported a model list with nothing marked selected',
+    };
+  }
   const plan = planModelSwitch(effortId, options);
-  // `none` is agreement; `unavailable` means nothing here suits the rung, which
-  // is a different problem and not one the user can fix from the picker.
-  if (plan.action !== 'switch' || !plan.model) return null;
-  return { current: current.label, wanted: plan.model.label };
+  if (plan.action === 'unavailable') return { state: 'unavailable', reason: plan.reason };
+  if (plan.action === 'none') return { state: 'agree', current: current.label };
+  return { state: 'mismatch', current: current.label, wanted: plan.model.label };
 }
 
 export function planModelSwitch(effortId, models = []) {

@@ -1446,6 +1446,25 @@ export class AgentLoop {
     this.modelOptions = models;
 
     /*
+     * A list with entries and none of them marked `selected` is a failed
+     * picker read, not agreement — and until now nothing said so anywhere.
+     * `modelMismatch` collapsed it into the same `null` as "the browser
+     * genuinely agrees with the rung", so a broken selector on the picker DOM
+     * looked identical to nothing being wrong. Logged once per occurrence
+     * rather than per poll — `MODEL_POLL_INTERVAL_MS` already throttles how
+     * often this runs, so there is nothing here spamming on its own.
+     */
+    const options = models.filter((m) => m && m.label);
+    if (options.length > 0 && !options.some((m) => m.selected)) {
+      logError(this.workspace, {
+        flow: 'agent',
+        op: 'model_picker_unreadable',
+        message: 'Browser reported a model list with nothing marked selected',
+        detail: `offered: ${options.map((m) => m.label).join(', ')}`,
+      });
+    }
+
+    /*
      * `switchedTo` is what the picker *reads* after the click, not what was
      * asked for — so this can say whether it landed instead of assuming.
      *

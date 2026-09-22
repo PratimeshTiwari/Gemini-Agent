@@ -1005,6 +1005,15 @@ export async function handleSlashCommand(query, {
            * exactly what `isLocal` marks.
            */
           const newHistory = agentLoop.conversationHistory.map((t, i) => ({ ...t, __loopIndex: i }));
+          // /undo and /compact rewrite the transcript rather than clearing it, so
+          // the reply that follows needs the `❯ /compact` row above it or it reads
+          // as glued onto whatever the model last said, with nothing saying what
+          // caused it. /clear has no rewritten history to glue onto — it is wiped
+          // above at the early return — so it never reaches here; if it ever did,
+          // echoing a command into a just-emptied transcript would be pointless.
+          if (command !== 'clear') {
+            newHistory.push({ role: 'user', content: query, isLocal: true });
+          }
           if (result && result.message) {
             newHistory.push({ role: 'assistant', content: result.message, isLocal: true });
           }
