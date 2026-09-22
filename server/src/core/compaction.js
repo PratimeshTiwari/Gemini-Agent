@@ -55,12 +55,25 @@ export async function compactHistory(loop, focus) {
   const pending = loop.conversationHistory.slice(0, -5);
   const pendingChars = charsOf(pending);
   if (pendingChars < MIN_COMPACT_CHARS) {
+    // The two numbers here measure different things, and side by side they
+    // used to read as the tool contradicting itself — "only 114 characters"
+    // next to "~23,248 tokens" with nothing saying why. This one is
+    // `conversationHistory.slice(0, -5)`: everything /compact would actually
+    // summarise, which is small because there just isn't much history yet.
+    // `loop.contextTokens` is everything ever typed into the browser tab —
+    // system prompt, tool definitions, every prior turn — which starts large
+    // on turn 0 and stays large. Both are true; they answer different
+    // questions, so the message now says which is which instead of leaving
+    // the reader to guess.
     return {
-      message: `Nothing worth compacting yet — the older turns are only `
-        + `${pendingChars.toLocaleString()} characters, and summarising them would cost a `
-        + `browser round trip to save less than it spends.\n\n`
-        + `_Context is ~${loop.contextTokens.toLocaleString()} tokens; `
-        + `auto-compaction runs past 80% of the rung's budget._`,
+      message: `Nothing worth compacting yet — the older turns eligible for compaction `
+        + `(everything but the last 5) are only ${pendingChars.toLocaleString()} characters, `
+        + `below the ${MIN_COMPACT_CHARS.toLocaleString()}-character threshold where a browser `
+        + `round trip pays for itself.\n\n`
+        + `_That's not the number in the status bar. This one is just the turns \`/compact\` `
+        + `would summarise; context is ~${loop.contextTokens.toLocaleString()} tokens — `
+        + `everything ever typed into the tab, including the system prompt — `
+        + `and auto-compaction runs off that one, past 80% of the rung's budget._`,
     };
   }
 
