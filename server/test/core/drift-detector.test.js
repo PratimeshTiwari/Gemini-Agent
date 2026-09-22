@@ -170,6 +170,34 @@ describe('looksLikeCodeQuestion', () => {
     ]) assert.ok(looksLikeCodeQuestion(q), `missed: ${q}`);
   });
 
+  /*
+   * The corpus, taken off disk rather than imagined.
+   *
+   * Every string below is a real first prompt from `.agent/sessions/`, verbatim
+   * including its typos, whose reply cited two or more files with no tool call
+   * before it. Eight of them across 38 sessions; the detector caught three, so
+   * `turn0_no_tools` reported 0% for a failure running at ~21% of sessions.
+   *
+   * The five marked MISSED are the regression: each one is a confident answer
+   * about this repository written without opening a file, and the last is the
+   * one that invented six UI components and an event API.
+   */
+  test('the real turn-0 prompts from the sessions on disk', () => {
+    for (const q of [
+      // MISSED before 2026-09-22 — no path, no extension, no "we".
+      'can you make a plan on improving effort or system prompt of this to make it '
+        + 'closer to gpt 6 astra level , suggest real world improvements on this for '
+        + 'different effort levels',
+      'can you suggest me imporvement on current system and base prompt in this agetn '
+        + ', seems like a mess and the un-organised',
+      'an you suggest me imporvement on current system and base prompt in this agetn',
+      'can you tell me about ui and watcher',
+      // Already caught, by "should we" — pinned so widening cannot lose them.
+      'can you help me improvement in effort tier ? should we send system prompt in '
+        + 'chunks again to remind model ?',
+    ]) assert.ok(looksLikeCodeQuestion(q), `missed: ${q}`);
+  });
+
   // A false positive costs one log row a human reads; a false negative costs
   // the measurement. But it must not fire on everything, or the rate is 100%
   // and says nothing — these are the control.
@@ -180,6 +208,11 @@ describe('looksLikeCodeQuestion', () => {
       'what is the capital of France',
       'translate good morning into japanese',
       'summarise this article for me',
+      // Added with the domain-noun pattern: these share no word with it, and
+      // they are the shape a widened list would start swallowing first.
+      'what year did the roman empire fall',
+      'give me a recipe for banana bread',
+      'is it going to rain tomorrow',
     ]) assert.equal(looksLikeCodeQuestion(q), false, `fired on: ${q}`);
   });
 

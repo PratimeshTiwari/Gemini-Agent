@@ -270,6 +270,33 @@ const CODE_QUESTION = [
   // Verbs of change aimed at a system rather than at prose.
   /\b(refactor|implement|debug|optimi[sz]e)\b/i,
   /\b(improve|fix|add|remove|change|update|rewrite)\b[^.!?]{0,40}\b(tier|prompt|tool|flag|agent|loop|bridge|handler|config|schema|branch|test)/i,
+  /*
+   * The parts of a system, named.
+   *
+   * Everything above is either punctuation (a path, an extension), a *generic*
+   * software noun (codebase, module, function, class) or a grammatical tell
+   * ("should we", "how does this"). What people actually type is the name of
+   * the piece they mean — "tell me about ui and watcher", "suggest improvement
+   * on the base prompt", "what's wrong with the bridge". Those carry no path,
+   * no extension, no `we` and none of the nouns above, so none of them were
+   * seen.
+   *
+   * Measured against the sessions on disk, 2026-09-22. Across 38 sessions,
+   * eight first replies answered a question about this repo citing two or more
+   * files with no tool call before them; this detector caught **three**. The
+   * worst of the five it missed was "can you tell me about ui and watcher",
+   * which produced seventeen file references, six components that do not exist
+   * (`ChatView.jsx`, `MessageList.jsx`, `DiffViewer.jsx`, `TasksPane.jsx`,
+   * `ConfirmDialog`, `QuestionDialog`) and an `agentLoop.on(...)` event API on a
+   * class that is not an EventEmitter and that `App.jsx` never calls `.on` on.
+   *
+   * So `turn0_no_tools` read **0%** while the failure it was written for ran at
+   * roughly one session in five. That is worse than having no counter, because
+   * the turn-0 redesign was deliberately gated on this number deciding whether
+   * the failure was worth the risk of a prompt rewrite — a broken detector was
+   * quietly answering "no".
+   */
+  /\b(ui|cli|api|watcher|bridge|extension|agent|subagent|loop|prompt|tool|tier|effort|hook|endpoint|schema|config|session|transcript|side ?panel|content script|service worker|daemon|middleware|migration)\b/i,
 ];
 
 export function looksLikeCodeQuestion(text) {
