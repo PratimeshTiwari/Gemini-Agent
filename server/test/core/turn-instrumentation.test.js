@@ -42,13 +42,38 @@ describe('what /logs rates can answer', () => {
 });
 
 describe('turn0_no_tools is emitted from the right place', () => {
-  test('both halves are required', () => {
+  test('all three halves are required', () => {
     assert.match(
       loopSrc,
-      /if \(isFirstReply && !premature && looksLikeCodeQuestion\(this\.currentObjective\)\)/,
-      'the pair is what makes it a failure — either half alone is ordinary',
+      /if \(isFirstReply && !premature && openedNothing\s*\n?\s*&& looksLikeCodeQuestion\(this\.currentObjective\)\)/,
+      'the combination is what makes it a failure — any one alone is ordinary',
     );
     assert.match(loopSrc, /op: 'turn0_no_tools'/);
+  });
+
+  /*
+   * The half that was missing, and the reason it matters more than it looks.
+   *
+   * `isFirstReply` reads `conversationHistory` for an `agent`/`assistant` turn.
+   * A tool round pushes `role: 'system'` and nothing else, so it stays true for
+   * every round of turn 0 — and the final prose reply, which by then has no
+   * tool calls of its own, tripped the pair. Caught on 2026-09-24 by running
+   * the real agent: four files opened, an accurate answer, and a log line
+   * saying it "answered without opening anything".
+   *
+   * That is a false positive on the *best* available outcome — investigate,
+   * then answer — so it would have inflated the rate the turn-0 work is gated
+   * on, in the opposite direction from the blindness fixed in #26.
+   */
+  test('a turn that opened something is not a turn that opened nothing', () => {
+    assert.match(
+      loopSrc,
+      /const openedNothing = !this\._turnEvidence\?\.size;/,
+      'the check must be the turn\'s evidence, not whether this one reply called a tool',
+    );
+    // And the evidence it reads has to be per user turn, or a second question
+    // in the same session inherits the first one's tool calls and never fires.
+    assert.match(loopSrc, /this\._turnEvidence = new Map\(\);/);
   });
 
   test('it reads the request, not the reply', () => {

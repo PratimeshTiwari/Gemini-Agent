@@ -893,7 +893,41 @@ export class AgentLoop {
        * This exists to produce a number; what to do about the number is a
        * decision to make once it exists.
        */
-      if (isFirstReply && !premature && looksLikeCodeQuestion(this.currentObjective)) {
+      /*
+       * **`_turnEvidence`, not "this reply had no tool calls".**
+       *
+       * Found by running the real agent against the real browser, 2026-09-24.
+       * The prompt was "can you tell me about ui and watcher" — the one that
+       * produced seventeen invented file references in September. This time it
+       * did everything right: `search_files watcher`, `read_file
+       * file-watcher.js`, `search_files ui`, `read_file cli-ui.jsx`, then an
+       * accurate answer. Every claim in it checks out against the source.
+       *
+       * And it logged `turn0_no_tools` — *"answered without opening anything"*
+       * — about a turn that opened four files.
+       *
+       * `isFirstReply` asks whether `conversationHistory` holds an `agent` or
+       * `assistant` turn. A tool round pushes `role: 'system'` and nothing
+       * else, so it stays **true** for every round of turn 0, however many
+       * files get read. The final prose reply then has no tool calls of its
+       * own, and the pair fires.
+       *
+       * So it fired on the *best* outcome available — investigate, then answer
+       * — which is the most common shape of a good turn 0. Left alone it would
+       * have inflated the very rate the turn-0 work is gated on, in the
+       * opposite direction from the blindness fixed in #26, and the gate would
+       * have been wrong twice for opposite reasons.
+       *
+       * The comment below already said what it meant: *"'Asked about the code'
+       * is fine if it then went and looked."* Nothing checked whether it went
+       * and looked. `_turnEvidence` is that check — reset once per user turn in
+       * `handleUserMessage`, counting every tool the turn ran — and it was
+       * already there.
+       */
+      const openedNothing = !this._turnEvidence?.size;
+
+      if (isFirstReply && !premature && openedNothing
+        && looksLikeCodeQuestion(this.currentObjective)) {
         logError(this.workspace, {
           flow: 'agent',
           op: 'turn0_no_tools',
