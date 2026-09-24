@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.26.0**
+## Current version: **1.27.0**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -103,6 +103,24 @@ observers and clears its timers instead of ticking on.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.27.0 — 2026-09-25
+
+- **The tab a subagent task holds now survives a worker eviction.** `sessionTabs`
+  was module state, and MV3 evicts the service worker constantly — so between one
+  round and the next the map was often simply gone. That was harmless while every
+  round opened its own tab; holding one tab for a whole task made it load-bearing.
+  The failure was loud: `session_lost`, a full re-send, and a **new tab per round**
+  — reported as *"it opened subagent tab multiple times and just closed, felt like
+  a crash."* Persisted to `chrome.storage.session`, which is what `OWNED_KEY`
+  already uses for exactly this reason.
+- **`ctrl+b` opens the tab again, and the other two say why they cannot.**
+  `focusModelTab` and `sendToModelTab` both returned whether they reached a tab and
+  both callers discarded it, so ctrl+b, `/effort`'s model switch and
+  `discover_models` failed in silence. Focus now adopts any Gemini tab — showing
+  you a tab touches nothing. The other two still refuse tabs the extension does not
+  own, because one changes the model and the other opens its menu, but they now
+  report `no gemini tab this extension owns` instead of nothing.
 
 ### 1.26.0 — 2026-09-25
 

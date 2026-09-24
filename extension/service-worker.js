@@ -148,23 +148,62 @@
   function claimSubagentTab(tabId, sessionId = null) {
     if (tabId === void 0 || tabId === null) return;
     subagentTabs.add(tabId);
-    if (sessionId) sessionTabs.set(sessionId, tabId);
+    if (sessionId) {
+      sessionTabs.set(sessionId, tabId);
+      rememberSessionTab(sessionId, tabId);
+    }
     claimOwnedTab(tabId);
   }
+  var SESSIONS_KEY = "agentSessionTabs";
+  async function storedSessions() {
+    try {
+      const { [SESSIONS_KEY]: map = {} } = await chrome.storage.session.get(SESSIONS_KEY);
+      return map;
+    } catch {
+      return {};
+    }
+  }
+  async function rememberSessionTab(sessionId, tabId) {
+    if (!sessionId) return;
+    try {
+      const map = await storedSessions();
+      map[sessionId] = tabId;
+      await chrome.storage.session.set({ [SESSIONS_KEY]: map });
+    } catch {
+    }
+  }
+  async function forgetSessionTab(sessionId) {
+    if (!sessionId) return;
+    try {
+      const map = await storedSessions();
+      if (!(sessionId in map)) return;
+      delete map[sessionId];
+      await chrome.storage.session.set({ [SESSIONS_KEY]: map });
+    } catch {
+    }
+  }
   async function sessionTab(sessionId) {
-    if (!sessionId || !sessionTabs.has(sessionId)) return null;
-    const tabId = sessionTabs.get(sessionId);
+    if (!sessionId) return null;
+    let tabId = sessionTabs.get(sessionId);
+    if (tabId === void 0) {
+      tabId = (await storedSessions())[sessionId];
+      if (tabId === void 0) return null;
+      sessionTabs.set(sessionId, tabId);
+      subagentTabs.add(tabId);
+    }
     try {
       const tab = await chrome.tabs.get(tabId);
       if (tab) return tab;
     } catch {
     }
     sessionTabs.delete(sessionId);
+    await forgetSessionTab(sessionId);
     return null;
   }
   async function endSession(sessionId) {
-    const tabId = sessionTabs.get(sessionId);
+    const tabId = sessionTabs.get(sessionId) ?? (await storedSessions())[sessionId];
     sessionTabs.delete(sessionId);
+    await forgetSessionTab(sessionId);
     if (tabId === void 0) return;
     subagentTabs.delete(tabId);
     focusTakenFrom.delete(tabId);

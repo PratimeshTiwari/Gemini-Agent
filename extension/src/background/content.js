@@ -240,7 +240,11 @@ const sessionTabs = new Map();
 export function claimSubagentTab(tabId, sessionId = null) {
   if (tabId === undefined || tabId === null) return;
   subagentTabs.add(tabId);
-  if (sessionId) sessionTabs.set(sessionId, tabId);
+  if (sessionId) {
+    sessionTabs.set(sessionId, tabId);
+    // Persisted too, or the next round after a worker eviction opens a new tab.
+    rememberSessionTab(sessionId, tabId);
+  }
   // We opened it, so it is ours — and a recycled worker must not later mistake
   // it for one of the user's own tabs, nor adopt it as the main lane's.
   claimOwnedTab(tabId);
@@ -252,9 +256,67 @@ export function claimSubagentTab(tabId, sessionId = null) {
  * Checks the tab still exists rather than trusting the map: the user can close
  * it, and a send into a closed tab is an error the server cannot interpret.
  */
+/**
+ * Session id -> tab id, through the worker's own restarts.
+ *
+ * `sessionTabs` is module state, and MV3 evicts the service worker constantly —
+ * the reconnect cadence in this extension was measured at a 30-second floor. So
+ * between one round of a subagent task and the next, the map is very often
+ * simply gone.
+ *
+ * That was harmless while every round opened its own tab. Holding one tab for a
+ * whole task made it load-bearing, and the failure is loud: `sessionTab`
+ * returns null, the incremental prompt is refused as `session_lost`, the server
+ * resends the whole history, and a **new tab opens**. Reported from use minutes
+ * after that change shipped — *"it opened subagent tab multiple times and just
+ * closed, felt like a crash"* — with `extension/session_lost` in the log to
+ * match.
+ *
+ * `chrome.storage.session` is what `OWNED_KEY` above already uses for exactly
+ * this reason: it survives a worker restart and is cleared when the browser
+ * closes, which is the lifetime of a tab id. The in-memory map stays as the
+ * fast path.
+ */
+const SESSIONS_KEY = 'agentSessionTabs';
+
+async function storedSessions() {
+  try {
+    const { [SESSIONS_KEY]: map = {} } = await chrome.storage.session.get(SESSIONS_KEY);
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+async function rememberSessionTab(sessionId, tabId) {
+  if (!sessionId) return;
+  try {
+    const map = await storedSessions();
+    map[sessionId] = tabId;
+    await chrome.storage.session.set({ [SESSIONS_KEY]: map });
+  } catch { /* the in-memory map still works for this worker's lifetime */ }
+}
+
+async function forgetSessionTab(sessionId) {
+  if (!sessionId) return;
+  try {
+    const map = await storedSessions();
+    if (!(sessionId in map)) return;
+    delete map[sessionId];
+    await chrome.storage.session.set({ [SESSIONS_KEY]: map });
+  } catch { /* nothing to do */ }
+}
+
 export async function sessionTab(sessionId) {
-  if (!sessionId || !sessionTabs.has(sessionId)) return null;
-  const tabId = sessionTabs.get(sessionId);
+  if (!sessionId) return null;
+  let tabId = sessionTabs.get(sessionId);
+  if (tabId === undefined) {
+    // The worker was recycled since this session started. Storage still knows.
+    tabId = (await storedSessions())[sessionId];
+    if (tabId === undefined) return null;
+    sessionTabs.set(sessionId, tabId);
+    subagentTabs.add(tabId);
+  }
   try {
     const tab = await chrome.tabs.get(tabId);
     if (tab) return tab;
@@ -262,13 +324,15 @@ export async function sessionTab(sessionId) {
     /* closed while we were not looking */
   }
   sessionTabs.delete(sessionId);
+  await forgetSessionTab(sessionId);
   return null;
 }
 
 /** End a batch session and close the tab it was holding. */
 export async function endSession(sessionId) {
-  const tabId = sessionTabs.get(sessionId);
+  const tabId = sessionTabs.get(sessionId) ?? (await storedSessions())[sessionId];
   sessionTabs.delete(sessionId);
+  await forgetSessionTab(sessionId);
   if (tabId === undefined) return;
   subagentTabs.delete(tabId);
   focusTakenFrom.delete(tabId);
