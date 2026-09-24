@@ -207,6 +207,17 @@
     mainTabs.set(targetModel, chosen.id);
     return chosen;
   }
+  async function adoptableModelTab(targetModel = "gemini") {
+    const targetUrl = MODEL_URLS[targetModel];
+    if (!targetUrl) return null;
+    try {
+      const tabs = await chrome.tabs.query({ url: targetUrl });
+      const usable = tabs.filter((t) => !subagentTabs.has(t.id));
+      return usable.length ? usable[usable.length - 1] : null;
+    } catch {
+      return null;
+    }
+  }
   function matchesModelUrl(url, targetModel) {
     const pattern = MODEL_URLS[targetModel];
     if (!pattern || !url) return false;
@@ -498,7 +509,7 @@
     }
   }
   async function focusModelTab(targetModel = "gemini") {
-    const tab = await pickMainTab(targetModel);
+    const tab = await pickMainTab(targetModel) || await adoptableModelTab(targetModel);
     if (!tab) return false;
     try {
       await chrome.tabs.update(tab.id, { active: true });
@@ -543,14 +554,23 @@
     const targetUrl = MODEL_URLS[targetModel];
     if (!targetUrl) return false;
     const tab = sessionId ? await sessionTab(sessionId) : await pickMainTab(targetModel);
-    if (!tab) return false;
+    if (!tab) {
+      lastTabFailure = `[${message.type}] no ${targetModel} tab this extension owns \u2014 open one from the agent, or reload the extension if you opened it yourself`;
+      return false;
+    }
     try {
       await chrome.tabs.sendMessage(tab.id, message);
       return true;
     } catch (err) {
+      lastTabFailure = `[${message.type}] ${err.message}`;
       console.warn(`[Agent CLI] ${message.type} could not reach the ${targetModel} tab:`, err.message);
       return false;
     }
+  }
+  function takeTabFailure() {
+    const reason = lastTabFailure;
+    lastTabFailure = null;
+    return reason;
   }
   async function triggerNewChatInModel(payload) {
     const targetModel = payload.targetModel || "gemini";
@@ -709,6 +729,10 @@
       heartbeatTimer = null;
     }
   }
+  function reportTabFailure(op) {
+    const message = takeTabFailure() || `[${op}] could not reach a model tab`;
+    sendToServer({ type: "error", payload: { op, stage: "tab", message } });
+  }
   async function handleServerMessage(message) {
     const { type, payload } = message;
     switch (type) {
@@ -742,11 +766,15 @@
         await endSession(payload?.sessionId);
         break;
       case "focus_tab":
-        await focusModelTab(payload?.targetModel);
+        if (!await focusModelTab(payload?.targetModel)) reportTabFailure("focus_tab");
         break;
       case "discover_models":
       case "switch_model":
-        await sendToModelTab({ type, payload }, payload?.targetModel || "gemini", payload?.sessionId || null);
+        if (!await sendToModelTab(
+          { type, payload },
+          payload?.targetModel || "gemini",
+          payload?.sessionId || null
+        )) reportTabFailure(type);
         break;
       case "heartbeat_ack":
         break;

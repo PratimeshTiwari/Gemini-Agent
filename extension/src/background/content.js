@@ -349,6 +349,40 @@ export async function pickMainTab(targetModel = 'gemini') {
   return chosen;
 }
 
+/**
+ * Any tab of this model we may act on, whether or not we opened it.
+ *
+ * `pickMainTab` deliberately returns only **owned** tabs — tabs the extension
+ * opened — and that guard is right for injecting a prompt: dropping a turn into
+ * a conversation the person is having, or into a subagent's tab, is the failure
+ * it was written to stop.
+ *
+ * It is wrong for everything else, and that was costing three separate
+ * features. `focus_tab` (ctrl+b), `discover_models` and `switch_model` all go
+ * through `sendToModelTab` → `pickMainTab`, and all three return `false` and
+ * say nothing when the Gemini tab is one **you** opened, or when the service
+ * worker was recycled and ownership was lost. Reported together on 2026-09-25:
+ * ctrl+b stopped opening the tab, `/effort lite` did not change the model, and
+ * `model_options_unanswered` fired on every run — one cause, three symptoms.
+ *
+ * The inject path never showed it because it has a fallback: no owned tab means
+ * open one. These three had none.
+ *
+ * Subagent tabs stay excluded. They are a different conversation, and focusing
+ * or re-modelling one is never what the user meant.
+ */
+export async function adoptableModelTab(targetModel = 'gemini') {
+  const targetUrl = MODEL_URLS[targetModel];
+  if (!targetUrl) return null;
+  try {
+    const tabs = await chrome.tabs.query({ url: targetUrl });
+    const usable = tabs.filter((t) => !subagentTabs.has(t.id));
+    return usable.length ? usable[usable.length - 1] : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Does this URL belong to that model? The query pattern, without the query. */
 export function matchesModelUrl(url, targetModel) {
   const pattern = MODEL_URLS[targetModel];
@@ -950,7 +984,9 @@ export async function injectPromptIntoModel(payload) {
  * the ownership rules exist to prevent.
  */
 export async function focusModelTab(targetModel = 'gemini') {
-  const tab = await pickMainTab(targetModel);
+  // Ours if we have one, otherwise whichever Gemini tab is open: "show me the
+  // tab" means the tab the person can see, not a question of ownership.
+  const tab = (await pickMainTab(targetModel)) || (await adoptableModelTab(targetModel));
   if (!tab) return false;
   try {
     await chrome.tabs.update(tab.id, { active: true });
@@ -1005,16 +1041,44 @@ export async function sendToModelTab(message, targetModel = 'gemini', sessionId 
   const targetUrl = MODEL_URLS[targetModel];
   if (!targetUrl) return false;
 
+  /*
+   * Owned only, deliberately.
+   *
+   * `switch_model` changes the model in the tab it reaches and
+   * `discover_models` opens its menu, so adopting a tab the person opened for
+   * themselves would reach into their own conversation — the thing the
+   * ownership rule above this file's `OWNED_KEY` exists to prevent. `ctrl+b`
+   * is different and does adopt: activating a tab shows it to the person who
+   * asked to see it and touches nothing.
+   *
+   * What changes here is that the failure stops being silent. It returned a
+   * bare `false` that both callers in `socket.js` discarded, so a picker that
+   * could not be reached was indistinguishable from one that answered — which
+   * is how `model_options_unanswered` could fire on every run with no way to
+   * tell "no tab" from "no answer".
+   */
   const tab = sessionId ? await sessionTab(sessionId) : await pickMainTab(targetModel);
-  if (!tab) return false;
+  if (!tab) {
+    lastTabFailure = `[${message.type}] no ${targetModel} tab this extension owns — `
+      + 'open one from the agent, or reload the extension if you opened it yourself';
+    return false;
+  }
 
   try {
     await chrome.tabs.sendMessage(tab.id, message);
     return true;
   } catch (err) {
+    lastTabFailure = `[${message.type}] ${err.message}`;
     console.warn(`[Agent CLI] ${message.type} could not reach the ${targetModel} tab:`, err.message);
     return false;
   }
+}
+
+/** Why the last `sendToModelTab` / `focusModelTab` failed, for the server. */
+export function takeTabFailure() {
+  const reason = lastTabFailure;
+  lastTabFailure = null;
+  return reason;
 }
 
 /**
