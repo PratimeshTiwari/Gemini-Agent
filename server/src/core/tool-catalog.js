@@ -336,6 +336,10 @@ paths, "the fix above" means nothing to it; \`role: "task"\` for a self-containe
 Parameters:
   - role (string, required): "review", "research" or "task"
   - prompt (string, required): everything it needs — it has no other context
+  - effort (string, optional): "lite", "flash" or "pro" — which model its tab runs on.
+    Leave it out and research and task go to a fast model, review keeps yours. Set it
+    only when you know better: "pro" for an errand that needs real reasoning, "lite"
+    for one that is barely more than a search.
 
 `,
   },

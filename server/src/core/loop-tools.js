@@ -98,10 +98,33 @@ function askQuestion(loop, call) {
 }
 
 /** Hand the work to a second Gemini tab, or hand it back labelled. */
+/**
+ * Which rung a delegated job should run on.
+ *
+ * Gathering is not reasoning. `role: "research"` is grep, read, report — work
+ * a cheap model does as well as an expensive one, and the expensive one is
+ * rate-limited on a consumer plan. So research and task default **down**.
+ *
+ * `review` does not. Its whole purpose is a reader who does not share the
+ * author's assumptions, and quietly downgrading the one step that exists to
+ * catch what the author missed would be the `unstructured` failure again:
+ * degrading in silence. It inherits the session's rung.
+ *
+ * An explicit `effort` always wins, including on review — the model may know
+ * the errand is trivial, and saying so beats a rule guessing.
+ */
+export function subagentEffort(requested, role, sessionEffort) {
+  const asked = String(requested || '').toLowerCase().trim();
+  if (asked === 'lite' || asked === 'flash' || asked === 'pro') return asked;
+  if (role === 'review') return sessionEffort || null;
+  return 'flash';
+}
+
 async function askSubagent(loop, call) {
   const role = String(call.args.role || 'task').toLowerCase();
   const task = call.args.prompt || call.args.query || '';
-  const result = await loop._runSubAgentSession(role, task, loop.mainModel);
+  const effort = subagentEffort(call.args.effort, role, loop.modelConfig?.effort);
+  const result = await loop._runSubAgentSession(role, task, loop.mainModel, effort);
   if (result.success) return result;
 
   /**

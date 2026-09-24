@@ -1161,6 +1161,24 @@ function findModelTriggerStructurally() {
   return null;
 }
 
+/**
+ * Which model the picker says is selected, without opening it.
+ *
+ * The trigger's own label carries it — "Open mode picker, currently Pro" —
+ * measured against the live page on 2026-09-24. That makes it readable with a
+ * single DOM query and no menu interaction, which is what lets the worker
+ * *confirm* a switch instead of sleeping and hoping.
+ *
+ * Deliberately not `readModelOptions()`: that opens the menu, and opening the
+ * menu over a composer is the bug `switch_model` was just laned to avoid.
+ */
+function currentModelLabel() {
+  const trigger = findElement(SELECTORS.modelTrigger) || findModelTriggerStructurally();
+  const label = trigger?.getAttribute('aria-label') || '';
+  const m = label.match(/currently\s+(.+)$/i);
+  return m ? m[1].trim() : null;
+}
+
 /** One option's label, its own description, and whether it is the current one. */
 function describeModelOption(el) {
   const lines = (el.innerText || el.textContent || '')
@@ -1589,6 +1607,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         url: window.location.href,
         hasInput: !!findElement(SELECTORS.inputField),
         hasSendButton: !!findElement(SELECTORS.sendButton),
+        // So a caller can confirm a switch landed. `switch_model` answers
+        // `{success:true}` the moment it is *dispatched* — the click and the
+        // menu animation are still ahead of it — so the ack cannot be the
+        // confirmation, and this is what the worker polls instead.
+        model: currentModelLabel(),
       });
       break;
 

@@ -22,6 +22,7 @@
  */
 import { randomUUID } from 'crypto';
 import { logError } from './error-log.js';
+import { pickModelFor, browserModelPin } from './model-match.js';
 
 /**
  * One subagent task, in **one** tab held for the whole of it.
@@ -44,10 +45,30 @@ import { logError } from './error-log.js';
  * is a `return` — `return_result`, the prose fallback, the empty failure — and
  * a session that is never ended leaves a tab open for the life of the browser.
  */
-export async function runSubAgentSession(loop, role, prompt, targetModel) {
+export async function runSubAgentSession(loop, role, prompt, targetModel, effort = null) {
   const session = randomUUID();
+
+  /*
+   * A rung, resolved against the picker the browser is really offering.
+   *
+   * The caller asks for `lite` / `flash` / `pro`, never a model name: the names
+   * move (`3.1 Pro` becomes `3.2 Pro`) and the list differs by subscription,
+   * which is the whole thesis of `model-match.js`. `pickModelFor` turns the
+   * rung into a label that exists *right now*, honouring a `browserModels` pin
+   * when one is set.
+   *
+   * Null when the picker has not been read yet — and null means "leave the tab
+   * on whatever it opens with", which is exactly the behaviour before this
+   * existed. A routing feature whose failure mode is stranding a subagent on no
+   * model at all would be worse than not routing.
+   */
+  const pick = effort
+    ? pickModelFor(effort, loop.modelOptions || [], browserModelPin(loop.modelConfig, effort))
+    : null;
+  const model = pick?.model?.label || null;
+
   try {
-    return await runSession(loop, role, prompt, targetModel, session);
+    return await runSession(loop, role, prompt, targetModel, session, model);
   } finally {
     // Best effort, like every other teardown here: a tab that outlives its
     // task is untidy, and failing the task over the tidy-up would be worse.
@@ -55,7 +76,7 @@ export async function runSubAgentSession(loop, role, prompt, targetModel) {
   }
 }
 
-async function runSession(loop, role, prompt, targetModel, session) {
+async function runSession(loop, role, prompt, targetModel, session, model) {
   const wrapper = loop.promptBuilder.buildSubagentWrapper(role);
   const baseSystem = `${wrapper}\nYou also have access to read-only tools to explore the codebase if needed.
 Workspace root path: ${loop.workspace}
@@ -96,7 +117,7 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
     let response = await loop._executeSubagent(
       targetModel,
       serialise(continuing ? localHistory.slice(sent) : localHistory),
-      { session, continuing },
+      { session, continuing, model },
     );
 
     /*
@@ -111,7 +132,7 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
     if (continuing && response?.sessionLost) {
       sent = 0;
       response = await loop._executeSubagent(
-        targetModel, serialise(localHistory), { session, continuing: false },
+        targetModel, serialise(localHistory), { session, continuing: false, model },
       );
     }
 

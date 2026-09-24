@@ -646,6 +646,46 @@ export async function sendWithRepairs(tabId, message, targetModel) {
   return false;
 }
 
+/**
+ * Put a freshly opened subagent tab on a named model, and confirm it landed.
+ *
+ * This is the whole of "route gathering to a Flash tab": a subagent already
+ * gets its own tab on its own lane, and the picker in that tab is its own. The
+ * only thing missing was saying which entry to choose, before the first prompt
+ * is typed — a switch after round 1 has already paid full price for round 1.
+ *
+ * **Confirmed, not assumed.** `switch_model` answers `{success: true}` the
+ * moment it is dispatched; the click and the menu animation are still ahead of
+ * it, so the ack proves nothing. `get_page_status` reports the picker's own
+ * label, so this polls that until it agrees.
+ *
+ * A failure is not a failed turn. The worst case is a subagent that runs on
+ * whatever the tab defaulted to, which is exactly what happened before this
+ * existed — so it is logged upward and stepped over, never thrown.
+ */
+async function selectModelInTab(tabId, label, budgetMs) {
+  const wanted = String(label || '').trim().toLowerCase();
+  if (!wanted) return false;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'switch_model', payload: { label } });
+  } catch {
+    return false; // no listener yet; the turn still goes out on the default
+  }
+
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 150));
+    try {
+      const status = await chrome.tabs.sendMessage(tabId, { type: 'get_page_status' });
+      const now = String(status?.model || '').toLowerCase();
+      if (now && (now === wanted || now.includes(wanted) || wanted.includes(now))) return true;
+    } catch {
+      /* the page is mid-navigation; ask again until the budget runs out */
+    }
+  }
+  return false;
+}
+
 async function trySendToTab(tab, message, targetModel) {
   await prepareTabForTurn(tab.id);
 
@@ -791,6 +831,9 @@ export async function injectPromptIntoModel(payload) {
       // Was a flat 4s. A subagent fan-out pays this per tab, so it was the
       // single largest fixed cost on the parallel path.
       await waitForBridge(newTab.id, 10000);
+      // Route the cheap work to a cheaper model, before the first prompt lands
+      // rather than after — a switch on round 2 has already paid for round 1.
+      if (payload.model) await selectModelInTab(newTab.id, payload.model, 5000);
       success = await trySendToTab(newTab, message, targetModel);
     }
   } else {
