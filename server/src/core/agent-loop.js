@@ -1669,7 +1669,60 @@ export class AgentLoop {
    * effort would change the model the person is talking to.
    */
   switchModelTo(label, sessionId = null) {
-    if (label) this._toExtension('switch_model', { label, ...(sessionId ? { sessionId } : {}) });
+    if (!label) return;
+
+    /*
+     * A switch is a DOM interaction on the tab a turn may be using.
+     *
+     * This was `this._toExtension('switch_model', …)` and nothing else — the
+     * one tab interaction in the system that did **not** go through
+     * `extension-lock`. Everything else is serialised per lane precisely
+     * because a tab can only do one thing at a time; this opened a menu
+     * whenever it felt like it.
+     *
+     * Reported from use with a screenshot: the turn-0 prompt sitting in the
+     * composer, the mode picker open on top of it, and nothing sent. Opening
+     * the picker puts an overlay across the composer, so the send button is
+     * behind it — `waitForSendButton` then finds a control it cannot click,
+     * burns its budget, and the turn is lost. The next prompt goes to whatever
+     * model was selected, because the switch never landed either.
+     *
+     * Held rather than dropped, and **not** by holding the lane. Holding it
+     * would need an ack to release on, and an ack that never arrives — a stale
+     * extension, a changed picker selector — wedges the main lane for the rest
+     * of the session and every later prompt vanishes into it. Deferring cannot
+     * fail that way: the worst case is a switch that happens one turn later
+     * than asked, which is what the mismatch row is for.
+     *
+     * A subagent's tab is its own and cannot collide with the main turn, so a
+     * session switch goes straight out.
+     */
+    if (sessionId) {
+      this._toExtension('switch_model', { label, sessionId });
+      return;
+    }
+
+    if (this.extensionLock?.isBusy?.(mainLane(this.mainModel))) {
+      this._pendingModelSwitch = label;
+      return;
+    }
+    this._toExtension('switch_model', { label });
+  }
+
+  /**
+   * Send a switch that was deferred because the tab was mid-turn.
+   *
+   * Called from `_releaseExtension`, after the lock has been handed back —
+   * `release()` pumps the next queued prompt, so the lane can be busy again
+   * immediately, and asking again is cheaper than guessing. A switch that is
+   * still blocked stays pending and is retried on the next release.
+   */
+  _flushModelSwitch() {
+    const label = this._pendingModelSwitch;
+    if (!label) return;
+    if (this.extensionLock?.isBusy?.(mainLane(this.mainModel))) return;
+    this._pendingModelSwitch = null;
+    this._toExtension('switch_model', { label });
   }
 
   /**
@@ -1772,6 +1825,8 @@ export class AgentLoop {
    */
   _releaseExtension(lane = mainLane(this.mainModel)) {
     this.extensionLock.release(lane);
+    // A model switch that arrived mid-turn has been waiting for exactly this.
+    this._flushModelSwitch();
   }
 
   /**
