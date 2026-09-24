@@ -135,7 +135,23 @@ export async function connectWebSocket() {
     ws.send(JSON.stringify({
       id: crypto.randomUUID(),
       type: 'identify',
-      payload: { clientType: 'extension' },
+      /*
+       * The build Chrome actually has, from the manifest it actually loaded.
+       *
+       * Reported from use, 2026-09-24: `chrome://extensions` said 1.25.0 while
+       * the loaded copy still had `github.com/*` site access — a permission
+       * removed on 2026-09-19. So the version badge was a number someone had
+       * typed, not evidence, and a day went into diagnosing selector failures
+       * that were really a stale load.
+       *
+       * `getManifest()` cannot lie the same way: it is read out of the bundle
+       * Chrome is running. The server compares it with the source tree it was
+       * started from and says so when they differ.
+       */
+      payload: {
+        clientType: 'extension',
+        version: chrome.runtime.getManifest().version,
+      },
       timestamp: Date.now(),
     }));
 

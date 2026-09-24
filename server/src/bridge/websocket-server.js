@@ -22,6 +22,7 @@ import { prepareWorkspaceSwitch, leaveWhenIdle, RESTART_EXIT_CODE } from '../cor
 import { canPickFolder, pickFolder } from '../core/folder-picker.js';
 import { planResume } from '../core/chat-thread.js';
 import { logError } from '../core/error-log.js';
+import { extensionVersionNotice } from '../core/extension-version.js';
 
 /**
  * Loopback only. Not `localhost`, which resolves through the hosts file and has
@@ -266,6 +267,38 @@ export class WebSocketServer {
       // while it was gone. Done before the timing bookkeeping below so a
       // resumed turn is not waiting on it.
       if (client.type === 'extension') {
+        /*
+         * Which build is actually in Chrome, said once, at the only moment it
+         * is cheap to say it.
+         *
+         * A stale extension is indistinguishable from a broken selector by
+         * watching failures — both are "the browser did not do the thing" —
+         * and on 2026-09-24 that ambiguity cost a day. The handshake already
+         * happens; this is one field on it and one row when they disagree.
+         *
+         * A row rather than a log line, because the person who can fix it is
+         * the one looking at the screen, and silence here is what let a
+         * pre-19-September build run for days claiming to be current.
+         */
+        client.extensionVersion = payload.version || null;
+        if (this.agentLoop) this.agentLoop.extensionVersion = client.extensionVersion;
+        const stale = extensionVersionNotice(client.extensionVersion);
+        if (stale) {
+          this.broadcast('extension', {
+            id: randomUUID(),
+            type: 'status',
+            payload: { message: stale },
+            timestamp: Date.now(),
+          });
+          this.agentLoop?._notify?.(stale);
+          logError(this.agentLoop?.workspace, {
+            flow: 'bridge',
+            op: 'extension_stale',
+            message: 'The extension in Chrome is not the build beside this server',
+            detail: stale,
+          });
+        }
+
         const resumed = this.flushPendingInjects();
         if (resumed > 0) {
           logError(this.agentLoop?.workspace, {

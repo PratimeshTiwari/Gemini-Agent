@@ -21,6 +21,7 @@
 import fs from 'fs';
 import { resolveEffort } from './effort.js';
 import { browserModelPin } from './model-match.js';
+import { expectedExtensionVersion } from './extension-version.js';
 import * as paths from './paths.js';
 import { countToday } from './command-log.js';
 import { describeInstructionSources } from './instruction-sources.js';
@@ -177,6 +178,24 @@ export function describeSettings(agentLoop) {
         return ms < 1000 ? `connected in ${ms}ms` : `connected in ${(ms / 1000).toFixed(1)}s`;
       })(),
       hint: 'how long the browser bridge took to find this server',
+    },
+    {
+      /*
+       * Which build is in Chrome, askable rather than only announced.
+       *
+       * The connect-time row scrolls away, and "have I reloaded it?" is asked
+       * long after. The number comes from `chrome.runtime.getManifest()` in
+       * the loaded bundle, so unlike the badge on `chrome://extensions` it
+       * cannot be a version somebody typed and forgot — which is exactly how a
+       * build from before 2026-09-19 ran for days calling itself 1.25.0.
+       */
+      group: 'Status',
+      label: 'Extension build',
+      value: agentLoop?.extensionVersion
+        || (agentLoop?.extensionConnectMs === undefined ? 'not connected yet' : 'older than 1.26.0'),
+      hint: expectedExtensionVersion()
+        ? `this checkout ships ${expectedExtensionVersion()} — reload Chrome's copy if they differ`
+        : 'reported by the extension itself, not by chrome://extensions',
     },
     {
       group: 'Status',

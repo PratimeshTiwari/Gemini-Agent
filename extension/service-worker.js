@@ -332,6 +332,26 @@
     }
     return false;
   }
+  async function selectModelInTab(tabId, label, budgetMs) {
+    const wanted = String(label || "").trim().toLowerCase();
+    if (!wanted) return false;
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: "switch_model", payload: { label } });
+    } catch {
+      return false;
+    }
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 150));
+      try {
+        const status = await chrome.tabs.sendMessage(tabId, { type: "get_page_status" });
+        const now = String(status?.model || "").toLowerCase();
+        if (now && (now === wanted || now.includes(wanted) || wanted.includes(now))) return true;
+      } catch {
+      }
+    }
+    return false;
+  }
   async function trySendToTab(tab, message, targetModel) {
     await prepareTabForTurn(tab.id);
     let originalActiveTabId = null;
@@ -426,6 +446,7 @@
         const newTab = await chrome.tabs.create({ url: targetUrl.replace("/*", ""), active: false });
         claimSubagentTab(newTab.id, payload.sessionId);
         await waitForBridge(newTab.id, 1e4);
+        if (payload.model) await selectModelInTab(newTab.id, payload.model, 5e3);
         success = await trySendToTab(newTab, message, targetModel);
       }
     } else {
@@ -591,7 +612,23 @@
       ws.send(JSON.stringify({
         id: crypto.randomUUID(),
         type: "identify",
-        payload: { clientType: "extension" },
+        /*
+         * The build Chrome actually has, from the manifest it actually loaded.
+         *
+         * Reported from use, 2026-09-24: `chrome://extensions` said 1.25.0 while
+         * the loaded copy still had `github.com/*` site access — a permission
+         * removed on 2026-09-19. So the version badge was a number someone had
+         * typed, not evidence, and a day went into diagnosing selector failures
+         * that were really a stale load.
+         *
+         * `getManifest()` cannot lie the same way: it is read out of the bundle
+         * Chrome is running. The server compares it with the source tree it was
+         * started from and says so when they differ.
+         */
+        payload: {
+          clientType: "extension",
+          version: chrome.runtime.getManifest().version
+        },
         timestamp: Date.now()
       }));
       broadcastTabStatus();

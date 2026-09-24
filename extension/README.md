@@ -14,12 +14,24 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.25.0**
+## Current version: **1.26.0**
 
-The panel prints its own version in the status bar, read from the manifest at
-load — so it is the build Chrome actually has, not a number someone forgot to
-update. If that badge and the version here disagree, **the extension has not
-been reloaded**.
+**Since 1.26.0 the CLI checks this for you.** The extension reports
+`chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
+loaded — on the `identify` handshake, and the server compares it with the
+manifest in this checkout. If they disagree you get one row at connect time
+saying so, and `/settings → Status → Extension build` answers it any time after.
+
+That check exists because the version on `chrome://extensions` is not evidence.
+On 2026-09-24 it read **1.25.0** while the loaded copy still had
+`github.com/*` site access — a permission removed from this manifest on
+2026-09-19. Six `model_options_unanswered` failures were investigated as a
+broken picker selector; the selectors were fine, and the build was three weeks
+stale. A number in a manifest is something a person typed. `getManifest()` is
+what Chrome is running.
+
+**An extension older than 1.26.0 reports no version at all**, so silence is
+itself the answer, and the CLI says so in as many words.
 
 ---
 
@@ -91,6 +103,15 @@ observers and clears its timers instead of ticking on.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.26.0 — 2026-09-25
+
+- **The extension says which build it is, and the CLI checks.** `identify` now
+  carries `chrome.runtime.getManifest().version`. The server compares it with
+  the manifest beside it and shows one row when they differ, logging
+  `extension_stale` so `/logs bridge` has it too. No version reported means a
+  build older than 1.26.0, which is reported as such rather than guessed at.
+  See the note under *Current version* for what this cost before it existed.
 
 ### 1.25.0 — 2026-09-20
 
