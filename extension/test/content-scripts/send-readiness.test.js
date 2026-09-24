@@ -44,6 +44,51 @@ const body = (() => {
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/\/\/[^\n]*/g, '');
 
+/**
+ * The paste has to prove it landed.
+ *
+ * `pasteHandled` was `!input.dispatchEvent(pasteEvent)` — true when anything
+ * called `preventDefault`. Gemini's editor always does, then inserts the text
+ * itself on a later tick, so the flag answered "a handler ran" and the
+ * `insertText` fallback was skipped on precisely the runs where that handler
+ * ran and dropped the text.
+ *
+ * Measured against the live page on 2026-09-24: `button[aria-label="Send
+ * message"]` exists **only when the composer has content** — 0 matches empty,
+ * 1 with text. So the `send button found: false` in `resend_unsubmitted` was
+ * an empty composer reporting itself accurately, and the turn then burned
+ * `waitForSendButton`'s whole 30s budget on a control that could not appear.
+ *
+ * Source assertions, like the rest of this file: the function closes over
+ * `SELECTORS` and `findElement`, and the regression — restoring a flag that
+ * reads like it means "the paste worked" — is invisible in a diff.
+ */
+describe('the paste is checked against the composer, not against preventDefault', () => {
+  test('the dispatch result is no longer treated as evidence', () => {
+    // The comments above the fix quote the old name on purpose, so this asks
+    // the code rather than the file.
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    assert.doesNotMatch(code, /pasteHandled/,
+      'preventDefault means a handler ran, not that the text arrived');
+  });
+
+  test('it reads the composer, and polls rather than reading once', () => {
+    assert.match(src, /const composerText = \(\) =>/,
+      'the composer contents are what the send button is keyed on');
+    assert.match(src, /for \(let i = 0; i < PASTE_SETTLE_TRIES && !landed; i \+= 1\)/,
+      'Quill inserts on a later tick — reading once would paste a second copy');
+    assert.match(src, /document\.execCommand\('insertText', false, text\)/,
+      'and there is still a fallback when it really did not land');
+  });
+
+  // An image with no text legitimately leaves the composer empty and the
+  // button enabled by the attachment. Re-inserting there would be a bug.
+  test('the image-only path is left alone', () => {
+    assert.match(src, /let landed = !text;/,
+      'no text to land means nothing to verify');
+  });
+});
+
 describe('waitForSendButton', () => {
   test('checks immediately rather than sleeping first', () => {
     assert.doesNotMatch(body, /setTimeout\(check,\s*500\)/,
