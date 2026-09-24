@@ -45,9 +45,25 @@ export function logTrace(workspace, trace) {
     }
     if (Object.keys(stages).length === 0) return;
 
+    /*
+     * The rung rides along, because without it these numbers cannot answer the
+     * question people actually ask of them.
+     *
+     * The record was `{time, model, stages}` — and `model` is always `gemini`,
+     * since that is the only provider. So a whole log of round-trip timings
+     * could not be split by *which model in the picker ran*, which makes
+     * "is Flash cheaper per round trip than Pro?" unanswerable from the one
+     * file that has every other part of the answer. It was asked on
+     * 2026-09-24 as the basis for routing cheap work to a Flash tab, and the
+     * honest reply was that nobody had measured it.
+     *
+     * Written only when known, so old rows stay valid and a turn with no rung
+     * attached is simply not counted in the per-rung split.
+     */
     const line = JSON.stringify({
       time: new Date().toISOString(),
       model: trace.model || 'gemini',
+      ...(trace.effort ? { effort: String(trace.effort) } : {}),
       stages,
     });
     const file = tracePath(workspace);
@@ -113,7 +129,37 @@ export function summariseTraces(workspace, { limit = 200 } = {}) {
     }))
     .sort((a, b) => order(a.stage) - order(b.stage) || a.stage.localeCompare(b.stage));
 
-  return { samples: traces.length, stages };
+  /*
+   * And the same numbers split by rung.
+   *
+   * Recorded *and read*, in one change. This repo has twice shipped a value
+   * that was written and never carried back — `getAllMemories` with no callers,
+   * `task.md` that no prompt returned — and both times the tool call was spent
+   * for nothing. A per-rung field with no per-rung view would be the third.
+   *
+   * `first_token` and `complete` are the two that differ by model: the rest is
+   * our own overhead and is the same whichever tab is answering.
+   */
+  const byEffort = new Map();
+  for (const trace of traces) {
+    if (!trace.effort) continue;
+    if (!byEffort.has(trace.effort)) byEffort.set(trace.effort, { first: [], complete: [] });
+    const row = byEffort.get(trace.effort);
+    const s2 = trace.stages || {};
+    if (Number.isFinite(s2.first_token)) row.first.push(s2.first_token);
+    if (Number.isFinite(s2.complete)) row.complete.push(s2.complete);
+  }
+
+  const efforts = [...byEffort.entries()]
+    .map(([effort, v]) => ({
+      effort,
+      n: Math.max(v.first.length, v.complete.length),
+      firstToken: percentile(v.first, 50),
+      complete: percentile(v.complete, 50),
+    }))
+    .sort((a, b) => b.n - a.n);
+
+  return { samples: traces.length, stages, efforts };
 }
 
 /** `2.1s`, `340ms` — the unit people would say out loud. */
