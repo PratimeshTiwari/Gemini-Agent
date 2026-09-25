@@ -1142,7 +1142,18 @@ function extractLatestResponse() {
  * rather than a timer, so the deadline is honest too. The `setTimeout` backstop
  * is the one throttled thing left and it only ever makes a *failure* late.
  */
-const MENU_OPEN_BUDGET_MS = 1000;
+/*
+ * **The old budget was never the number it said.** `20 × 50ms` reads as one
+ * second and, chained through a hidden tab's clamped timers, actually waited
+ * twenty-plus. Replacing it with a *real* one-second deadline was a 20×
+ * shortening nobody asked for — the throttling had been paying for a budget
+ * the code never declared. Three seconds is the honest version: an order of
+ * magnitude over a normal render, and still comfortably inside the server's
+ * 8s watchdog, so a picker that genuinely will not open still fails while
+ * someone is waiting rather than after they have given up.
+ */
+const MENU_OPEN_BUDGET_MS = 3000;
+const MENU_CLOSE_BUDGET_MS = 3000;
 const MODEL_SETTLE_BUDGET_MS = 2000;
 
 /**
@@ -1203,18 +1214,33 @@ async function openModelMenu(trigger) {
 }
 
 /**
- * Close it, and do not wait to be told it closed.
+ * Close it — including when it opens *after* we stopped waiting for it.
  *
- * The confirmation loop never retried and never reported — it polled until the
- * attribute flipped and then returned either way, so every one of its ticks was
- * spent on a value nobody read. It ran inside `readModelOptions`'s `finally`,
- * which means the model list the server is waiting for was held behind it.
- * The click is synchronous and is the part that matters; `aria-expanded` is
- * checked first, which is what stops a blind click re-opening the menu.
+ * The old confirmation loop never retried and never reported: it polled until
+ * the attribute flipped and then returned either way, so every tick was spent
+ * on a value nobody read, inside the `finally` the model list returns through.
+ * That part is gone and stays gone; the answer is not held behind cleanup.
+ *
+ * **But "click only if it is open right now" is a trap, and it is the one this
+ * file's own comment describes.** The open budget can expire before the
+ * component has set `aria-expanded`, and then the menu renders a moment later
+ * with nobody left to close it. A menu left open swallows the next click — so
+ * the *following* turn types its prompt into the composer and the send lands
+ * on the menu's backdrop instead. That looks exactly like a dead tab, two
+ * turns away from the discovery that caused it.
+ *
+ * So this is asynchronous and deliberately **not awaited**: it waits for the
+ * menu to be open, then closes it, and gives up quietly if it never opens.
+ * Nothing reads the result, which is why it must not be able to throw.
  */
-function closeModelMenu(trigger) {
-  if (trigger.getAttribute('aria-expanded') !== 'true') return;
-  trigger.click();
+async function closeModelMenu(trigger) {
+  try {
+    const open = await waitForDom(
+      () => trigger.getAttribute('aria-expanded') === 'true' || null,
+      MENU_CLOSE_BUDGET_MS,
+    );
+    if (open) trigger.click();
+  } catch { /* cleanup, and nobody is waiting on it */ }
 }
 
 /**
