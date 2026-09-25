@@ -23,7 +23,39 @@
 import { randomUUID } from 'crypto';
 import { logError } from './error-log.js';
 
+/**
+ * One subagent task, in **one** tab held for the whole of it.
+ *
+ * It used to be one tab per *round*: every pass re-serialised the entire
+ * accumulated history and handed it to `_executeSubagent` with no session, so
+ * the extension opened a fresh tab, typed everything again, and closed it. Six
+ * rounds meant six tabs and six copies of a history that only grew — the same
+ * waste `CLAUDE.md` measured for batch tasks at **81% of characters resent
+ * over ten turns**, and the reason a subagent has never been cheaper than
+ * doing the work inline.
+ *
+ * `turn-runner.js` already solved this for batch tasks and this file did not
+ * follow, because it predates it. The mechanics below are lifted from there
+ * deliberately rather than reinvented: a `sessionId` the extension keys a tab
+ * on, an incremental prompt of only what the tab has not seen, and a
+ * `sessionLost` fallback that says it all again once.
+ *
+ * The session is ended in a `finally`, because every exit from the loop below
+ * is a `return` — `return_result`, the prose fallback, the empty failure — and
+ * a session that is never ended leaves a tab open for the life of the browser.
+ */
 export async function runSubAgentSession(loop, role, prompt, targetModel) {
+  const session = randomUUID();
+  try {
+    return await runSession(loop, role, prompt, targetModel, session);
+  } finally {
+    // Best effort, like every other teardown here: a tab that outlives its
+    // task is untidy, and failing the task over the tidy-up would be worse.
+    try { loop._sendEndSession?.(session); } catch { /* not worth a turn */ }
+  }
+}
+
+async function runSession(loop, role, prompt, targetModel, session) {
   const wrapper = loop.promptBuilder.buildSubagentWrapper(role);
   const baseSystem = `${wrapper}\nYou also have access to read-only tools to explore the codebase if needed.
 Workspace root path: ${loop.workspace}
@@ -47,16 +79,46 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
   ];
 
   let lastCleanContent = '';
+  // How much of `localHistory` the tab's own thread already holds.
+  let sent = 0;
+
+  const serialise = (entries) => entries.map(t => {
+    if (t.role === 'system') return `[System Context/Tool Results]\n${t.content}`;
+    if (t.role === 'user') return `[User Task]\n${t.content}`;
+    if (t.role === 'agent') return `[Your Previous Output]\n${t.content}`;
+    return t.content;
+  }).join('\n\n');
 
   for (let turn = 0; turn < 6; turn++) {
-    const serializedPrompt = localHistory.map(t => {
-      if (t.role === 'system') return `[System Context/Tool Results]\n${t.content}`;
-      if (t.role === 'user') return `[User Task]\n${t.content}`;
-      if (t.role === 'agent') return `[Your Previous Output]\n${t.content}`;
-      return t.content;
-    }).join('\n\n');
-    const response = await loop._executeSubagent(targetModel, serializedPrompt);
+    // Only what the tab has not seen. On the first pass, or after a lost
+    // session, that is everything; after that it is the tool results alone.
+    const continuing = sent > 0;
+    let response = await loop._executeSubagent(
+      targetModel,
+      serialise(continuing ? localHistory.slice(sent) : localHistory),
+      { session, continuing },
+    );
+
+    /*
+     * The tab was closed under us mid-task.
+     *
+     * The extension refuses an incremental prompt rather than opening a fresh
+     * tab for it, because a continuation typed into an empty conversation gets
+     * a confident answer to a question the model never saw. Say it all again,
+     * once — if the second attempt loses its tab too, something is closing
+     * tabs faster than we can use them and retrying forever helps nobody.
+     */
+    if (continuing && response?.sessionLost) {
+      sent = 0;
+      response = await loop._executeSubagent(
+        targetModel, serialise(localHistory), { session, continuing: false },
+      );
+    }
+
     if (!response.success) return { success: false, error: response.error };
+    // Everything to here is in the tab's thread now. What follows — the reply
+    // and the tool results — is what the next pass has to send.
+    sent = localHistory.length;
 
     if (response.url) {
       loop.callbacks.sendToPanel({
@@ -68,7 +130,13 @@ RULES: Make up to 5 tool calls before calling return_result with your final answ
     }
 
     const content = response.result || response.content;
+    // The reply is already in the tab's thread — the model wrote it there. It
+    // stays in `localHistory` only for the `sessionLost` re-send, so `sent`
+    // moves past it and the next incremental prompt is the tool results alone.
+    // `turn-runner.js` sets `sent` twice for exactly this reason; the first
+    // port of this loop set it once and typed the model's own words back at it.
     localHistory.push({ role: 'agent', content });
+    sent = localHistory.length;
 
     let toolCalls = [];
     let cleanContent = content;

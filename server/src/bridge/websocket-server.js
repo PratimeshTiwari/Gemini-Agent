@@ -17,6 +17,7 @@
 import { WebSocketServer as WS } from 'ws';
 import { randomUUID } from 'crypto';
 import { logTrace } from '../core/trace-log.js';
+import { resolveEffort } from '../core/effort.js';
 import { prepareWorkspaceSwitch, leaveWhenIdle, RESTART_EXIT_CODE } from '../core/restart.js';
 import { canPickFolder, pickFolder } from '../core/folder-picker.js';
 import { planResume } from '../core/chat-thread.js';
@@ -355,7 +356,12 @@ export class WebSocketServer {
         // How long the browser spent on each stage of a *successful* turn. The
         // failure log has never had this, which is why "it got slower" was a
         // feeling rather than a number.
-        logTrace(this.agentLoop?.workspace, payload);
+        // The rung is the server's to know — the tab has no idea which profile
+        // built the prompt it was handed — so it is attached here.
+        logTrace(this.agentLoop?.workspace, {
+          ...payload,
+          effort: resolveEffort(this.agentLoop?.modelConfig?.effort).id,
+        });
         break;
 
       case 'model_options':

@@ -108,3 +108,58 @@ describe('formatMs — the unit people would say out loud', () => {
     assert.equal(formatMs(undefined), '—');
   });
 });
+
+/**
+ * The rung rides on the record, and is read back.
+ *
+ * Asked on 2026-09-24 as the basis for routing cheap work to a Flash tab: is
+ * Flash actually cheaper per round trip than Pro? The trace log had every other
+ * part of the answer — `first_token`, `complete`, one row per turn — and could
+ * not be split by which model in the picker ran, because the only identifying
+ * field was `model`, and `model` is always `gemini`.
+ *
+ * Recorded **and** summarised in one change. This repo has twice shipped a
+ * value that was written and never carried back (`getAllMemories` with no
+ * callers, `task.md` that no prompt returned), and both times the work was
+ * spent for nothing. A per-rung field with no per-rung view is the third.
+ */
+describe('traces carry the effort rung', () => {
+  test('it is written when known', () => {
+    logTrace(ws, { model: 'gemini', effort: 'pro', stages: { complete: 4000 } });
+    assert.equal(readTraces(ws)[0].effort, 'pro');
+  });
+
+  // Old rows have no rung and must stay valid — the field is new.
+  test('and left off entirely when it is not', () => {
+    logTrace(ws, { model: 'gemini', stages: { complete: 4000 } });
+    assert.ok(!('effort' in readTraces(ws)[0]), 'absent, not null or ""');
+  });
+
+  test('the split reports the two stages the model decides', () => {
+    logTrace(ws, { effort: 'lite', stages: { first_token: 1000, complete: 2000, send: 70 } });
+    logTrace(ws, { effort: 'lite', stages: { first_token: 3000, complete: 4000, send: 70 } });
+    logTrace(ws, { effort: 'pro', stages: { first_token: 9000, complete: 8000, send: 70 } });
+
+    const { efforts } = summariseTraces(ws);
+    const lite = efforts.find((e) => e.effort === 'lite');
+    const pro = efforts.find((e) => e.effort === 'pro');
+
+    assert.equal(lite.n, 2);
+    // Nearest-rank: ceil(0.5 * 2) = 1, so the median of two samples is the
+    // lower one. Every reported number is one that really happened, which is
+    // the property `percentile` is tested for above.
+    assert.equal(lite.firstToken, 1000, 'nearest-rank median of [1000, 3000]');
+    assert.equal(pro.n, 1);
+    assert.equal(pro.firstToken, 9000);
+    // Busiest rung first: with one rung the row is noise, and the caller hides
+    // the whole block below two.
+    assert.equal(efforts[0].effort, 'lite');
+  });
+
+  test('a log with no rungs at all offers an empty split, not a crash', () => {
+    logTrace(ws, { stages: { complete: 1000 } });
+    const { efforts, samples } = summariseTraces(ws);
+    assert.equal(samples, 1);
+    assert.deepEqual(efforts, []);
+  });
+});

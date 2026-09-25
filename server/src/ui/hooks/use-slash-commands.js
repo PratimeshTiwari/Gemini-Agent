@@ -655,10 +655,22 @@ export async function handleSlashCommand(query, {
         let timing = '';
         if (arg === 'extension') {
           const t = summariseTraces(agentLoop.workspace);
+          /*
+           * And the split by rung, which is the one comparison these numbers
+           * are asked for: is a Flash tab actually cheaper per round trip than
+           * a Pro one? Shown only with **two or more** rungs represented — one
+           * row comparing a thing to itself is noise, and the field is new so
+           * most logs will have one rung for a while.
+           */
+          const byRung = (t.efforts || []).filter((e) => e.n > 0);
+          const rungs = byRung.length < 2 ? '' : '\n\n**By effort rung** — median, the two stages the model decides\n'
+            + byRung.map((e) => `  ${e.effort.padEnd(6)} n=${String(e.n).padEnd(4)} first token ${formatMs(e.firstToken).padStart(7)}   reply ${formatMs(e.complete)}`).join('\n');
+
           timing = t.samples === 0
             ? '_No turn timings recorded yet — they land here as turns complete._\n\n'
             : `**Browser timings** — median and slowest tenth, over ${t.samples} turn${t.samples === 1 ? '' : 's'}\n`
               + t.stages.map((st) => `  ${st.stage.padEnd(12)} ${formatMs(st.median).padStart(6)}   p90 ${formatMs(st.p90)}`).join('\n')
+              + rungs
               + '\n\n';
         }
         const entries = readErrors(agentLoop.workspace, { flow: arg, limit: 15 });
