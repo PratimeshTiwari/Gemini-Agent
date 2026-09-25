@@ -1357,6 +1357,21 @@ async function selectModelByLabel(label) {
   if (!trigger) throw new Error('[find_model_trigger] no control that opens the mode picker');
 
   const items = await openModelMenu(trigger);
+
+  /*
+   * Describe them *now*, while the menu we already opened is on screen.
+   *
+   * The caller needs the option list to report the switch, and it used to get
+   * it by calling `readModelOptions()` afterwards — a **second** open of the
+   * same menu, moments after this one closed. `currentModelLabel`'s comment,
+   * twenty lines up, already says why that is wrong: opening the menu over a
+   * composer is the bug `switch_model` was given its own lane to avoid.
+   *
+   * Reported with two screenshots on 2026-09-25 — the picker open over a
+   * composer holding an unsent prompt, and `3.1 Pro` correctly ticked behind
+   * it. The switch had *worked*; the second open is what swallowed the send.
+   */
+  const described = items.map(describeModelOption).filter((m) => m.label);
   const hit = items.find((el) => describeModelOption(el).label.trim().toLowerCase() === wanted);
 
   if (!hit) {
@@ -1379,14 +1394,70 @@ async function selectModelByLabel(label) {
    * server asked for "Pro", which is the same comparison `selectModelInTab`
    * makes on the worker side.
    *
-   * A timeout here is not a failure: `readModelOptions()` runs next and reports
-   * what the picker actually says, which is the honest answer either way.
+   * A timeout here is not a failure: the trigger is read again below either
+   * way, so what goes back is what the picker says rather than what we asked.
    */
   await waitForDom(() => {
     const now = (currentModelLabel() || '').trim().toLowerCase();
-    return now && (now === wanted || now.includes(wanted) || wanted.includes(now)) ? now : null;
+    return now && sameModelName(now, wanted) ? now : null;
   }, MODEL_SETTLE_BUDGET_MS);
-  return true;
+
+  /*
+   * The selection, re-derived from the trigger rather than from a second menu.
+   *
+   * `describeModelOption` read `selected` off the menu items *before* the
+   * click, so that flag is one state stale. The trigger's own `aria-label` —
+   * "Open mode picker, currently Pro" — carries the answer with a single DOM
+   * query and no interaction, which is the entire reason `currentModelLabel`
+   * exists. Verified against the live page: the label updates with the click.
+   */
+  return markSelected(described, currentModelLabel());
+}
+
+/** Lower-cased and trimmed, the only normalisation any of this needs. */
+const norm = (s) => String(s || '').trim().toLowerCase();
+
+/**
+ * Is the trigger reporting something like this name? Used only for "has it
+ * changed yet", where a false positive costs nothing — the list below is what
+ * decides which entry is actually selected.
+ */
+function sameModelName(a, b) {
+  const x = norm(a);
+  const y = norm(b);
+  if (!x || !y) return false;
+  return x === y || x.includes(y) || y.includes(x);
+}
+
+/**
+ * Which option is the trigger's label naming — exactly one, or none.
+ *
+ * **Substring alone is ambiguous here and gets it wrong.** The trigger says
+ * `Flash`; the menu offers `3.8 Flash` *and* `3.5 Flash-Lite`, and both
+ * contain it. `find` would then return whichever is first in the DOM, which is
+ * `3.5 Flash-Lite` — so switching to Flash would confirm the lite model, on a
+ * path whose entire purpose is to report the truth rather than the request.
+ *
+ * The version prefix is what makes this decidable: dropping the leading
+ * `3.1`-style token turns `3.1 Pro` into `Pro` and `3.5 Flash-Lite` into
+ * `Flash-Lite`, and then an exact comparison separates them. Substring is kept
+ * as a fallback for a vocabulary that does not look like today's, and there it
+ * follows `pickModelFor`'s rule for pins: **one hit is an answer, several are
+ * not**. Nothing selected is an honest outcome — the CLI already has a row for
+ * "still on X, asked for Y".
+ */
+function markSelected(described, triggerLabel) {
+  const wanted = norm(triggerLabel);
+  const stripVersion = (s) => norm(s).replace(/^\d+(\.\d+)*\s+/, '');
+
+  let index = described.findIndex((m) => stripVersion(m.label) === wanted);
+  if (index === -1) {
+    const hits = described
+      .map((m, i) => i)
+      .filter((i) => wanted && norm(described[i].label).includes(wanted));
+    index = hits.length === 1 ? hits[0] : -1;
+  }
+  return described.map((m, i) => ({ ...m, selected: i === index }));
 }
 
 /**
@@ -1747,20 +1818,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'switch_model':
+      /*
+       * Report what the picker *reads*, not what we asked it to read.
+       *
+       * `switchedTo` used to echo `payload.label` straight back, so the CLI
+       * said "Browser mode switched to X" whenever the click did not throw —
+       * which is a claim, not an observation.
+       *
+       * **And it used to buy that observation with a second menu open.** This
+       * chained `.then(() => readModelOptions())`, re-opening the picker
+       * moments after the click closed it, purely to read `selected` off the
+       * items. `selectModelByLabel` already had them in hand from the open it
+       * performed itself, and the trigger's `aria-label` carries the current
+       * model with no interaction at all — which is what `currentModelLabel`
+       * was written for, and what its comment says to use *instead of* this.
+       *
+       * The cost of ignoring that was a menu left open across the composer
+       * while the first prompt of the session was being typed into it, so the
+       * send landed on the backdrop. Reported with two screenshots: the picker
+       * open over an unsent prompt, with `3.1 Pro` correctly ticked behind it.
+       * The switch had worked; the confirmation is what broke the turn.
+       */
       selectModelByLabel(payload?.label)
-        .then(() => readModelOptions())
-        /*
-         * Report what the picker *reads*, not what we asked it to read.
-         *
-         * `switchedTo` used to echo `payload.label` straight back, so the CLI
-         * said "Browser mode switched to X" whenever the click did not throw —
-         * which is a claim, not an observation. That is why the CLI then told
-         * the user to go and check the picker themselves: the one thing that
-         * could have checked it was throwing the answer away.
-         *
-         * `readModelOptions()` already runs here and `describeModelOption`
-         * already reports `selected`, so the truth was in hand and unused.
-         */
         .then((models) => safeSend({
           type: 'model_options',
           payload: {

@@ -16,14 +16,19 @@ import assert from 'node:assert/strict';
 import { AgentLoop } from '../../src/core/agent-loop.js';
 
 const settleModelOptions = AgentLoop.prototype.settleModelOptions;
+// Borrowed too, because `settleModelOptions` calls it: a failure row that does
+// not say which model you are actually on leaves the reader to go and look,
+// which is the job the switch exists to do.
+const { browserModelNotice } = AgentLoop.prototype;
 
 function loopWithWatchdog(extra = {}) {
   const loop = {
     notices: [],
     fired: false,
-    modelOptions: [{ label: 'Pro', selected: true }],
+    modelOptions: [{ label: '3.1 Pro', selected: true }],
     _pendingEffortSwitch: null,
     _notify(text) { this.notices.push(text); },
+    browserModelNotice,
     ...extra,
   };
   loop._modelOptionsWatchdog = setTimeout(() => { loop.fired = true; }, 5);
@@ -54,7 +59,7 @@ test('the last known list survives — it is better than nothing', () => {
   const loop = loopWithWatchdog();
   settleModelOptions.call(loop, 'the picker did not open');
 
-  assert.deepEqual(loop.modelOptions, [{ label: 'Pro', selected: true }],
+  assert.deepEqual(loop.modelOptions, [{ label: '3.1 Pro', selected: true }],
     'a failure to ask overwrote what we already knew');
 });
 
@@ -69,6 +74,34 @@ test('a waiting /effort is told, once, and stops waiting', () => {
   assert.equal(loop._pendingEffortSwitch, null,
     'a pending switch left armed is applied to the next list that arrives, '
     + 'long after the user stopped expecting it');
+
+  // The half that makes the row actionable. Without it the reader is told a
+  // switch failed and left to go and look at the tab themselves — which is the
+  // job the switch exists to do.
+  assert.match(loop.notices[0], /Continuing on 3\.1 Pro/,
+    'the failure row does not say which model is actually running');
+  assert.match(loop.notices[0], /last seen/,
+    'a stale reading is being reported in the present tense');
+});
+
+test('and when there has never been a reading, it names nothing', () => {
+  const loop = loopWithWatchdog({ _pendingEffortSwitch: 'pro', modelOptions: [] });
+  settleModelOptions.call(loop, 'no tab');
+
+  assert.match(loop.notices[0], /browser model is unknown/);
+  assert.doesNotMatch(loop.notices[0], /Continuing on/,
+    'it invented a current model out of an empty list');
+});
+
+// A list we have but with nothing marked selected is the `model_picker_unreadable`
+// case, and it is not a reading either.
+test('a list with no selection is not a reading', () => {
+  const loop = loopWithWatchdog({
+    _pendingEffortSwitch: 'pro',
+    modelOptions: [{ label: '3.1 Pro', selected: false }, { label: '3.8 Flash', selected: false }],
+  });
+  settleModelOptions.call(loop, 'no tab');
+  assert.match(loop.notices[0], /browser model is unknown/);
 });
 
 // The background poll is nobody's question. CLAUDE.md: a warning per minute
