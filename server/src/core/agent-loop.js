@@ -1584,8 +1584,34 @@ export class AgentLoop {
     if (this._pendingEffortSwitch) {
       this._pendingEffortSwitch = null;
       this._notify(`! The browser could not read its model picker${reason ? `: ${reason}` : ''}`
-        + '\n  The effort here already changed. ctrl+b opens the tab.');
+        + `\n  ${this.browserModelNotice()}`);
     }
+  }
+
+  /**
+   * What the tab is running on, for a row that has to admit a switch failed.
+   *
+   * Asked for directly: *"if effort fails to select, print the current selected
+   * model from the web on the UI — continuing with model X, and change it
+   * manually as auto failed"*. The reasoning is right and the old row did not
+   * do it: "could not read the picker" leaves you to go and look, which is the
+   * job the feature exists to do. A failed switch is only actionable if you are
+   * told what you are actually on.
+   *
+   * The last successful read is the source, and it can be stale — that is the
+   * nature of a failure path — so this says **last seen** rather than claiming
+   * the present tense, and names nothing rather than guessing when there has
+   * never been a reading. `modelOptions` is deliberately not cleared by a
+   * failed ask, which is what leaves anything here to report.
+   */
+  browserModelNotice() {
+    const current = (this.modelOptions || []).find((m) => m && m.selected);
+    return current
+      ? `Continuing on ${current.label} — last seen selected in the tab. `
+        + 'Change it there by hand if you want a different one (ctrl+b opens it). '
+        + 'The prompt here already changed.'
+      : 'The effort here already changed; the browser model is unknown. '
+        + 'ctrl+b opens the tab so you can set it by hand.';
   }
 
   /**
@@ -1733,7 +1759,7 @@ export class AgentLoop {
       if (this._pendingEffortSwitch) {
         this._pendingEffortSwitch = null;
         this._notify('! The browser never answered with its model list — the tab '
-          + 'may need a reload (ctrl+b opens it). The effort here already changed.');
+          + `may need a reload.\n  ${this.browserModelNotice()}`);
       }
     }, MODEL_OPTIONS_TIMEOUT_MS);
     this._modelOptionsWatchdog.unref?.();

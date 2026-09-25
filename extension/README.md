@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.29.0**
+## Current version: **1.29.1**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -103,6 +103,45 @@ observers and clears its timers instead of ticking on.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.29.1 — 2026-09-25
+
+- **The switch worked; confirming it is what broke the turn.** `switch_model`
+  opened the menu **twice** — once in `selectModelByLabel` to click the option,
+  and again in `readModelOptions()` to read `selected` back off the items. The
+  second open is the one that sat across the composer while the session's first
+  prompt was being typed into it, so the send landed on the backdrop.
+
+  Reported with two screenshots, and they show the switch **succeeding**: the
+  trigger reads `Pro` and `3.1 Pro` carries the tick. The box around
+  `3.5 Flash-Lite` is the `active` class — keyboard focus on the item the menu
+  opened on — which is not selection, and is the trap `describeModelOption`
+  already warns about in a comment.
+
+  `currentModelLabel` exists for exactly this: the trigger's `aria-label` reads
+  `Open mode picker, currently Pro`, one DOM query, no interaction. Its own
+  comment says to use it *instead of* `readModelOptions` here, and that advice
+  was simply not taken. `selectModelByLabel` now describes the items from the
+  open it already performed and re-derives the selection from the trigger, so
+  the whole switch is one menu open.
+
+- **"Which one is selected" cannot be a substring test.** The trigger says
+  `Flash`; the menu offers `3.8 Flash` *and* `3.5 Flash-Lite`, and both contain
+  it — with Flash-Lite first in the DOM. So the obvious implementation confirms
+  the *lite* model when you switched to Flash, on the one path whose purpose is
+  to report the truth rather than the request. Dropping the leading version
+  token makes it decidable (`3.1 Pro` → `Pro`, `3.5 Flash-Lite` →
+  `Flash-Lite`); substring survives as a fallback under `pickModelFor`'s rule
+  for pins — one hit is an answer, several are not.
+
+- **A failed switch now says what you are running on.** Asked for directly:
+  *"if effort fails to select, print the current selected model — continuing
+  with model X, change it manually as auto failed"*. The old rows said the
+  picker could not be read and left you to go and look, which is the job the
+  switch exists to do. Both failure paths — no answer, and a refusal — now name
+  the last model seen selected, as **last seen** rather than in the present
+  tense, and name nothing at all rather than guess when there has never been a
+  reading.
 
 ### 1.29.0 — 2026-09-25
 
