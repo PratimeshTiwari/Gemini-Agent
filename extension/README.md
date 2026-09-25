@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.29.1**
+## Current version: **1.30.0**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -103,6 +103,56 @@ observers and clears its timers instead of ticking on.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.30.0 — 2026-09-26
+
+- **The deadline could not outlast the work it was waiting on.** 1.29.0 let a
+  user-initiated ask *open* a tab when there was none. `ensureModelTab` budgets
+  **8000ms** for the page to load and a further **5000ms** for the bridge to
+  answer — thirteen seconds against a watchdog of **eight**. So the watchdog
+  fired while the tab was still loading, every time, and reported *"the browser
+  never answered"* about an ask that was proceeding normally.
+
+  The fix for the missing tab created a deadline that guaranteed the failure it
+  was meant to remove, and from the transcript it looked identical to the
+  original bug — which is why it took a fourth pass to see. A user-initiated ask
+  now gets a budget derived from `ensureModelTab`'s own worst case; the
+  background poll, which opens nothing, keeps the eight seconds.
+
+- **And a throw while opening that tab vanished.** The `await` was unguarded, so
+  a rejection propagated out of `handleServerMessage` into `ws.onmessage`'s
+  catch — which logs *"unparseable server message"* about a message that parsed
+  perfectly — and skipped `sendToModelTab`, so the tab-failure report never
+  fired either. The server saw pure silence and blamed its own watchdog.
+
+- **Models are matched by the picker's order, anchored on Pro.** Reported by the
+  owner: *"Pro is the main identifier — Flash-Lite and Flash change across
+  different Google accounts, only Pro is constant, even the versions change."*
+  That undercuts the word lists for two rungs of three: `lite` reaches for
+  `fastest`/`lite` and `flash` for `thinking`/`flash`, and neither word is
+  promised to anybody.
+
+  The order is stable, and it was verified against the live picker by cycling it
+  with Gemini's own `⌘⇧M`, which walks the models and nothing else:
+  **Flash-Lite → Flash → Pro → Flash-Lite**. Lightest first, Pro last, and
+  Extended thinking is *not in the rotation* — a mode rather than a rung, which
+  is what `avoid: ['extended','complex']` always encoded by hand.
+
+  So Pro is found by name (`\bpro\b`) and the rest by position relative to it,
+  with modes dropped before positions are counted. Clamped rather than wrapped:
+  on a two-entry plan the middle rung collapses onto the lightest, because
+  wrapping would send it to Pro — the pairing CLAUDE.md names as the worst
+  available. The word lists stay as the fallback for a plan with no Pro in it,
+  which is the case they were actually written for.
+
+- **`⌘⇧M` itself cannot be used, and that is a platform boundary.** The shortcut
+  works and switches without opening the menu at all, which would have removed
+  this entire class of bug. It cannot be driven from an extension: synthetic
+  `KeyboardEvent`s carry `isTrusted: false`, and Gemini ignores them. Tested
+  across `window`, `document`, `body` and the composer, with `keydown`,
+  `keypress` and `keyup`, and both `m` and `M` — nothing moved, while a real
+  keypress moved it every time. Only `chrome.debugger` can send trusted input,
+  and it shows a permanent "debugging this browser" banner.
 
 ### 1.29.1 — 2026-09-25
 

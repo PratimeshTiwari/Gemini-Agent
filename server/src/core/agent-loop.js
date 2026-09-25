@@ -89,6 +89,27 @@ const MODEL_POLL_INTERVAL_MS = 60000;
 const MODEL_OPTIONS_TIMEOUT_MS = 8000;
 
 /**
+ * The same bound when the ask may have to **open a tab first**.
+ *
+ * `/effort` before the first prompt has no tab to read, so the extension opens
+ * one (1.29.0). `ensureModelTab` budgets **8000ms** for the page to finish
+ * loading and a further **5000ms** for the bridge to answer — thirteen seconds
+ * of work that the eight-second deadline above cannot possibly outlast.
+ *
+ * So the watchdog fired *while the tab was still loading*, every time, and
+ * reported "the browser never answered" about an ask that was proceeding
+ * normally. The fix for the missing tab created a deadline that guaranteed the
+ * failure it was meant to remove — and it looked identical to the original bug
+ * from the transcript, which is why it took a fourth pass to see.
+ *
+ * **A deadline has to outlast the work it is waiting on.** This one is
+ * `ensureModelTab`'s own worst case plus the round trip, rounded up. Keep the
+ * two in step: shortening the budgets there should shorten this, and lengthening
+ * them silently breaks it again.
+ */
+const MODEL_OPTIONS_WITH_TAB_TIMEOUT_MS = 20000;
+
+/**
  * How long a subagent nobody is waiting on may run before it is abandoned.
  *
  * A watchdog, not a UX budget — it exists so a background task cannot hold a
@@ -1735,13 +1756,18 @@ export class AgentLoop {
      * worse bug than the one it reports.
      */
     if (this._modelOptionsWatchdog) return;
+    // A user-initiated ask may be opening a tab first, and that work outlasts
+    // the background deadline on its own. See the constant.
+    const budget = userInitiated
+      ? MODEL_OPTIONS_WITH_TAB_TIMEOUT_MS
+      : MODEL_OPTIONS_TIMEOUT_MS;
     this._modelOptionsWatchdog = setTimeout(() => {
       this._modelOptionsWatchdog = null;
       logError(this.workspace, {
         flow: 'agent',
         op: 'model_options_unanswered',
         message: 'Asked the browser for its model list and nothing came back',
-        detail: `waited ${MODEL_OPTIONS_TIMEOUT_MS}ms — the picker cannot be read, `
+        detail: `waited ${budget}ms — the picker cannot be read, `
           + 'so the effort/browser mismatch warning has nothing to compare against',
         meta: { effort: this.modelConfig?.effort || null },
       });
@@ -1761,7 +1787,7 @@ export class AgentLoop {
         this._notify('! The browser never answered with its model list — the tab '
           + `may need a reload.\n  ${this.browserModelNotice()}`);
       }
-    }, MODEL_OPTIONS_TIMEOUT_MS);
+    }, budget);
     this._modelOptionsWatchdog.unref?.();
   }
 

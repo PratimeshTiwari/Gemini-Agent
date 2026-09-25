@@ -63,6 +63,53 @@ const INTENT = {
 const haystack = (m) => `${m.label || ''} ${m.description || ''}`.toLowerCase();
 
 /**
+ * The picker's own running order, anchored on the one name that does not drift.
+ *
+ * Reported by the owner, 2026-09-26: *"Pro is the main identifier — Flash-Lite
+ * and Flash change across different Google accounts, only Pro is constant, even
+ * the versions change."* That is a fact about Google's naming, not about this
+ * code, and it undercuts the word lists above for two of the three rungs:
+ * `lite` reaches for `fastest`/`lite` and `flash` for `thinking`/`flash`, and
+ * neither word is promised to anybody.
+ *
+ * What *is* stable is the order. Verified against the live picker by cycling it
+ * with the browser's own `⌘⇧M` shortcut, which walks the models and nothing
+ * else:
+ *
+ *     Flash-Lite → Flash → Pro → Flash-Lite (wraps)
+ *
+ * Lightest first, Pro last, and **Extended thinking is not in the rotation at
+ * all** — it is a mode rather than a rung, which is what `avoid` has always
+ * encoded by hand.
+ *
+ * So Pro is found by name, and the rest by position relative to it: the first
+ * entry is the lightest, and the one immediately before Pro is the middle. With
+ * two entries the middle *is* the lightest, and with one there is nothing to
+ * choose. Anything past Pro is a mode, not a model, and is dropped.
+ *
+ * Returns null when there is no entry recognisably named Pro — then the word
+ * lists run as before, because a plan that does not use the word at all is
+ * exactly the case they were written for.
+ */
+function byPickerOrder(effortId, options) {
+  const isMode = (m) => /extended|complex/.test(haystack(m));
+  const models = options.filter((m) => !isMode(m));
+
+  const proIndex = models.findIndex((m) => /\bpro\b/.test(haystack(m)));
+  if (proIndex === -1) return null;
+
+  if (effortId === 'pro') return models[proIndex];
+  if (effortId === 'lite') return models[0];
+  if (effortId === 'flash') {
+    // The rung below Pro. Clamped rather than wrapped: on a two-entry plan the
+    // middle collapses onto the lightest, which is the honest answer, and
+    // wrapping would send it to Pro — the one pairing CLAUDE.md calls the worst.
+    return models[Math.max(0, proIndex - 1)];
+  }
+  return null;
+}
+
+/**
  * The label this rung is pinned to in `config.json`, or `''`.
  *
  * `modelConfig.browserModels` is `{ lite, flash, pro }` — one picker label per
@@ -130,6 +177,29 @@ export function pickModelFor(effortId, models = [], pin = '') {
 
   const intent = INTENT[effortId];
   if (!intent) return null;
+
+  /*
+   * Order first, words second.
+   *
+   * The word lists survive a rename only if the new name happens to contain a
+   * word they know, which is a weaker promise than it looks — `lite` and
+   * `flash` are Google's product names this month, not guarantees. The picker's
+   * running order, anchored on Pro, does not depend on any of them.
+   *
+   * The words are kept as the fallback rather than deleted: a plan with no
+   * entry named Pro is precisely the case they were written for, and they are
+   * the only thing that can read a vocabulary nobody has seen yet.
+   */
+  const byOrder = byPickerOrder(effortId, options);
+  if (byOrder) {
+    return {
+      model: byOrder,
+      pinned: false,
+      ...(pinMissed ? { pinMissed } : {}),
+      why: `${byOrder.label} — ${effortId} by the picker's order, anchored on Pro`
+        + (pinMissed ? ` (${pinMissed})` : ''),
+    };
+  }
 
   let best = null;
   for (const model of options) {

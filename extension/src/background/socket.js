@@ -362,7 +362,24 @@ async function handleServerMessage(message) {
        * typed and are waiting on is the opposite case, and the row it prints
        * already says `ctrl+b` shows the tab.
        */
-      if (payload?.userInitiated && !payload?.sessionId) await ensureModelTab(payload?.targetModel || 'gemini');
+      if (payload?.userInitiated && !payload?.sessionId) {
+        /*
+         * Guarded, because a throw here vanishes and takes the report with it.
+         *
+         * `ensureModelTab` creates a tab and waits for its bridge, and either
+         * can reject. Unguarded, that rejection propagates out of
+         * `handleServerMessage` into `ws.onmessage`'s catch, which logs
+         * "unparseable server message" — about a message that parsed perfectly
+         * — and `sendToModelTab` below never runs, so `reportTabFailure` never
+         * fires either. The server then sees pure silence and blames its
+         * watchdog. Every part of that is misleading.
+         */
+        try {
+          await ensureModelTab(payload?.targetModel || 'gemini');
+        } catch (err) {
+          console.warn('[Agent CLI] could not open a tab for the picker:', err?.message);
+        }
+      }
       if (!await sendToModelTab(
         { type, payload }, payload?.targetModel || 'gemini', payload?.sessionId || null,
       )) reportTabFailure(type);

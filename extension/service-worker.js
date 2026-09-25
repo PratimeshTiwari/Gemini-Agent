@@ -811,7 +811,13 @@
         break;
       case "discover_models":
       case "switch_model":
-        if (payload?.userInitiated && !payload?.sessionId) await ensureModelTab(payload?.targetModel || "gemini");
+        if (payload?.userInitiated && !payload?.sessionId) {
+          try {
+            await ensureModelTab(payload?.targetModel || "gemini");
+          } catch (err) {
+            console.warn("[Agent CLI] could not open a tab for the picker:", err?.message);
+          }
+        }
         if (!await sendToModelTab(
           { type, payload },
           payload?.targetModel || "gemini",
