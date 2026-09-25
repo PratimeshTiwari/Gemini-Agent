@@ -1122,9 +1122,68 @@ function extractLatestResponse() {
  *   in a `finally` with Escape and broke every discovery after the first.
  *   Clicking the trigger closes it cleanly, in under 60ms, with the attribute
  *   and the DOM agreeing.
+ *
+ * **And neither may wait on a page timer.** This is the same fault CLAUDE.md
+ * records for completion detection, one level down and never fixed with it.
+ * Both of these polled with a chained `setTimeout`, and a chained timeout in a
+ * hidden tab is clamped to 1/second — 1/minute once Chrome's intensive
+ * throttling starts. The picker is *always* read in a hidden tab: discovery is
+ * a message to the tab, not a turn, so nothing brings it to the front first.
+ *
+ * So the 20 × 50ms open budget was really ≥20 seconds, and the 8 × 50ms
+ * close-confirmation — which the answer waits behind, in a `finally` — another
+ * ≥8. Against a server watchdog of 8 seconds. Measured in the errors log:
+ * 36 × `model_options_unanswered`, of which only 13 were "no tab to ask";
+ * the other 23 reached a tab and the reply arrived too late to count.
+ *
+ * `waitForDom` replaces the clock with the evidence. A `MutationObserver`
+ * delivers at full rate in a hidden tab (9.97/s measured, in the table above),
+ * the menu opening *is* a mutation, and `performance.now()` is a clock read
+ * rather than a timer, so the deadline is honest too. The `setTimeout` backstop
+ * is the one throttled thing left and it only ever makes a *failure* late.
  */
-const MENU_ITEM_POLL_MS = 50;
-const MENU_ITEM_POLL_TRIES = 20;
+const MENU_OPEN_BUDGET_MS = 1000;
+const MODEL_SETTLE_BUDGET_MS = 2000;
+
+/**
+ * Wait for the page to satisfy `predicate`, on mutations rather than on a timer.
+ *
+ * @param {() => any} predicate returns a truthy value to resolve with, else falsy
+ * @param {number} budgetMs ceiling, enforced on each mutation and by a backstop
+ * @returns {Promise<any|null>} what the predicate returned, or null on timeout
+ */
+function waitForDom(predicate, budgetMs) {
+  return new Promise((resolve) => {
+    const first = predicate();
+    if (first) { resolve(first); return; }
+
+    const deadline = performance.now() + budgetMs;
+    let settled = false;
+    let observer = null;
+    let backstop = null;
+
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      observer?.disconnect();
+      clearTimeout(backstop);
+      resolve(value || null);
+    };
+
+    const test = () => {
+      const hit = predicate();
+      if (hit) finish(hit);
+      else if (performance.now() >= deadline) finish(null);
+    };
+
+    observer = new MutationObserver(test);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+    // A page that goes completely still never fires the observer again, so the
+    // promise still needs one timer to settle it. Throttled, and that is fine:
+    // it is only reached when the answer is "no".
+    backstop = setTimeout(() => finish(predicate()), budgetMs);
+  });
+}
 
 function modelMenuItems() {
   for (const selector of SELECTORS.modelMenuItem) {
@@ -1136,21 +1195,26 @@ function modelMenuItems() {
 
 async function openModelMenu(trigger) {
   if (trigger.getAttribute('aria-expanded') !== 'true') trigger.click();
-  for (let i = 0; i < MENU_ITEM_POLL_TRIES; i++) {
-    const items = modelMenuItems();
-    if (items.length > 1) return items;
-    await new Promise((r) => setTimeout(r, MENU_ITEM_POLL_MS));
-  }
-  return [];
+  const items = await waitForDom(() => {
+    const found = modelMenuItems();
+    return found.length > 1 ? found : null;
+  }, MENU_OPEN_BUDGET_MS);
+  return items || [];
 }
 
-async function closeModelMenu(trigger) {
+/**
+ * Close it, and do not wait to be told it closed.
+ *
+ * The confirmation loop never retried and never reported — it polled until the
+ * attribute flipped and then returned either way, so every one of its ticks was
+ * spent on a value nobody read. It ran inside `readModelOptions`'s `finally`,
+ * which means the model list the server is waiting for was held behind it.
+ * The click is synchronous and is the part that matters; `aria-expanded` is
+ * checked first, which is what stops a blind click re-opening the menu.
+ */
+function closeModelMenu(trigger) {
   if (trigger.getAttribute('aria-expanded') !== 'true') return;
   trigger.click();
-  for (let i = 0; i < 8; i++) {
-    await new Promise((r) => setTimeout(r, MENU_ITEM_POLL_MS));
-    if (trigger.getAttribute('aria-expanded') !== 'true') return;
-  }
 }
 
 /**
@@ -1172,7 +1236,7 @@ async function readModelOptions() {
   } finally {
     // Always: a menu left open swallows the next click, and the turn after that
     // looks like a dead tab — a failure surfacing nowhere near its cause.
-    await closeModelMenu(trigger);
+    closeModelMenu(trigger);
   }
 }
 
@@ -1270,14 +1334,32 @@ async function selectModelByLabel(label) {
   const hit = items.find((el) => describeModelOption(el).label.trim().toLowerCase() === wanted);
 
   if (!hit) {
-    await closeModelMenu(trigger);
+    closeModelMenu(trigger);
     throw new Error(`[switch_model] the picker has no option called "${label}"`);
   }
 
   // Clicking an option closes the menu itself — no close needed, and calling
   // one would re-open it.
   hit.click();
-  await new Promise((r) => setTimeout(r, 300));
+
+  /*
+   * Wait for the trigger to agree, not for 300ms.
+   *
+   * The sleep was a guess at how long the component takes, and in a hidden tab
+   * it is not 300ms — chained page timers are clamped to a second or worse, and
+   * this one sat in front of the `readModelOptions()` that produces the answer.
+   * The trigger's own label carries the current model, so the switch landing is
+   * observable; matched loosely because the picker says "2.5 Pro" where the
+   * server asked for "Pro", which is the same comparison `selectModelInTab`
+   * makes on the worker side.
+   *
+   * A timeout here is not a failure: `readModelOptions()` runs next and reports
+   * what the picker actually says, which is the honest answer either way.
+   */
+  await waitForDom(() => {
+    const now = (currentModelLabel() || '').trim().toLowerCase();
+    return now && (now === wanted || now.includes(wanted) || wanted.includes(now)) ? now : null;
+  }, MODEL_SETTLE_BUDGET_MS);
   return true;
 }
 

@@ -251,6 +251,41 @@ alive for the turn by the heartbeat.
 With the clock outside the tab, **focus is returned as soon as the send lands** rather than
 when the reply does — the tab only has to be in front long enough to accept the paste.
 
+**And that fix was applied to one caller, on 2026-09-25 to the second.** The completion
+check was the throttled poll anyone had noticed, because it is the one that stalls a turn.
+The **mode picker** read the same way and was left on the same clock, and it is worse off:
+that last sentence is why. `discover_models` and `switch_model` are messages to a tab rather
+than turns, so nothing activates the tab first — the picker is read *only* in a hidden tab,
+where the `send` stage's measured ~500ms says injection is not.
+
+`openModelMenu` polled `20 × 50ms` and `closeModelMenu` `8 × 50ms`, the second of those
+inside the `finally` that `readModelOptions` returns the list through. Nominally 1.4
+seconds, clamped ≥28, against a server watchdog of 8. In `errors.jsonl`: **36
+`model_options_unanswered`, of which only 13 were "no tab to ask"** — the other 23 reached a
+tab and the answer arrived too late to be wanted. That is the whole of "the model never
+switches" and of routing falling back to the default: `modelOptions` was never filled, so
+`pickModelFor` had nothing to resolve a rung against.
+
+`waitForDom` waits on a `MutationObserver` (full rate, per the table above) with
+`performance.now()` as the deadline — a clock *read* rather than a timer. One `setTimeout`
+remains as a backstop for a page that goes completely still, and it is only ever reached
+when the answer is "no". The close-confirmation loop was deleted rather than converted: it
+never retried and never reported, so every tick of it was spent on a value nobody read.
+
+**The lesson generalises past this file: a clock fix has as many sites as the clock has
+callers.** Nothing in the codebase distinguished the two, and the second one was invisible
+because its symptom — a picker that does not change — reads as a DOM-selector bug. It was
+diagnosed as one twice.
+
+**A failure to read the picker also used to kill the turn.** The bridge's `error` case ends
+in `isProcessing = false` plus `abortExtensionWork()`, which is right for every error that
+means the in-flight prompt is not coming back and wrong for these two, which are asked
+outside the lane in the first place. So `/effort` during a turn, or one unreachable tab,
+abandoned the prompt underneath it and filed the reason under `flow: 'extension'`, nowhere
+near the turn that stopped. `NON_FATAL_EXTENSION_OPS` is the gate, with a negative control
+per branch — a bridge that aborts for nothing is a worse bug than the one being fixed, since
+a prompt that really is dead then holds the lane for seven minutes.
+
 **Chrome also discards background tabs**, which looks identical to a hang: the tab stays in
 the strip with its title intact while the page and content script are gone.
 `prepareTabForTurn` sets `autoDiscardable: false` on a tab about to hold a turn, and

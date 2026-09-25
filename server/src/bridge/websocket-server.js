@@ -53,6 +53,21 @@ const MAX_PENDING_INJECTS = 8;
  */
 const EXTENSION_ORIGIN = /^(chrome-extension|moz-extension|safari-web-extension):\/\//i;
 
+/**
+ * Extension errors that are about the *picker*, not about the turn.
+ *
+ * Everything else the extension reports means the prompt in flight is not
+ * coming back, so the lane has to be handed over. These two are asked outside
+ * the lane — `discover_models` at connect and once a turn, `switch_model` from
+ * `/effort` — and failing them costs a stale model list, nothing more.
+ *
+ * Named by op rather than by a `fatal` flag on the payload because the content
+ * scripts cannot set fields on it: they prefix `[stage]` to the message and it
+ * is lifted back into `op` above. The worker's own `reportTabFailure` sends the
+ * same op names for the same operations, so both sides land here.
+ */
+const NON_FATAL_EXTENSION_OPS = new Set(['discover_models', 'switch_model', 'focus_tab']);
+
 export function isAllowedOrigin(origin) {
   if (!origin) return true;              // not a browser page
   return EXTENSION_ORIGIN.test(origin);
@@ -674,6 +689,29 @@ export class WebSocketServer {
          */
         if (payload?.op === 'session_lost' && payload?.requestId) {
           this.agentLoop.resolveSubagent?.(payload.requestId, { sessionLost: true });
+          break;
+        }
+
+        /**
+         * Reading the picker is not a turn, so failing to read it is not a dead
+         * turn — and until now it was one.
+         *
+         * `discover_models` and `switch_model` are messages to a tab rather
+         * than prompts; they deliberately do not take the extension lock. But
+         * their failures arrive here as ordinary `error` payloads and fell
+         * straight through to `abortExtensionWork()`, which clears the lane and
+         * abandons whatever prompt is in flight. So a `/effort` typed during a
+         * turn, or a picker that would not open, killed the turn underneath it
+         * — and the user saw an agent that stopped answering, with the reason
+         * filed under a different flow.
+         *
+         * The watchdog is settled instead of left running: it exists to notice
+         * *silence*, and this is an answer. Without that, one unreachable tab
+         * was logged twice — once here as `discover_models`, once 8 seconds
+         * later as `model_options_unanswered` — which reads as two faults.
+         */
+        if (NON_FATAL_EXTENSION_OPS.has(payload?.op)) {
+          this.agentLoop.settleModelOptions?.(payload?.message || null);
           break;
         }
 
