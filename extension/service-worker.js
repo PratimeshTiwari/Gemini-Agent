@@ -148,23 +148,62 @@
   function claimSubagentTab(tabId, sessionId = null) {
     if (tabId === void 0 || tabId === null) return;
     subagentTabs.add(tabId);
-    if (sessionId) sessionTabs.set(sessionId, tabId);
+    if (sessionId) {
+      sessionTabs.set(sessionId, tabId);
+      rememberSessionTab(sessionId, tabId);
+    }
     claimOwnedTab(tabId);
   }
+  var SESSIONS_KEY = "agentSessionTabs";
+  async function storedSessions() {
+    try {
+      const { [SESSIONS_KEY]: map = {} } = await chrome.storage.session.get(SESSIONS_KEY);
+      return map;
+    } catch {
+      return {};
+    }
+  }
+  async function rememberSessionTab(sessionId, tabId) {
+    if (!sessionId) return;
+    try {
+      const map = await storedSessions();
+      map[sessionId] = tabId;
+      await chrome.storage.session.set({ [SESSIONS_KEY]: map });
+    } catch {
+    }
+  }
+  async function forgetSessionTab(sessionId) {
+    if (!sessionId) return;
+    try {
+      const map = await storedSessions();
+      if (!(sessionId in map)) return;
+      delete map[sessionId];
+      await chrome.storage.session.set({ [SESSIONS_KEY]: map });
+    } catch {
+    }
+  }
   async function sessionTab(sessionId) {
-    if (!sessionId || !sessionTabs.has(sessionId)) return null;
-    const tabId = sessionTabs.get(sessionId);
+    if (!sessionId) return null;
+    let tabId = sessionTabs.get(sessionId);
+    if (tabId === void 0) {
+      tabId = (await storedSessions())[sessionId];
+      if (tabId === void 0) return null;
+      sessionTabs.set(sessionId, tabId);
+      subagentTabs.add(tabId);
+    }
     try {
       const tab = await chrome.tabs.get(tabId);
       if (tab) return tab;
     } catch {
     }
     sessionTabs.delete(sessionId);
+    await forgetSessionTab(sessionId);
     return null;
   }
   async function endSession(sessionId) {
-    const tabId = sessionTabs.get(sessionId);
+    const tabId = sessionTabs.get(sessionId) ?? (await storedSessions())[sessionId];
     sessionTabs.delete(sessionId);
+    await forgetSessionTab(sessionId);
     if (tabId === void 0) return;
     subagentTabs.delete(tabId);
     focusTakenFrom.delete(tabId);
@@ -206,6 +245,17 @@
     const chosen = usable[usable.length - 1];
     mainTabs.set(targetModel, chosen.id);
     return chosen;
+  }
+  async function adoptableModelTab(targetModel = "gemini") {
+    const targetUrl = MODEL_URLS[targetModel];
+    if (!targetUrl) return null;
+    try {
+      const tabs = await chrome.tabs.query({ url: targetUrl });
+      const usable = tabs.filter((t) => !subagentTabs.has(t.id));
+      return usable.length ? usable[usable.length - 1] : null;
+    } catch {
+      return null;
+    }
   }
   function matchesModelUrl(url, targetModel) {
     const pattern = MODEL_URLS[targetModel];
@@ -332,6 +382,26 @@
     }
     return false;
   }
+  async function selectModelInTab(tabId, label, budgetMs) {
+    const wanted = String(label || "").trim().toLowerCase();
+    if (!wanted) return false;
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: "switch_model", payload: { label } });
+    } catch {
+      return false;
+    }
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 150));
+      try {
+        const status = await chrome.tabs.sendMessage(tabId, { type: "get_page_status" });
+        const now = String(status?.model || "").toLowerCase();
+        if (now && (now === wanted || now.includes(wanted) || wanted.includes(now))) return true;
+      } catch {
+      }
+    }
+    return false;
+  }
   async function trySendToTab(tab, message, targetModel) {
     await prepareTabForTurn(tab.id);
     let originalActiveTabId = null;
@@ -426,6 +496,7 @@
         const newTab = await chrome.tabs.create({ url: targetUrl.replace("/*", ""), active: false });
         claimSubagentTab(newTab.id, payload.sessionId);
         await waitForBridge(newTab.id, 1e4);
+        if (payload.model) await selectModelInTab(newTab.id, payload.model, 5e3);
         success = await trySendToTab(newTab, message, targetModel);
       }
     } else {
@@ -477,7 +548,7 @@
     }
   }
   async function focusModelTab(targetModel = "gemini") {
-    const tab = await pickMainTab(targetModel);
+    const tab = await pickMainTab(targetModel) || await adoptableModelTab(targetModel);
     if (!tab) return false;
     try {
       await chrome.tabs.update(tab.id, { active: true });
@@ -522,14 +593,23 @@
     const targetUrl = MODEL_URLS[targetModel];
     if (!targetUrl) return false;
     const tab = sessionId ? await sessionTab(sessionId) : await pickMainTab(targetModel);
-    if (!tab) return false;
+    if (!tab) {
+      lastTabFailure = `[${message.type}] no ${targetModel} tab this extension owns \u2014 open one from the agent, or reload the extension if you opened it yourself`;
+      return false;
+    }
     try {
       await chrome.tabs.sendMessage(tab.id, message);
       return true;
     } catch (err) {
+      lastTabFailure = `[${message.type}] ${err.message}`;
       console.warn(`[Agent CLI] ${message.type} could not reach the ${targetModel} tab:`, err.message);
       return false;
     }
+  }
+  function takeTabFailure() {
+    const reason = lastTabFailure;
+    lastTabFailure = null;
+    return reason;
   }
   async function triggerNewChatInModel(payload) {
     const targetModel = payload.targetModel || "gemini";
@@ -591,7 +671,23 @@
       ws.send(JSON.stringify({
         id: crypto.randomUUID(),
         type: "identify",
-        payload: { clientType: "extension" },
+        /*
+         * The build Chrome actually has, from the manifest it actually loaded.
+         *
+         * Reported from use, 2026-09-24: `chrome://extensions` said 1.25.0 while
+         * the loaded copy still had `github.com/*` site access — a permission
+         * removed on 2026-09-19. So the version badge was a number someone had
+         * typed, not evidence, and a day went into diagnosing selector failures
+         * that were really a stale load.
+         *
+         * `getManifest()` cannot lie the same way: it is read out of the bundle
+         * Chrome is running. The server compares it with the source tree it was
+         * started from and says so when they differ.
+         */
+        payload: {
+          clientType: "extension",
+          version: chrome.runtime.getManifest().version
+        },
         timestamp: Date.now()
       }));
       broadcastTabStatus();
@@ -672,6 +768,10 @@
       heartbeatTimer = null;
     }
   }
+  function reportTabFailure(op) {
+    const message = takeTabFailure() || `[${op}] could not reach a model tab`;
+    sendToServer({ type: "error", payload: { op, stage: "tab", message } });
+  }
   async function handleServerMessage(message) {
     const { type, payload } = message;
     switch (type) {
@@ -705,11 +805,15 @@
         await endSession(payload?.sessionId);
         break;
       case "focus_tab":
-        await focusModelTab(payload?.targetModel);
+        if (!await focusModelTab(payload?.targetModel)) reportTabFailure("focus_tab");
         break;
       case "discover_models":
       case "switch_model":
-        await sendToModelTab({ type, payload }, payload?.targetModel || "gemini", payload?.sessionId || null);
+        if (!await sendToModelTab(
+          { type, payload },
+          payload?.targetModel || "gemini",
+          payload?.sessionId || null
+        )) reportTabFailure(type);
         break;
       case "heartbeat_ack":
         break;

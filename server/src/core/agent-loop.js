@@ -2531,7 +2531,7 @@ export class AgentLoop {
    * task keeps the watchdog.
    */
   async _executeSubagent(targetModel, prompt, {
-    session = null, continuing = false, timeoutMs = SUBAGENT_WATCHDOG_MS,
+    session = null, continuing = false, model = null, timeoutMs = SUBAGENT_WATCHDOG_MS,
   } = {}) {
     return new Promise((resolve, reject) => {
       const requestId = randomUUID();
@@ -2548,6 +2548,10 @@ export class AgentLoop {
         requestId,
         isSubagent: true,
         ...(session ? { sessionId: session, continuing } : {}),
+        // Which picker entry this tab should be on. Used only when the tab is
+        // opened, which is why it has to ride the first prompt rather than
+        // follow it: a switch after round 1 has already paid for round 1.
+        ...(model ? { model } : {}),
       });
       
       // Resolves rather than rejects: every caller has to carry on either way,
@@ -2566,8 +2570,8 @@ export class AgentLoop {
   }
 
   /** @see core/subagent-session.js — one subagent turn, in its own tab. */
-  async _runSubAgentSession(role, prompt, targetModel) {
-    return runSubAgentSession(this, role, prompt, targetModel);
+  async _runSubAgentSession(role, prompt, targetModel, effort = null) {
+    return runSubAgentSession(this, role, prompt, targetModel, effort);
   }
 
 

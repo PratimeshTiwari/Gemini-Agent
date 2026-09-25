@@ -1,7 +1,7 @@
 import { getState, setState } from './state.js';
 import { retryDelay, resolvePort, socketUrlFor } from './policy.js';
 import { broadcastToSidePanel, sendToServer } from './messaging.js';
-import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab, endSession, openThread, focusModelTab } from './content.js';
+import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab, endSession, openThread, focusModelTab, takeTabFailure } from './content.js';
 
 /**
  * The socket to the local agent, and the retry policy around it.
@@ -135,7 +135,23 @@ export async function connectWebSocket() {
     ws.send(JSON.stringify({
       id: crypto.randomUUID(),
       type: 'identify',
-      payload: { clientType: 'extension' },
+      /*
+       * The build Chrome actually has, from the manifest it actually loaded.
+       *
+       * Reported from use, 2026-09-24: `chrome://extensions` said 1.25.0 while
+       * the loaded copy still had `github.com/*` site access — a permission
+       * removed on 2026-09-19. So the version badge was a number someone had
+       * typed, not evidence, and a day went into diagnosing selector failures
+       * that were really a stale load.
+       *
+       * `getManifest()` cannot lie the same way: it is read out of the bundle
+       * Chrome is running. The server compares it with the source tree it was
+       * started from and says so when they differ.
+       */
+      payload: {
+        clientType: 'extension',
+        version: chrome.runtime.getManifest().version,
+      },
       timestamp: Date.now(),
     }));
 
@@ -251,6 +267,21 @@ function stopHeartbeat() {
   }
 }
 
+/**
+ * Say why a tab operation did nothing.
+ *
+ * `focusModelTab` and `sendToModelTab` both return whether they reached a tab,
+ * and both callers threw that away — the same shape as the bridge's `broadcast`
+ * return that every caller ignored. So three features failed silently at once:
+ * ctrl+b stopped opening the tab, `/effort` stopped switching the model, and
+ * `discover_models` went unanswered on every run with no way to tell "no tab"
+ * from "no answer".
+ */
+function reportTabFailure(op) {
+  const message = takeTabFailure() || `[${op}] could not reach a model tab`;
+  sendToServer({ type: 'error', payload: { op, stage: 'tab', message } });
+}
+
 async function handleServerMessage(message) {
   const { type, payload } = message;
 
@@ -291,7 +322,10 @@ async function handleServerMessage(message) {
       await endSession(payload?.sessionId);
       break;
     case 'focus_tab':
-      await focusModelTab(payload?.targetModel);
+      // ctrl+b. The result was discarded, so "show me the tab" failing looked
+      // exactly like it working — reported on 2026-09-25 as ctrl+b no longer
+      // opening the tab, with nothing anywhere saying why.
+      if (!await focusModelTab(payload?.targetModel)) reportTabFailure('focus_tab');
       break;
 
     case 'discover_models':
@@ -303,7 +337,12 @@ async function handleServerMessage(message) {
       // own tab. Without it this was always the main lane, which means the
       // user's tab: a background job raising its own effort would have changed
       // the model the person was mid-conversation with.
-      await sendToModelTab({ type, payload }, payload?.targetModel || 'gemini', payload?.sessionId || null);
+      // Same discarded result, and the same cost: `model_options_unanswered`
+      // could not tell "no tab to ask" from "asked and got no answer", and a
+      // `/effort` switch that never reached a tab reported nothing at all.
+      if (!await sendToModelTab(
+        { type, payload }, payload?.targetModel || 'gemini', payload?.sessionId || null,
+      )) reportTabFailure(type);
       break;
     case 'heartbeat_ack':
       break;

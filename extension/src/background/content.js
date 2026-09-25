@@ -240,7 +240,11 @@ const sessionTabs = new Map();
 export function claimSubagentTab(tabId, sessionId = null) {
   if (tabId === undefined || tabId === null) return;
   subagentTabs.add(tabId);
-  if (sessionId) sessionTabs.set(sessionId, tabId);
+  if (sessionId) {
+    sessionTabs.set(sessionId, tabId);
+    // Persisted too, or the next round after a worker eviction opens a new tab.
+    rememberSessionTab(sessionId, tabId);
+  }
   // We opened it, so it is ours — and a recycled worker must not later mistake
   // it for one of the user's own tabs, nor adopt it as the main lane's.
   claimOwnedTab(tabId);
@@ -252,9 +256,67 @@ export function claimSubagentTab(tabId, sessionId = null) {
  * Checks the tab still exists rather than trusting the map: the user can close
  * it, and a send into a closed tab is an error the server cannot interpret.
  */
+/**
+ * Session id -> tab id, through the worker's own restarts.
+ *
+ * `sessionTabs` is module state, and MV3 evicts the service worker constantly —
+ * the reconnect cadence in this extension was measured at a 30-second floor. So
+ * between one round of a subagent task and the next, the map is very often
+ * simply gone.
+ *
+ * That was harmless while every round opened its own tab. Holding one tab for a
+ * whole task made it load-bearing, and the failure is loud: `sessionTab`
+ * returns null, the incremental prompt is refused as `session_lost`, the server
+ * resends the whole history, and a **new tab opens**. Reported from use minutes
+ * after that change shipped — *"it opened subagent tab multiple times and just
+ * closed, felt like a crash"* — with `extension/session_lost` in the log to
+ * match.
+ *
+ * `chrome.storage.session` is what `OWNED_KEY` above already uses for exactly
+ * this reason: it survives a worker restart and is cleared when the browser
+ * closes, which is the lifetime of a tab id. The in-memory map stays as the
+ * fast path.
+ */
+const SESSIONS_KEY = 'agentSessionTabs';
+
+async function storedSessions() {
+  try {
+    const { [SESSIONS_KEY]: map = {} } = await chrome.storage.session.get(SESSIONS_KEY);
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+async function rememberSessionTab(sessionId, tabId) {
+  if (!sessionId) return;
+  try {
+    const map = await storedSessions();
+    map[sessionId] = tabId;
+    await chrome.storage.session.set({ [SESSIONS_KEY]: map });
+  } catch { /* the in-memory map still works for this worker's lifetime */ }
+}
+
+async function forgetSessionTab(sessionId) {
+  if (!sessionId) return;
+  try {
+    const map = await storedSessions();
+    if (!(sessionId in map)) return;
+    delete map[sessionId];
+    await chrome.storage.session.set({ [SESSIONS_KEY]: map });
+  } catch { /* nothing to do */ }
+}
+
 export async function sessionTab(sessionId) {
-  if (!sessionId || !sessionTabs.has(sessionId)) return null;
-  const tabId = sessionTabs.get(sessionId);
+  if (!sessionId) return null;
+  let tabId = sessionTabs.get(sessionId);
+  if (tabId === undefined) {
+    // The worker was recycled since this session started. Storage still knows.
+    tabId = (await storedSessions())[sessionId];
+    if (tabId === undefined) return null;
+    sessionTabs.set(sessionId, tabId);
+    subagentTabs.add(tabId);
+  }
   try {
     const tab = await chrome.tabs.get(tabId);
     if (tab) return tab;
@@ -262,13 +324,15 @@ export async function sessionTab(sessionId) {
     /* closed while we were not looking */
   }
   sessionTabs.delete(sessionId);
+  await forgetSessionTab(sessionId);
   return null;
 }
 
 /** End a batch session and close the tab it was holding. */
 export async function endSession(sessionId) {
-  const tabId = sessionTabs.get(sessionId);
+  const tabId = sessionTabs.get(sessionId) ?? (await storedSessions())[sessionId];
   sessionTabs.delete(sessionId);
+  await forgetSessionTab(sessionId);
   if (tabId === undefined) return;
   subagentTabs.delete(tabId);
   focusTakenFrom.delete(tabId);
@@ -347,6 +411,40 @@ export async function pickMainTab(targetModel = 'gemini') {
   const chosen = usable[usable.length - 1];
   mainTabs.set(targetModel, chosen.id);
   return chosen;
+}
+
+/**
+ * Any tab of this model we may act on, whether or not we opened it.
+ *
+ * `pickMainTab` deliberately returns only **owned** tabs — tabs the extension
+ * opened — and that guard is right for injecting a prompt: dropping a turn into
+ * a conversation the person is having, or into a subagent's tab, is the failure
+ * it was written to stop.
+ *
+ * It is wrong for everything else, and that was costing three separate
+ * features. `focus_tab` (ctrl+b), `discover_models` and `switch_model` all go
+ * through `sendToModelTab` → `pickMainTab`, and all three return `false` and
+ * say nothing when the Gemini tab is one **you** opened, or when the service
+ * worker was recycled and ownership was lost. Reported together on 2026-09-25:
+ * ctrl+b stopped opening the tab, `/effort lite` did not change the model, and
+ * `model_options_unanswered` fired on every run — one cause, three symptoms.
+ *
+ * The inject path never showed it because it has a fallback: no owned tab means
+ * open one. These three had none.
+ *
+ * Subagent tabs stay excluded. They are a different conversation, and focusing
+ * or re-modelling one is never what the user meant.
+ */
+export async function adoptableModelTab(targetModel = 'gemini') {
+  const targetUrl = MODEL_URLS[targetModel];
+  if (!targetUrl) return null;
+  try {
+    const tabs = await chrome.tabs.query({ url: targetUrl });
+    const usable = tabs.filter((t) => !subagentTabs.has(t.id));
+    return usable.length ? usable[usable.length - 1] : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Does this URL belong to that model? The query pattern, without the query. */
@@ -646,6 +744,46 @@ export async function sendWithRepairs(tabId, message, targetModel) {
   return false;
 }
 
+/**
+ * Put a freshly opened subagent tab on a named model, and confirm it landed.
+ *
+ * This is the whole of "route gathering to a Flash tab": a subagent already
+ * gets its own tab on its own lane, and the picker in that tab is its own. The
+ * only thing missing was saying which entry to choose, before the first prompt
+ * is typed — a switch after round 1 has already paid full price for round 1.
+ *
+ * **Confirmed, not assumed.** `switch_model` answers `{success: true}` the
+ * moment it is dispatched; the click and the menu animation are still ahead of
+ * it, so the ack proves nothing. `get_page_status` reports the picker's own
+ * label, so this polls that until it agrees.
+ *
+ * A failure is not a failed turn. The worst case is a subagent that runs on
+ * whatever the tab defaulted to, which is exactly what happened before this
+ * existed — so it is logged upward and stepped over, never thrown.
+ */
+async function selectModelInTab(tabId, label, budgetMs) {
+  const wanted = String(label || '').trim().toLowerCase();
+  if (!wanted) return false;
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'switch_model', payload: { label } });
+  } catch {
+    return false; // no listener yet; the turn still goes out on the default
+  }
+
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 150));
+    try {
+      const status = await chrome.tabs.sendMessage(tabId, { type: 'get_page_status' });
+      const now = String(status?.model || '').toLowerCase();
+      if (now && (now === wanted || now.includes(wanted) || wanted.includes(now))) return true;
+    } catch {
+      /* the page is mid-navigation; ask again until the budget runs out */
+    }
+  }
+  return false;
+}
+
 async function trySendToTab(tab, message, targetModel) {
   await prepareTabForTurn(tab.id);
 
@@ -791,6 +929,9 @@ export async function injectPromptIntoModel(payload) {
       // Was a flat 4s. A subagent fan-out pays this per tab, so it was the
       // single largest fixed cost on the parallel path.
       await waitForBridge(newTab.id, 10000);
+      // Route the cheap work to a cheaper model, before the first prompt lands
+      // rather than after — a switch on round 2 has already paid for round 1.
+      if (payload.model) await selectModelInTab(newTab.id, payload.model, 5000);
       success = await trySendToTab(newTab, message, targetModel);
     }
   } else {
@@ -907,7 +1048,9 @@ export async function injectPromptIntoModel(payload) {
  * the ownership rules exist to prevent.
  */
 export async function focusModelTab(targetModel = 'gemini') {
-  const tab = await pickMainTab(targetModel);
+  // Ours if we have one, otherwise whichever Gemini tab is open: "show me the
+  // tab" means the tab the person can see, not a question of ownership.
+  const tab = (await pickMainTab(targetModel)) || (await adoptableModelTab(targetModel));
   if (!tab) return false;
   try {
     await chrome.tabs.update(tab.id, { active: true });
@@ -962,16 +1105,44 @@ export async function sendToModelTab(message, targetModel = 'gemini', sessionId 
   const targetUrl = MODEL_URLS[targetModel];
   if (!targetUrl) return false;
 
+  /*
+   * Owned only, deliberately.
+   *
+   * `switch_model` changes the model in the tab it reaches and
+   * `discover_models` opens its menu, so adopting a tab the person opened for
+   * themselves would reach into their own conversation — the thing the
+   * ownership rule above this file's `OWNED_KEY` exists to prevent. `ctrl+b`
+   * is different and does adopt: activating a tab shows it to the person who
+   * asked to see it and touches nothing.
+   *
+   * What changes here is that the failure stops being silent. It returned a
+   * bare `false` that both callers in `socket.js` discarded, so a picker that
+   * could not be reached was indistinguishable from one that answered — which
+   * is how `model_options_unanswered` could fire on every run with no way to
+   * tell "no tab" from "no answer".
+   */
   const tab = sessionId ? await sessionTab(sessionId) : await pickMainTab(targetModel);
-  if (!tab) return false;
+  if (!tab) {
+    lastTabFailure = `[${message.type}] no ${targetModel} tab this extension owns — `
+      + 'open one from the agent, or reload the extension if you opened it yourself';
+    return false;
+  }
 
   try {
     await chrome.tabs.sendMessage(tab.id, message);
     return true;
   } catch (err) {
+    lastTabFailure = `[${message.type}] ${err.message}`;
     console.warn(`[Agent CLI] ${message.type} could not reach the ${targetModel} tab:`, err.message);
     return false;
   }
+}
+
+/** Why the last `sendToModelTab` / `focusModelTab` failed, for the server. */
+export function takeTabFailure() {
+  const reason = lastTabFailure;
+  lastTabFailure = null;
+  return reason;
 }
 
 /**
