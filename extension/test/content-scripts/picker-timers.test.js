@@ -1,0 +1,193 @@
+/**
+ * The mode picker is read in a hidden tab, so it must not wait on a page timer.
+ *
+ * CLAUDE.md measured this once already, for completion detection: a page's own
+ * `setInterval` in a hidden tab delivers **1.9%** of its ticks, collapsing to
+ * roughly one per minute within 60 seconds, while a `MutationObserver` runs at
+ * full rate and layout still works. The clock for completion was moved into the
+ * service worker; the picker was left behind on the same throttled clock.
+ *
+ * That mattered because the picker is *always* read hidden. `discover_models`
+ * and `switch_model` are messages to the tab rather than turns, so nothing
+ * brings it to the front first — unlike an inject, which activates the tab to
+ * paste and is why the `send` stage measures ~500ms while this one does not.
+ *
+ * The old code polled `20 × 50ms` to open the menu and `8 × 50ms` to confirm it
+ * closed, the second of those inside the `finally` that the answer returns
+ * through. Nominally 1.4 seconds; clamped, ≥28. The server gives it 8.
+ * In `.agent/logs/errors.jsonl` that shows as 36 `model_options_unanswered`,
+ * only 13 of which were "no tab to ask" — the other 23 reached a tab and the
+ * answer was simply too late to be wanted.
+ *
+ * So these tests run `waitForDom` with `setTimeout` clamped the way Chrome
+ * clamps it, which is the negative control: on the old code every one of them
+ * fails by timing out, and a poll loop reintroduced later fails them again.
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { JSDOM } from 'jsdom';
+import { loadFunction } from '../load-content-script.js';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const SCRIPT = join(here, '../../content-scripts/gemini-bridge.js');
+const src = readFileSync(SCRIPT, 'utf8');
+
+/**
+ * A DOM whose timers are throttled the way a hidden tab's are.
+ *
+ * One minute is the floor Chrome's intensive throttling reaches, and every test
+ * here finishes in milliseconds — so anything that resolves has resolved on a
+ * mutation, and anything waiting on a timer simply never finishes.
+ */
+const HIDDEN_TAB_CLAMP_MS = 60_000;
+
+function hiddenTab() {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const { window } = dom;
+  const timers = [];
+
+  return {
+    window,
+    globals: {
+      document: window.document,
+      MutationObserver: window.MutationObserver,
+      performance: window.performance,
+      setTimeout: (fn) => {
+        // Scheduled at the clamp, and never run by these tests.
+        const id = timers.length;
+        timers.push(fn);
+        return id;
+      },
+      clearTimeout: () => {},
+    },
+    /** Fire what the page scheduled, standing in for a minute passing. */
+    runClampedTimers() {
+      const due = timers.splice(0);
+      for (const fn of due) fn();
+    },
+    pendingTimers: () => timers.length,
+    clamp: HIDDEN_TAB_CLAMP_MS,
+  };
+}
+
+function load(tab) {
+  return loadFunction(SCRIPT, 'waitForDom', tab.globals);
+}
+
+test('a condition already true does not touch a timer at all', async () => {
+  const tab = hiddenTab();
+  const waitForDom = load(tab);
+
+  const got = await waitForDom(() => 'ready', tab.clamp);
+
+  assert.equal(got, 'ready');
+  assert.equal(tab.pendingTimers(), 0,
+    'the fast path scheduled a backstop it did not need');
+});
+
+test('the menu opening resolves it, with the timer still pending', async () => {
+  const tab = hiddenTab();
+  const waitForDom = load(tab);
+  const { document } = tab.window;
+
+  const pending = waitForDom(
+    () => document.querySelectorAll('.menu-item').length > 1
+      ? [...document.querySelectorAll('.menu-item')]
+      : null,
+    tab.clamp,
+  );
+
+  // What the picker does a few hundred milliseconds after the trigger is
+  // clicked. The observer sees it; the clamped timer is still a minute away.
+  const menu = document.createElement('div');
+  menu.innerHTML = '<div class="menu-item">Fast</div><div class="menu-item">Pro</div>';
+  document.body.appendChild(menu);
+
+  const items = await pending;
+
+  assert.equal(items.length, 2, 'the observer never delivered the menu');
+  assert.equal(items[1].textContent, 'Pro');
+});
+
+test('an attribute flip resolves it too — the trigger relabels in place', async () => {
+  const tab = hiddenTab();
+  const waitForDom = load(tab);
+  const { document } = tab.window;
+
+  const trigger = document.createElement('button');
+  trigger.setAttribute('aria-label', 'Open mode picker, currently Fast');
+  document.body.appendChild(trigger);
+
+  const pending = waitForDom(
+    () => /currently Pro/.test(trigger.getAttribute('aria-label')) || null,
+    tab.clamp,
+  );
+
+  // `selectModelByLabel` waits on exactly this, in place of a 300ms sleep that
+  // is not 300ms in a hidden tab. A childList-only observer would miss it.
+  trigger.setAttribute('aria-label', 'Open mode picker, currently Pro');
+
+  assert.equal(await pending, true);
+});
+
+test('nothing happening still settles, through the backstop', async () => {
+  const tab = hiddenTab();
+  const waitForDom = load(tab);
+
+  const pending = waitForDom(() => null, tab.clamp);
+  assert.equal(tab.pendingTimers(), 1, 'a still page would hang with no timer');
+
+  // The one place a throttled timer is acceptable: it only makes a *failure*
+  // late, and the server has already logged the silence by then.
+  tab.runClampedTimers();
+
+  assert.equal(await pending, null);
+});
+
+test('a mutation that does not satisfy the predicate does not resolve early', async () => {
+  const tab = hiddenTab();
+  const waitForDom = load(tab);
+  const { document } = tab.window;
+
+  let settled = false;
+  const pending = waitForDom(() => document.querySelector('.menu-item'), tab.clamp)
+    .then((v) => { settled = true; return v; });
+
+  // Gemini's page mutates constantly on its own; only the menu counts.
+  document.body.appendChild(document.createElement('span'));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(settled, false);
+
+  const item = document.createElement('div');
+  item.className = 'menu-item';
+  document.body.appendChild(item);
+  assert.ok(await pending);
+});
+
+/*
+ * And the poll loops must not come back.
+ *
+ * Both were plain `for` loops around `await new Promise(r => setTimeout(r, 50))`
+ * — the most ordinary-looking code in the file, and the reason this is asserted
+ * against the source rather than only against behaviour. A reviewer reading a
+ * reintroduced poll sees a bounded wait, not a 28-second one.
+ */
+test('neither menu function waits on a page timer', () => {
+  for (const name of ['openModelMenu', 'closeModelMenu']) {
+    const start = src.indexOf(`function ${name}(`);
+    assert.ok(start > -1, `${name} is gone — this test needs rewriting, not deleting`);
+    const body = src.slice(start, src.indexOf('\n}', start));
+    assert.ok(!/setTimeout/.test(body),
+      `${name} is polling on a page timer again; in a hidden tab that is ~1 tick/second`);
+  }
+});
+
+test('the close is not awaited by the read that returns the list', () => {
+  const start = src.indexOf('async function readModelOptions(');
+  const body = src.slice(start, src.indexOf('\n}', start));
+  assert.ok(/(?<!await )closeModelMenu\(trigger\)/.test(body),
+    'the model list is being held behind the menu closing again');
+});

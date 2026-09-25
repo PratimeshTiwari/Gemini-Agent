@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.27.0**
+## Current version: **1.28.0**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -103,6 +103,34 @@ observers and clears its timers instead of ticking on.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.28.0 — 2026-09-25
+
+- **The mode picker is read off the page's clock, which a hidden tab does not
+  run.** The picker is *always* read hidden: `discover_models` and
+  `switch_model` are messages to the tab rather than turns, so nothing brings it
+  to the front first — unlike an inject, which activates the tab to paste. Both
+  waited on chained `setTimeout` polls, and Chrome clamps those to one per
+  second in a hidden tab and one per *minute* once intensive throttling starts.
+  So a nominal `20 × 50ms` to open the menu plus `8 × 50ms` to confirm it closed
+  — the second inside the `finally` the answer returns through — was really 28
+  seconds or worse, against a server watchdog of 8. Measured in the agent's own
+  log: 36 × `model_options_unanswered`, and only 13 of those were "no tab to
+  ask". The other 23 reached a tab and the answer came back too late to be
+  wanted, which is why `/effort` appeared to change nothing and subagent routing
+  always fell back to the default model.
+
+  `waitForDom` waits on a `MutationObserver` instead — measured at full rate in
+  a hidden tab — with `performance.now()` for the deadline, because a clock read
+  is not a timer. The close-confirmation loop is gone outright: it never retried
+  and never reported, so every tick of it was spent on a value nobody read. This
+  is the same correction CLAUDE.md records for completion detection, applied one
+  level down.
+- **A picker that will not open no longer kills the turn.** Both of these are
+  asked outside the extension lane, but their failures arrived at the bridge as
+  ordinary errors and fell through to `abortExtensionWork()` — so `/effort`
+  typed during a turn, or one unreachable tab, abandoned the prompt in flight
+  and filed the reason under a different flow.
 
 ### 1.27.0 — 2026-09-25
 

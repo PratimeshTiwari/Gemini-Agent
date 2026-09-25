@@ -1528,6 +1528,33 @@ export class AgentLoop {
   }
 
   /**
+   * The browser said it *cannot* answer. That settles the question too.
+   *
+   * The watchdog below reports silence, and a refusal is not silence — but it
+   * was being treated as such, so one unreachable tab produced two log lines
+   * under two ops eight seconds apart, and the second one said the picker
+   * "cannot be read" when the extension had already said precisely why.
+   *
+   * `modelOptions` is deliberately left alone. Null means "never looked" and a
+   * stale list is still the best information available; neither should be
+   * replaced by a failure to ask. What is cleared is the timer and the pending
+   * `/effort`, because nothing further is coming for either.
+   */
+  settleModelOptions(reason = null) {
+    clearTimeout(this._modelOptionsWatchdog);
+    this._modelOptionsWatchdog = null;
+
+    // Only when they asked. The once-a-turn poll is background and a notice per
+    // minute about a picker nobody is setting is the kind people scroll past —
+    // the same rule the watchdog itself follows.
+    if (this._pendingEffortSwitch) {
+      this._pendingEffortSwitch = null;
+      this._notify(`! The browser could not read its model picker${reason ? `: ${reason}` : ''}`
+        + '\n  The effort here already changed. ctrl+b opens the tab.');
+    }
+  }
+
+  /**
    * Ask the browser what it is offering. Cheap, and safe to repeat.
    *
    * Not through `injectPrompt`, which wraps everything as `inject_prompt` and
