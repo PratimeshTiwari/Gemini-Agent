@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.28.2**
+## Current version: **1.29.0**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -103,6 +103,35 @@ observers and clears its timers instead of ticking on.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.29.0 — 2026-09-25
+
+- **A picker operation you asked for may open the tab it needs.** This is the
+  root of *"the effort never changes"*, and it survived two fixes aimed at the
+  wrong layer.
+
+  Every other stage works, measured against the live page in a hidden tab: the
+  menu opens in 41.9ms, a full read takes 27.7ms and returns all four options
+  with `selected` correct, and the real matcher resolves that list to
+  `3.1 Pro` for the pro rung. What none of it could do is **get a tab**.
+  `sendToModelTab` uses the lane's *existing* tab, while the inject path has
+  always had `ensureModelTab`, which opens one when there is none. So the
+  picker could only be read *after* the first prompt had already gone out —
+  and `/effort` is typed *before* the first prompt almost every time. It
+  printed `asked the browser for Gemini Pro` and nothing ever followed, which
+  reads like a status rather than a dead end.
+
+  1.28.2 moved discovery onto tab *creation*, which fixed the connect-time ask
+  and not this one: tabs are created by injects, so a session opening with
+  `/effort` still had none. Reported again immediately, with a transcript of
+  three `/effort` commands in a row on a fresh session.
+
+  `userInitiated` is the whole safety argument, and it is a real distinction
+  rather than a flag: a background poll must never make a window appear to
+  answer a question nobody asked, and a command you typed and are waiting on is
+  the opposite case — the row it prints already says `ctrl+b` shows the tab. A
+  session-scoped ask is excluded too, because a subagent's tab is its own and
+  opening a main tab for it would read the wrong picker entirely.
 
 ### 1.28.2 — 2026-09-25
 

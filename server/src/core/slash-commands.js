@@ -431,7 +431,7 @@ export async function handleSlashCommand(loop, command, args) {
           browser = `browser already on **${plan.model.label}**${pinned}`;
         } else {
           loop._pendingEffortSwitch = chosen.id;
-          loop.requestModelOptions?.();
+          loop.requestModelOptions?.(true);
           /*
            * The one branch that cannot confirm anything: there is no model list
            * to match against, so say so and offer the key that shows the tab.
