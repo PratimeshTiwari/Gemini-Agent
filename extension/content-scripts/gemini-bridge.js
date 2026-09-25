@@ -66,6 +66,16 @@ const NO_RESPONSE_TIMEOUT = 45000;
 
 // ── DOM Selectors ────────────────────────────────────────────────────
 // Centralized selectors — update these when Google changes the UI
+/**
+ * How long to let a paste settle before deciding it never landed.
+ *
+ * Quill inserts on a later tick, so the check has to poll rather than read
+ * once. 600ms total: long enough that a normal paste is never second-guessed,
+ * short enough that the failure path does not eat the send budget.
+ */
+const PASTE_SETTLE_MS = 50;
+const PASTE_SETTLE_TRIES = 12;
+
 const SELECTORS = {
   // The control that opens the picker. Ordered by what actually matched on
   // gemini.google.com, not by what sounded likely: the first two guesses here
@@ -503,15 +513,55 @@ async function injectPrompt(text) {
     
     // Focus before pasting
     input.focus();
-    const pasteHandled = !input.dispatchEvent(pasteEvent);
+    input.dispatchEvent(pasteEvent);
 
     // If we pasted an image, wait for it to process
     if (hasImage) {
       await new Promise(r => setTimeout(r, 500));
     }
 
-    // Fallback: If paste wasn't handled natively by Gemini, use insertText
-    if (!pasteHandled && text) {
+    /*
+     * `preventDefault()` is not evidence that the text arrived.
+     *
+     * This was `const pasteHandled = !input.dispatchEvent(pasteEvent)` — true
+     * whenever *somebody* called `preventDefault`. Gemini's editor always does:
+     * it takes the paste and inserts the text itself, on a later tick. So the
+     * flag meant "a handler ran", and the `insertText` fallback was skipped on
+     * exactly the runs where that handler ran and then lost the text — a
+     * composer re-mounted mid-paste, a paste landing during navigation. The
+     * editor stayed empty and nothing tried again.
+     *
+     * Reported from use: *"the prompt is pasted on the searchbar but the send
+     * is not clicked, I manually click"*.
+     *
+     * Measured against the live page, 2026-09-24: Gemini renders
+     * `button[aria-label="Send message"]` **only once the composer has
+     * content** — 0 matches on an empty composer, 1 with text. So
+     * `send button found: false` in `resend_unsubmitted` was never a stale
+     * selector. It was this: an empty composer, correctly reporting that there
+     * is no send button, after a paste that was "handled" and dropped. The
+     * turn then spent `waitForSendButton`'s full 30s budget waiting for a
+     * control that cannot exist until the text does.
+     *
+     * The composer's own contents answer it directly, and are the same thing
+     * the button is keyed on. Polled rather than read once, because Quill
+     * inserts asynchronously and reading immediately would see empty and paste
+     * a second copy — which is the opposite failure and a worse one, since a
+     * doubled system prompt is what trips Gemini's repetition filters.
+     *
+     * `!text` counts as landed so the image-only path is untouched: there the
+     * composer legitimately holds nothing and the button is enabled by the
+     * attachment.
+     */
+    const composerText = () => String(input.value ?? input.innerText ?? input.textContent ?? '').trim();
+    let landed = !text;
+    for (let i = 0; i < PASTE_SETTLE_TRIES && !landed; i += 1) {
+      if (composerText()) landed = true;
+      else await new Promise(r => setTimeout(r, PASTE_SETTLE_MS));
+    }
+
+    if (!landed && text) {
+      console.warn('[Gemini Bridge] [type] paste left the composer empty; inserting directly');
       input.focus(); // Re-focus to prevent selection loss
       document.execCommand('insertText', false, text);
     }
