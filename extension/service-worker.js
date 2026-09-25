@@ -599,14 +599,11 @@
       lastTabFailure = `[${message.type}] no ${targetModel} tab this extension owns \u2014 open one from the agent, or reload the extension if you opened it yourself`;
       return false;
     }
-    try {
-      await chrome.tabs.sendMessage(tab.id, message);
-      return true;
-    } catch (err) {
-      lastTabFailure = `[${message.type}] ${err.message}`;
-      console.warn(`[Agent CLI] ${message.type} could not reach the ${targetModel} tab:`, err.message);
-      return false;
+    const ok = await sendWithRepairs(tab.id, message, targetModel);
+    if (!ok) {
+      lastTabFailure = `[${message.type}] the ${targetModel} tab did not accept it, and re-injecting the bridge did not help`;
     }
+    return ok;
   }
   function takeTabFailure() {
     const reason = lastTabFailure;

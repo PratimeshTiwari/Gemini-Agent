@@ -1158,14 +1158,30 @@ export async function sendToModelTab(message, targetModel = 'gemini', sessionId 
     return false;
   }
 
-  try {
-    await chrome.tabs.sendMessage(tab.id, message);
-    return true;
-  } catch (err) {
-    lastTabFailure = `[${message.type}] ${err.message}`;
-    console.warn(`[Agent CLI] ${message.type} could not reach the ${targetModel} tab:`, err.message);
-    return false;
+  /*
+   * Through the repair ladder, the same as an inject.
+   *
+   * This was a bare `chrome.tabs.sendMessage`, and the difference mattered most
+   * in exactly the situation this feature is used in: **right after the
+   * extension is reloaded**, which is how a new build gets loaded at all.
+   *
+   * A reload orphans the content script already in the page. The orphan's
+   * listener is still registered, so Chrome delivers to it and `sendMessage`
+   * resolves — nothing throws, nothing is reported — but the orphan's own
+   * `chrome.runtime` calls fail, so the reply never leaves the page. The server
+   * then waits out its whole budget on an ask that was answered by a corpse.
+   * Silence, with a success on this side of it.
+   *
+   * `sendWithRepairs` is the ladder the inject path has had all along: send,
+   * re-inject the script, reload the tab. The commonest cause by far is that
+   * orphan, and re-injecting fixes it in one rung.
+   */
+  const ok = await sendWithRepairs(tab.id, message, targetModel);
+  if (!ok) {
+    lastTabFailure = `[${message.type}] the ${targetModel} tab did not accept it, `
+      + 'and re-injecting the bridge did not help';
   }
+  return ok;
 }
 
 /** Why the last `sendToModelTab` / `focusModelTab` failed, for the server. */
