@@ -32,3 +32,6 @@ build/
 # The durable versions of what they hold live in CLAUDE.md and README.md.
 TEST.md
 HANDOFF.md
+
+# Claude Code personal settings (never committed)
+.claude/settings.local.json
