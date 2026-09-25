@@ -1720,6 +1720,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
 
     case 'discover_models':
+      /*
+       * Never over a live composer.
+       *
+       * Reading the picker means opening a menu, and an open menu swallows the
+       * next click — including the send. That is the failure this file's own
+       * header describes and the reason `switch_model` was given its own lane.
+       * Discovery now also fires the moment a tab is created, which is closer
+       * to an inject than it has ever been, so the cheap guard is worth having:
+       * `isInjecting` is already the flag for "a prompt is going in right now".
+       *
+       * Declining is free. The end-of-turn poll asks again a few seconds later,
+       * when the composer is no longer in use.
+       */
+      if (isInjecting) {
+        sendResponse({ success: false, error: 'injecting' });
+        return false;
+      }
       readModelOptions()
         .then((models) => safeSend({ type: 'model_options', payload: { models } }))
         .catch((err) => safeSend({

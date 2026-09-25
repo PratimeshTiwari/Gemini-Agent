@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Agent CLI Bridge",
-  "version": "1.28.1",
+  "version": "1.28.2",
   "description": "Connects the local Agent CLI to your gemini.google.com session.",
   "permissions": [
     "tabs",

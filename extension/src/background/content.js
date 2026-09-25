@@ -872,6 +872,36 @@ export async function ensureModelTab(targetModel = 'gemini') {
   mainTabs.set(targetModel, newTab.id);
   await claimOwnedTab(newTab.id);
   broadcastTabStatus();
+
+  /*
+   * Read the picker now, because *now* is when there is one to read.
+   *
+   * Discovery was scheduled on a **connection** — 1.5s after the extension
+   * identifies — but it depends on a **tab**, and a socket being open does not
+   * imply one exists. At connect there is usually no owned tab at all, so the
+   * ask reached nothing, `modelOptions` stayed empty, `pickModelFor` had no
+   * list to resolve a rung against, and routing fell back to whatever the tab
+   * happened to be on. That is the whole of "the effort never changes": the
+   * status bar reads PRO, the tab runs Flash, and nothing can compare them.
+   *
+   * Logged verbatim as `discover_models — no gemini tab this extension owns`,
+   * 13 times, every one of them at connect.
+   *
+   * The event that actually means "a picker became readable" is this one, and
+   * it is the only place that knows. Fire-and-forget: the content script sends
+   * the list to the server itself, and a turn must not wait on a menu.
+   *
+   * Before the first paste, not after — the tab was created a moment ago and
+   * nothing is typed into it until this function returns, so the menu is open
+   * and shut (measured at 28ms against the live page) long before a composer
+   * is involved. `discover_models` also declines while an inject is running,
+   * which is the belt to this braces: a menu over a live composer swallows the
+   * send, and that is the bug the lane was introduced to avoid.
+   */
+  chrome.tabs.sendMessage(newTab.id, { type: 'discover_models' }).catch(() => {
+    /* no listener yet; the end-of-turn poll is the fallback it always was */
+  });
+
   return newTab;
 }
 
