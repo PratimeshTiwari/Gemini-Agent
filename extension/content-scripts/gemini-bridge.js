@@ -36,7 +36,6 @@
 // ── Constants & State ───────────────────────────────────────────────
 
 const RESPONSE_IDLE_TIMEOUT = 15000; // 15s of no new text = response complete
-const RESPONSE_ACTIVITY_TIMEOUT = 60000; // 60s of no new text during streaming = consider done
 const RESPONSE_MAX_TIMEOUT = 300000; // 5 min absolute max (safety net)
 // Every completion path below needs `lastResponseText` to be non-empty, so a
 // scrape that matches nothing used to sit here for the full 5 minutes with no
@@ -1196,6 +1195,64 @@ function waitForDom(predicate, budgetMs) {
   });
 }
 
+/**
+ * Which entries are models, and which are modes — asked of the DOM, not of a
+ * word list.
+ *
+ * The picker separates the two with a rule, and that rule is a real element:
+ *
+ *     3.5 Flash-Lite
+ *     3.8 Flash
+ *     3.1 Pro
+ *     ──────────────   <mat-divider>
+ *     Extended thinking
+ *
+ * Verified against the live menu, walking it in DOM order. It agrees exactly
+ * with what Gemini's own `⌘⇧M` shortcut does: that cycles the three entries
+ * above the line — `Flash-Lite → Flash → Pro → Flash-Lite` — and never lands on
+ * Extended thinking. Two independent views of the same boundary.
+ *
+ * This is what lets the server stop knowing any product names. It had to veto
+ * `extended` and `complex` by hand in every rung's `avoid` list, which is a
+ * guess about English that breaks the moment Google ships a fourth mode or
+ * renames this one. The divider cannot be renamed, because it says nothing.
+ *
+ * `isMode` is reported rather than filtered out here: the server decides what a
+ * rung means, and throwing information away at the edge is how a consumer ends
+ * up guessing it back.
+ */
+function describeMenu(items) {
+  const menu = items[0]?.closest('[role="menu"]') || document.querySelector('[role="menu"]');
+  const isSeparator = (el) => el.getAttribute?.('role') === 'separator'
+    || /(^|\s)mat-divider(\s|$)/.test(el.className || '')
+    || el.tagName?.toLowerCase() === 'mat-divider';
+
+  // Walk in DOM order so "after the rule" is positional rather than inferred.
+  const order = [];
+  const visit = (el) => {
+    for (const child of el.children || []) {
+      if (child.getAttribute('role') === 'menuitem' || items.includes(child)) order.push(child);
+      else if (isSeparator(child)) order.push('rule');
+      else visit(child);
+    }
+  };
+  if (menu) visit(menu);
+
+  let seenRule = false;
+  const modeOf = new Map();
+  for (const entry of order) {
+    if (entry === 'rule') { seenRule = true; continue; }
+    modeOf.set(entry, seenRule);
+  }
+
+  return items.map((el) => ({
+    ...describeModelOption(el),
+    // No rule found at all — an older layout, or a plan with no modes. Then
+    // nothing is a mode, and the server's word veto is still there behind this.
+    isMode: modeOf.get(el) === true,
+  }));
+}
+
 function modelMenuItems() {
   for (const selector of SELECTORS.modelMenuItem) {
     const found = [...document.querySelectorAll(selector)];
@@ -1258,7 +1315,7 @@ async function readModelOptions() {
   try {
     const items = await openModelMenu(trigger);
     if (items.length === 0) throw new Error('[open_model_menu] the picker did not open, or has no options');
-    return items.map(describeModelOption).filter((m) => m.label);
+    return describeMenu(items).filter((m) => m.label);
   } finally {
     // Always: a menu left open swallows the next click, and the turn after that
     // looks like a dead tab — a failure surfacing nowhere near its cause.
@@ -1371,7 +1428,7 @@ async function selectModelByLabel(label) {
    * composer holding an unsent prompt, and `3.1 Pro` correctly ticked behind
    * it. The switch had *worked*; the second open is what swallowed the send.
    */
-  const described = items.map(describeModelOption).filter((m) => m.label);
+  const described = describeMenu(items).filter((m) => m.label);
   const hit = items.find((el) => describeModelOption(el).label.trim().toLowerCase() === wanted);
 
   if (!hit) {
