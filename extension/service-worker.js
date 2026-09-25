@@ -811,6 +811,7 @@
         break;
       case "discover_models":
       case "switch_model":
+        if (payload?.userInitiated && !payload?.sessionId) await ensureModelTab(payload?.targetModel || "gemini");
         if (!await sendToModelTab(
           { type, payload },
           payload?.targetModel || "gemini",

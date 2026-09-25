@@ -1,7 +1,7 @@
 import { getState, setState } from './state.js';
 import { retryDelay, resolvePort, socketUrlFor } from './policy.js';
 import { broadcastToSidePanel, sendToServer } from './messaging.js';
-import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab, endSession, openThread, focusModelTab, takeTabFailure } from './content.js';
+import { injectPromptIntoModel, triggerNewChatInModel, broadcastTabStatus, sendToModelTab, endSession, openThread, focusModelTab, takeTabFailure, ensureModelTab } from './content.js';
 
 /**
  * The socket to the local agent, and the retry policy around it.
@@ -340,6 +340,29 @@ async function handleServerMessage(message) {
       // Same discarded result, and the same cost: `model_options_unanswered`
       // could not tell "no tab to ask" from "asked and got no answer", and a
       // `/effort` switch that never reached a tab reported nothing at all.
+      //
+      /*
+       * **And when *you* asked, a tab is opened rather than the ask abandoned.**
+       *
+       * This is the root of "the effort never changes". Every picker operation
+       * needs a tab and none of them could *get* one — `sendToModelTab` uses
+       * the lane's existing tab, while the inject path has always had
+       * `ensureModelTab`, which opens one when there is none. So the picker
+       * could only be read after the first prompt had already gone out, and
+       * `/effort` is typed before the first prompt almost every time. It
+       * answered "asked the browser for Pro" and nothing ever followed.
+       *
+       * Reported twice, and it survived two fixes aimed at the wrong layer:
+       * every other stage measures fine against the live page (menu open
+       * 41.9ms hidden, full read 27.7ms, all four options with `selected`
+       * correct, matcher resolving pro → 3.1 Pro). Only the tab was missing.
+       *
+       * `userInitiated` is what makes this safe. A background poll must never
+       * make a window appear to answer a question nobody asked; a command you
+       * typed and are waiting on is the opposite case, and the row it prints
+       * already says `ctrl+b` shows the tab.
+       */
+      if (payload?.userInitiated && !payload?.sessionId) await ensureModelTab(payload?.targetModel || 'gemini');
       if (!await sendToModelTab(
         { type, payload }, payload?.targetModel || 'gemini', payload?.sessionId || null,
       )) reportTabFailure(type);

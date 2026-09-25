@@ -1670,8 +1670,31 @@ export class AgentLoop {
     this._pendingNewChat?.done(Boolean(payload?.ok));
   }
 
-  requestModelOptions() {
-    this._toExtension('discover_models');
+  /**
+   * Ask the browser what its picker is offering.
+   *
+   * @param {boolean} userInitiated `/effort` asked, rather than a background poll.
+   *
+   * **That flag decides whether a tab may be opened for this**, and it is the
+   * whole of the bug it fixes. Every picker operation needs a tab and none of
+   * them could get one: `sendToModelTab` uses the lane's *existing* tab, while
+   * the inject path has always had `ensureModelTab`, which opens one when there
+   * is none. So the list could only ever be read after the first prompt had
+   * already gone out — and `/effort` is typed *before* the first prompt almost
+   * every time, which is exactly when it answers "asked the browser for Pro"
+   * and nothing further ever happens.
+   *
+   * Moving discovery onto tab creation (1.28.2) fixed the connect-time ask and
+   * not this one: a tab is created by an *inject*, so a session that opens with
+   * `/effort` still has none.
+   *
+   * A background poll must not open tabs — a window appearing while you are in
+   * another app, to answer a question nobody asked, is its own bug. A command
+   * you typed is different: you are waiting for it, the row already says
+   * "ctrl+b shows the tab", and the very next prompt needs that tab anyway.
+   */
+  requestModelOptions(userInitiated = false) {
+    this._toExtension('discover_models', { userInitiated });
 
     /*
      * One watchdog at a time, and it is about *silence*, not about being slow.
