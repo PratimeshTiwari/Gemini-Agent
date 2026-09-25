@@ -456,6 +456,8 @@
     mainTabs.set(targetModel, newTab.id);
     await claimOwnedTab(newTab.id);
     broadcastTabStatus();
+    chrome.tabs.sendMessage(newTab.id, { type: "discover_models" }).catch(() => {
+    });
     return newTab;
   }
   async function injectPromptIntoModel(payload) {

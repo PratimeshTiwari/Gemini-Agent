@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.28.1**
+## Current version: **1.28.2**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -104,14 +104,22 @@ observers and clears its timers instead of ticking on.
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
 
-### 1.28.1 — 2026-09-25
+### 1.28.2 — 2026-09-25
 
-- **1.28.0 shortened the menu budget 20× without saying so.** `20 × 50ms` reads
-  as one second and, chained through a hidden tab's clamped timers, actually
-  waited twenty-plus — the throttling had been quietly paying for a budget the
-  code never declared. Replacing it with a literal `1000` was therefore a cut,
-  not a like-for-like move. It is 3000ms now: an order of magnitude over a
-  normal render, still inside the server's 8s watchdog.
+- **The budget is 3000ms, and the reason first given for that was wrong.**
+  1.28.1 claimed the literal `1000` was a 20× cut of an effective ≥20s budget
+  and blamed it for the timeouts still being logged. Measured afterwards
+  against the live page, in a genuinely hidden tab: the menu renders in
+  **41.9ms**, and a full `readModelOptions` — open, scrape four options, read
+  `selected`, close — takes **27.7ms**. 1000ms was already 35× more than the
+  work needs, so the cut was real arithmetic about the old code and **not** a
+  cause of anything. 3000ms is kept as cheap headroom, not as a fix.
+
+  The same session measured the premise underneath 1.28.0, which **does** hold:
+  28 chained `setTimeout(…, 50)` — nominal 1.4s — did not complete in **45
+  seconds** in that hidden tab, while the `MutationObserver` path did the same
+  work in 28ms. Moving off page timers was right; re-explaining a later symptom
+  with it was not.
 - **A menu that opens after we stop waiting is now closed anyway.** The close
   clicked only when `aria-expanded` was true *at that instant*, so a budget
   that expired a moment before the component set the attribute left the picker
@@ -120,7 +128,29 @@ per-change history below.
   into the composer and the send lands on the backdrop. The tab then looks
   dead, two turns away from the discovery that caused it. Reported with a
   screenshot showing exactly that. The close is asynchronous and still not
-  awaited, so the model list is not held behind cleanup.
+  awaited, so the model list is not held behind cleanup. Kept as robustness —
+  with the menu rendering in 42ms against a 3000ms budget, the window it
+  guards is now vanishingly small.
+- **The picker is read when a tab is created, which is when one exists to
+  read.** Discovery was scheduled on a **connection** — 1.5s after the
+  extension identifies — but it depends on a **tab**, and an open socket does
+  not imply one. At connect there is usually no owned tab, so the ask reached
+  nothing, `modelOptions` stayed empty, `pickModelFor` had no list to resolve a
+  rung against, and routing fell back to whatever the tab was already on. That
+  is the whole of *"the effort never changes"*: the status bar reads PRO, the
+  tab runs Flash, and nothing can compare them. Logged verbatim 13 times as
+  `discover_models — no gemini tab this extension owns`, every one at connect.
+
+  `ensureModelTab` now asks the moment it claims a tab, before anything is
+  typed into it. `discover_models` also declines while an inject is running,
+  because a menu over a live composer swallows the send.
+
+  **Verified end to end against the live page rather than argued:** the scrape
+  returns all four options with the right descriptions and `selected` correctly
+  on `3.8 Flash` (the `selected` class — note `active` sits on `3.5 Flash-Lite`,
+  exactly as the code comment warns), and feeding that list to the real matcher
+  resolves `lite → 3.5 Flash-Lite`, `flash → 3.8 Flash` (already there),
+  `pro → 3.1 Pro`. Every stage works; only the ask was arriving too early.
 
 ### 1.28.0 — 2026-09-25
 
