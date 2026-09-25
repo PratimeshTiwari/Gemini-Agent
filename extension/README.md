@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.31.0**
+## Current version: **1.32.0**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -103,6 +103,45 @@ observers and clears its timers instead of ticking on.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.32.0 — 2026-09-26
+
+- **A picker read is repaired like an inject, instead of dying quietly.**
+  `sendToModelTab` used a bare `chrome.tabs.sendMessage` while the inject path
+  has always gone through `sendWithRepairs`. That gap bit hardest in the one
+  situation this feature is used in — **right after the extension is reloaded**,
+  which is how a new build gets loaded at all.
+
+  A reload orphans the content script already in the page. The orphan's listener
+  is still registered, so Chrome delivers to it and `sendMessage` resolves:
+  nothing throws, nothing is reported. But the orphan's own `chrome.runtime`
+  calls fail, so the reply never leaves the page. The server then waits out its
+  whole budget on an ask that was answered by a corpse — silence, with a success
+  on the worker's side of it. Now it re-injects the bridge and asks again.
+
+- **A deferred read is no longer a dropped one.** 1.29.0 made
+  `discover_models` decline while a prompt was going in — correct, since a menu
+  over a live composer swallows the send — but it answered the *worker* and sent
+  the *server* nothing, so the server waited out its full 20 seconds and
+  reported that the browser never answered. CLAUDE.md names this exactly:
+  dropping a notification costs a line, dropping a **request** deadlocks
+  whoever is waiting on it. The read now runs the moment the inject finishes.
+
+- **"Was the prompt actually sent?" is observed, not inferred.** Proposed by
+  the owner: *"check whether Gemini's input box still has our pasted text — if
+  the text is there it was not sent, so retry."*
+
+  `neverSubmitted` was `!isGenerating && !sawGenerating`, which is equally true
+  when generation *did* start and a changed selector stopped us seeing it — and
+  a resend there asks a thread that already holds the answer. Gemini clears the
+  composer when it accepts a prompt, so text still sitting in it is proof the
+  submit did not happen, and an empty composer is proof it went.
+
+  **The second half is the valuable one**: it is a brake on the resend, not an
+  accelerator. Compared as a whitespace-collapsed prefix, because the editor
+  reflows what it holds. A composer that cannot be found reports `null` rather
+  than `false`, which hands the decision back to `sawGenerating` instead of
+  asserting the prompt was sent.
 
 ### 1.31.0 — 2026-09-26
 

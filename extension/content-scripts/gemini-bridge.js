@@ -149,6 +149,49 @@ const SELECTORS = {
 
 // ── State ────────────────────────────────────────────────────────────
 let isInjecting = false;
+
+/**
+ * A picker read that arrived while a prompt was going in.
+ *
+ * Set by the `discover_models` handler when it declines, drained when the
+ * inject finishes. It is a boolean rather than a queue because the answer is
+ * the picker's current state — two deferred reads want the same one reply.
+ */
+let pendingDiscover = false;
+
+/**
+ * The opening of the prompt we last typed, so "did it actually go?" can be
+ * **observed** rather than inferred.
+ *
+ * Proposed by the owner: *"are we checking whether the prompt we typed was
+ * sent? We can simply check whether Gemini's input box still has our pasted
+ * text — if the text is there it was not sent, so retry."* That is strictly
+ * better evidence than what the timeout path had. `neverSubmitted` was
+ * `!isGenerating && !sawGenerating`, which is an **inference**: it is equally
+ * true when generation started and a changed selector stopped us seeing it,
+ * and a resend there asks a thread that already holds the answer.
+ *
+ * Gemini clears the composer when it accepts a prompt. So text still sitting
+ * there is proof the submit did not happen, and an empty composer is proof the
+ * text went somewhere — which is the half that prevents a double-send, not
+ * just the half that enables a retry.
+ *
+ * A prefix, because the editor normalises what it holds: it splits pasted text
+ * into paragraphs, so the whole string rarely compares equal while the opening
+ * survives intact.
+ */
+let lastTypedPrefix = '';
+const TYPED_PREFIX_CHARS = 120;
+
+/** Is the composer still holding the prompt we typed? null when unknowable. */
+function composerStillHoldsPrompt() {
+  if (!lastTypedPrefix) return null;
+  const input = findInputResilient();
+  if (!input) return null;
+  const text = (input.innerText || input.textContent || '').replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  return text.includes(lastTypedPrefix);
+}
 let responseObserver = null;
 let lastResponseText = '';
 let responseIdleTimer = null;
@@ -451,6 +494,7 @@ async function injectPrompt(text) {
 
   isInjecting = true;
   traceStart();
+  lastTypedPrefix = String(text || '').replace(/\s+/g, ' ').trim().slice(0, TYPED_PREFIX_CHARS);
 
   // What was clickable before the prompt had anything in it. Send is whatever is
   // clickable afterwards and was not — see findSendButtonStructurally.
@@ -616,6 +660,16 @@ async function injectPrompt(text) {
     return false;
   } finally {
     isInjecting = false;
+    // The composer is free again, so a read that was turned away can run.
+    if (pendingDiscover) {
+      pendingDiscover = false;
+      readModelOptions()
+        .then((models) => safeSend({ type: 'model_options', payload: { models } }))
+        .catch((err) => safeSend({
+          type: 'error',
+          payload: { op: 'discover_models', message: err.message },
+        }));
+    }
   }
 }
 
@@ -880,14 +934,28 @@ function startResponseObserver() {
           /**
            * Did the model ever see this turn?
            *
-           * `sawGenerating` is the honest answer, and it decides whether the
-           * agent may retry. Generation started and we failed to read it ->
-           * the model HAS an answer, and resending would ask it twice into a
-           * thread that already holds the first reply. Generation never
-           * started and nothing was scraped -> the submit did not happen, so
-           * sending again is the first attempt landing, not a repeat.
+           * `sawGenerating` was the honest answer while it was the only one
+           * available, and it decides whether the agent may retry. Generation
+           * started and we failed to read it -> the model HAS an answer, and
+           * resending would ask it twice into a thread that already holds the
+           * first reply. Generation never started and nothing was scraped ->
+           * the submit did not happen, so sending again is the first attempt
+           * landing, not a repeat.
+           *
+           * **But it is an inference, and the composer is a fact.** Gemini
+           * clears the composer when it accepts a prompt, so our text still
+           * sitting in it proves the submit did not happen, and an empty
+           * composer proves the text went somewhere. The second half is the
+           * one that matters most: it stops a resend in the case
+           * `sawGenerating` gets wrong — generation started and a changed
+           * selector hid it — which is the case that asks twice.
+           *
+           * So the observation wins where there is one, and the inference is
+           * the fallback for a composer we cannot find or a turn where nothing
+           * was recorded as typed.
            */
-          neverSubmitted: !isGenerating && !sawGenerating,
+          neverSubmitted: composerStillHoldsPrompt() ?? (!isGenerating && !sawGenerating),
+          composerStillHolds: composerStillHoldsPrompt(),
         },
       });
       return;
@@ -1861,8 +1929,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
        * Declining is free. The end-of-turn poll asks again a few seconds later,
        * when the composer is no longer in use.
        */
+      /*
+       * Deferred, never dropped.
+       *
+       * The first cut of this guard answered `{success: false}` to the *worker*
+       * and sent nothing to the server — so the server, which is waiting on a
+       * `model_options` message, waited out its entire budget and reported that
+       * the browser never answered. CLAUDE.md names this exactly: dropping a
+       * notification costs a line, dropping a **request** deadlocks whoever is
+       * waiting on the answer. I added a request that could be silently
+       * declined, which is the thing that rule exists to prevent.
+       *
+       * Declining is still right — a menu over a live composer swallows the
+       * send — but the ask has to survive it. `pendingDiscover` runs the read
+       * the moment the inject finishes, which is a second or two later and is
+       * the answer the caller actually wanted.
+       */
       if (isInjecting) {
-        sendResponse({ success: false, error: 'injecting' });
+        pendingDiscover = true;
+        sendResponse({ success: true, deferred: true });
         return false;
       }
       readModelOptions()
