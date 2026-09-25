@@ -122,6 +122,58 @@ test('“Pro” inside another word does not anchor the order', () => {
     'positions were counted from a model that merely starts with the letters p-r-o');
 });
 
+/*
+ * The name-free path, which is the point of all of this.
+ *
+ * The extension reports `isMode`, taken from the rule the picker draws between
+ * its models and its modes — a real `<mat-divider>`, verified against the live
+ * menu and agreeing exactly with what `⌘⇧M` cycles. Once modes are identified
+ * structurally, the ladder maps onto position alone and **no product name is
+ * needed for any rung**, including Pro.
+ */
+const M = (label, description = '') => ({ label, description, isMode: false });
+const MODE = (label, description = '') => ({ label, description, isMode: true });
+
+test('with isMode, every name can change — including Pro', () => {
+  const alien = [M('Zephyr'), M('Cirrus'), M('Cumulus'), MODE('Deep Reasoning', 'Complex problems')];
+  assert.equal(pick('lite', alien), 'Zephyr');
+  assert.equal(pick('flash', alien), 'Cirrus');
+  assert.equal(pick('pro', alien), 'Cumulus',
+    'the heaviest model was found by a word rather than by its position');
+});
+
+test('a mode that does not say "extended" or "complex" is still a mode', () => {
+  // The exact case the word veto cannot see, and the reason the rule is better.
+  const named = [M('A'), M('B'), M('C'), MODE('Agent mode', 'Does things for you')];
+  assert.equal(pick('pro', named), 'C', 'a mode was treated as the heaviest model');
+});
+
+test('several modes after the rule are all excluded', () => {
+  const many = [M('A'), M('B'), M('C'), MODE('Extended thinking'), MODE('Agent mode')];
+  assert.equal(pick('pro', many), 'C');
+  assert.equal(pick('flash', many), 'B');
+});
+
+test('more models than rungs maps onto the top of the list', () => {
+  const four = [M('W'), M('X'), M('Y'), M('Z'), MODE('Extended thinking')];
+  assert.equal(pick('lite', four), 'W', 'lightest is the first, however many there are');
+  assert.equal(pick('pro', four), 'Z');
+  assert.equal(pick('flash', four), 'Y', 'the rung below the heaviest');
+});
+
+test('degenerate plans do not throw or invent', () => {
+  assert.equal(pick('flash', [M('Only'), MODE('Extended thinking')]), 'Only');
+  assert.equal(pick('pro', [MODE('Extended thinking')]), null,
+    'a picker offering only modes produced a model');
+});
+
+// The fallback must survive: an extension that predates `isMode` sends labels
+// with no flag at all, and the Pro anchor is what reads those.
+test('a build that cannot report modes still uses the Pro anchor', () => {
+  assert.equal(pick('pro', LIVE), '3.1 Pro');
+  assert.equal(pick('flash', LIVE), '3.8 Flash');
+});
+
 test('an empty picker is still nothing', () => {
   assert.equal(pickModelFor('pro', [], null), null);
   assert.equal(pickModelFor('pro', null, null), null);

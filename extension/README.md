@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.30.0**
+## Current version: **1.31.0**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -103,6 +103,44 @@ observers and clears its timers instead of ticking on.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.31.0 — 2026-09-26
+
+- **The models are read from the page; no product name is hardcoded anywhere.**
+  Asked for directly: *"stop hardcoding Pro, Flash and all — read the model name
+  straight from the web, so we are always in alignment and there is no
+  mismatch."*
+
+  The picker already separates its models from its modes with a rule, and that
+  rule is a real element. Walked in DOM order against the live menu:
+
+  ```
+  3.5 Flash-Lite
+  3.8 Flash
+  3.1 Pro
+  ──────────────   <mat-divider>
+  Extended thinking
+  ```
+
+  That boundary agrees exactly with what Gemini's own `⌘⇧M` cycles — the three
+  above the line, wrapping, never Extended thinking. Two independent views of
+  the same split.
+
+  So the content script reports `isMode` per entry, and the rung maps onto
+  **position alone**: lightest first, heaviest last, the middle rung one below
+  the heaviest. `lite`, `flash` and `pro` no longer need to appear in any label,
+  and neither does `extended` or `complex` — the veto that used to be a guess
+  about English, which would have broken on a fourth mode or a rename.
+
+  Proved by matching a picker with every name changed, Pro included:
+  `Zephyr / Cirrus / Cumulus / Deep Reasoning` resolves correctly, as does a
+  mode called `Agent mode` that contains none of the vetoed words.
+
+  Both older strategies are kept **behind** it, in order: a config pin still
+  wins outright, and a build too old to report `isMode` falls back to the Pro
+  anchor, then to the word lists.
+
+- Removed `RESPONSE_ACTIVITY_TIMEOUT`, defined and never read.
 
 ### 1.30.0 — 2026-09-26
 

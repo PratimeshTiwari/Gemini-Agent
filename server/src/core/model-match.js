@@ -92,20 +92,50 @@ const haystack = (m) => `${m.label || ''} ${m.description || ''}`.toLowerCase();
  * exactly the case they were written for.
  */
 function byPickerOrder(effortId, options) {
-  const isMode = (m) => /extended|complex/.test(haystack(m));
+  /*
+   * A mode is whatever the page says is a mode.
+   *
+   * The extension now reports `isMode`, taken from the rule the picker draws
+   * between its models and its modes — a real `<mat-divider>`, verified against
+   * the live menu and agreeing exactly with what `⌘⇧M` cycles. The word test is
+   * the fallback for a build that does not send the flag, and it is the thing
+   * this is getting away from: `extended`/`complex` is a guess about English
+   * that breaks on a fourth mode or a rename.
+   */
+  const knowsModes = options.some((m) => typeof m.isMode === 'boolean');
+  const isMode = (m) => (knowsModes ? m.isMode === true : /extended|complex/.test(haystack(m)));
   const models = options.filter((m) => !isMode(m));
+  if (models.length === 0) return null;
+
+  /*
+   * Position alone, once modes are out of the way.
+   *
+   * The picker lists its models lightest-first — confirmed by cycling it, which
+   * walks them in that order and wraps from the heaviest back to the lightest.
+   * So the ladder maps straight onto the list and **no product name is needed
+   * for any rung**: reported by the owner that Flash-Lite and Flash are renamed
+   * across accounts, and that even Pro carries a version that moves.
+   *
+   * Anchoring on the word `pro` was the previous step and is kept only for a
+   * build that cannot say which entries are modes, where the list may still
+   * hold one and counting from the end would land on it.
+   */
+  if (knowsModes) {
+    if (effortId === 'lite') return models[0];
+    if (effortId === 'pro') return models[models.length - 1];
+    // The rung below the heaviest. Clamped, never wrapped: on a two-entry plan
+    // the middle collapses onto the lightest, which is honest, where wrapping
+    // would send it to the heaviest — the pairing CLAUDE.md calls the worst.
+    if (effortId === 'flash') return models[Math.max(0, models.length - 2)];
+    return null;
+  }
 
   const proIndex = models.findIndex((m) => /\bpro\b/.test(haystack(m)));
   if (proIndex === -1) return null;
 
   if (effortId === 'pro') return models[proIndex];
   if (effortId === 'lite') return models[0];
-  if (effortId === 'flash') {
-    // The rung below Pro. Clamped rather than wrapped: on a two-entry plan the
-    // middle collapses onto the lightest, which is the honest answer, and
-    // wrapping would send it to Pro — the one pairing CLAUDE.md calls the worst.
-    return models[Math.max(0, proIndex - 1)];
-  }
+  if (effortId === 'flash') return models[Math.max(0, proIndex - 1)];
   return null;
 }
 
