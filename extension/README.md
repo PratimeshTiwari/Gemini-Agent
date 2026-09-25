@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.28.0**
+## Current version: **1.28.1**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -103,6 +103,24 @@ observers and clears its timers instead of ticking on.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.28.1 — 2026-09-25
+
+- **1.28.0 shortened the menu budget 20× without saying so.** `20 × 50ms` reads
+  as one second and, chained through a hidden tab's clamped timers, actually
+  waited twenty-plus — the throttling had been quietly paying for a budget the
+  code never declared. Replacing it with a literal `1000` was therefore a cut,
+  not a like-for-like move. It is 3000ms now: an order of magnitude over a
+  normal render, still inside the server's 8s watchdog.
+- **A menu that opens after we stop waiting is now closed anyway.** The close
+  clicked only when `aria-expanded` was true *at that instant*, so a budget
+  that expired a moment before the component set the attribute left the picker
+  up with nobody to close it. This README already says what that costs: a menu
+  left open swallows the next click, so the *following* turn types its prompt
+  into the composer and the send lands on the backdrop. The tab then looks
+  dead, two turns away from the discovery that caused it. Reported with a
+  screenshot showing exactly that. The close is asynchronous and still not
+  awaited, so the model list is not held behind cleanup.
 
 ### 1.28.0 — 2026-09-25
 

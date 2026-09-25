@@ -168,6 +168,43 @@ test('a mutation that does not satisfy the predicate does not resolve early', as
 });
 
 /*
+ * The menu that opens after we stopped waiting.
+ *
+ * Reported with a screenshot on 2026-09-25: the picker open over a composer
+ * that was holding an unsent prompt. `closeModelMenu` used to click only when
+ * `aria-expanded` was true *at that instant*, so an open budget that expired
+ * a moment before the component set the attribute left the menu up with
+ * nobody to close it. This file's own header says what that costs — a menu
+ * left open swallows the next click, so the *following* turn's send lands on
+ * the backdrop and the tab looks dead, two turns from the cause.
+ */
+test('a menu that opens late is still closed', async () => {
+  const tab = hiddenTab();
+  const waitForDom = load(tab);
+  const { document } = tab.window;
+
+  const trigger = document.createElement('button');
+  trigger.setAttribute('aria-expanded', 'false');
+  document.body.appendChild(trigger);
+  let clicks = 0;
+  trigger.addEventListener('click', () => { clicks += 1; });
+
+  // What `closeModelMenu` does: wait for open, then click.
+  const closing = waitForDom(
+    () => trigger.getAttribute('aria-expanded') === 'true' || null,
+    tab.clamp,
+  ).then((open) => { if (open) trigger.click(); });
+
+  assert.equal(clicks, 0, 'clicked a menu that was not open — that re-opens it');
+
+  // The component catches up after the open budget already expired.
+  trigger.setAttribute('aria-expanded', 'true');
+  await closing;
+
+  assert.equal(clicks, 1, 'the late menu was left open, and it eats the next send');
+});
+
+/*
  * And the poll loops must not come back.
  *
  * Both were plain `for` loops around `await new Promise(r => setTimeout(r, 50))`
@@ -183,6 +220,26 @@ test('neither menu function waits on a page timer', () => {
     assert.ok(!/setTimeout/.test(body),
       `${name} is polling on a page timer again; in a hidden tab that is ~1 tick/second`);
   }
+});
+
+/*
+ * The budget is a real deadline now, so its value matters in a way it did not
+ * when throttling was silently paying for it. `20 × 50ms` read as one second
+ * and waited twenty-plus; a literal 1000ms was a 20× cut nobody chose.
+ */
+test('and closeModelMenu is the function that does that, not a one-shot read', () => {
+  const start = src.indexOf('async function closeModelMenu(');
+  assert.ok(start > -1, 'closeModelMenu no longer waits for the menu it is closing');
+  const body = src.slice(start, src.indexOf('\n}', start));
+  assert.ok(/waitForDom/.test(body),
+    'closeModelMenu checks aria-expanded once again; a menu that opens a moment '
+    + 'later is then left up, and it swallows the next turn\'s send');
+});
+
+test('the open budget leaves room for a slow render, and beats the watchdog', () => {
+  const open = Number(/const MENU_OPEN_BUDGET_MS = (\d+);/.exec(src)[1]);
+  assert.ok(open >= 2000, `${open}ms is tighter than the throttled budget it replaced`);
+  assert.ok(open < 8000, `${open}ms outlasts the server's 8s watchdog, so the answer is unwanted`);
 });
 
 test('the close is not awaited by the read that returns the list', () => {
