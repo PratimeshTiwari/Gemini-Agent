@@ -24,6 +24,16 @@ import { pickModelFor } from '../../src/core/model-match.js';
 const P = (label, description = '') => ({ label, description });
 const pick = (rung, opts) => pickModelFor(rung, opts, null)?.model?.label ?? null;
 
+/**
+ * A model and a mode, as the extension reports them.
+ *
+ * `isMode` comes from the rule the picker draws between the two — a real
+ * `<mat-divider>`, verified against the live menu. Every fixture below says
+ * which it means rather than relying on a word, which is the whole point.
+ */
+const M = (label, description = '') => ({ label, description, isMode: false });
+const MODE = (label, description = '') => ({ label, description, isMode: true });
+
 const LIVE = [
   P('3.5 Flash-Lite', 'Fastest answers'),
   P('3.8 Flash', 'All-around help'),
@@ -92,86 +102,28 @@ test('a two-model plan puts the middle rung on the lighter one, never Pro', () =
 });
 
 /*
- * The negative control, and the reason the word lists are kept rather than
- * deleted: a plan with no entry named Pro is exactly what they were written
- * for, and they are the only thing that can read a vocabulary nobody has seen.
- */
-test('with no Pro at all, the word lists still run', () => {
-  const noPro = [P('3.5 Flash-Lite', 'Fastest answers'), P('3.8 Flash', 'All-around help')];
-  assert.equal(pick('low', noPro), '3.5 Flash-Lite');
-  assert.equal(pick('medium', noPro), '3.8 Flash');
-  assert.equal(pick('high', noPro), null, 'it invented a Pro out of a plan that has none');
-});
-
-/*
- * The anchor is `\bpro\b`, so "Prometheus" does not make a plan Pro-shaped and
- * the order logic declines rather than counting positions from a decoy.
+ * There are no word lists any more, and no `\bpro\b` anchor either.
  *
- * What happens next is the word list's business, and it is looser — it asks
- * `text.includes('high')`, so it *does* answer "Prometheus". That is a
- * pre-existing weakness of the fallback rather than of the anchor, and this
- * test deliberately asserts the boundary between them rather than the outcome:
- * the first draft asserted `null` here, which is behaviour the system has never
- * had, and it failed for the right reason.
- */
-test('“Pro” inside another word does not anchor the order', () => {
-  const decoys = [P('Prometheus', 'Fastest answers'), P('Proxy Mode', 'All-around help')];
-  const picked = pickModelFor('high', decoys, null);
-
-  assert.ok(!/picker's order/.test(picked?.why ?? ''),
-    'positions were counted from a model that merely starts with the letters p-r-o');
-});
-
-/*
- * The name-free path, which is the point of all of this.
+ * Both were strategies for reading a picker by vocabulary, and both went on
+ * 2026-09-26 once the page started saying which entries are models. Position
+ * answers every case they answered and several they could not — a plan that
+ * renames Pro, a mode called `Agent mode`, a version number that moves.
  *
- * The extension reports `isMode`, taken from the rule the picker draws between
- * its models and its modes — a real `<mat-divider>`, verified against the live
- * menu and agreeing exactly with what `⌘⇧M` cycles. Once modes are identified
- * structurally, the ladder maps onto position alone and **no product name is
- * needed for any rung**, including Pro.
+ * What is left is two strategies: a config pin, then structure.
  */
-const M = (label, description = '') => ({ label, description, isMode: false });
-const MODE = (label, description = '') => ({ label, description, isMode: true });
-
-test('with isMode, every name can change — including Pro', () => {
-  const alien = [M('Zephyr'), M('Cirrus'), M('Cumulus'), MODE('Deep Reasoning', 'Complex problems')];
-  assert.equal(pick('low', alien), 'Zephyr');
-  assert.equal(pick('medium', alien), 'Cirrus');
-  assert.equal(pick('high', alien), 'Cumulus',
-    'the heaviest model was found by a word rather than by its position');
+test('a picker with no Pro in it still resolves, by position', () => {
+  const noPro = [M('Swift', 'Fastest answers'), M('Deep', 'Advanced reasoning')];
+  assert.equal(pick('low', noPro), 'Swift');
+  assert.equal(pick('high', noPro), 'Deep',
+    'the heaviest rung needed the word "Pro" to find the heaviest model');
 });
 
-test('a mode that does not say "extended" or "complex" is still a mode', () => {
-  // The exact case the word veto cannot see, and the reason the rule is better.
-  const named = [M('A'), M('B'), M('C'), MODE('Agent mode', 'Does things for you')];
-  assert.equal(pick('high', named), 'C', 'a mode was treated as the heaviest model');
-});
-
-test('several modes after the rule are all excluded', () => {
-  const many = [M('A'), M('B'), M('C'), MODE('Extended thinking'), MODE('Agent mode')];
-  assert.equal(pick('high', many), 'C');
-  assert.equal(pick('medium', many), 'B');
-});
-
-test('more models than rungs maps onto the top of the list', () => {
-  const four = [M('W'), M('X'), M('Y'), M('Z'), MODE('Extended thinking')];
-  assert.equal(pick('low', four), 'W', 'lightest is the first, however many there are');
-  assert.equal(pick('high', four), 'Z');
-  assert.equal(pick('medium', four), 'Y', 'the rung below the heaviest');
-});
-
-test('degenerate plans do not throw or invent', () => {
-  assert.equal(pick('medium', [M('Only'), MODE('Extended thinking')]), 'Only');
-  assert.equal(pick('high', [MODE('Extended thinking')]), null,
-    'a picker offering only modes produced a model');
-});
-
-// The fallback must survive: an extension that predates `isMode` sends labels
-// with no flag at all, and the Pro anchor is what reads those.
-test('a build that cannot report modes still uses the Pro anchor', () => {
-  assert.equal(pick('high', LIVE), '3.1 Pro');
-  assert.equal(pick('medium', LIVE), '3.8 Flash');
+test('a name that merely starts with p-r-o is not treated as special', () => {
+  // `Prometheus` used to trip the substring half of the old word match. Under
+  // position it is simply the first entry, which is what it looks like.
+  const decoys = [M('Prometheus', 'Fastest answers'), M('Proxy Mode', 'All-around help')];
+  assert.equal(pick('low', decoys), 'Prometheus');
+  assert.equal(pick('high', decoys), 'Proxy Mode');
 });
 
 test('an empty picker is still nothing', () => {

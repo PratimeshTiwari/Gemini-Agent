@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.34.0**
+## Current version: **1.35.0**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -103,6 +103,41 @@ observers and clears its timers instead of ticking on.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.35.0 — 2026-09-26
+
+Cleanup of what accumulated while the model switch was being chased. No new
+behaviour except the first item.
+
+- **The mismatch row is silent while a switch is in flight.** `modelMismatch`
+  recomputes on every render from `modelOptions`, and at the instant a switch is
+  dispatched that list still holds the *previous* read — so the warning appeared
+  directly under the row announcing the switch, contradicting it. Reported with
+  a transcript showing exactly that pair. It was true at that instant, which is
+  why this suppresses rather than corrects: the row is about a **standing**
+  disagreement, and a fresh reading ends the suppression whether it agrees or
+  not.
+- **`picker_trace` is gone.** It existed to name the failing hop, it did that,
+  and leaving it would cost a log row per turn forever. `extension_unreachable`
+  and the relay-drift test stay — those are the durable half.
+- **Four matching strategies became two: a config pin, then structure.** The
+  `\bpro\b` anchor could only help a build that reports no modes *and* still
+  calls its top model Pro — narrower than the word lists it sat in front of,
+  for a third answer to one question. The word lists went with it: `INTENT`,
+  its `prefer`/`avoid` scoring, and the loop over them. Position answers every
+  case they answered and several they could not.
+
+  A floor came with it: when the page cannot say which entries are modes, a
+  picker offering **one** entry is not enough to infer a ladder from — `Canvas`
+  alone would otherwise read as "the only model" and be switched to, and a
+  wrong switch is worse than no switch. Counted on what the picker offered, not
+  on what survived the mode veto.
+- **`sameModelName` is gone, and the settle-wait no longer knows any names.**
+  It asked whether the trigger's new label matched what the server requested,
+  loosely, because the picker says `3.1 Pro` where the server said `Pro`.
+  `markSelected` already answers *which* option is selected, by position and
+  authoritatively — so the wait only needs to know the component has stopped
+  moving, and "different from before" says that without a product name.
 
 ### 1.34.0 — 2026-09-26
 

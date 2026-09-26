@@ -380,35 +380,9 @@ async function handleServerMessage(message) {
           console.warn('[Agent CLI] could not open a tab for the picker:', err?.message);
         }
       }
-      /*
-       * Traced at every hop, because this path has now failed five times in a
-       * row in a way no log could distinguish.
-       *
-       * "The browser never answered" was the only thing the server could say,
-       * and it is true of at least five different faults: nothing connected to
-       * ask, no tab to ask in, a tab whose content script is an orphan, a read
-       * that threw, and a read that was declined. Each one wants a different
-       * fix, and guessing between them is what the last five attempts were.
-       *
-       * These go to the server as `flow: 'extension'` rows so they land in
-       * `/logs extension` next to the failures, rather than in a service-worker
-       * console that is empty by the time anyone opens it.
-       */
-      {
-        const reached = await sendToModelTab(
-          { type, payload }, payload?.targetModel || 'gemini', payload?.sessionId || null,
-        );
-        sendToServer({
-          type: 'picker_trace',
-          payload: {
-            op: type,
-            userInitiated: Boolean(payload?.userInitiated),
-            sessionId: payload?.sessionId || null,
-            reachedTab: reached,
-          },
-        });
-        if (!reached) reportTabFailure(type);
-      }
+      if (!await sendToModelTab(
+        { type, payload }, payload?.targetModel || 'gemini', payload?.sessionId || null,
+      )) reportTabFailure(type);
       break;
     case 'heartbeat_ack':
       break;

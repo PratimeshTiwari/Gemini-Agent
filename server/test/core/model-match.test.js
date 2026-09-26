@@ -169,7 +169,7 @@ describe('the message after an effort switch', () => {
    * with nothing above it saying where it came from.
    */
   test('a known switch names what changed and what the browser is doing', async () => {
-    const msg = await run('high', [{ label: 'Gemini Pro' }, { label: '3.8 Flash' }]);
+    const msg = await run('high', [{ label: '3.8 Flash' }, { label: 'Gemini Pro' }]);
     assert.match(msg, /switching the browser to \*\*Gemini Pro\*\*/);
     assert.match(msg, /⚙ effort/);
     assert.doesNotMatch(msg, /Check the Gemini tab/i, 'it still sends the user looking');
@@ -196,8 +196,8 @@ describe('the message after an effort switch', () => {
   // which is `unavailable`, a different branch.
   test('already on it asks for nothing', async () => {
     const msg = await run('high', [
-      { label: 'Gemini Pro', selected: true },
       { label: '3.8 Flash' },
+      { label: 'Gemini Pro', selected: true },
     ]);
     assert.match(msg, /already on/);
     assert.doesNotMatch(msg, /read back after the switch/);
@@ -231,7 +231,7 @@ describe('the message after an effort switch', () => {
    * on nothing, and it must not do it in silence.
    */
   test('a pin the plan does not offer is warned about, not swallowed', async () => {
-    const msg = await run('high', [{ label: '3.1 Pro', description: 'Advanced reasoning' }], {
+    const msg = await run('high', [{ label: '3.1 Pro', description: 'Advanced reasoning', isMode: false }], {
       modelConfig: { effort: 'high', browserModels: { high: 'Gemini 9 Ultra' } },
     });
     assert.match(msg, /⚠/);
@@ -335,8 +335,8 @@ describe('modelMismatch — only when both halves are known', () => {
 
   test('agreement is silence', () => {
     assert.equal(modelMismatch('high', [
-      { label: '3.1 Pro', description: 'reasoning', selected: true },
       { label: '3.8 Flash' },
+      { label: '3.1 Pro', description: 'reasoning', selected: true },
     ]), null);
   });
 

@@ -815,23 +815,11 @@
             console.warn("[Agent CLI] could not open a tab for the picker:", err?.message);
           }
         }
-        {
-          const reached = await sendToModelTab(
-            { type, payload },
-            payload?.targetModel || "gemini",
-            payload?.sessionId || null
-          );
-          sendToServer({
-            type: "picker_trace",
-            payload: {
-              op: type,
-              userInitiated: Boolean(payload?.userInitiated),
-              sessionId: payload?.sessionId || null,
-              reachedTab: reached
-            }
-          });
-          if (!reached) reportTabFailure(type);
-        }
+        if (!await sendToModelTab(
+          { type, payload },
+          payload?.targetModel || "gemini",
+          payload?.sessionId || null
+        )) reportTabFailure(type);
         break;
       case "heartbeat_ack":
         break;
@@ -909,7 +897,6 @@
          * to the worker, and nothing was checking.
          */
         case "model_options":
-        case "picker_trace":
         case "error":
           sendToServer({ type, payload });
           sendResponse({ success: true });

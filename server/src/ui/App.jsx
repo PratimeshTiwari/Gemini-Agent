@@ -500,7 +500,15 @@ export function App({ agentLoop, wsServer }) {
    * It is the right one of the three to drop: `/update`'s two rows are about
    * work in progress, and the effort is still on the status bar.
    */
-  const mismatch = isCompactHeight(terminalHeight) ? null : modelMismatch(
+  /*
+   * Silent while a switch is in flight — see `_switchInFlight`. The row is for
+   * a standing disagreement; during the second between dispatch and
+   * confirmation it would sit directly under "switching the browser to X" and
+   * contradict it.
+   */
+  const mismatch = (isCompactHeight(terminalHeight) || agentLoop._switchInFlight)
+    ? null
+    : modelMismatch(
     agentLoop.modelConfig?.effort,
     agentLoop.modelOptions || [],
     // Resolved here rather than inside: `browserModels` is keyed by rung id and

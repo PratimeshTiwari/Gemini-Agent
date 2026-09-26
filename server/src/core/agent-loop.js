@@ -1524,6 +1524,9 @@ export class AgentLoop {
     clearTimeout(this._modelOptionsWatchdog);
     this._modelOptionsWatchdog = null;
     this.modelOptions = models;
+    // A fresh reading ends the suppression whether it agrees or not: from here
+    // a disagreement is standing rather than in flight, and worth the row.
+    this._switchInFlight = null;
 
     /*
      * A list with entries and none of them marked `selected` is a failed
@@ -1868,6 +1871,23 @@ export class AgentLoop {
       this._toExtension('switch_model', { label, sessionId });
       return;
     }
+
+    /*
+     * What the main tab has been told to become, until it confirms.
+     *
+     * `modelMismatch` recomputes on every render from `modelOptions`, and at
+     * the instant a switch is dispatched that list still holds the *previous*
+     * read. So the warning fired immediately under the row announcing the
+     * switch — "switching the browser to 3.8 Flash" followed by "browser is on
+     * 3.1 Pro, this rung wants 3.8 Flash" — which reads as the switch having
+     * failed when it is simply in flight. Reported from use with a transcript
+     * of exactly that pair.
+     *
+     * Technically the warning was true at that instant, which is why this
+     * suppresses rather than fixes: the answer is a second away and the row is
+     * about a *standing* disagreement, not a transient one.
+     */
+    this._switchInFlight = label;
 
     if (this.extensionLock?.isBusy?.(mainLane(this.mainModel))) {
       this._pendingModelSwitch = label;
