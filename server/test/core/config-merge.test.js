@@ -38,7 +38,7 @@ describe('AgentLoop._saveConfig', () => {
     loop.modelConfig = { main: 'gemini', effort: 'standard' };
     loop._loadConfig();
 
-    assert.equal(loop.modelConfig.effort, 'lite');
+    assert.equal(loop.modelConfig.effort, 'low');
     assert.equal(loop.modelConfig.modelTier, undefined, 'the old keys are folded away');
     assert.equal(loop.modelConfig.reasoningLevel, undefined);
     assert.equal(loop.modelConfig.reasoningEffort, undefined);

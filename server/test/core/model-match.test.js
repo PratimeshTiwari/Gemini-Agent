@@ -25,11 +25,11 @@ const LEAN_PLAN = [
 
 describe('pickModelFor — decide by what an option is for, not what it is called', () => {
   test('the fast rung takes the fastest thing offered', () => {
-    assert.equal(pickModelFor('lite', OWNER_PLAN).model.label, '3.5 Flash-Lite');
+    assert.equal(pickModelFor('low', OWNER_PLAN).model.label, '3.5 Flash-Lite');
   });
 
   test('the pro rung takes the reasoning model', () => {
-    assert.equal(pickModelFor('pro', OWNER_PLAN).model.label, '3.1 Pro');
+    assert.equal(pickModelFor('high', OWNER_PLAN).model.label, '3.1 Pro');
   });
 
   /*
@@ -53,7 +53,7 @@ describe('pickModelFor — decide by what an option is for, not what it is calle
   });
 
   test('a plan without a lite option still gives the fast rung something', () => {
-    assert.equal(pickModelFor('lite', LEAN_PLAN).model.label, '3.8 Flash');
+    assert.equal(pickModelFor('low', LEAN_PLAN).model.label, '3.8 Flash');
   });
 
   /**
@@ -66,8 +66,8 @@ describe('pickModelFor — decide by what an option is for, not what it is calle
       { label: '4.9 Flash', description: 'All-around help' },
       { label: '4.0 Pro', description: 'Advanced reasoning' },
     ];
-    assert.equal(pickModelFor('lite', renamed).model.label, '4.2 Flash-Lite');
-    assert.equal(pickModelFor('pro', renamed).model.label, '4.0 Pro');
+    assert.equal(pickModelFor('low', renamed).model.label, '4.2 Flash-Lite');
+    assert.equal(pickModelFor('high', renamed).model.label, '4.0 Pro');
   });
 
   test('a description alone is enough when the label says nothing', () => {
@@ -75,8 +75,8 @@ describe('pickModelFor — decide by what an option is for, not what it is calle
       { label: 'Model A', description: 'Fastest answers' },
       { label: 'Model B', description: 'Advanced reasoning' },
     ];
-    assert.equal(pickModelFor('lite', opaque).model.label, 'Model A');
-    assert.equal(pickModelFor('pro', opaque).model.label, 'Model B');
+    assert.equal(pickModelFor('low', opaque).model.label, 'Model A');
+    assert.equal(pickModelFor('high', opaque).model.label, 'Model B');
   });
 
   test('the fast rung refuses a heavy option even when the words overlap', () => {
@@ -84,24 +84,24 @@ describe('pickModelFor — decide by what an option is for, not what it is calle
       { label: 'Flash Extended', description: 'Complex problem solving' },
       { label: 'Flash', description: 'Fastest answers' },
     ];
-    assert.equal(pickModelFor('lite', tricky).model.label, 'Flash');
+    assert.equal(pickModelFor('low', tricky).model.label, 'Flash');
   });
 
   test('nothing to pick from is null, not a guess', () => {
-    assert.equal(pickModelFor('lite', []), null);
-    assert.equal(pickModelFor('lite', undefined), null);
+    assert.equal(pickModelFor('low', []), null);
+    assert.equal(pickModelFor('low', undefined), null);
     assert.equal(pickModelFor('nonsense', OWNER_PLAN), null);
   });
 
   test('it says why, because a switch you cannot explain reads as a bug', () => {
-    assert.match(pickModelFor('pro', OWNER_PLAN).why, /3\.1 Pro/);
-    assert.match(pickModelFor('pro', OWNER_PLAN).why, /pro/);
+    assert.match(pickModelFor('high', OWNER_PLAN).why, /3\.1 Pro/);
+    assert.match(pickModelFor('high', OWNER_PLAN).why, /high/);
   });
 });
 
 describe('planModelSwitch — the cheapest interaction is the one not performed', () => {
   test('already on the right model means no click', () => {
-    const plan = planModelSwitch('flash', OWNER_PLAN);
+    const plan = planModelSwitch('medium', OWNER_PLAN);
     assert.equal(plan.action, 'none');
     assert.match(plan.reason, /already on 3\.8 Flash/);
   });
@@ -112,20 +112,20 @@ describe('planModelSwitch — the cheapest interaction is the one not performed'
    * rather than just `action: 'switch'` is what makes that visible.
    */
   test('a different model means switch, and names it', () => {
-    const plan = planModelSwitch('pro', OWNER_PLAN);
+    const plan = planModelSwitch('high', OWNER_PLAN);
     assert.equal(plan.action, 'switch');
     assert.equal(plan.model.label, '3.1 Pro');
   });
 
   test('no list yet is unavailable, not a failure to act on', () => {
-    const plan = planModelSwitch('pro', []);
+    const plan = planModelSwitch('high', []);
     assert.equal(plan.action, 'unavailable');
     assert.match(plan.reason, /not reported a model list/);
   });
 
   test('a plan that offers nothing suitable says what it does offer', () => {
     const odd = [{ label: 'Canvas', description: 'Drawing' }];
-    const plan = planModelSwitch('pro', odd);
+    const plan = planModelSwitch('high', odd);
     assert.equal(plan.action, 'unavailable');
     assert.match(plan.reason, /Canvas/);
   });
@@ -150,7 +150,7 @@ describe('the message after an effort switch', () => {
     // Only what `/effort` reaches for. Growing this as it errors is how the
     // stub stays honest about the command's real dependencies.
     const loop = {
-      modelConfig: { effort: 'pro' },
+      modelConfig: { effort: 'high' },
       modelOptions,
       promptBuilder: { resetPromptState() {} },
       switchModelTo() {},
@@ -169,7 +169,7 @@ describe('the message after an effort switch', () => {
    * with nothing above it saying where it came from.
    */
   test('a known switch names what changed and what the browser is doing', async () => {
-    const msg = await run('pro', [{ label: 'Gemini Pro' }, { label: '3.8 Flash' }]);
+    const msg = await run('high', [{ label: 'Gemini Pro' }, { label: '3.8 Flash' }]);
     assert.match(msg, /switching the browser to \*\*Gemini Pro\*\*/);
     assert.match(msg, /⚙ effort/);
     assert.doesNotMatch(msg, /Check the Gemini tab/i, 'it still sends the user looking');
@@ -182,7 +182,7 @@ describe('the message after an effort switch', () => {
    * match against — so it is the only one that offers the key showing the tab.
    */
   test('with no list it says so, and offers the tab', async () => {
-    const msg = await run('pro', []);
+    const msg = await run('high', []);
     // Past tense: the row is `<Static>` scrollback from the moment the command
     // ran, so a present participle read as live status for the whole session.
     assert.match(msg, /asked the browser/i);
@@ -195,7 +195,7 @@ describe('the message after an effort switch', () => {
   // version of this test passed a list the effort could not match at all,
   // which is `unavailable`, a different branch.
   test('already on it asks for nothing', async () => {
-    const msg = await run('pro', [
+    const msg = await run('high', [
       { label: 'Gemini Pro', selected: true },
       { label: '3.8 Flash' },
     ]);
@@ -218,8 +218,8 @@ describe('the message after an effort switch', () => {
    * setting you can trust and a coincidence you cannot tell from one.
    */
   test('a pinned model is labelled as pinned, not as a lucky guess', async () => {
-    const msg = await run('pro', [{ label: 'Extended thinking' }, { label: '3.1 Pro' }], {
-      modelConfig: { effort: 'pro', browserModels: { pro: 'Extended thinking' } },
+    const msg = await run('high', [{ label: 'Extended thinking' }, { label: '3.1 Pro' }], {
+      modelConfig: { effort: 'high', browserModels: { high: 'Extended thinking' } },
     });
     assert.match(msg, /switching the browser to \*\*Extended thinking\*\*/);
     assert.match(msg, /_\(pinned\)_/);
@@ -231,8 +231,8 @@ describe('the message after an effort switch', () => {
    * on nothing, and it must not do it in silence.
    */
   test('a pin the plan does not offer is warned about, not swallowed', async () => {
-    const msg = await run('pro', [{ label: '3.1 Pro', description: 'Advanced reasoning' }], {
-      modelConfig: { effort: 'pro', browserModels: { pro: 'Gemini 9 Ultra' } },
+    const msg = await run('high', [{ label: '3.1 Pro', description: 'Advanced reasoning' }], {
+      modelConfig: { effort: 'high', browserModels: { high: 'Gemini 9 Ultra' } },
     });
     assert.match(msg, /⚠/);
     assert.match(msg, /Gemini 9 Ultra/);
@@ -240,7 +240,7 @@ describe('the message after an effort switch', () => {
   });
 
   test('mid-chat, it says the next message resends the whole prompt', async () => {
-    const msg = await run('lite', [{ label: '3.8 Flash' }], {
+    const msg = await run('low', [{ label: '3.8 Flash' }], {
       conversationHistory: [{ role: 'user', content: 'hi' }],
     });
     assert.match(msg, /resends the full prompt/);
@@ -248,13 +248,13 @@ describe('the message after an effort switch', () => {
   });
 
   test('and says nothing of the sort in a fresh chat', async () => {
-    const msg = await run('lite', [{ label: '3.8 Flash' }], { conversationHistory: [] });
+    const msg = await run('low', [{ label: '3.8 Flash' }], { conversationHistory: [] });
     assert.doesNotMatch(msg, /resends/);
   });
 
   test('it no longer leads with reload instructions', async () => {
     for (const options of [[], [{ label: 'Gemini Pro' }]]) {
-      const msg = await run('pro', options);
+      const msg = await run('high', options);
       assert.doesNotMatch(msg, /chrome:\/\/extensions/,
         'a stale bridge is a different problem, and there is no sign of one yet');
       assert.doesNotMatch(msg, /If nothing happens/);
@@ -326,7 +326,7 @@ describe('noteModelOptions reports what landed', () => {
  */
 describe('modelMismatch — only when both halves are known', () => {
   test('a different selected model is a mismatch, and names both sides', () => {
-    const m = modelMismatch('pro', [
+    const m = modelMismatch('high', [
       { label: '3.8 Flash', selected: true },
       { label: '3.1 Pro', description: 'reasoning' },
     ]);
@@ -334,7 +334,7 @@ describe('modelMismatch — only when both halves are known', () => {
   });
 
   test('agreement is silence', () => {
-    assert.equal(modelMismatch('pro', [
+    assert.equal(modelMismatch('high', [
       { label: '3.1 Pro', description: 'reasoning', selected: true },
       { label: '3.8 Flash' },
     ]), null);
@@ -346,16 +346,16 @@ describe('modelMismatch — only when both halves are known', () => {
    * point it costs more than the mismatch it exists to catch.
    */
   test('nothing reported selected is silence, not a guess', () => {
-    assert.equal(modelMismatch('pro', [{ label: '3.8 Flash' }, { label: '3.1 Pro' }]), null);
-    assert.equal(modelMismatch('pro', []), null);
-    assert.equal(modelMismatch('pro'), null);
-    assert.equal(modelMismatch('pro', null), null);
+    assert.equal(modelMismatch('high', [{ label: '3.8 Flash' }, { label: '3.1 Pro' }]), null);
+    assert.equal(modelMismatch('high', []), null);
+    assert.equal(modelMismatch('high'), null);
+    assert.equal(modelMismatch('high', null), null);
   });
 
   // `unavailable` — nothing offered suits the rung — is a different problem and
   // not one the picker can fix, so it is not dressed up as one.
   test('a plan with nothing suitable is silence', () => {
-    assert.equal(modelMismatch('lite', [{ label: 'Extended thinking', selected: true }]), null);
+    assert.equal(modelMismatch('low', [{ label: 'Extended thinking', selected: true }]), null);
   });
 
   test('every rung on the ladder can be checked without throwing', () => {
@@ -375,20 +375,38 @@ describe('modelMismatch — only when both halves are known', () => {
  */
 describe('browserModelPin — the config override, read by rung', () => {
   test('reads the rung it was asked for, case-insensitively', () => {
-    const mc = { browserModels: { lite: 'Fast', flash: 'Thinking', pro: '3.1 Pro' } };
-    assert.equal(browserModelPin(mc, 'pro'), '3.1 Pro');
-    assert.equal(browserModelPin(mc, 'LITE'), 'Fast');
-    assert.equal(browserModelPin(mc, ' flash '), 'Thinking');
+    const mc = { browserModels: { low: 'Fast', medium: 'Thinking', high: '3.1 Pro' } };
+    assert.equal(browserModelPin(mc, 'high'), '3.1 Pro');
+    assert.equal(browserModelPin(mc, 'LOW'), 'Fast');
+    assert.equal(browserModelPin(mc, ' medium '), 'Thinking');
+  });
+
+  /*
+   * The rung ids were renamed on 2026-09-26 and this map is keyed by them, so
+   * a config written before that holds `{ lite, flash, pro }`. Losing those
+   * silently is the worst way for a pin to fail: it exists to *correct* a bad
+   * match, so a dropped pin looks exactly like the match being wrong again.
+   */
+  test('a config written before the rename still resolves', () => {
+    const old = { browserModels: { lite: 'Fast', flash: 'Thinking', pro: '3.1 Pro' } };
+    assert.equal(browserModelPin(old, 'low'), 'Fast');
+    assert.equal(browserModelPin(old, 'medium'), 'Thinking');
+    assert.equal(browserModelPin(old, 'high'), '3.1 Pro');
+  });
+
+  test('and the current name wins when a config carries both', () => {
+    const both = { browserModels: { high: 'New', pro: 'Old' } };
+    assert.equal(browserModelPin(both, 'high'), 'New');
   });
 
   // Absent is the default and must stay indistinguishable from "decide by
   // intent" — every config written before this existed is in this case.
   test('absent, blank and the wrong type are all "no pin"', () => {
-    assert.equal(browserModelPin({}, 'pro'), '');
-    assert.equal(browserModelPin(undefined, 'pro'), '');
-    assert.equal(browserModelPin({ browserModels: {} }, 'pro'), '');
-    assert.equal(browserModelPin({ browserModels: { pro: 3 } }, 'pro'), '');
-    assert.equal(browserModelPin({ browserModels: { pro: '   ' } }, 'pro'), '');
+    assert.equal(browserModelPin({}, 'high'), '');
+    assert.equal(browserModelPin(undefined, 'high'), '');
+    assert.equal(browserModelPin({ browserModels: {} }, 'high'), '');
+    assert.equal(browserModelPin({ browserModels: { high: 3 } }, 'high'), '');
+    assert.equal(browserModelPin({ browserModels: { high: '   ' } }, 'high'), '');
   });
 });
 
@@ -396,26 +414,26 @@ describe('pickModelFor — a pin overrides the intent match, when it can', () =>
   test('an exact pin wins, including one the intent match vetoes', () => {
     // `pro` avoids "extended" and "complex", so this option is unreachable by
     // intent — which is exactly the case a pin exists for.
-    const pick = pickModelFor('pro', OWNER_PLAN, 'Extended thinking');
+    const pick = pickModelFor('high', OWNER_PLAN, 'Extended thinking');
     assert.equal(pick.model.label, 'Extended thinking');
     assert.equal(pick.pinned, true);
   });
 
   test('a substring pin survives the version number moving', () => {
-    assert.equal(pickModelFor('pro', OWNER_PLAN, 'Pro').model.label, '3.1 Pro');
+    assert.equal(pickModelFor('high', OWNER_PLAN, 'Pro').model.label, '3.1 Pro');
     const renamed = OWNER_PLAN.map((m) => (m.label === '3.1 Pro' ? { ...m, label: '3.2 Pro' } : m));
-    assert.equal(pickModelFor('pro', renamed, 'Pro').model.label, '3.2 Pro');
+    assert.equal(pickModelFor('high', renamed, 'Pro').model.label, '3.2 Pro');
   });
 
   test('case does not matter', () => {
     assert.equal(
-      pickModelFor('pro', OWNER_PLAN, 'extended THINKING').model.label, 'Extended thinking',
+      pickModelFor('high', OWNER_PLAN, 'extended THINKING').model.label, 'Extended thinking',
     );
   });
 
   test('an exact label beats being a substring of another', () => {
     const plan = [{ label: '3.1 Pro Preview' }, { label: 'Pro' }];
-    assert.equal(pickModelFor('pro', plan, 'Pro').model.label, 'Pro');
+    assert.equal(pickModelFor('high', plan, 'Pro').model.label, 'Pro');
   });
 
   /*
@@ -427,7 +445,7 @@ describe('pickModelFor — a pin overrides the intent match, when it can', () =>
    * added to fix, so an unresolvable pin is reported and stepped over.
    */
   test('a pin this plan does not offer falls back, and says so', () => {
-    const pick = pickModelFor('pro', OWNER_PLAN, 'Gemini 9 Ultra');
+    const pick = pickModelFor('high', OWNER_PLAN, 'Gemini 9 Ultra');
     assert.equal(pick.model.label, '3.1 Pro', 'it still picks by intent');
     assert.equal(pick.pinned, false);
     assert.match(pick.pinMissed, /does not offer/);
@@ -437,7 +455,7 @@ describe('pickModelFor — a pin overrides the intent match, when it can', () =>
   // "Flash" is both `3.5 Flash-Lite` and `3.8 Flash`. Picking one of those by
   // position is how you land on a model nobody chose.
   test('an ambiguous pin is treated as missed, not resolved by position', () => {
-    const pick = pickModelFor('lite', OWNER_PLAN, 'Flash');
+    const pick = pickModelFor('low', OWNER_PLAN, 'Flash');
     assert.equal(pick.pinned, false);
     assert.match(pick.pinMissed, /matches 2/);
     assert.equal(pick.model.label, '3.5 Flash-Lite');
@@ -454,14 +472,14 @@ describe('pickModelFor — a pin overrides the intent match, when it can', () =>
 
 describe('planModelSwitch and explainModelMismatch carry the pin', () => {
   test('a pinned switch says it was pinned', () => {
-    const plan = planModelSwitch('pro', OWNER_PLAN, 'Extended thinking');
+    const plan = planModelSwitch('high', OWNER_PLAN, 'Extended thinking');
     assert.equal(plan.action, 'switch');
     assert.equal(plan.model.label, 'Extended thinking');
     assert.equal(plan.pinned, true);
   });
 
   test('already on the pinned model is still no click', () => {
-    const plan = planModelSwitch('pro', [
+    const plan = planModelSwitch('high', [
       { label: 'Extended thinking', description: 'Complex problem solving', selected: true },
       { label: '3.1 Pro', description: 'Advanced reasoning' },
     ], 'Extended thinking');
@@ -470,7 +488,7 @@ describe('planModelSwitch and explainModelMismatch carry the pin', () => {
   });
 
   test('a missed pin still switches, and carries the reason', () => {
-    const plan = planModelSwitch('pro', OWNER_PLAN, 'nothing like this');
+    const plan = planModelSwitch('high', OWNER_PLAN, 'nothing like this');
     assert.equal(plan.action, 'switch');
     assert.equal(plan.pinned, false);
     assert.match(plan.pinMissed, /does not offer/);
@@ -483,9 +501,9 @@ describe('planModelSwitch and explainModelMismatch carry the pin', () => {
       { label: '3.1 Pro', description: 'Advanced reasoning', selected: true },
       { label: 'Extended thinking', description: 'Complex problem solving' },
     ];
-    assert.equal(explainModelMismatch('pro', models).state, 'agree');
+    assert.equal(explainModelMismatch('high', models).state, 'agree');
 
-    const pinned = explainModelMismatch('pro', models, 'Extended thinking');
+    const pinned = explainModelMismatch('high', models, 'Extended thinking');
     assert.equal(pinned.state, 'mismatch');
     assert.equal(pinned.wanted, 'Extended thinking');
     assert.equal(pinned.pinned, true);
@@ -496,13 +514,13 @@ describe('planModelSwitch and explainModelMismatch carry the pin', () => {
       { label: '3.8 Flash', description: 'All-around help', selected: true },
       { label: '3.1 Pro', description: 'Advanced reasoning' },
     ];
-    assert.equal(explainModelMismatch('pro', models).pinned, false);
+    assert.equal(explainModelMismatch('high', models).pinned, false);
   });
 
   // `modelMismatch` keeps its two-field contract: the status row only needs
   // "warn or don't", and an extra key is one more thing to start relying on.
   test('modelMismatch still answers with exactly current and wanted', () => {
-    const m = modelMismatch('pro', [
+    const m = modelMismatch('high', [
       { label: '3.1 Pro', description: 'Advanced reasoning', selected: true },
       { label: 'Extended thinking', description: 'Complex problem solving' },
     ], 'Extended thinking');
@@ -529,7 +547,7 @@ describe('requestModelOptions — silence gets written down', () => {
     const loop = Object.create(AgentLoop.prototype);
     Object.assign(loop, {
       workspace,
-      modelConfig: { effort: 'pro' },
+      modelConfig: { effort: 'high' },
       modelOptions: null,
       _notify: (m) => said.push(m),
       _toExtension: (type) => sent.push(type),
@@ -591,7 +609,7 @@ describe('requestModelOptions — silence gets written down', () => {
     const row = errors(ws).find((r) => r.op === 'model_options_unanswered');
     assert.ok(row, 'nothing recorded the unanswered ask');
     assert.equal(row.flow, 'agent');
-    assert.equal(row.meta.effort, 'pro');
+    assert.equal(row.meta.effort, 'high');
   });
 
   /*
@@ -609,7 +627,7 @@ describe('requestModelOptions — silence gets written down', () => {
     t.mock.timers.tick(30000);
     assert.deepEqual(poll.said, [], 'a background poll says nothing');
 
-    const asked = loopWith(mkws(), { _pendingEffortSwitch: 'pro' });
+    const asked = loopWith(mkws(), { _pendingEffortSwitch: 'high' });
     asked.loop.requestModelOptions();
     t.mock.timers.tick(30000);
     assert.match(asked.said[0], /never answered/);

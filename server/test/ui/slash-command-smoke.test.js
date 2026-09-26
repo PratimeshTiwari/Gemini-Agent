@@ -49,7 +49,7 @@ function harness() {
     workspace: ws,
     codeDir: ws,
     mode: 'auto',
-    modelConfig: { main: 'gemini', effort: 'pro' },
+    modelConfig: { main: 'gemini', effort: 'high' },
     conversationHistory: [],
     isProcessing: false,
     commandRules: { enabled: true, allow: [], block: [] },
@@ -180,7 +180,7 @@ describe('a wrong word is rejected, not ignored', () => {
     await h.run('/effort nonsense');
 
     assert.match(h.lastMessage(), /not an effort level/);
-    assert.equal(h.loop.modelConfig.effort, 'pro', 'it changed the effort to something invalid');
+    assert.equal(h.loop.modelConfig.effort, 'high', 'it changed the effort to something invalid');
     h.cleanup();
   });
 
@@ -188,7 +188,7 @@ describe('a wrong word is rejected, not ignored', () => {
     const h = harness();
     await h.run('/effort lite');
 
-    assert.equal(h.loop.modelConfig.effort, 'lite');
+    assert.equal(h.loop.modelConfig.effort, 'low');
     assert.doesNotMatch(h.lastMessage(), /not an effort level/);
     h.cleanup();
   });

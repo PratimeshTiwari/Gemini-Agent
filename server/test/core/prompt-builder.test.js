@@ -107,7 +107,7 @@ describe('PromptBuilder — refresh cadence counts messages, not user turns', ()
 
 describe('PromptBuilder — instructions the model can actually act on', () => {
   test('no message teaches the QUESTION: protocol, which nothing parses', () => {
-    for (const effort of ['lite', 'flash', 'standard']) {
+    for (const effort of ['low', 'medium', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
       const modelConfig = { effort };
       const messages = [build(pb, { modelConfig }), driveToRefresh(pb, { modelConfig }).prompt];
@@ -140,7 +140,7 @@ describe('PromptBuilder — the advertised tool set matches the dispatchable one
   const names = (text) => [...text.matchAll(/^## ([a-z_]+)/gm)].map((m) => m[1]);
 
   test('ask_subagent is advertised in every tier when subagents are on', () => {
-    for (const effort of ['lite', 'flash', 'standard']) {
+    for (const effort of ['low', 'medium', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
       const defs = pb._buildToolDefinitions(true, { effort });
       assert.ok(names(defs).includes('ask_subagent'),
@@ -179,7 +179,7 @@ describe('PromptBuilder — the advertised tool set matches the dispatchable one
 describe('PromptBuilder — tier differentiation', () => {
   test('flash gets a smaller prompt than pro', () => {
     const pb = new PromptBuilder(ws, ws);
-    const flash = build(pb, { modelConfig: { effort: 'lite' } }).length;
+    const flash = build(pb, { modelConfig: { effort: 'low' } }).length;
     const pb2 = new PromptBuilder(ws, ws);
     const pro = build(pb2, { modelConfig: { effort: 'standard' } }).length;
     assert.ok(flash < pro / 2, `flash ${flash} vs pro ${pro}`);
@@ -194,17 +194,17 @@ describe('PromptBuilder — tier differentiation', () => {
   // The three old keys are folded into one rung on read, so a config written
   // by any earlier build still lands on the profile it used to get.
   test('a config written before /effort still selects the right profile', () => {
-    assert.strictEqual(effortFromConfig({ modelTier: 'lite' }), 'lite');
-    assert.strictEqual(effortFromConfig({ reasoningEffort: 'low' }), 'lite');
-    assert.strictEqual(effortFromConfig({ reasoningEffort: 'medium' }), 'flash');
-    assert.strictEqual(effortFromConfig({ modelTier: 'pro', reasoningLevel: 'deep' }), 'pro');
-    assert.strictEqual(effortFromConfig({}), 'pro');
+    assert.strictEqual(effortFromConfig({ modelTier: 'lite' }), 'low');
+    assert.strictEqual(effortFromConfig({ reasoningEffort: 'low' }), 'low');
+    assert.strictEqual(effortFromConfig({ reasoningEffort: 'medium' }), 'medium');
+    assert.strictEqual(effortFromConfig({ modelTier: 'pro', reasoningLevel: 'deep' }), 'high');
+    assert.strictEqual(effortFromConfig({}), 'high');
   });
 
   // "flash tier, deep reasoning" was representable and meant nothing. The tier
   // is what the prompt branched on, so it wins and the level is dropped.
   test('a combination that never made sense resolves to the half that did', () => {
-    assert.strictEqual(effortFromConfig({ modelTier: 'lite', reasoningLevel: 'deep' }), 'lite');
+    assert.strictEqual(effortFromConfig({ modelTier: 'lite', reasoningLevel: 'deep' }), 'low');
   });
 });
 
@@ -220,7 +220,7 @@ describe('PromptBuilder — tier differentiation', () => {
  * notice them creeping back in.
  */
 describe('PromptBuilder — the pro rung', () => {
-  const proPrompt = (effort = 'pro') => {
+  const proPrompt = (effort = 'high') => {
     const pb = new PromptBuilder(ws, ws);
     return build(pb, { modelConfig: { effort } });
   };
@@ -261,7 +261,7 @@ describe('PromptBuilder — the pro rung', () => {
 
   test('levels do not leak into the flash tiers, which have no room for them', () => {
     const pb = new PromptBuilder(ws, ws);
-    const p = build(pb, { modelConfig: { effort: 'lite' } });
+    const p = build(pb, { modelConfig: { effort: 'low' } });
     assert.doesNotMatch(p, /RESTATE AND DECOMPOSE/);
     assert.doesNotMatch(p, /Adversarial self-review/);
   });
@@ -278,8 +278,8 @@ describe('PromptBuilder — the pro rung', () => {
       build(pb, { modelConfig });
       return driveToRefresh(pb, { modelConfig }).prompt;
     };
-    assert.match(remind('pro'), /decompose/i);
-    assert.doesNotMatch(remind('lite'), /decompose/i);
+    assert.match(remind('high'), /decompose/i);
+    assert.doesNotMatch(remind('low'), /decompose/i);
   });
 });
 
@@ -324,7 +324,7 @@ describe('PromptBuilder — the prompt tells the truth about delegation', () => 
 
 describe('PromptBuilder — the ask_question contract', () => {
   test('every tier is told a prose question does not reach the user', () => {
-    for (const effort of ['lite', 'flash', 'standard']) {
+    for (const effort of ['low', 'medium', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
       const p = build(pb, { modelConfig: { effort } });
       assert.match(p, /ask_question/, `${effort} does not mention the tool`);
@@ -457,7 +457,7 @@ describe('PromptBuilder — the single-response rule is stated, not chanted', ()
   });
 
   test('the rule is still stated where it is read at least once', () => {
-    for (const effort of ['lite', 'flash', 'standard']) {
+    for (const effort of ['low', 'medium', 'standard']) {
       const pb = new PromptBuilder(ws, ws);
       const turn0 = build(pb, { modelConfig: { effort } });
       assert.match(turn0, /one answer per turn/i,
@@ -530,7 +530,7 @@ describe('PromptBuilder — the prompt may not name a tool that does not exist',
     const offenders = new Set();
 
     for (const mode of ['plan', 'auto']) {
-      for (const effort of ['lite', 'flash', 'brief', 'standard', 'deep']) {
+      for (const effort of ['low', 'medium', 'brief', 'standard', 'deep']) {
         for (const topology of ['single', 'duo']) {
           const pb = new PromptBuilder(ws, ws);
           const modelConfig = { effort, main: 'gemini', ...(topology === 'duo' ? { reviewer: 'chatgpt' } : {}) };
@@ -585,7 +585,7 @@ describe('PromptBuilder — a dispatchable tool the prompt never mentions is unr
 describe('every rung asks for a list, checks it, and reviews before finishing', () => {
   const pro = (effort) => build(new PromptBuilder(ws, ws), { modelConfig: { effort } });
   const pb = () => new PromptBuilder(ws, ws);
-  const LADDER = ['lite', 'flash', 'pro'];
+  const LADDER = ['low', 'medium', 'high'];
 
   /*
    * Where the handover lives depends on the rung now.
@@ -635,11 +635,11 @@ describe('every rung asks for a list, checks it, and reviews before finishing', 
    * costs the characters twice and looks like it works.
    */
   test('the pro rung no longer carries it in the opening prompt', () => {
-    assert.doesNotMatch(pro('pro'), /THE HANDOVER REVIEW|Read back:/);
+    assert.doesNotMatch(pro('high'), /THE HANDOVER REVIEW|Read back:/);
   });
 
   test('and the flash rungs still do, because theirs is small', () => {
-    for (const effort of ['lite', 'flash']) {
+    for (const effort of ['low', 'medium']) {
       assert.match(pro(effort), /BEFORE YOU FINISH/, effort);
       assert.equal(pb().buildHandoverBlock(effort), '', `${effort} should not get a second one`);
     }
@@ -657,27 +657,27 @@ describe('every rung asks for a list, checks it, and reviews before finishing', 
     // assert against the reminder.
     const blockFresh = (effort) => new PromptBuilder(ws, ws).buildHandoverBlock(effort);
 
-    assert.match(pro('lite'), /BEFORE YOU FINISH/);
-    assert.doesNotMatch(pro('lite'), /THE HANDOVER REVIEW/, 'the full review on a 5.6k prompt is +33%');
+    assert.match(pro('low'), /BEFORE YOU FINISH/);
+    assert.doesNotMatch(pro('low'), /THE HANDOVER REVIEW/, 'the full review on a 5.6k prompt is +33%');
 
     // flash-thinking carries the four-point version inside its own reasoning
     // prompt, and gets no second block.
-    assert.match(pro('flash'), /Read back:/);
-    assert.doesNotMatch(pro('flash'), /THE HANDOVER REVIEW/);
+    assert.match(pro('medium'), /Read back:/);
+    assert.doesNotMatch(pro('medium'), /THE HANDOVER REVIEW/);
 
-    assert.match(blockFresh('pro'), /THE HANDOVER REVIEW/);
+    assert.match(blockFresh('high'), /THE HANDOVER REVIEW/);
   });
 
   // The whole prompt strategy exists to avoid large repeated payloads typed
   // into a browser tab, and Flash's identity is being terse.
   test('the cost stays proportionate', () => {
     const chars = Object.fromEntries(LADDER.map((e) => [e, pro(e).length]));
-    assert.ok(chars.lite < 7000, `lite grew to ${chars.lite}; it is the terse rung`);
+    assert.ok(chars.low < 7000, `low grew to ${chars.low}; it is the terse rung`);
     // Strictly increasing, named explicitly. A mechanical rename briefly turned
-    // the middle comparison into `chars.flash < chars.flash` — a value against
+    // the middle comparison into `chars.medium < chars.medium` — a value against
     // itself, which passes forever and says nothing.
-    assert.ok(chars.lite < chars.flash, `lite ${chars.lite} !< flash ${chars.flash}`);
-    assert.ok(chars.flash < chars.pro, `flash ${chars.flash} !< pro ${chars.pro}`);
+    assert.ok(chars.low < chars.medium, `lite ${chars.low} !< flash ${chars.medium}`);
+    assert.ok(chars.medium < chars.high, `flash ${chars.medium} !< pro ${chars.high}`);
   });
 });
 
@@ -705,10 +705,10 @@ describe('the handover review — asked for, so pin where it appears', () => {
   });
 
   test('the flash tiers never see the pro prompt, so they get their own', () => {
-    assert.doesNotMatch(pro('lite'), /THE HANDOVER REVIEW/);
-    assert.doesNotMatch(pro('flash'), /THE HANDOVER REVIEW/);
-    assert.match(pro('lite'), /BEFORE YOU FINISH/);
-    assert.match(pro('flash'), /BEFORE YOU FINISH/);
+    assert.doesNotMatch(pro('low'), /THE HANDOVER REVIEW/);
+    assert.doesNotMatch(pro('medium'), /THE HANDOVER REVIEW/);
+    assert.match(pro('low'), /BEFORE YOU FINISH/);
+    assert.match(pro('medium'), /BEFORE YOU FINISH/);
   });
 
   /*

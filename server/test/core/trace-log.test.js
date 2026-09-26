@@ -125,8 +125,8 @@ describe('formatMs — the unit people would say out loud', () => {
  */
 describe('traces carry the effort rung', () => {
   test('it is written when known', () => {
-    logTrace(ws, { model: 'gemini', effort: 'pro', stages: { complete: 4000 } });
-    assert.equal(readTraces(ws)[0].effort, 'pro');
+    logTrace(ws, { model: 'gemini', effort: 'high', stages: { complete: 4000 } });
+    assert.equal(readTraces(ws)[0].effort, 'high');
   });
 
   // Old rows have no rung and must stay valid — the field is new.
@@ -136,13 +136,13 @@ describe('traces carry the effort rung', () => {
   });
 
   test('the split reports the two stages the model decides', () => {
-    logTrace(ws, { effort: 'lite', stages: { first_token: 1000, complete: 2000, send: 70 } });
-    logTrace(ws, { effort: 'lite', stages: { first_token: 3000, complete: 4000, send: 70 } });
-    logTrace(ws, { effort: 'pro', stages: { first_token: 9000, complete: 8000, send: 70 } });
+    logTrace(ws, { effort: 'low', stages: { first_token: 1000, complete: 2000, send: 70 } });
+    logTrace(ws, { effort: 'low', stages: { first_token: 3000, complete: 4000, send: 70 } });
+    logTrace(ws, { effort: 'high', stages: { first_token: 9000, complete: 8000, send: 70 } });
 
     const { efforts } = summariseTraces(ws);
-    const lite = efforts.find((e) => e.effort === 'lite');
-    const pro = efforts.find((e) => e.effort === 'pro');
+    const lite = efforts.find((e) => e.effort === 'low');
+    const pro = efforts.find((e) => e.effort === 'high');
 
     assert.equal(lite.n, 2);
     // Nearest-rank: ceil(0.5 * 2) = 1, so the median of two samples is the
@@ -153,7 +153,7 @@ describe('traces carry the effort rung', () => {
     assert.equal(pro.firstToken, 9000);
     // Busiest rung first: with one rung the row is noise, and the caller hides
     // the whole block below two.
-    assert.equal(efforts[0].effort, 'lite');
+    assert.equal(efforts[0].effort, 'low');
   });
 
   test('a log with no rungs at all offers an empty split, not a crash', () => {

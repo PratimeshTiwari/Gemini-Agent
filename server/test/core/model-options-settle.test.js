@@ -64,7 +64,7 @@ test('the last known list survives — it is better than nothing', () => {
 });
 
 test('a waiting /effort is told, once, and stops waiting', () => {
-  const loop = loopWithWatchdog({ _pendingEffortSwitch: 'pro' });
+  const loop = loopWithWatchdog({ _pendingEffortSwitch: 'high' });
   settleModelOptions.call(loop, 'the picker did not open');
 
   assert.equal(loop.notices.length, 1);
@@ -85,7 +85,7 @@ test('a waiting /effort is told, once, and stops waiting', () => {
 });
 
 test('and when there has never been a reading, it names nothing', () => {
-  const loop = loopWithWatchdog({ _pendingEffortSwitch: 'pro', modelOptions: [] });
+  const loop = loopWithWatchdog({ _pendingEffortSwitch: 'high', modelOptions: [] });
   settleModelOptions.call(loop, 'no tab');
 
   assert.match(loop.notices[0], /browser model is unknown/);
@@ -97,7 +97,7 @@ test('and when there has never been a reading, it names nothing', () => {
 // case, and it is not a reading either.
 test('a list with no selection is not a reading', () => {
   const loop = loopWithWatchdog({
-    _pendingEffortSwitch: 'pro',
+    _pendingEffortSwitch: 'high',
     modelOptions: [{ label: '3.1 Pro', selected: false }, { label: '3.8 Flash', selected: false }],
   });
   settleModelOptions.call(loop, 'no tab');
@@ -113,7 +113,7 @@ test('the once-a-turn poll says nothing', () => {
 });
 
 test('it works with no reason given', () => {
-  const loop = loopWithWatchdog({ _pendingEffortSwitch: 'pro' });
+  const loop = loopWithWatchdog({ _pendingEffortSwitch: 'high' });
   settleModelOptions.call(loop);
   assert.equal(loop.notices.length, 1);
   assert.doesNotMatch(loop.notices[0], /null|undefined/);

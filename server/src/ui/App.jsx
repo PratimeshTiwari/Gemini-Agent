@@ -507,6 +507,16 @@ export function App({ agentLoop, wsServer }) {
     // `modelConfig.effort` can still be a pre-2026-09-20 word on an old config.
     browserModelPin(agentLoop.modelConfig, resolveEffort(agentLoop.modelConfig?.effort).id),
   );
+  /*
+   * What the browser's picker says is selected, or null when it has never been
+   * read. `modelOptions` is not cleared by a failed ask, so this can be a
+   * moment stale — which is the right trade for a status row: a name that was
+   * true recently beats no name at all, and the mismatch row beside it is what
+   * catches a real disagreement.
+   */
+  const browserModelLabel = (agentLoop.modelOptions || [])
+    .find((m) => m && m.selected)?.label || null;
+
   const noticeRows = (update.available ? 1 : 0) + (pendingReload ? 1 : 0) + (mismatch ? 1 : 0);
 
   /**
@@ -1360,7 +1370,23 @@ export function App({ agentLoop, wsServer }) {
           {runningTasks > 0 ? <Text color="yellow">{runningTasks} bg{'  ·  '}</Text> : ''}
           <Text color={mode === 'plan' ? 'yellow' : 'cyan'}>{mode}</Text>
           <Text dimColor> ⇥{'  ·  '}</Text>
-          {resolveEffort(agentLoop.modelConfig?.effort).id.toUpperCase()}
+          {/*
+            Two different facts, and the row says which one it has.
+
+            The effort is **ours** — how hard to work, now `low`/`medium`/`high`
+            since it stopped being named after Google's models. The model is the
+            **browser's**, and it is whatever its picker currently offers. Naming
+            our rungs after their models is what made "flash" mean two things,
+            and the status bar inherited that confusion.
+
+            So: show the model when the picker has actually been read, because
+            that is the more specific fact and the one a mismatch is about. Fall
+            back to the rung when it has not — never invent a model, and never
+            leave the row blank, which would read as "off".
+          */}
+          {browserModelLabel
+            ? <Text color="cyan">{browserModelLabel}</Text>
+            : <Text>{`effort: ${resolveEffort(agentLoop.modelConfig?.effort).id}`}</Text>}
           {'  ·  '}
           <Text color={tokenColor}>{tokenPct}% of {tokenLimit >= 1000 ? `${Math.round(tokenLimit / 1000)}k` : tokenLimit}</Text>
         </Text>

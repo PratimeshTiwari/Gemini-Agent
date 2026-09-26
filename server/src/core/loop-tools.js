@@ -19,6 +19,7 @@
 import { randomUUID } from 'crypto';
 import { normalizeQuestionSet } from './question.js';
 import { TOOL_CATALOG } from './tool-catalog.js';
+import { foldEffort } from './effort.js';
 
 /** Tools dispatched here rather than by the MCP server. */
 export const LOOP_TOOLS = new Set(
@@ -115,9 +116,12 @@ function askQuestion(loop, call) {
  */
 export function subagentEffort(requested, role, sessionEffort) {
   const asked = String(requested || '').toLowerCase().trim();
-  if (asked === 'lite' || asked === 'flash' || asked === 'pro') return asked;
+  // Accepts the ladder's own words, and the browser-shaped ones an older
+  // prompt or config may still be using — `resolveEffort` folds those.
+  const folded = foldEffort(asked);
+  if (folded) return folded;
   if (role === 'review') return sessionEffort || null;
-  return 'flash';
+  return 'medium';
 }
 
 async function askSubagent(loop, call) {
