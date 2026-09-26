@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.32.0**
+## Current version: **1.33.0**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -103,6 +103,34 @@ observers and clears its timers instead of ticking on.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.33.0 — 2026-09-26
+
+**Instrumentation, not a fix.** The model switch has now failed five times in a
+row, and each attempt was a different theory tested by shipping it. This build
+stops that: it makes the path say which hop failed.
+
+- **"Nothing came back" was true of five different faults.** Nothing connected
+  to ask; no tab to ask in; a tab whose content script is an orphan; a read that
+  threw; a read that was declined. The server could only ever report the last
+  effect, and every one of those wants a different fix. `picker_trace` rows now
+  mark each hop — sent, reached a tab, read started, options arrived — and land
+  in `/logs extension` beside the failures.
+
+  In the service-worker console rather than the log would have been useless:
+  MV3 evicts the worker constantly and takes its console with it, which is why
+  it reads empty by the time anyone opens it.
+
+- **A message sent to nobody is no longer indistinguishable from a message
+  ignored.** `broadcast` has always returned whether it found a client, and
+  `_toExtension` threw it away — so `discover_models`, `switch_model`,
+  `focus_tab`, `new_chat` and `open_thread` could each be sent into an empty
+  room and look exactly like the browser failing to answer. CLAUDE.md records
+  the cost of ignoring this same return once before, on `injectPrompt`. It now
+  logs `extension_unreachable`, naming the message.
+
+  The CLI's own `sendToPanel` had to start returning that answer too; it
+  broadcast and discarded the result.
 
 ### 1.32.0 — 2026-09-26
 

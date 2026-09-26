@@ -815,11 +815,23 @@
             console.warn("[Agent CLI] could not open a tab for the picker:", err?.message);
           }
         }
-        if (!await sendToModelTab(
-          { type, payload },
-          payload?.targetModel || "gemini",
-          payload?.sessionId || null
-        )) reportTabFailure(type);
+        {
+          const reached = await sendToModelTab(
+            { type, payload },
+            payload?.targetModel || "gemini",
+            payload?.sessionId || null
+          );
+          sendToServer({
+            type: "picker_trace",
+            payload: {
+              op: type,
+              userInitiated: Boolean(payload?.userInitiated),
+              sessionId: payload?.sessionId || null,
+              reachedTab: reached
+            }
+          });
+          if (!reached) reportTabFailure(type);
+        }
         break;
       case "heartbeat_ack":
         break;

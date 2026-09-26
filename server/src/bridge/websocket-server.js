@@ -416,6 +416,20 @@ export class WebSocketServer {
         // What the browser's mode picker is offering. Stored, not acted on:
         // `core/model-match.js` decides which one an effort rung wants, and the
         // names differ by subscription so they cannot be assumed.
+        // The arrival itself is the fact the server owns, and the one hop that
+        // has never been recorded. Its absence is what "nothing came back"
+        // means, and with the hops either side of it that becomes locatable.
+        logError(this.agentLoop?.workspace, {
+          flow: 'extension',
+          op: 'picker_trace',
+          message: `model_options arrived: ${(payload?.models || []).length} option(s)`,
+          meta: {
+            op: 'options_arrived',
+            count: (payload?.models || []).length,
+            selected: (payload?.models || []).find((m) => m?.selected)?.label ?? null,
+            switchedTo: payload?.switchedTo ?? null,
+          },
+        });
         this.agentLoop.noteModelOptions(payload?.models, payload?.switchedTo, payload?.requested);
         break;
 
@@ -726,6 +740,25 @@ export class WebSocketServer {
 
       case 'identify':
         // Handled above to set client type, just break
+        break;
+
+      /*
+       * The picker path, narrated. Not an error and not a turn — a breadcrumb
+       * per hop, so the next failure says *which* hop.
+       *
+       * Logged rather than merely broadcast because the service-worker console
+       * is empty by the time anyone thinks to open it: the worker is evicted
+       * constantly, and it takes its console with it. `/logs extension` keeps.
+       */
+      case 'picker_trace':
+        logError(this.agentLoop?.workspace, {
+          flow: 'extension',
+          op: 'picker_trace',
+          message: `${payload?.op ?? 'picker'}`
+            + (payload?.reachedTab === undefined ? '' : ` reachedTab=${payload.reachedTab}`)
+            + (payload?.count === undefined ? '' : ` options=${payload.count}`),
+          meta: payload || {},
+        });
         break;
 
       case 'tab_status':
