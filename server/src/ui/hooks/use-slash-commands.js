@@ -49,6 +49,8 @@ import { SETTING_GROUPS, describeSettings } from '../../core/settings.js';
 import { canPickFolder, pickFolder } from '../../core/folder-picker.js';
 import { summariseTraces, formatMs } from '../../core/trace-log.js';
 import { channelHealth, formatRate, MIN_TURNS_FOR_RATE } from '../../core/channel-health.js';
+import { summariseToolUsage } from '../../core/tool-usage.js';
+import { TOOL_CATALOG } from '../../core/tool-catalog.js';
 import { checkForUpdate, isDirty, pullUpdate, savePendingReload, readPendingReload, clearPendingReload } from '../../core/update.js';
 import { installRoot, installDependencies } from '../../core/dep-recovery.js';
 
@@ -642,6 +644,54 @@ export async function handleSlashCommand(query, {
           content: `### 📉 Text-channel failures\n\n${note}\n\n${body}\n\n`
             + '_The denominator is `traces.jsonl`: one entry per turn the browser answered, '
             + 'which is the population these failures are drawn from._',
+        }]);
+        setIsProcessing(false);
+        return;
+      }
+
+      /*
+       * Which tools the model actually reaches for.
+       *
+       * CLAUDE.md measured this once by hand — 41 sessions, 529 calls, eight of
+       * the eighteen tools never called once — and drew a real conclusion from
+       * it: the lever for an unused tool is a trigger at the moment of
+       * relevance, never naming it again on every turn. That measurement was
+       * not repeatable, so the conclusion could not be checked and the
+       * decisions resting on it stayed gated.
+       *
+       * It could not be recovered later either: `_extractToolCalls` strips the
+       * calls out of a reply before the cleaned text reaches the session
+       * history, so the data was never written down. Now it is.
+       *
+       * `neverCalled` comes from the catalog rather than from the log, because
+       * a list derived from what was seen cannot contain what was not.
+       */
+      if (arg === 'tools') {
+        const u = summariseToolUsage(agentLoop.workspace, TOOL_CATALOG.map((t) => t.name));
+        if (u.turns === 0) {
+          setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+            role: 'assistant', isLocal: true,
+            content: '### 🔧 Tool usage\n\nNothing recorded yet — this starts counting '
+              + 'from the next turn.',
+          }]);
+          setIsProcessing(false);
+          return;
+        }
+        const width = Math.max(...u.rows.map((r) => r.name.length), 12);
+        const used = u.rows
+          .map((r) => `  ${r.name.padEnd(width)}  ${String(r.count).padStart(5)}`
+            + `   ${(100 * r.share).toFixed(1).padStart(5)}%`)
+          .join('\n');
+        const never = u.neverCalled.length
+          ? `\n\n**Never called** (${u.neverCalled.length} of ${TOOL_CATALOG.length}): `
+            + `${u.neverCalled.join(', ')}\n_A tool the model never reaches for is not `
+            + 'one it needs reminding of — it needs a trigger where it is relevant._'
+          : '\n\nEvery tool in the catalog has been called at least once.';
+        const quiet = u.turnsWithNoTools;
+        setHistory(prev => [...prev, { role: 'user', content: query, isLocal: true }, {
+          role: 'assistant', isLocal: true,
+          content: `### 🔧 Tool usage\n\n**${u.calls}** calls over **${u.turns}** turns`
+            + ` — ${quiet} of them used no tools at all.\n\n${used}${never}`,
         }]);
         setIsProcessing(false);
         return;

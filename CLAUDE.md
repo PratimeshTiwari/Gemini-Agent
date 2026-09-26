@@ -1743,6 +1743,40 @@ having tools **1.0%**, provider error **0%**, multiple drafts **0%**. The text c
 better shape than the estimates in this file assume — which is the point of having the number
 rather than the estimate.
 
+**Second reading, 350 turns, 2026-09-26 — and it closes two gated items.**
+
+    unparseable tool call     0.3%   1     last seen 09-20
+    denied having tools       0.3%   1     last seen 09-17
+    provider error            1.4%   5     Gemini's own errors, not ours
+    multiple drafts           0.0%   0
+    unverified handover       2.6%   9     last seen 09-20
+    concluded before evidence 0.0%   0
+    first turn answered blind 0.3%   1     last seen 09-24
+
+**Read the dates, not the rates.** Every lifetime percentage above is carried
+by a cluster that has since stopped. `handover_unsupported` is 7 on 09-19 and 2
+on 09-20 and **nothing in the six days since**; `tool_amnesia` fired once, on
+09-17, nine days ago. A rate computed over all time describes a product that no
+longer exists.
+
+- **D1 (handover-audit teeth) is closed, not done.** Its signal stopped six days
+  before the work would have started. Building enforcement for a failure that
+  has stopped happening is how a system accumulates rules nobody can remove.
+- **D3 (turn-0 bootstrap) is closed too.** The 09-22 branch was explicit —
+  *15–25% → do D3; near 0% → the prompts need nothing* — and the reading is
+  **0.3%, one occurrence**, which `e28` then showed was a false positive
+  (`isFirstReply` stays true through every tool round). Zero real cases.
+- **C4 (delegation nudge) could not be read at all, and that was the finding.**
+  `_extractToolCalls` strips tool calls out of a reply before the cleaned text
+  reaches `history.jsonl`, so the delegation rate is unrecoverable after the
+  fact: a probe over every stored session returned `0 of 2790`, and all 2790
+  were `"name"` keys inside tool *results*. The one-off *41 sessions, 529 calls*
+  figure this file quotes was never repeatable. `core/tool-usage.js` records it
+  now, one row per turn from the tally `_turnEvidence` already keeps; `/logs
+  tools` reads it back, with `neverCalled` taken from the **catalog** rather
+  than from the log, because a list of what was seen cannot contain what was
+  not.
+
 **C. An optional API backend.** The only option that actually removes the ceiling: structured
 calls, real parallelism, caching, and `looksLikeCapabilityDenial` plus half of `PromptBuilder`'s
 economics become dead code. It contradicts the standing "no API keys" decision above, so it is
