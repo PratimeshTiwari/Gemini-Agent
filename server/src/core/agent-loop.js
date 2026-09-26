@@ -164,6 +164,7 @@ function oneLineError(result) {
 }
 import * as paths from './paths.js';
 import { threadFromUrl } from './chat-thread.js';
+import { logToolUsage } from './tool-usage.js';
 import { auditHandover, describeFindings, countChecklist, hasHandoverBlock } from './handover-audit.js';
 import { diagnosticsAfterEdit } from './edit-diagnostics.js';
 import { compactHistory } from './compaction.js';
@@ -1011,6 +1012,19 @@ export class AgentLoop {
         this._lastModelPoll = now;
         this.requestModelOptions();
       }
+
+      /*
+       * The turn's tool calls, written down.
+       *
+       * Here rather than at dispatch, because a turn is the unit every other
+       * rate in `/logs` uses and per-call rows would make this the busiest
+       * file in `.agent/`. `_turnEvidence` is already the exact tally — kept
+       * for the handover audit — so this costs one append.
+       *
+       * A turn with no tool calls is recorded too: that is not an absence of
+       * data, it is the thing `turn0_no_tools` is about.
+       */
+      logToolUsage(this.workspace, this._turnEvidence || new Map());
 
       // No tool calls — agent is done
       this.isProcessing = false;

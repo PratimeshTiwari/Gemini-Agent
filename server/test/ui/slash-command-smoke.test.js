@@ -142,7 +142,7 @@ describe('arguments do not break anything', () => {
   const CASES = [
     '/image remove', '/image /nonexistent/x.png',
     '/open', '/open nope.txt',
-    '/logs agent', '/logs nosuchflow',
+    '/logs agent', '/logs nosuchflow', '/logs rates', '/logs tools',
     '/name Ada', '/name',
     '/memory on', '/memory off',
     '/allowlist', '/allowlist add ls',
