@@ -31,11 +31,14 @@ session. No API key, no hosted backend, no telemetry.
 - **Editor awareness.** A VS Code companion hands over your active file, cursor position and
   the Problems panel, so `get_diagnostics` reads your real TypeScript and ESLint errors
   instead of running a build.
-- **One effort ladder, three rungs — named after the tabs they expect.** `/effort` runs
-  from `⚡ lite` (terse) through `🧠 flash` (3-phase) to `🪜 pro`, which plans first, then
+- **One effort ladder, three rungs — named for effort, not for models.** `/effort` runs
+  from `⚡ low` (terse) through `🧠 medium` (3-phase) to `🪜 high`, which plans first, then
   investigates, implements, verifies, and sends the diff to a second tab reading it cold.
-  The names are the picker's own words, so "flash" means the same thing in both places —
-  and the CLI warns when the tab is on a different model from the rung.
+  The rungs were once named after Google's models and that was the mistake: `flash` meant
+  *our* terse rung and *their* middle one, in the same sentence. The effort is how hard to
+  work; the model is whatever the browser's picker offers, read from the page. The status
+  bar shows the model when the picker has been read and the rung when it has not, and the
+  CLI warns when the two disagree.
 - **A terminal UI that behaves like one.** Real streaming, no mouse tracking, so scroll,
   drag-select and copy stay your terminal's. Settled turns are committed to scrollback and
   only the in-flight turn repaints.
@@ -471,7 +474,7 @@ model. The list says which is which.
 Once the agent is running, you can use built-in slash commands to manage your session:
 - Type `/help` in the CLI to see all available commands.
 - Type `/config` to turn **subagents** on or off — one switch, and it is on by default. With them on, `ask_subagent` can hand work to a second Gemini tab that has not seen the conversation: a cold review of a change, a search you would otherwise do as a long chain of reads, or a self-contained errand. `/config off` works as well as `/config subagents off`, and `solo` / `duo` are still accepted as words for off and on. There is no separate `/mode` screen, though the name still answers.
-- Type `/effort` to pick how hard the agent works — one ladder, `lite` · `flash` · `pro`. Changing it mid-chat says so: the next message resends the whole system prompt into
+- Type `/effort` to pick how hard the agent works — one ladder, `low` · `medium` · `high`. The older words (`lite`/`flash`/`pro`, and `brief`/`standard`/`deep` before them) still select the rung they always meant. Changing it mid-chat says so: the next message resends the whole system prompt into
   the thread, and the row names `/compact` as the way to start a fresh one instead. It sets
   the prompt profile **and switches the browser's mode picker to match**, so a prompt written
   for Pro is not typed into a Flash tab. It tells you which model it chose. Nothing is
@@ -485,8 +488,8 @@ Once the agent is running, you can use built-in slash commands to manage your se
 
   ```json
   "modelConfig": {
-    "effort": "pro",
-    "browserModels": { "lite": "Fast", "flash": "Thinking", "pro": "Pro" }
+    "effort": "high",
+    "browserModels": { "low": "Fast", "medium": "Thinking", "high": "Pro" }
   }
   ```
 
@@ -701,6 +704,98 @@ missing one**, since the model reaches for it and concludes the code is not ther
 
 ---
 
+### v3 — 2026-09-22 … 2026-09-26 · PRs #26–#43
+
+**Eighteen PRs, and one of them is the reason for the other seventeen.** The
+model picker — the thing that puts the browser tab on the model the effort rung
+was written for — did not work, and six separate attempts to fix it failed
+before the cause was found. Everything below is either that hunt or work that
+came out of it.
+
+```bash
+git log --oneline --merges v2.5.1..HEAD
+npm test
+```
+
+#### The bug, and why it took six tries
+
+`/effort pro` printed *"asked the browser for Gemini Pro"* and nothing further
+ever happened. The server logged `model_options_unanswered` — the browser never
+answered — and that sentence was **true of five different faults**: nothing
+connected to ask, no tab to ask in, a tab whose content script is an orphan, a
+read that threw, and a read that was declined. Each wants a different fix. The
+server could only observe the last effect, so every attempt was a coin flip.
+
+The cause was none of the five. The service worker relays messages from the
+content script to the agent, by type — and **`model_options` had no case in
+that switch**, so it hit `default` and was discarded one hop before the socket.
+The picker had been read correctly the entire time: measured against the live
+page at **27.7ms**, returning every option with its selection flag correct.
+
+`gemini_response` *is* in that list. That single difference is the whole of
+"prompts work but `/effort` and `ctrl+b` do not" — one path was relayed and the
+other was not. `error` was dropped for the same reason, which is why the
+content script's own failures never surfaced either.
+
+It was found by **running the agent under a pty and reading the rows the run
+did not produce**: no `extension_unreachable` (so it was delivered), no
+"no tab this extension owns" (so a tab accepted it), and still no reply. That
+leaves exactly one hop, and it was the only one nobody had read.
+
+`test/background/relay-drift.test.js` makes the class impossible: it derives
+the types the content script sends **from the content script's own source** and
+asserts the worker handles each. A hand-maintained list is precisely what
+drifted. It caught a second dropped message before it had finished being
+written.
+
+#### What the hunt produced that is worth keeping
+
+- **The picker is read without knowing any product name.** The menu separates
+  models from modes with a real `<mat-divider>`, and the rung maps onto
+  position: lightest first, heaviest last. Confirmed against the live page and
+  cross-checked against what Gemini's own `⌘⇧M` cycles, which walks exactly the
+  entries above that rule. Flash-Lite and Flash are renamed across Google
+  accounts and version numbers move; none of that reaches us now.
+- **Page timers do not work in a hidden tab, and the picker is always read in
+  one.** Measured on the real page: 28 chained `setTimeout(…, 50)` — nominal
+  1.4s — did not complete in **45 seconds**, while a `MutationObserver` did the
+  same work in 28ms. CLAUDE.md had recorded this for completion detection; the
+  picker was a second caller of the same clock and had been left behind.
+- **A message sent to nobody no longer looks like a message ignored.**
+  `broadcast` always returned whether it reached a client and `_toExtension`
+  discarded it, so five different commands could be sent into an empty room
+  indistinguishably from the browser going quiet.
+- **Whether a prompt was actually sent is observed, not inferred.** Gemini
+  clears its composer when it accepts one, so text still sitting there proves
+  the submit did not happen — and an empty composer proves it did, which is the
+  half that prevents a double-send.
+
+#### Other work in this range
+
+- **Turn-0 false positive** (#28): `turn0_no_tools` fired on turns that *did*
+  open files, because `isFirstReply` stays true through every tool round.
+- **A paste that was "handled" and lost** (#29): `pasteHandled` asked whether
+  anyone called `preventDefault`, which Gemini always does before inserting
+  asynchronously — so a lost insert skipped the fallback and burned 30s waiting
+  for a send button that cannot render without text.
+- **Lanes and tab reuse** (#30): the model switch was the one tab interaction
+  not serialised through `extension-lock`; subagent tasks opened a tab per
+  round, measured at **64.8% of characters saved** once one tab was held.
+- **The extension says which build it is** (#31): `identify` carries
+  `chrome.runtime.getManifest().version`, compared with the manifest beside the
+  server. A version badge is a number someone typed; `getManifest()` is what
+  Chrome is running.
+
+#### Extension versions in this range
+
+1.26.0 → 1.34.0. The per-change record is in
+[`extension/README.md`](extension/README.md), including the four releases that
+fixed the wrong thing and the measurements that disproved them. They are kept
+deliberately: this repo keeps its mistakes, because the reasoning that produced
+them is the reasoning that would produce them again.
+
+---
+
 ### v2.5.1 — 2026-09-22 · PR #25 · `v2.5.1/echo-and-guardrails`
 
 **Four small fixes, each reported from use in the same session, none changing
@@ -757,7 +852,7 @@ covered file *content* and function signatures already read, never path
 
 ---
 
-### Unreleased — `v2.2`
+### v2.2 — 2026-09-21 · PR #20 · `v2.2/tool-call-discipline`
 
 **Evidence discipline.** An answer that arrives before its own evidence, and an
 audit that could not see the claim it was written to check.
@@ -834,7 +929,7 @@ narration beside a tool call is correct and common.
 
 ---
 
-### In review — `v2.1` · [PR #19](https://github.com/PratimeshTiwari/Gemini-Agent/pull/19)
+### v2.1 — 2026-09-21 · [PR #19](https://github.com/PratimeshTiwari/Gemini-Agent/pull/19) · `v2.1/fix/tool-call-parsing-and-resume`
 
 Three faults reported from use, each reproduced before it was touched. What they
 have in common: the product was measured rather than reasoned about, and in two
@@ -952,7 +1047,7 @@ and reprinting the whole transcript *below* the copy already on screen. On a tal
 terminal you saw the banner three times, once per tool round. Measured at 210×64:
 **3× → 1×**, 0 full clears, 22,868 → 15,312 bytes.
 
-**The effort ladder is three rungs** — `lite`, `flash`, `pro` — because
+**The effort ladder is three rungs** — `low`, `medium`, `high` — because
 five was one tier wearing three hats. `standard → deep` was three substantive
 blocks for 4.2%, so `pro` is the old `standard` plus the one of them with a
 demonstrated job: a second tab reading the diff cold. The other two are paid in
@@ -984,11 +1079,13 @@ demonstrated job: a second tab reading the diff cold. The other two are paid in
 - The GitHub PR agent — `github/`, the tab, two hooks, a content script.
 - ChatGPT, the second bridge, and `topology` as a stored setting.
 - `figlet` and `@inquirer/prompts`; `node_modules` 98.5 MB → 72.7 MB.
-- The `brief` and `deep` effort rungs; a stored config naming one folds to `pro`.
+- The `brief` and `deep` effort rungs; a stored config naming one folds to `high`.
 - `server/README.md` — the root README and `CLAUDE.md` already covered it.
 
 **Changed**
 - The rungs are named after the tabs they expect: `lite` · `flash` · `pro`.
+  (Renamed again in v3 to `low` · `medium` · `high` — naming them after models is
+  what made `flash` mean two different things.)
 - Tables are drawn at the width the terminal actually is.
 - Plain `✓` / `!` instead of emoji on the compaction, diff and model-switch rows.
 - Two latency bugs, measured: a reply ending in a code block was read as

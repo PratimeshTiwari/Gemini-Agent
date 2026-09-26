@@ -104,6 +104,21 @@ observers and clears its timers instead of ticking on.
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
 
+> **Reading 1.28.1 → 1.34.0.** These seven entries are one bug being chased,
+> and four of them fixed the wrong thing. The cause was found in **1.34.0**:
+> the service worker had no relay case for `model_options`, so the picker's
+> answer was discarded one hop before the socket — while the picker itself had
+> been read correctly the whole time.
+>
+> Everything before that is a theory tested by shipping it, and two of those
+> theories *caused* the next entry's bug. They are kept because the reasoning
+> that produced them is the reasoning that would produce them again, and
+> because two of the measurements taken along the way — the hidden-tab timer
+> figures and the live-page picker timings — are load-bearing elsewhere.
+>
+> The corrections are marked in place. 1.28.1's account of its own fix is
+> disproved by a measurement recorded in 1.28.2.
+
 ### 1.35.0 — 2026-09-26
 
 Cleanup of what accumulated while the model switch was being chased. No new
