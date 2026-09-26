@@ -19,7 +19,7 @@
 import fs from 'fs';
 import path from 'path';
 import * as paths from './paths.js';
-import { EFFORT_LEVELS, resolveEffort, isEffort } from './effort.js';
+import { EFFORT_LEVELS, resolveEffort, foldEffort } from './effort.js';
 import { logError } from './error-log.js';
 import { planModelSwitch, browserModelPin } from './model-match.js';
 
@@ -381,7 +381,15 @@ export async function handleSlashCommand(loop, command, args) {
         : '';
       const wanted = args?.[0]?.toLowerCase();
 
-      if (wanted && isEffort(wanted)) {
+      /*
+       * `foldEffort`, not `isEffort`: the rungs were renamed on 2026-09-26 and
+       * `/effort pro` is in the owner's fingers, in this repo's own docs, and
+       * in every transcript before today. Rejecting it as "not an effort
+       * level" would be technically correct and useless — and the rejection
+       * path prints the ladder, so the old word would look like a typo rather
+       * than a rename. Folded words select the rung they always meant.
+       */
+      if (wanted && foldEffort(wanted)) {
         const chosen = resolveEffort(wanted);
         const before = resolveEffort(loop.modelConfig.effort);
         loop.modelConfig.effort = chosen.id;
@@ -487,7 +495,7 @@ export async function handleSlashCommand(loop, command, args) {
        * one case where silence is worst: you believe the setting changed, and
        * every later turn goes out on the old rung.
        */
-      const rejected = wanted && !isEffort(wanted)
+      const rejected = wanted && !foldEffort(wanted)
         ? `⚠ \`${wanted}\` is not an effort level — nothing changed.\n\n`
         : '';
       return {

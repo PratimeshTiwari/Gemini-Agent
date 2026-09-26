@@ -110,21 +110,21 @@ describe('the picker mismatch can finally see its own case', () => {
   ].map((m) => ({ ...m, selected: m.label.startsWith(selected) }));
 
   test('pro rung against a Flash tab is a mismatch', () => {
-    const m = modelMismatch('pro', picker('3.8 Flash'));
+    const m = modelMismatch('high', picker('3.8 Flash'));
     assert.ok(m, 'the documented worst pairing reports nothing');
     assert.match(m.current, /Flash/);
     assert.match(m.wanted, /Pro/);
   });
 
   test('agreement is silent', () => {
-    assert.equal(modelMismatch('pro', picker('3.1 Pro')), null);
+    assert.equal(modelMismatch('high', picker('3.1 Pro')), null);
   });
 
   // This was the real bug: the list was requested once, 1.5s after the extension
   // connected, and never again — so a picker changed mid-session was invisible,
   // which is exactly when someone changes it.
   test('nothing can be said without a list, so the list is refreshed', () => {
-    assert.equal(modelMismatch('pro', []), null, 'an empty list must stay silent');
+    assert.equal(modelMismatch('high', []), null, 'an empty list must stay silent');
     assert.match(loopSrc, /this\.requestModelOptions\(\)/);
     assert.match(loopSrc, /MODEL_POLL_INTERVAL_MS/,
       'the refresh is unthrottled, so it costs a message every turn forever');

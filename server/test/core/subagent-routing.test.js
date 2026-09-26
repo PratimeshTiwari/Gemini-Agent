@@ -50,8 +50,8 @@ const stub = (modelOptions, modelConfig = {}) => {
 
 describe('subagentEffort — where a delegated job runs', () => {
   test('research and task go to a fast model by default', () => {
-    assert.equal(subagentEffort(undefined, 'research', 'pro'), 'flash');
-    assert.equal(subagentEffort(undefined, 'task', 'pro'), 'flash');
+    assert.equal(subagentEffort(undefined, 'research', 'high'), 'medium');
+    assert.equal(subagentEffort(undefined, 'task', 'high'), 'medium');
   });
 
   /*
@@ -60,38 +60,38 @@ describe('subagentEffort — where a delegated job runs', () => {
    * failure again: degrading without saying so.
    */
   test('review keeps the session rung rather than being downgraded', () => {
-    assert.equal(subagentEffort(undefined, 'review', 'pro'), 'pro');
-    assert.equal(subagentEffort(undefined, 'review', 'lite'), 'lite');
+    assert.equal(subagentEffort(undefined, 'review', 'high'), 'high');
+    assert.equal(subagentEffort(undefined, 'review', 'low'), 'low');
   });
 
   test('an explicit rung always wins, including on review', () => {
-    assert.equal(subagentEffort('pro', 'research', 'lite'), 'pro');
-    assert.equal(subagentEffort('lite', 'review', 'pro'), 'lite');
-    assert.equal(subagentEffort('FLASH', 'task', 'pro'), 'flash');
+    assert.equal(subagentEffort('high', 'research', 'low'), 'high');
+    assert.equal(subagentEffort('low', 'review', 'high'), 'low');
+    assert.equal(subagentEffort('FLASH', 'task', 'high'), 'medium');
   });
 
   test('a word that is not a rung falls back to the rule, not to itself', () => {
-    assert.equal(subagentEffort('cheap', 'research', 'pro'), 'flash');
-    assert.equal(subagentEffort('deep', 'review', 'pro'), 'pro');
+    assert.equal(subagentEffort('cheap', 'research', 'high'), 'medium');
+    assert.equal(subagentEffort('deep', 'review', 'high'), 'high');
   });
 });
 
 describe('the rung reaches the tab that is opened', () => {
   test('it is resolved against the live picker and rides the first prompt', async () => {
     const { loop, calls } = stub(PLAN);
-    await runSubAgentSession(loop, 'research', 'find it', 'gemini', 'lite');
+    await runSubAgentSession(loop, 'research', 'find it', 'gemini', 'low');
     assert.equal(calls[0].model, '3.5 Flash-Lite', 'the rung became a real label');
   });
 
   test('a browserModels pin wins over the intent match', async () => {
-    const { loop, calls } = stub(PLAN, { browserModels: { lite: '3.8 Flash' } });
-    await runSubAgentSession(loop, 'research', 'find it', 'gemini', 'lite');
+    const { loop, calls } = stub(PLAN, { browserModels: { low: '3.8 Flash' } });
+    await runSubAgentSession(loop, 'research', 'find it', 'gemini', 'low');
     assert.equal(calls[0].model, '3.8 Flash');
   });
 
   // Every one of these means "leave the tab on whatever it opens with".
   test('no rung, no list and nothing suitable all fall back to the default tab', async () => {
-    for (const [options, effort] of [[PLAN, null], [[], 'lite'], [PLAN, 'nonsense']]) {
+    for (const [options, effort] of [[PLAN, null], [[], 'low'], [PLAN, 'nonsense']]) {
       const { loop, calls } = stub(options);
       await runSubAgentSession(loop, 'research', 'find it', 'gemini', effort);
       // Falsy, not strictly undefined: the session passes `model: null` and

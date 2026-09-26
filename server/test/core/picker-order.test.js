@@ -32,14 +32,14 @@ const LIVE = [
 ];
 
 test('the picker as it is today', () => {
-  assert.equal(pick('lite', LIVE), '3.5 Flash-Lite');
-  assert.equal(pick('flash', LIVE), '3.8 Flash');
-  assert.equal(pick('pro', LIVE), '3.1 Pro');
+  assert.equal(pick('low', LIVE), '3.5 Flash-Lite');
+  assert.equal(pick('medium', LIVE), '3.8 Flash');
+  assert.equal(pick('high', LIVE), '3.1 Pro');
 });
 
 /*
  * The case the whole change exists for. Every word the old lists match on is
- * gone — no "lite", no "flash", no "fastest" in a label — and only the order
+ * gone — no "low", no "medium", no "fastest" in a label — and only the order
  * and the word Pro remain.
  */
 test('a plan that has renamed everything except Pro', () => {
@@ -49,16 +49,16 @@ test('a plan that has renamed everything except Pro', () => {
     P('4.0 Pro', 'Advanced reasoning'),
     P('Extended thinking', 'Complex problem solving'),
   ];
-  assert.equal(pick('lite', renamed), '4.0 Nano');
-  assert.equal(pick('flash', renamed), '4.0 Swift');
-  assert.equal(pick('pro', renamed), '4.0 Pro');
+  assert.equal(pick('low', renamed), '4.0 Nano');
+  assert.equal(pick('medium', renamed), '4.0 Swift');
+  assert.equal(pick('high', renamed), '4.0 Pro');
 });
 
 test('version numbers moving, or going away entirely', () => {
   const bare = [P('Nano'), P('Swift'), P('Pro'), P('Extended thinking', 'Complex problem solving')];
-  assert.equal(pick('lite', bare), 'Nano');
-  assert.equal(pick('flash', bare), 'Swift');
-  assert.equal(pick('pro', bare), 'Pro');
+  assert.equal(pick('low', bare), 'Nano');
+  assert.equal(pick('medium', bare), 'Swift');
+  assert.equal(pick('high', bare), 'Pro');
 });
 
 /*
@@ -73,9 +73,9 @@ test('a mode listed among the models does not shift the positions', () => {
     P('Swift', 'All-around'),
     P('Pro', 'Advanced reasoning'),
   ];
-  assert.equal(pick('lite', interleaved), 'Nano');
-  assert.equal(pick('flash', interleaved), 'Swift');
-  assert.equal(pick('pro', interleaved), 'Pro');
+  assert.equal(pick('low', interleaved), 'Nano');
+  assert.equal(pick('medium', interleaved), 'Swift');
+  assert.equal(pick('high', interleaved), 'Pro');
 });
 
 /*
@@ -86,9 +86,9 @@ test('a mode listed among the models does not shift the positions', () => {
  */
 test('a two-model plan puts the middle rung on the lighter one, never Pro', () => {
   const two = [P('Lite', 'Fastest'), P('Pro', 'Advanced reasoning')];
-  assert.equal(pick('lite', two), 'Lite');
-  assert.equal(pick('flash', two), 'Lite');
-  assert.equal(pick('pro', two), 'Pro');
+  assert.equal(pick('low', two), 'Lite');
+  assert.equal(pick('medium', two), 'Lite');
+  assert.equal(pick('high', two), 'Pro');
 });
 
 /*
@@ -98,9 +98,9 @@ test('a two-model plan puts the middle rung on the lighter one, never Pro', () =
  */
 test('with no Pro at all, the word lists still run', () => {
   const noPro = [P('3.5 Flash-Lite', 'Fastest answers'), P('3.8 Flash', 'All-around help')];
-  assert.equal(pick('lite', noPro), '3.5 Flash-Lite');
-  assert.equal(pick('flash', noPro), '3.8 Flash');
-  assert.equal(pick('pro', noPro), null, 'it invented a Pro out of a plan that has none');
+  assert.equal(pick('low', noPro), '3.5 Flash-Lite');
+  assert.equal(pick('medium', noPro), '3.8 Flash');
+  assert.equal(pick('high', noPro), null, 'it invented a Pro out of a plan that has none');
 });
 
 /*
@@ -108,7 +108,7 @@ test('with no Pro at all, the word lists still run', () => {
  * the order logic declines rather than counting positions from a decoy.
  *
  * What happens next is the word list's business, and it is looser — it asks
- * `text.includes('pro')`, so it *does* answer "Prometheus". That is a
+ * `text.includes('high')`, so it *does* answer "Prometheus". That is a
  * pre-existing weakness of the fallback rather than of the anchor, and this
  * test deliberately asserts the boundary between them rather than the outcome:
  * the first draft asserted `null` here, which is behaviour the system has never
@@ -116,7 +116,7 @@ test('with no Pro at all, the word lists still run', () => {
  */
 test('“Pro” inside another word does not anchor the order', () => {
   const decoys = [P('Prometheus', 'Fastest answers'), P('Proxy Mode', 'All-around help')];
-  const picked = pickModelFor('pro', decoys, null);
+  const picked = pickModelFor('high', decoys, null);
 
   assert.ok(!/picker's order/.test(picked?.why ?? ''),
     'positions were counted from a model that merely starts with the letters p-r-o');
@@ -136,53 +136,53 @@ const MODE = (label, description = '') => ({ label, description, isMode: true })
 
 test('with isMode, every name can change — including Pro', () => {
   const alien = [M('Zephyr'), M('Cirrus'), M('Cumulus'), MODE('Deep Reasoning', 'Complex problems')];
-  assert.equal(pick('lite', alien), 'Zephyr');
-  assert.equal(pick('flash', alien), 'Cirrus');
-  assert.equal(pick('pro', alien), 'Cumulus',
+  assert.equal(pick('low', alien), 'Zephyr');
+  assert.equal(pick('medium', alien), 'Cirrus');
+  assert.equal(pick('high', alien), 'Cumulus',
     'the heaviest model was found by a word rather than by its position');
 });
 
 test('a mode that does not say "extended" or "complex" is still a mode', () => {
   // The exact case the word veto cannot see, and the reason the rule is better.
   const named = [M('A'), M('B'), M('C'), MODE('Agent mode', 'Does things for you')];
-  assert.equal(pick('pro', named), 'C', 'a mode was treated as the heaviest model');
+  assert.equal(pick('high', named), 'C', 'a mode was treated as the heaviest model');
 });
 
 test('several modes after the rule are all excluded', () => {
   const many = [M('A'), M('B'), M('C'), MODE('Extended thinking'), MODE('Agent mode')];
-  assert.equal(pick('pro', many), 'C');
-  assert.equal(pick('flash', many), 'B');
+  assert.equal(pick('high', many), 'C');
+  assert.equal(pick('medium', many), 'B');
 });
 
 test('more models than rungs maps onto the top of the list', () => {
   const four = [M('W'), M('X'), M('Y'), M('Z'), MODE('Extended thinking')];
-  assert.equal(pick('lite', four), 'W', 'lightest is the first, however many there are');
-  assert.equal(pick('pro', four), 'Z');
-  assert.equal(pick('flash', four), 'Y', 'the rung below the heaviest');
+  assert.equal(pick('low', four), 'W', 'lightest is the first, however many there are');
+  assert.equal(pick('high', four), 'Z');
+  assert.equal(pick('medium', four), 'Y', 'the rung below the heaviest');
 });
 
 test('degenerate plans do not throw or invent', () => {
-  assert.equal(pick('flash', [M('Only'), MODE('Extended thinking')]), 'Only');
-  assert.equal(pick('pro', [MODE('Extended thinking')]), null,
+  assert.equal(pick('medium', [M('Only'), MODE('Extended thinking')]), 'Only');
+  assert.equal(pick('high', [MODE('Extended thinking')]), null,
     'a picker offering only modes produced a model');
 });
 
 // The fallback must survive: an extension that predates `isMode` sends labels
 // with no flag at all, and the Pro anchor is what reads those.
 test('a build that cannot report modes still uses the Pro anchor', () => {
-  assert.equal(pick('pro', LIVE), '3.1 Pro');
-  assert.equal(pick('flash', LIVE), '3.8 Flash');
+  assert.equal(pick('high', LIVE), '3.1 Pro');
+  assert.equal(pick('medium', LIVE), '3.8 Flash');
 });
 
 test('an empty picker is still nothing', () => {
-  assert.equal(pickModelFor('pro', [], null), null);
-  assert.equal(pickModelFor('pro', null, null), null);
+  assert.equal(pickModelFor('high', [], null), null);
+  assert.equal(pickModelFor('high', null, null), null);
 });
 
 // A config pin still outranks all of this: it is the user naming the label
 // themselves, and it is checked against the live list before anything here.
 test('a pin still wins', () => {
-  const picked = pickModelFor('pro', LIVE, '3.8 Flash');
+  const picked = pickModelFor('high', LIVE, '3.8 Flash');
   assert.equal(picked.model.label, '3.8 Flash');
   assert.equal(picked.pinned, true);
 });

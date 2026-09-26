@@ -31,11 +31,11 @@
  * reaching for.
  */
 const INTENT = {
-  lite: {
+  low: {
     prefer: ['lite', 'fastest', 'flash'],
     avoid: ['extended', 'complex', 'pro', 'advanced'],
   },
-  flash: {
+  medium: {
     prefer: ['thinking', 'flash'],
     // A step up from flash, not a step into the heavyweight tier — and not back
     // down to the lite option either.
@@ -54,7 +54,7 @@ const INTENT = {
    * the browser". Caught here only because `model-match.test.js` asserts on
    * which of those two sentences comes back.
    */
-  pro: {
+  high: {
     prefer: ['pro', 'reasoning', 'advanced'],
     avoid: ['extended', 'complex'],
   },
@@ -121,21 +121,21 @@ function byPickerOrder(effortId, options) {
    * hold one and counting from the end would land on it.
    */
   if (knowsModes) {
-    if (effortId === 'lite') return models[0];
-    if (effortId === 'pro') return models[models.length - 1];
+    if (effortId === 'low') return models[0];
+    if (effortId === 'high') return models[models.length - 1];
     // The rung below the heaviest. Clamped, never wrapped: on a two-entry plan
     // the middle collapses onto the lightest, which is honest, where wrapping
     // would send it to the heaviest — the pairing CLAUDE.md calls the worst.
-    if (effortId === 'flash') return models[Math.max(0, models.length - 2)];
+    if (effortId === 'medium') return models[Math.max(0, models.length - 2)];
     return null;
   }
 
   const proIndex = models.findIndex((m) => /\bpro\b/.test(haystack(m)));
   if (proIndex === -1) return null;
 
-  if (effortId === 'pro') return models[proIndex];
-  if (effortId === 'lite') return models[0];
-  if (effortId === 'flash') return models[Math.max(0, proIndex - 1)];
+  if (effortId === 'high') return models[proIndex];
+  if (effortId === 'low') return models[0];
+  if (effortId === 'medium') return models[Math.max(0, proIndex - 1)];
   return null;
 }
 
@@ -151,7 +151,19 @@ function byPickerOrder(effortId, options) {
  */
 export function browserModelPin(modelConfig, effortId) {
   const key = String(effortId ?? '').toLowerCase().trim();
-  const pinned = modelConfig?.browserModels?.[key];
+  const pins = modelConfig?.browserModels;
+  /*
+   * Keyed by rung id, and the rung ids were renamed on 2026-09-26 — so a
+   * config written before that holds `{ lite, flash, pro }` and would stop
+   * resolving in silence, which is the worst way for a pin to fail: it exists
+   * to correct a bad match, so losing it looks exactly like the match being
+   * wrong again.
+   *
+   * The old key is read only when the new one is absent, so a config carrying
+   * both is answered by the current name.
+   */
+  const LEGACY = { low: 'lite', medium: 'flash', high: 'pro' };
+  const pinned = pins?.[key] ?? pins?.[LEGACY[key]];
   return typeof pinned === 'string' ? pinned.trim() : '';
 }
 

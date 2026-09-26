@@ -127,7 +127,7 @@ describe('the subagent toggle', () => {
 });
 
 describe('the rendered block keeps its shape', () => {
-  for (const tier of ['lite', 'pro']) {
+  for (const tier of ['low', 'high']) {
     for (const topology of ['single', 'duo']) {
       test(`${tier}/${topology} is wrapped, ordered and complete`, () => {
         const defs = renderToolDefinitions(tier, topology, { reviewer: 'gemini' });
@@ -157,7 +157,7 @@ describe('the rendered block keeps its shape', () => {
  * follows short prompts and ignores long ones.
  *
  * Nothing caught it, because nothing pinned it: the property held by accident
- * of what that one line said. A typo of intent rather than syntax — "lite"
+ * of what that one line said. A typo of intent rather than syntax — "low"
  * meant the cheap tiers and there turned out to be two of them.
  */
 describe('the terse tool list goes to the cheap tiers', () => {
@@ -177,7 +177,7 @@ describe('the terse tool list goes to the cheap tiers', () => {
   test('an unknown tier falls back to the full block, not the terse one', () => {
     // Safer direction to be wrong in: too much guidance costs characters, too
     // little costs a misused tool.
-    assert.equal(size('something-new'), size('pro'));
+    assert.equal(size('something-new'), size('high'));
   });
 });
 

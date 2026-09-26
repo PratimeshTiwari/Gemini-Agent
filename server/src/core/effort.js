@@ -61,30 +61,30 @@
 /** The rungs, least effort first. Order is what the picker shows. */
 export const EFFORT_LEVELS = [
   {
-    id: 'lite',
+    id: 'low',
     contextBudget: 24000,
-    name: 'Lite',
-    label: '⚡ Lite',
+    name: 'Low',
+    label: '⚡ Low',
     tier: 'lite',
     level: null,
     browser: 'Gemini Flash-Lite',
     blurb: 'Terse prompt, no reasoning protocol. Small, well-understood edits.',
   },
   {
-    id: 'flash',
+    id: 'medium',
     contextBudget: 48000,
-    name: 'Flash',
-    label: '🧠 Flash',
+    name: 'Medium',
+    label: '🧠 Medium',
     tier: 'flash',
     level: null,
     browser: 'Gemini Flash',
     blurb: 'Moderate depth — a three-phase protocol, still a short prompt.',
   },
   {
-    id: 'pro',
+    id: 'high',
     contextBudget: 96000,
-    name: 'Pro',
-    label: '🪜 Pro',
+    name: 'High',
+    label: '🪜 High',
     tier: 'pro',
     level: 'standard',
     browser: 'Gemini Pro',
@@ -92,7 +92,7 @@ export const EFFORT_LEVELS = [
   },
 ];
 
-export const DEFAULT_EFFORT = 'pro';
+export const DEFAULT_EFFORT = 'high';
 
 /**
  * About `contextBudget`.
@@ -116,9 +116,24 @@ export const DEFAULT_EFFORT = 'pro';
 
 const BY_ID = new Map(EFFORT_LEVELS.map((e) => [e.id, e]));
 
-/** The rung with this id, or the default. Never throws, never returns null. */
+/**
+ * The rung with this id, or the default. Never throws, never returns null.
+ *
+ * **Retired words resolve to what they meant, not to the default.** Without
+ * that, `resolveEffort('lite')` fell through to `DEFAULT_EFFORT` and answered
+ * `high` — the *opposite* rung — while `resolveEffort('pro')` answered `high`
+ * correctly by pure luck, because `pro` and the default happen to coincide.
+ * One legacy word silently inverted and its neighbour silently worked, which
+ * is the worst possible pairing for noticing.
+ *
+ * Caught by a smoke test asserting `/effort lite` still selects the terse
+ * rung, during the 2026-09-26 rename that created the hazard.
+ */
 export function resolveEffort(id) {
-  return BY_ID.get(String(id ?? '').toLowerCase().trim()) || BY_ID.get(DEFAULT_EFFORT);
+  const word = String(id ?? '').toLowerCase().trim();
+  return BY_ID.get(word)
+    || BY_ID.get(RETIRED_RUNGS[word])
+    || BY_ID.get(DEFAULT_EFFORT);
 }
 
 /** Is this a real rung? Used to tell `/effort deep` from `/effort deeply`. */
@@ -136,17 +151,56 @@ export function isEffort(id) {
  * tier; all three are `pro`.
  */
 const RETIRED_RUNGS = {
-  brief: 'pro',
-  standard: 'pro',
-  deep: 'pro',
+  brief: 'high',
+  standard: 'high',
+  deep: 'high',
+  /*
+   * **Renamed again on 2026-09-26, and this time away from the browser.**
+   * Owner's call: *"internally for effort selection lets simplify the names,
+   * low medium high"*.
+   *
+   * Naming our rungs after Google's models was the root of a collision this
+   * file already documents — `flash` meant our terse rung before 2026-09-20
+   * and the middle one after — and it only got worse as the picker learned to
+   * read itself. The effort is **ours** and says how hard to work; the model
+   * is the **browser's** and is whatever its picker currently offers. Two
+   * different things, and they no longer share a vocabulary.
+   *
+   * `lite`/`flash`/`pro` fold straight across. There is no ambiguity this
+   * time, because `low`/`medium`/`high` are words this ladder has used before
+   * only in `reasoningEffort` — where they meant exactly these three rungs, in
+   * this order. The rename is a return to that vocabulary, not a departure.
+   */
+  lite: 'low',
+  flash: 'medium',
+  pro: 'high',
   // Renamed 2026-09-20 to match what the browser's picker calls things: what
   // was `flash` is `lite`, and what was `flash-thinking` is `flash`. A stored
   // `flash` is therefore *ambiguous* — it meant the terse rung before the
   // rename and the middle one after — and it is read as the middle one,
   // because that is what the word means now and in the picker. The terse rung
   // is reachable by its own name.
-  'flash-thinking': 'flash',
+  'flash-thinking': 'medium',
 };
+
+/**
+ * Fold any word this ladder has ever used into a rung id, or `null`.
+ *
+ * `resolveEffort` cannot answer this: it never returns null, because callers
+ * that need *a* rung must always get one. A caller that needs to know whether
+ * the user actually named a rung — `/effort deeep`, or `ask_subagent`'s
+ * optional `effort` — needs the difference between "you asked for high" and
+ * "I picked high for you", and collapsing those is how a typo became a silent
+ * confirmation once already.
+ *
+ * @param {string} id anything: a current rung, a retired one, or nonsense
+ * @returns {string|null} the rung id, or null when it is not a rung at all
+ */
+export function foldEffort(id) {
+  const word = String(id ?? '').toLowerCase().trim();
+  if (BY_ID.has(word)) return word;
+  return RETIRED_RUNGS[word] || null;
+}
 
 /**
  * Work out the rung from whatever an existing config.json holds.
@@ -163,13 +217,24 @@ export function effortFromConfig(config = {}) {
   const retired = RETIRED_RUNGS[String(config.effort ?? '').toLowerCase().trim()];
   if (retired) return retired;
 
+  /*
+   * `modelTier` is still the browser-shaped word (`lite`/`flash`/`pro`) because
+   * it is the *prompt profile*, which the prompt files are named after and
+   * which `prompt-builder` branches on. Only the rung **id** moved to
+   * low/medium/high, so an old tier has to be translated rather than returned.
+   *
+   * `reasoningEffort` needs no translation at all: it held low/medium/high for
+   * exactly these three rungs before 2026-09-20, which is the vocabulary this
+   * rename returns to.
+   */
   const tier = String(config.modelTier ?? '').toLowerCase()
     || { low: 'lite', medium: 'flash', high: 'pro' }[
       String(config.reasoningEffort ?? '').toLowerCase()
     ]
     || 'pro';
 
-  if (tier === 'lite' || tier === 'flash') return tier;
+  const fromTier = { lite: 'low', flash: 'medium', pro: 'high' }[tier];
+  if (fromTier === 'low' || fromTier === 'medium') return fromTier;
 
   // `reasoningLevel` only ever held brief/standard/deep, which are now one rung.
   const level = String(config.reasoningLevel ?? '').toLowerCase();

@@ -29,7 +29,7 @@ const stub = (busy) => {
   const sent = [];
   const loop = Object.create(AgentLoop.prototype);
   Object.assign(loop, {
-    modelConfig: { main: 'gemini', effort: 'pro' },
+    modelConfig: { main: 'gemini', effort: 'high' },
     extensionLock: {
       busy,
       isBusy() { return this.busy; },
