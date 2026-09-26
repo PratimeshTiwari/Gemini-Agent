@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.33.0**
+## Current version: **1.34.0**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -103,6 +103,46 @@ observers and clears its timers instead of ticking on.
 
 Dates are when the work landed on `v1-stable`. Versions before 1.1.0 predate the
 per-change history below.
+
+### 1.34.0 — 2026-09-26
+
+**This is the one. The worker was throwing the answer away.**
+
+- **`model_options` had no case in the worker's relay, so it hit `default` and
+  was dropped one hop before the socket.** The content script read the picker
+  correctly the entire time — measured against the live page at 27.7ms,
+  returning every option with `selected` correct — handed the list to
+  `safeSend`, and the service worker discarded it. The server then waited out
+  every budget it had and reported, accurately, that nothing came back.
+
+  `gemini_response` *is* in that list. That one difference is the whole of
+  "prompts work but `/effort` and `ctrl+b` do not": one path was relayed and
+  the other was not. `error` and `picker_trace` were being dropped too, which
+  is why the content script's own failures never surfaced either — the
+  `discover_models` rows that did appear came from the *worker*, by a different
+  route.
+
+  Five releases of fixes were aimed at every hop except this one.
+
+- **An unrelayed message now reports itself.** The `default` arm answered the
+  *sender* — a content script that ignores the reply — and told the server
+  nothing, so a message vanished between two processes with no trace in either.
+  It now logs to the server as well as the console, because MV3 evicts this
+  worker constantly and takes its console with it. That is why the console read
+  empty every time it was checked.
+
+- **`test/background/relay-drift.test.js` makes the class impossible.** It
+  derives the list of types the *content script* sends from the content
+  script's own source and asserts the worker handles each one — a
+  hand-maintained list being exactly what drifted. It caught a second dropped
+  message, `content_script_ready`, before it had finished being written; that
+  one is worker-local news and is now absorbed rather than relayed.
+
+  CLAUDE.md already stated the rule, about the side panel: *"a surface that
+  ignores an unknown message type is not equally harmless for every type.
+  Dropping a notification costs a missing line; dropping a request deadlocks
+  whatever is waiting on the answer."* The worker is such a surface, and
+  nothing was checking it.
 
 ### 1.33.0 — 2026-09-26
 
