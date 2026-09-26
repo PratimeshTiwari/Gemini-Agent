@@ -102,3 +102,38 @@ test('and still reads the picker when nothing is being injected', () => {
   assert.match(handler, /readModelOptions\(\)[\s\S]*model_options/,
     'discovery no longer answers at all');
 });
+
+/*
+ * `ctrl+b` opens a tab when there is none.
+ *
+ * `focusModelTab` fell back from "the lane's tab" to "any Gemini tab" and then
+ * gave up, reporting that it could not reach one — true, and useless. Reported
+ * from use as "ctrl+b did not open the gemini tab", which is exactly what the
+ * key is for.
+ *
+ * Opening is right here for the same reason it is right for `/effort`: it is
+ * user-initiated, they are waiting on it, and the next prompt needs that tab
+ * anyway. Nothing background calls this.
+ */
+const focusModelTab = bodyOf(worker, 'export async function focusModelTab(');
+
+test('ctrl+b opens a tab rather than reporting that it cannot find one', () => {
+  assert.match(focusModelTab, /ensureModelTab/,
+    'the one key whose whole job is "show me the tab" still cannot make one');
+});
+
+test('and it prefers an existing tab to opening another', () => {
+  const owned = focusModelTab.indexOf('pickMainTab');
+  const adopt = focusModelTab.indexOf('adoptableModelTab');
+  const open = focusModelTab.indexOf('ensureModelTab');
+  assert.ok(owned > -1 && adopt > -1 && open > -1);
+  assert.ok(owned < adopt && adopt < open,
+    'it opens a second tab while one the person can already see is sitting there');
+});
+
+// Opening can fail — no window, a blocked URL — and `ctrl+b` failing must not
+// take anything else down with it.
+test('a failure to open is caught, not thrown', () => {
+  assert.match(focusModelTab, /ensureModelTab\([^)]*\)\.catch\(/,
+    'a rejected tab creation escapes the keybinding');
+});

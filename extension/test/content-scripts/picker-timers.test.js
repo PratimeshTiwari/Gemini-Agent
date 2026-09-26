@@ -248,3 +248,46 @@ test('the close is not awaited by the read that returns the list', () => {
   assert.ok(/(?<!await )closeModelMenu\(trigger\)/.test(body),
     'the model list is being held behind the menu closing again');
 });
+
+/*
+ * A freshly opened tab does not have a picker yet.
+ *
+ * `waitForBridge` gates on `canType` — the composer being in the DOM — which
+ * is the right precondition for an *inject*. The mode picker is a different
+ * control and Angular renders it a beat later, so a read fired the moment the
+ * tab is ready finds no trigger, or a trigger whose menu is still empty.
+ *
+ * Reported from use exactly that way: the first `/effort` after a tab was
+ * opened failed with "the picker did not open, or has no options" and the
+ * second worked. That race is why the tab had to be opened by hand once before
+ * the feature would work at all.
+ */
+test('a trigger that mounts late is still found', async () => {
+  const tab = hiddenTab();
+  const waitForDom = load(tab);
+  const { document } = tab.window;
+
+  const pending = waitForDom(() => document.querySelector('[data-test-id="bard-mode-menu-button"]'), tab.clamp);
+
+  // Angular catching up, a beat after the composer was ready.
+  const trigger = document.createElement('button');
+  trigger.setAttribute('data-test-id', 'bard-mode-menu-button');
+  document.body.appendChild(trigger);
+
+  assert.ok(await pending, 'the read gave up before the picker had mounted');
+});
+
+test('the read waits for the trigger, and retries an empty menu once', () => {
+  const body = src.slice(src.indexOf('async function readModelOptions('), src.indexOf('\n}', src.indexOf('async function readModelOptions(')));
+  assert.match(body, /waitForDom\(/,
+    'readModelOptions throws the moment the trigger is missing, so a tab opened '
+    + 'for this very purpose is too young to answer');
+  assert.match(body, /items = await openModelMenu\(trigger\)/,
+    'an empty menu is reported as broken rather than retried');
+});
+
+test('and the wait is bounded, so a genuinely missing picker still fails', () => {
+  const budget = Number(/const PICKER_READY_BUDGET_MS = (\d+);/.exec(src)[1]);
+  assert.ok(budget > 0 && budget <= 15000,
+    `${budget}ms — a changed selector would hang every read instead of erroring`);
+});

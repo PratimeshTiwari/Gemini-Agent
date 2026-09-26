@@ -1078,9 +1078,24 @@ export async function injectPromptIntoModel(payload) {
  * the ownership rules exist to prevent.
  */
 export async function focusModelTab(targetModel = 'gemini') {
-  // Ours if we have one, otherwise whichever Gemini tab is open: "show me the
-  // tab" means the tab the person can see, not a question of ownership.
-  const tab = (await pickMainTab(targetModel)) || (await adoptableModelTab(targetModel));
+  /*
+   * Ours if we have one, otherwise whichever Gemini tab is open — "show me the
+   * tab" means the tab the person can see, not a question of ownership — and
+   * otherwise **open one**.
+   *
+   * That last step was missing, and `ctrl+b` therefore did nothing at all on a
+   * session where no Gemini tab existed yet: it reported that it could not
+   * reach one, which is true and useless. Reported from use as "ctrl+b did not
+   * open the gemini tab", which is exactly what it says it does.
+   *
+   * Opening is right here for the same reason it is right for `/effort`: you
+   * asked, you are waiting, and the next prompt needs that tab anyway. A
+   * background caller never reaches this — nothing calls `focusModelTab`
+   * except the keybinding and the model picker's own "show me" affordance.
+   */
+  const tab = (await pickMainTab(targetModel))
+    || (await adoptableModelTab(targetModel))
+    || (await ensureModelTab(targetModel).catch(() => null));
   if (!tab) return false;
   try {
     await chrome.tabs.update(tab.id, { active: true });

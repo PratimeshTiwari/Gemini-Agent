@@ -1248,6 +1248,15 @@ function extractLatestResponse() {
  * someone is waiting rather than after they have given up.
  */
 const MENU_OPEN_BUDGET_MS = 3000;
+/*
+ * How long a *freshly opened* tab gets to render its mode picker.
+ *
+ * Longer than the menu budget because this waits on Angular mounting the
+ * control at all, not on a menu animating open, and it is only ever reached on
+ * a tab that was opened a moment ago — on a warm one the trigger is already
+ * there and nothing waits.
+ */
+const PICKER_READY_BUDGET_MS = 8000;
 const MENU_CLOSE_BUDGET_MS = 3000;
 const MODEL_SETTLE_BUDGET_MS = 2000;
 
@@ -1405,11 +1414,45 @@ async function closeModelMenu(trigger) {
  * (`core/model-match.js`). Nothing here knows what "deep" means.
  */
 async function readModelOptions() {
-  const trigger = findElement(SELECTORS.modelTrigger) || findModelTriggerStructurally();
+  /*
+   * Wait for the picker to exist, because a freshly opened tab does not have
+   * one yet.
+   *
+   * `waitForBridge` gates on `canType` — the composer being in the DOM — and
+   * that is the right precondition for an *inject*. The mode picker is a
+   * different control and Angular renders it a beat later, so a read fired the
+   * moment the tab is ready finds no trigger, or finds one whose menu has no
+   * items yet.
+   *
+   * Reported from use exactly that way: the first `/effort` after the tab was
+   * opened failed with "[open_model_menu] the picker did not open, or has no
+   * options", and the second, seconds later, worked. That is a race, not a
+   * broken selector, and it is why the tab had to be opened by hand once
+   * before the feature would work at all.
+   *
+   * Observer-based, so it costs nothing on a warm tab — the trigger is almost
+   * always already there and `waitForDom` returns on its first check.
+   */
+  const trigger = findElement(SELECTORS.modelTrigger)
+    || findModelTriggerStructurally()
+    || await waitForDom(
+      () => findElement(SELECTORS.modelTrigger) || findModelTriggerStructurally(),
+      PICKER_READY_BUDGET_MS,
+    );
   if (!trigger) throw new Error('[find_model_trigger] no control that opens the mode picker');
 
   try {
-    const items = await openModelMenu(trigger);
+    let items = await openModelMenu(trigger);
+    /*
+     * One retry, for the same race one level down: the trigger can be mounted
+     * while the menu it opens is still empty. Cheap — `openModelMenu` returns
+     * on the first mutation that produces items — and the alternative is
+     * telling the user the picker does not work when it simply was not ready.
+     */
+    if (items.length === 0) {
+      closeModelMenu(trigger);
+      items = await openModelMenu(trigger);
+    }
     if (items.length === 0) throw new Error('[open_model_menu] the picker did not open, or has no options');
     return describeMenu(items).filter((m) => m.label);
   } finally {

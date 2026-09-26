@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.36.0**
+## Current version: **1.37.0**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -118,6 +118,31 @@ per-change history below.
 >
 > The corrections are marked in place. 1.28.1's account of its own fix is
 > disproved by a measurement recorded in 1.28.2.
+
+### 1.37.0 — 2026-09-26
+
+Both reported together: *"I needed to open the tab once for this?"* and
+*"ctrl+b did not open the gemini tab."* One cause each, and neither is the
+picker.
+
+- **`ctrl+b` opens a tab when there is none.** `focusModelTab` fell back from
+  the lane's tab to any Gemini tab and then gave up, reporting that it could
+  not reach one — true, and useless, since making the tab visible is the
+  entire job of that key. It now opens one, for the same reason `/effort` may:
+  you asked, you are waiting, and the next prompt needs that tab anyway. An
+  existing tab is still preferred to a new one, and a failed open is caught
+  rather than thrown.
+- **The picker is waited for, because a fresh tab does not have one yet.**
+  `waitForBridge` gates on `canType` — the composer being in the DOM — which is
+  the right precondition for an *inject*. The mode picker is a different
+  control and Angular renders it a beat later, so a read fired the moment the
+  tab reports ready finds no trigger, or a trigger whose menu is still empty.
+
+  That is why the first `/effort` after a tab was opened failed with
+  *"the picker did not open, or has no options"* and the second, seconds later,
+  worked — **and why the tab had to be opened by hand once** before the feature
+  would work at all. The read now waits for the trigger to mount and retries an
+  empty menu once. Both waits are observer-based, so a warm tab pays nothing.
 
 ### 1.36.0 — 2026-09-26
 

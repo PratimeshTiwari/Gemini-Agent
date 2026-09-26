@@ -550,7 +550,7 @@
     }
   }
   async function focusModelTab(targetModel = "gemini") {
-    const tab = await pickMainTab(targetModel) || await adoptableModelTab(targetModel);
+    const tab = await pickMainTab(targetModel) || await adoptableModelTab(targetModel) || await ensureModelTab(targetModel).catch(() => null);
     if (!tab) return false;
     try {
       await chrome.tabs.update(tab.id, { active: true });
