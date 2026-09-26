@@ -18,7 +18,7 @@
  */
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { AgentLoop } from '../../src/core/agent-loop.js';
@@ -190,4 +190,34 @@ describe('a failed subagent falls back in-thread', () => {
     assert.doesNotMatch(turn.result, /could not run/);
     rmSync(dir, { recursive: true, force: true });
   });
+});
+
+/**
+ * The watchdog is a deadline, and a deadline wants evidence.
+ *
+ * It was five minutes. Measured over 350 recorded turns on the owner's
+ * machine: median 8.5s, p90 20.9s, p99 44.7s, and **55.7s for the slowest turn
+ * ever recorded**. Five minutes is 5.4× that slowest turn — so a subagent
+ * silent at two minutes is not slow, it is gone.
+ *
+ * The whole of that wait was spent *before* `askSubagent` could hand the work
+ * back and do it inline, which it has been able to do since 2026-09-19. The
+ * cost of the watchdog being slightly too tight is bounded and visible: the
+ * work is handed back, labelled, and done in the main conversation. The cost of
+ * it being far too loose is five minutes of nothing.
+ */
+test('the subagent watchdog stays within reach of measured turn times', () => {
+  const src = readFileSync(
+    new URL('../../src/core/agent-loop.js', import.meta.url), 'utf8',
+  );
+  const expr = /const SUBAGENT_WATCHDOG_MS = ([^;]+);/.exec(src)[1];
+  // eslint-disable-next-line no-eval
+  const ms = eval(expr);
+
+  assert.ok(ms >= 60_000,
+    `${ms}ms is inside the tail of normal turns (p99 was 44.7s) — a healthy `
+    + 'subagent would be abandoned and its work redone');
+  assert.ok(ms <= 180_000,
+    `${ms}ms is more than 3× the slowest turn ever recorded (55.7s); the wait `
+    + 'is spent before the work can be handed back and done inline');
 });

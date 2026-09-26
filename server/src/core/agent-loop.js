@@ -110,12 +110,39 @@ const MODEL_OPTIONS_TIMEOUT_MS = 8000;
 const MODEL_OPTIONS_WITH_TAB_TIMEOUT_MS = 20000;
 
 /**
- * How long a subagent nobody is waiting on may run before it is abandoned.
+ * How long a subagent may run before the work is handed back.
  *
  * A watchdog, not a UX budget — it exists so a background task cannot hold a
  * lane forever. Anything a person is watching passes its own, shorter deadline.
+ *
+ * **It was five minutes, and that was 14× longer than any evidence supports.**
+ * Measured over 350 recorded turns on the owner's machine:
+ *
+ *     median   8.5s
+ *     p90     20.9s
+ *     p99     44.7s
+ *     slowest 55.7s   ← the slowest turn ever recorded, of 350
+ *
+ * Five minutes is **5.4× the slowest turn that has ever happened here**. A
+ * subagent silent at two minutes is not slow, it is gone — and the whole of
+ * that wait was spent before `askSubagent` could hand the work back and do it
+ * inline, which it has been able to do since 2026-09-19.
+ *
+ * Two minutes is still 5.7× p90 and 2.2× that slowest turn. The cost of being
+ * wrong is bounded and visible: the work is handed back, labelled, and done in
+ * the main conversation rather than lost.
+ *
+ * **And it is now checkable.** Since the traces record `outcome`, a turn that
+ * really did need longer shows up as a `timeout` row with its stages — so this
+ * number can be argued from the log instead of from caution.
+ *
+ * The tab may outlive the hand-back by up to the content script's own
+ * `RESPONSE_MAX_TIMEOUT` (300s), which closes it when it reports. A stray tab
+ * for a few minutes is the price; the alternative is plumbing a per-request cap
+ * through the inject payload, which is worth doing only if that proves to
+ * matter.
  */
-const SUBAGENT_WATCHDOG_MS = 5 * 60 * 1000;
+const SUBAGENT_WATCHDOG_MS = 2 * 60 * 1000;
 
 /**
  * Tools that name a single file, so a claim about that file can be checked.
