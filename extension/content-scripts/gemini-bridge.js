@@ -884,6 +884,28 @@ function startResponseObserver() {
       const style = window.getComputedStyle(stopBtn);
       isGenerating = rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     }
+    /*
+     * The two moments the Stop button marks, recorded rather than only reasoned
+     * about.
+     *
+     * `sawGenerating` has always gated the resend decision — generation
+     * started means the model *has* an answer, so a resend asks twice — but it
+     * was never written down. So `response_timeout` could not say which of
+     * three things happened: our send failed, Gemini never started, or it
+     * started and we lost the scrape. Each wants a different repair and the
+     * log could not tell them apart.
+     *
+     * Both are marked once. `generating_start` is the first sighting of the
+     * Stop button, which is the honest "first token" — the existing
+     * `first_token` mark fires on the first *scraped text*, one observer tick
+     * later. `generating_end` is the first sighting of it gone after it was
+     * there, so a timeout that recorded a start and no end is a scrape that
+     * lost a reply still being written.
+     */
+    if (isGenerating && !sawGenerating) traceMark('generating_start');
+    if (!isGenerating && sawGenerating && !turnTrace?.stages?.generating_end) {
+      traceMark('generating_end');
+    }
     if (isGenerating) sawGenerating = true;
 
     // Finished means: no Stop button, the text has stopped growing, and both
@@ -925,6 +947,9 @@ function startResponseObserver() {
       console.warn(`[Gemini Bridge] ${diagnosis}`);
       clearInterval(streamingUpdateTimer);
       stopResponseObserver();
+      // Whatever was measured before it stalled — this is the case the
+      // generating marks exist to explain.
+      sendTurnTrace('timeout');
       safeSend({
         type: 'gemini_response',
         payload: {
@@ -966,6 +991,9 @@ function startResponseObserver() {
       console.warn('[Gemini Bridge] Absolute max timeout reached (5 min)');
       clearInterval(streamingUpdateTimer);
       stopResponseObserver();
+      // Whatever was measured before it stalled — this is the case the
+      // generating marks exist to explain.
+      sendTurnTrace('timeout');
       safeSend({
         type: 'gemini_response',
         payload: {
@@ -1803,17 +1831,32 @@ function extractTextContent(element) {
 }
 
 /**
+ * Send the turn's timings, whatever the outcome.
+ *
+ * This used to be inline in `onResponseComplete`, which meant **a turn that
+ * timed out recorded nothing at all** — and the timeout is the one case the
+ * timings were wanted for. `response_timeout` could not say whether our send
+ * failed, Gemini never started, or it started and the scrape was lost; the
+ * marks that answer that were being taken and then thrown away.
+ *
+ * `outcome` is what makes the two comparable: a `complete` trace is the
+ * baseline a `timeout` trace is read against.
+ */
+function sendTurnTrace(outcome) {
+  if (!turnTrace) return;
+  // Sent separately from the reply, so a trace can never delay or break one.
+  safeSend({ type: 'turn_trace', payload: { model: 'gemini', outcome, stages: turnTrace.stages } });
+  turnTrace = null;
+}
+
+/**
  * Called when the response appears to be complete.
  */
 function onResponseComplete(responseText) {
   stopResponseObserver();
 
   traceMark('complete');
-  if (turnTrace) {
-    // Sent separately from the reply, so a trace can never delay or break one.
-    safeSend({ type: 'turn_trace', payload: { model: 'gemini', stages: turnTrace.stages } });
-    turnTrace = null;
-  }
+  sendTurnTrace('complete');
 
   // Send to service worker
   safeSend({

@@ -1,9 +1,12 @@
 import { test, describe, beforeEach, after } from 'node:test';
 import assert from 'node:assert';
-import { mkdtempSync, rmSync, existsSync, appendFileSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, appendFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { logTrace, readTraces, summariseTraces, percentile, formatMs } from '../../src/core/trace-log.js';
+import { logTrace, readTraces, summariseTraces, percentile, formatMs, STAGES } from '../../src/core/trace-log.js';
+
+/** Where `logTrace` puts a workspace's traces. */
+const tracesFile = (ws) => join(ws, '.agent', 'logs', 'traces.jsonl');
 
 let ws;
 beforeEach(() => { ws = mkdtempSync(join(tmpdir(), 'trace-')); });
@@ -162,4 +165,58 @@ describe('traces carry the effort rung', () => {
     assert.equal(samples, 1);
     assert.deepEqual(efforts, []);
   });
+});
+
+/**
+ * A timed-out turn is the one worth recording, and it used to record nothing.
+ *
+ * Traces were written only from `onResponseComplete`, so the log described the
+ * turns that worked and was silent about the ones anybody wanted explained.
+ * `response_timeout` could not say which of three things happened — our send
+ * failed, Gemini never started, or it started and the scrape was lost — and the
+ * marks that answer it were being taken and then thrown away.
+ */
+test('the outcome is kept, so a stall can be told from a success', async (t) => {
+  await t.test('a timeout is recorded and labelled', () => {
+    const ws = mkdtempSync(join(tmpdir(), 'trace-outcome-'));
+    logTrace(ws, { model: 'gemini', outcome: 'timeout', stages: { send: 5, generating_start: 900 } });
+
+    const row = JSON.parse(readFileSync(tracesFile(ws), 'utf8').trim());
+    assert.equal(row.outcome, 'timeout');
+    assert.equal(row.stages.generating_start, 900);
+  });
+
+  /*
+   * Without the label a timeout's partial timings average into the healthy
+   * ones and make everything look slightly worse for no visible reason.
+   */
+  await t.test('a completed turn says so too', () => {
+    const ws = mkdtempSync(join(tmpdir(), 'trace-outcome-'));
+    logTrace(ws, { model: 'gemini', outcome: 'complete', stages: { complete: 10 } });
+    assert.equal(JSON.parse(readFileSync(tracesFile(ws), 'utf8').trim()).outcome, 'complete');
+  });
+
+  // Rows written before this existed stay valid; they simply do not appear in
+  // a split by outcome.
+  await t.test('and a row with no outcome is still a row', () => {
+    const ws = mkdtempSync(join(tmpdir(), 'trace-outcome-'));
+    logTrace(ws, { model: 'gemini', stages: { complete: 10 } });
+    const row = JSON.parse(readFileSync(tracesFile(ws), 'utf8').trim());
+    assert.equal('outcome' in row, false, 'it invented an outcome for an older row');
+    assert.equal(row.stages.complete, 10);
+  });
+});
+
+/**
+ * The Stop button's two edges, which `sawGenerating` has always watched and
+ * never written down.
+ */
+test('the generating marks sit between send and complete', () => {
+  const order = (s) => STAGES.indexOf(s);
+  assert.ok(order('generating_start') > order('send'),
+    'the model cannot start before the prompt is sent');
+  assert.ok(order('generating_start') < order('first_token'),
+    'the Stop button appears before the first scraped text, not after');
+  assert.ok(order('generating_end') < order('complete'));
+  assert.ok(order('generating_end') > order('generating_start'));
 });

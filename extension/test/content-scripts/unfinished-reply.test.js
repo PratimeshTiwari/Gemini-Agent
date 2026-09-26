@@ -114,3 +114,31 @@ describe('the hold is bounded', () => {
     assert.match(src, /unfinishedHolds <= UNFINISHED_GRACE_CHECKS/);
   });
 });
+
+/**
+ * A timed-out turn now records what it measured.
+ *
+ * The trace was sent only from `onResponseComplete`, so the log described the
+ * turns that worked and was silent about the ones anybody wanted explained.
+ * `sawGenerating` has always gated the resend decision — generation started
+ * means the model *has* an answer, so a resend asks twice — and it was never
+ * written down, so `response_timeout` could not say which of three things
+ * happened: our send failed, Gemini never started, or it started and the
+ * scrape was lost. Each wants a different repair.
+ */
+test('both timeout paths send a trace before reporting the failure', () => {
+  const sends = [...src.matchAll(/sendTurnTrace\('(\w+)'\)/g)].map((m) => m[1]);
+  assert.ok(sends.filter((o) => o === 'timeout').length >= 2,
+    `only ${sends.filter((o) => o === 'timeout').length} timeout path(s) record a trace; `
+    + 'the one case the timings are wanted for is the one going unrecorded');
+  assert.ok(sends.includes('complete'), 'a finished turn stopped being traced');
+});
+
+test('the Stop button’s edges are marked once each', () => {
+  assert.match(src, /if \(isGenerating && !sawGenerating\) traceMark\('generating_start'\)/,
+    'generating_start is re-marked on every check, which overwrites the first sighting');
+  assert.match(src, /generating_end/);
+  // Guarded on the mark not already existing, or every quiet check past the
+  // end would move it and the span would read as zero.
+  assert.match(src, /!turnTrace\?\.stages\?\.generating_end/);
+});
