@@ -2903,15 +2903,48 @@ export class AgentLoop {
    * it null and threw on `this.callbacks.sendToPanel` — which the UI did not
    * catch either, so the whole thing hung with nothing on screen.
    */
+  /**
+   * Where a notice goes when no turn owns the screen.
+   *
+   * `_notify` sends `type: 'status'`, and every front-end reads that as the
+   * label on the *spinner* — which only exists while a turn is running. So a
+   * notice raised outside one was drawn nowhere at all: the CLI registers its
+   * callbacks per-submit and has none installed between turns, and the
+   * background set broadcasts to the extension and the side panel only.
+   *
+   * That is not a cosmetic gap. `/effort` runs outside a turn, so
+   * "✓ Browser model is now 3.1 Pro" — the confirmation that the model switch
+   * *worked* — was invisible in the terminal for the entire time the feature
+   * was being debugged, and so was every connect-time row including
+   * `extension_stale`.
+   *
+   * A dedicated sink rather than making the CLI's callbacks the background
+   * set: that would also hand it `requestDiffApproval`, so a headless task's
+   * diff would start prompting a user who did not ask for it. This channel
+   * carries notices and nothing else.
+   */
+  setNoticeSink(fn) {
+    this._noticeSink = typeof fn === 'function' ? fn : null;
+  }
+
   _notify(message) {
     const target = this.callbacks || this._backgroundCallbacks;
-    if (!target?.sendToPanel) return;
-    target.sendToPanel({
+    target?.sendToPanel?.({
       id: randomUUID(),
       type: 'status',
       payload: { message },
       timestamp: Date.now(),
     });
+
+    /*
+     * Only outside a turn. During one the spinner is on screen and carries
+     * this, and appending a row as well would print every status line twice —
+     * including the per-tool "Running read_file…" chatter.
+     *
+     * Read from `isProcessing` on the loop, which is the turn's own truth;
+     * CLAUDE.md records the UI's copy being set by the thing that asks.
+     */
+    if (!this.isProcessing) this._noticeSink?.(message);
   }
 
   /** @see core/compaction.js — summarise the older turns and hand the thread over. */

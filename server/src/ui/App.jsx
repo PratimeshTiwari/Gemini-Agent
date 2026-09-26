@@ -115,6 +115,31 @@ export function App({ agentLoop, wsServer }) {
   const [queued, setQueued] = useState([]);
   const [tasks, setTasks] = useState([]);
 
+  /*
+   * Notices raised outside a turn land in the transcript.
+   *
+   * `_notify` sends a `status`, which every front-end reads as the spinner's
+   * label — and the spinner only exists while a turn is running. The CLI
+   * registers its callbacks per-submit, so between turns there was nothing
+   * listening at all, and a notice went nowhere.
+   *
+   * `/effort` runs outside a turn. So did every connect-time row. That is why
+   * "✓ Browser model is now 3.1 Pro" and `extension_stale` were both invisible
+   * in the terminal while the model switch was being debugged — the answers
+   * were arriving and the screen had no way to show them.
+   *
+   * `isLocal` marks it UI-only, so `mergeLoopHistory` does not count it as a
+   * loop turn and shift every later merge by one.
+   */
+  useEffect(() => {
+    if (!agentLoop?.setNoticeSink) return undefined;
+    agentLoop.setNoticeSink((text) => setHistory((prev) => [
+      ...prev,
+      { role: 'assistant', content: text, isLocal: true, timestamp: Date.now() },
+    ]));
+    return () => agentLoop.setNoticeSink(null);
+  }, [agentLoop]);
+
   // Extension Connection Polling
   const [extensionConnected, setExtensionConnected] = useState(false);
   useEffect(() => {
