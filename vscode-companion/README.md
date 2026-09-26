@@ -14,7 +14,6 @@ conversation your editor already knows about.
 | **Editor state** | The active file and cursor position, so `get_editor_state` can answer "what am I looking at?". |
 | **Diagnostics** | The Problems panel, so `get_diagnostics` can check whether an edit compiled. |
 | **Plan review** | Comment on a plan section by section and approve, request changes, or reject — the shape of a PR review, on `implementation_plan.md`. |
-| **Terminal failures** | Failed commands from terminals **you point at** are offered to the agent's prompt. |
 
 ## How it talks to the CLI
 
@@ -24,7 +23,6 @@ Through files under `<workspace>/.agent/state/`, never a socket:
 editor.json         active file and cursor
 diagnostics.json    the Problems panel, debounced 1.5s
 chat-queue.jsonl    "Add to Agent Chat" selections, drained by the CLI
-terminal.jsonl      failed commands from watched terminals
 plan-review.json    comments accumulated while reviewing
 plan-approval.json  the submitted verdict
 ```
@@ -39,7 +37,7 @@ while a project indexes, and writing on every event makes the file unreadable.
 ## Installing
 
 Extensions panel (`Cmd+Shift+X`) → `...` → **Install from VSIX...** → pick the `.vsix` in
-this folder. Requires VS Code **1.93.0** or newer, for the terminal shell-integration API.
+this folder. Requires VS Code **1.93.0** or newer.
 
 ## Building
 
@@ -56,6 +54,30 @@ is how someone installs the wrong one.
 `server/`. Changing `AGENT_DIR` in `server/src/core/paths.js` means changing it here too.
 
 ## Version history
+
+### 1.7.0 — 2026-09-26
+
+**Terminal forwarding removed.** It never produced a single record.
+
+`editor.json` and `diagnostics.json` are written continuously on a live
+install; `terminal.jsonl` **has never been created**. Both ends were wired
+correctly — the companion wrote on `onDidEndTerminalShellExecution`, the CLI
+drained it behind `ctrl+f` — so this was not the write-only trap this project
+has hit twice before. It was simply never reached.
+
+The cause is the gate, and 1.5.0's own note predicted it: the offer appears
+only when a command *fails* in an *unwatched* terminal, **once per session**,
+as a dismissable toast. Dismiss it and it is gone until you restart. That note
+said *"a feature nobody can find is the same as one that is off"*, which was
+right, and this is what it looked like eleven days later.
+
+Removed rather than made discoverable, on the owner's call. The alternative was
+a second attempt at a gate for a feature with no demonstrated demand — and the
+ladder of failed guesses is what CLAUDE.md warns about by name. Gone with it:
+`terminal-queue.js`, `paths.terminalQueuePath`, the `ctrl+f` binding, the
+`N failed ^f` status field, and the `agentCli.watchTerminal` command.
+
+The 1.4.0 and 1.5.0 entries below stay. They are the record of what was tried.
 
 ### 1.6.0 — 2026-09-21
 

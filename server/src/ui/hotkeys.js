@@ -26,7 +26,6 @@ export const HOTKEYS = {
   '\x16': 'paste-image',  // ctrl+v — attach an image from the clipboard
   '\x15': 'clear-input',  // ctrl+u — wipe the prompt, as readline has always done
   '\x17': 'delete-word',  // ctrl+w — delete the word behind the cursor
-  '\x06': 'attach-failures', // ctrl+f — pull in commands that failed in the editor
   '\x19': 'copy-code',    // ctrl+y — the last code block in the transcript
   '\x07': 'artifacts',    // ctrl+g — the task list, on its own key and its own state
   '\x02': 'focus-browser', // ctrl+b — bring the Gemini tab to the front

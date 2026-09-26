@@ -1625,11 +1625,26 @@ dispatch paths still want scaffolding and are left for the split in P3.
 
 ### P3 — done, 2026-09-11 (except the GitHub restructure)
 
-- VS Code terminal shell integration — *done.* The companion forwards **failed** commands only,
-  and only their tail, to `.agent/state/terminal.jsonl`; the CLI drains it into the input box as
-  a marker you send or delete. It offers rather than acts: an agent that starts editing because
-  a command you ran in another window failed is a worse tool than one that waits to be asked.
-  Engine `^1.80.0` → `^1.93.0`, repackaged as `cli-agent-companion-1.4.0.vsix`.
+- VS Code terminal shell integration — *built, then **removed on 2026-09-26**.* The companion
+  forwarded failed commands' tails to `.agent/state/terminal.jsonl` and the CLI drained them into
+  the input box as a marker you send or delete. "Offered, not acted on" was the right design and
+  it was implemented correctly at both ends.
+
+  **It never produced a single record.** On a live install `editor.json` and
+  `diagnostics.json` are written continuously while `terminal.jsonl` was never created — so
+  this is *not* the write-only trap recorded twice elsewhere here, where a writer had no
+  reader. Both halves worked; the gate was never passed. The offer appeared only when a
+  command failed in an *unwatched* terminal, **once per session**, as a dismissable toast,
+  and v1.5.0's own note had already written the epitaph: *"a feature nobody can find is the
+  same as one that is off."*
+
+  Removed rather than re-gated, on the owner's call. **The number is the argument**: zero uses
+  across the whole history of the feature is not a discoverability hypothesis worth a second
+  guess. Companion `1.7.0`.
+
+  *If it returns*: the thing to fix first is that the offer is tied to a failure happening.
+  A standing affordance — a status-bar toggle, or remembering the choice per workspace rather
+  than per session — is what it never had.
 - Native folder picker — *done.* `/skills dir add` with no path, and Browse… in the workspace
   picker. macOS, zenity, kdialog or PowerShell, and offered **only** where one exists: a menu row
   that silently does nothing is worse than no row, because people press it twice and conclude the

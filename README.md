@@ -412,16 +412,6 @@ pushing the transcript off screen, and shows `… N more lines` when it does.
   takes it back off.
 - **"Add to Agent Chat"** in VS Code (`cmd+alt+l`) drops the selection in as
   `@file.js:12-30`.
-- **`ctrl+f`** attaches commands that failed in a VS Code terminal. They are
-  *offered*, not inserted: the status bar shows `2 failed ^f` and nothing touches
-  your prompt until you ask. Something you chose to attach goes in; something
-  that merely happened to you waits.
-
-  And only from terminals you point at: right-click a terminal → **Agent CLI:
-  Watch This Terminal for Failures**, or run it from the command palette.
-  Forwarding every failure from every terminal meant a typo you had already
-  fixed arrived as a marker you then had to delete. Per session, because a
-  terminal is a per-session thing.
 
 ### Reading what came back
 
