@@ -2,7 +2,7 @@
   "name": "cli-agent-companion",
   "displayName": "Agent CLI Companion",
   "description": "Editor state, diagnostics, Add to Agent Chat, and plan review for the local Agent CLI.",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "publisher": "pratimesh-tiwari",
   "author": {
     "name": "Pratimesh Tiwari"
@@ -50,12 +50,6 @@
         "command": "agentCli.commentOnPlan",
         "title": "Comment on Plan Section",
         "category": "Agent CLI"
-      },
-      {
-        "command": "agentCli.watchTerminal",
-        "title": "Watch This Terminal for Failures",
-        "category": "Agent CLI",
-        "icon": "$(eye)"
       }
     ],
     "keybindings": [
@@ -91,18 +85,6 @@
         {
           "command": "agentCli.addToChat",
           "group": "navigation@1"
-        }
-      ],
-      "terminal/context": [
-        {
-          "command": "agentCli.watchTerminal",
-          "group": "navigation"
-        }
-      ],
-      "terminal/title/context": [
-        {
-          "command": "agentCli.watchTerminal",
-          "group": "navigation"
         }
       ]
     }

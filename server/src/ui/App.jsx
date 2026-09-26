@@ -13,7 +13,6 @@ import { modelMismatch, browserModelPin } from '../core/model-match.js';
 import { groupTurns, parseTurnActions } from './transcript.js';
 import { expandPastes, attachedPastes } from './paste.js';
 import { drainChatQueue } from './chat-queue.js';
-import { drainTerminalQueue } from './terminal-queue.js';
 import { useKeyBindings } from './hooks/use-key-bindings.js';
 import { useHotkeys } from './hooks/use-hotkeys.js';
 import { canCopy, copyToClipboard } from './clipboard.js';
@@ -225,7 +224,6 @@ export function App({ agentLoop, wsServer }) {
    * Kept here rather than pushed into the prompt so the offer costs one field
    * in a row that already exists, instead of rewriting what you were typing.
    */
-  const [pendingFailures, setPendingFailures] = useState([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
 
   /**
@@ -747,33 +745,6 @@ export function App({ agentLoop, wsServer }) {
     return () => clearInterval(id);
   }, [agentLoop.workspace]);
 
-  // Commands that failed in a VS Code terminal, forwarded by the companion.
-  //
-  // Offered, not acted on — and putting the marker straight into the prompt was
-  // already acting. The companion forwards *every* non-zero exit from *any*
-  // terminal, so a prompt would collect a failure you already knew about, from a
-  // command you ran deliberately, and sometimes a typo you had already noticed
-  // and fixed. Three of them accumulated in one prompt in use, each needing
-  // deleting by hand before the prompt could be used.
-  //
-  // The line: **what you asked for is inserted, what merely happened is
-  // offered.** The editor's "Add to Agent Chat" is a deliberate act and still
-  // lands in the box; a command failing somewhere else is not, so it waits
-  // behind ctrl+f and says so in the status bar.
-  //
-  // Draining still happens on the same tick, because the file is the
-  // companion's outbox and leaving it to grow is a different problem.
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (isProcessing) return; // never interrupt a running turn
-      const failures = drainTerminalQueue(agentLoop.workspace);
-      if (failures.length === 0) return;
-      // Held, not inserted. See `pendingFailures`.
-      setPendingFailures((prev) => [...prev, ...failures].slice(-20));
-    }, 1000);
-    return () => clearInterval(id);
-  }, [agentLoop.workspace, isProcessing]);
-
   // Poll active background tasks
   useEffect(() => {
     let lastTasksJson = '[]';
@@ -1036,16 +1007,6 @@ export function App({ agentLoop, wsServer }) {
           ? `📋 Copied ${lines} line${lines === 1 ? '' : 's'}${found.lang ? ` of ${found.lang}` : ''}.`
           : '📋 The clipboard command failed.');
       });
-    },
-    'attach-failures': () => {
-      if (pendingFailures.length === 0) return;
-      setPastes((prev) => [...prev, ...pendingFailures].slice(-20));
-      setInputAtEnd((prev) => {
-        const markers = pendingFailures.map((f) => f.marker).join(' ');
-        return prev ? `${prev.replace(/\s+$/, '')} ${markers} ` : `${markers} `;
-      });
-      setPendingFailures([]);
-      setPaletteSuppressed(true);
     },
   }, !diffRequest && !activeMenu);
 
@@ -1385,11 +1346,6 @@ export function App({ agentLoop, wsServer }) {
             is the one field here that wants a decision from you; it appears
             only when something is waiting and takes no room otherwise.
           */}
-          {pendingFailures.length > 0 ? (
-            <Text color="yellow">
-              {pendingFailures.length} failed ^f{'  ·  '}
-            </Text>
-          ) : ''}
           {attachedCount > 0 ? `${attachedCount} paste${attachedCount === 1 ? '' : 's'}  ·  ` : ''}
           {/*
             An attached image had no representation anywhere. The transcript

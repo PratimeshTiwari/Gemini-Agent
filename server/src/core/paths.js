@@ -220,7 +220,6 @@ export const chatQueuePath = (workspace) => statePath(workspace, 'chat-queue.jso
  * terminal emulator and there was no API for it. Inside VS Code there is one.
  * Append-only for the same reason as chat-queue: the CLI drains by deleting.
  */
-export const terminalQueuePath = (workspace) => statePath(workspace, 'terminal.jsonl');
 /** Comments left on a plan while reviewing it, before the review is submitted. */
 
 export const backupsDir = (workspace) => path.join(agentDir(workspace), 'backups');
