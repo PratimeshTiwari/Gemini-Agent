@@ -14,7 +14,7 @@ CLI  ──ws://127.0.0.1:7777──▶  service worker  ──▶  content scri
 
 ---
 
-## Current version: **1.35.0**
+## Current version: **1.36.0**
 
 **Since 1.26.0 the CLI checks this for you.** The extension reports
 `chrome.runtime.getManifest().version` — read out of the bundle Chrome actually
@@ -118,6 +118,28 @@ per-change history below.
 >
 > The corrections are marked in place. 1.28.1's account of its own fix is
 > disproved by a measurement recorded in 1.28.2.
+
+### 1.36.0 — 2026-09-26
+
+- **A timed-out turn records what it measured.** The trace was sent only from
+  `onResponseComplete`, so the log described the turns that **worked** and was
+  silent about the ones anybody wanted explained. Both timeout paths now send
+  one first, and every trace carries `outcome` so a stall can be told from a
+  success — without that label a timeout's partial timings average into the
+  healthy ones and make everything look slightly worse for no visible reason.
+- **The Stop button's two edges are written down.** `sawGenerating` has always
+  gated the resend decision — generation started means the model *has* an
+  answer, so a resend asks twice into a thread that already holds the first
+  reply — and it was never recorded. So `response_timeout` could not say which
+  of three things happened: our send failed, Gemini never started, or it
+  started and we lost the scrape. Each wants a different repair.
+
+  `generating_start` is the first sighting of the button, which is the honest
+  "the model started" — one observer tick ahead of `first_token`, which fires
+  on the first *scraped text*. `generating_end` is the first sighting of it
+  gone. **A trace with a start and no end is a reply that was still being
+  written when the scrape lost it**, which is the case that must never be
+  resent.
 
 ### 1.35.0 — 2026-09-26
 

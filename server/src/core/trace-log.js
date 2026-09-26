@@ -22,7 +22,19 @@ import * as paths from './paths.js';
  */
 
 /** Stages, in the order they happen. Unknown ones are kept but sort last. */
-export const STAGES = ['find_input', 'type', 'send', 'first_token', 'complete'];
+export const STAGES = [
+  'find_input',
+  'type',
+  'send',
+  // The Stop button appearing: the honest "the model started", one observer
+  // tick ahead of `first_token`, which fires on the first *scraped text*.
+  'generating_start',
+  'first_token',
+  // The Stop button gone after it was there. A trace with a start and no end
+  // is a reply that was still being written when the scrape lost it.
+  'generating_end',
+  'complete',
+];
 
 const tracePath = (workspace) => path.join(paths.logsDir(workspace), 'traces.jsonl');
 
@@ -60,10 +72,23 @@ export function logTrace(workspace, trace) {
      * Written only when known, so old rows stay valid and a turn with no rung
      * attached is simply not counted in the per-rung split.
      */
+    /*
+     * `outcome` separates a turn that finished from one that timed out.
+     *
+     * Traces used to be written only on completion, so the log described the
+     * turns that worked and was silent about the ones anybody wanted
+     * explained. Recording both is only useful if they can be told apart —
+     * otherwise a timeout's partial timings are averaged into the healthy
+     * ones and make everything look slightly worse for no visible reason.
+     *
+     * Written only when given, so rows from before this stay valid and simply
+     * do not appear in a split by outcome.
+     */
     const line = JSON.stringify({
       time: new Date().toISOString(),
       model: trace.model || 'gemini',
       ...(trace.effort ? { effort: String(trace.effort) } : {}),
+      ...(trace.outcome ? { outcome: String(trace.outcome) } : {}),
       stages,
     });
     const file = tracePath(workspace);
