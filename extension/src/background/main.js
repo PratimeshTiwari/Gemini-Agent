@@ -87,6 +87,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'question_response':
       case 'command_approval_response':
       case 'turn_trace':
+      /*
+       * The three below are what a **content script** reports, and their
+       * absence here is the whole of "the model never switches".
+       *
+       * `readModelOptions` works — measured against the live page at 27.7ms,
+       * returning every option with `selected` correct. It hands the list to
+       * `safeSend`, which is `chrome.runtime.sendMessage`, which arrives *here*
+       * — and `model_options` was not a case, so it fell to `default` and was
+       * dropped one hop before the socket. The server waited out every budget
+       * it had and reported, accurately, that nothing came back.
+       *
+       * `gemini_response` is in this list, which is exactly why prompts worked
+       * while `/effort`, `ctrl+b` and the mismatch warning did not: one path
+       * was relayed and the other was not.
+       *
+       * CLAUDE.md states the rule this broke, about the side panel: "a surface
+       * that ignores an unknown message type is not equally harmless for every
+       * type. Dropping a notification costs a missing line; dropping a request
+       * deadlocks whatever is waiting on the answer." The same sentence applies
+       * to the worker, and nothing was checking.
+       */
+      case 'model_options':
+      case 'picker_trace':
+      case 'error':
         sendToServer({ type, payload });
         sendResponse({ success: true });
         break;
@@ -102,6 +126,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       }
 
+      /*
+       * Absorbed, not relayed: the bridge announcing itself is news for the
+       * worker and means nothing to the agent.
+       *
+       * It still needs a case. Without one it reaches `default`, which now
+       * reports an unrelayed message — so a page-load announcement would file
+       * an error row every time a Gemini tab opened. Found by the drift test
+       * added alongside this fix, which is the second thing that test caught
+       * before it had finished being written.
+       */
+      case 'content_script_ready':
+        sendResponse({ success: true });
+        break;
+
       case 'connect':
         // The reply carries the state so a model tab can back its nudge off.
         // Reported before the attempt, not after: `connectWebSocket` resolves
@@ -112,6 +150,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
 
       default:
+        /*
+         * Never silently again.
+         *
+         * This arm dropped `model_options` for the entire life of the picker
+         * feature, and it cost five releases of fixes aimed at every hop except
+         * this one. It answered the *sender* — a content script that ignores
+         * the reply — and told the server nothing, so the message vanished
+         * between two processes with no trace in either.
+         *
+         * A console line is not enough on its own, because MV3 evicts this
+         * worker constantly and takes its console with it. The server is told,
+         * so it lands in `/logs extension` and survives.
+         */
+        console.warn('[Agent CLI] worker has no relay for message type:', type);
+        sendToServer({
+          type: 'error',
+          payload: {
+            op: 'unrelayed_message',
+            message: `The extension received "${type}" from a content script and `
+              + 'has no rule for it, so it was dropped before reaching the agent.',
+          },
+        });
         sendResponse({ success: false, error: 'Unknown message type' });
     }
   })();
