@@ -56,7 +56,13 @@ export function buildAgentCallbacks({
 }) {
   return {
     sendToPanel: (msg) => {
-      wsServer.broadcast('extension', msg);
+      /*
+       * Kept, and returned. The CLI's copy of this dropped the answer on the
+       * floor, so `_toExtension` could not tell "the browser did not reply"
+       * from "there was no browser to ask" — the ambiguity that made the model
+       * switch undiagnosable from the terminal.
+       */
+      const delivered = wsServer.broadcast('extension', msg);
       if (msg.type === 'agent_response') {
         // Append what the loop has gained; never replace. See mergeLoopHistory —
         // replacing dropped every UI-only message and took a real turn off the
@@ -107,6 +113,7 @@ export function buildAgentCallbacks({
         // caused by re-rendering the entire history component 50+ times per second.
         // This also allows the 'Thinking...' messages to continue cycling during generation!
       }
+          return delivered;
     },
     injectPrompt: (msg) => {
       const success = wsServer.broadcast('extension', {

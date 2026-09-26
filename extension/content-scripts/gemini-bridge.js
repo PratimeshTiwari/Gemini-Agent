@@ -1950,8 +1950,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true, deferred: true });
         return false;
       }
+      // Traced from inside the page: "the read ran and returned N options" is
+      // the one fact no other layer can report, and its absence is what
+      // separates a failed read from a message that never arrived.
+      safeSend({ type: 'picker_trace', payload: { op: 'read_start' } });
       readModelOptions()
-        .then((models) => safeSend({ type: 'model_options', payload: { models } }))
+        .then((models) => safeSend({
+          type: 'model_options',
+          payload: { models, trace: { op: 'read_done', count: models.length } },
+        }))
         .catch((err) => safeSend({
           type: 'error',
           payload: { op: 'discover_models', message: err.message },

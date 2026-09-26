@@ -1645,7 +1645,38 @@ export class AgentLoop {
    */
   _toExtension(type, payload = {}) {
     const target = this.callbacks || this._backgroundCallbacks;
-    target?.sendToPanel?.({ id: randomUUID(), type, payload, timestamp: Date.now() });
+    const delivered = target?.sendToPanel?.({ id: randomUUID(), type, payload, timestamp: Date.now() });
+
+    /*
+     * Did it reach anything? This used to be thrown away.
+     *
+     * `broadcast` has always returned whether it found a client, and CLAUDE.md
+     * already records the cost of ignoring it once: `injectPrompt` with no
+     * extension connected "wrote to no sockets and vanished", leaving the lane
+     * busy until a seven-minute watchdog. The same return is available here and
+     * the same mistake was made — so `discover_models`, `switch_model`,
+     * `focus_tab`, `new_chat` and `open_thread` could all be sent into an empty
+     * room, and every one of them would look exactly like the browser failing
+     * to answer.
+     *
+     * That ambiguity is what five attempts at the model switch kept running
+     * into: "the browser never answered" and "nothing was ever asked" produce
+     * the same silence, and only one of them is about the browser.
+     *
+     * `false` is the answer, `undefined` means the front-end does not report —
+     * which is not the same thing and must not be logged as a failure.
+     */
+    if (delivered === false) {
+      logError(this.workspace, {
+        flow: 'bridge',
+        op: 'extension_unreachable',
+        message: `Nothing is connected to send "${type}" to`,
+        detail: 'The extension is not connected to this server, so the browser was '
+          + 'never asked. Reload it at chrome://extensions, or check the port.',
+        meta: { type },
+      });
+    }
+    return delivered;
   }
 
   /**
