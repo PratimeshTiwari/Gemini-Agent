@@ -109,7 +109,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
        * to the worker, and nothing was checking.
        */
       case 'model_options':
-      case 'picker_trace':
       case 'error':
         sendToServer({ type, payload });
         sendResponse({ success: true });

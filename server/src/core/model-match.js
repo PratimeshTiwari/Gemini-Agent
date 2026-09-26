@@ -20,45 +20,17 @@
  * from a bug.
  */
 
+import { EFFORT_LEVELS } from './effort.js';
+
 /**
- * What each rung reaches for, and what it must not land on.
+ * The rung ids, from the ladder itself.
  *
- * `avoid` is not decoration. "Extended thinking — complex problem solving" and
- * "3.8 Flash — all-around help" share the word *thinking* with the flash rung's
- * intent, and the extended option is several times the weight; without a
- * per-rung veto the middle rung quietly selected the heaviest model on the
- * plan. Every rung therefore says what it is reaching past, not only what it is
- * reaching for.
+ * Derived rather than listed: a hand-kept copy is what `INTENT` effectively
+ * was, and CLAUDE.md already names the failure — "`INTENT[effortId]` undefined
+ * means `pickModelFor` returns null … and `/effort pro` quietly stops matching
+ * any browser model", which still *reads* like it worked.
  */
-const INTENT = {
-  low: {
-    prefer: ['lite', 'fastest', 'flash'],
-    avoid: ['extended', 'complex', 'pro', 'advanced'],
-  },
-  medium: {
-    prefer: ['thinking', 'flash'],
-    // A step up from flash, not a step into the heavyweight tier — and not back
-    // down to the lite option either.
-    avoid: ['lite', 'fastest', 'extended', 'complex'],
-  },
-  /*
-   * One entry since the ladder became three rungs (2026-09-20). It is
-   * `standard`'s list, because `pro` is `standard`'s profile — `deep`'s
-   * `prefer: ['extended', 'complex', …]` went with `deep`.
-   *
-   * **This table is keyed by rung id, which makes it the thing a rung change
-   * breaks silently.** `INTENT[effortId]` undefined means `pickModelFor`
-   * returns null, `planModelSwitch` answers `unavailable`, and `/effort pro`
-   * quietly stops matching any browser model — it still *reads* like it worked,
-   * because the message just changes from "Switching the browser" to "Asking
-   * the browser". Caught here only because `model-match.test.js` asserts on
-   * which of those two sentences comes back.
-   */
-  high: {
-    prefer: ['pro', 'reasoning', 'advanced'],
-    avoid: ['extended', 'complex'],
-  },
-};
+const EFFORT_IDS = new Set(EFFORT_LEVELS.map((e) => e.id));
 
 const haystack = (m) => `${m.label || ''} ${m.description || ''}`.toLowerCase();
 
@@ -95,12 +67,13 @@ function byPickerOrder(effortId, options) {
   /*
    * A mode is whatever the page says is a mode.
    *
-   * The extension now reports `isMode`, taken from the rule the picker draws
+   * The extension reports `isMode`, taken from the rule the picker draws
    * between its models and its modes — a real `<mat-divider>`, verified against
-   * the live menu and agreeing exactly with what `⌘⇧M` cycles. The word test is
-   * the fallback for a build that does not send the flag, and it is the thing
-   * this is getting away from: `extended`/`complex` is a guess about English
-   * that breaks on a fourth mode or a rename.
+   * the live menu and agreeing exactly with what `⌘⇧M` cycles. The word test
+   * behind it is not a second strategy: it is the same question asked of a
+   * build too old to answer it, and it is the thing this is getting away from.
+   * `extended`/`complex` is a guess about English that breaks on a fourth mode
+   * or a rename.
    */
   const knowsModes = options.some((m) => typeof m.isMode === 'boolean');
   const isMode = (m) => (knowsModes ? m.isMode === true : /extended|complex/.test(haystack(m)));
@@ -108,34 +81,45 @@ function byPickerOrder(effortId, options) {
   if (models.length === 0) return null;
 
   /*
-   * Position alone, once modes are out of the way.
+   * Position is only meaningful over a list we know is a list of models.
    *
-   * The picker lists its models lightest-first — confirmed by cycling it, which
-   * walks them in that order and wraps from the heaviest back to the lightest.
-   * So the ladder maps straight onto the list and **no product name is needed
-   * for any rung**: reported by the owner that Flash-Lite and Flash are renamed
-   * across accounts, and that even Pro carries a version that moves.
+   * When the page cannot say which entries are modes, everything it offers
+   * looks like one — so a picker holding a single unlabelled entry, `Canvas`
+   * say, would be read as "the only model" and *switched to*. A wrong switch
+   * is worse than no switch: it moves the tab somewhere nobody chose, and the
+   * turn after it runs on that.
    *
-   * Anchoring on the word `pro` was the previous step and is kept only for a
-   * build that cannot say which entries are modes, where the list may still
-   * hold one and counting from the end would land on it.
+   * Two entries is the floor for inferring a ladder from an order, and it is
+   * counted on what the picker **offered**, not on what survived the veto. A
+   * two-entry menu where one is recognisably a mode is still a real picker —
+   * it told us something — whereas a single unlabelled entry told us nothing.
+   * Counting the survivors instead rejected `Flash Extended` + `Flash`, which
+   * is exactly the case the veto exists to handle.
    */
-  if (knowsModes) {
-    if (effortId === 'low') return models[0];
-    if (effortId === 'high') return models[models.length - 1];
-    // The rung below the heaviest. Clamped, never wrapped: on a two-entry plan
-    // the middle collapses onto the lightest, which is honest, where wrapping
-    // would send it to the heaviest — the pairing CLAUDE.md calls the worst.
-    if (effortId === 'medium') return models[Math.max(0, models.length - 2)];
-    return null;
-  }
+  if (!knowsModes && options.length < 2) return null;
 
-  const proIndex = models.findIndex((m) => /\bpro\b/.test(haystack(m)));
-  if (proIndex === -1) return null;
-
-  if (effortId === 'high') return models[proIndex];
+  /*
+   * Position, and nothing else.
+   *
+   * The picker lists its models lightest-first — confirmed by cycling it with
+   * the browser's own shortcut, which walks them in that order and wraps from
+   * the heaviest back to the lightest. So the ladder maps straight onto the
+   * list and **no product name is needed for any rung**: the owner reports that
+   * Flash-Lite and Flash are renamed across accounts and that even Pro carries
+   * a version that moves.
+   *
+   * This used to be two passes — position when `isMode` was available, a
+   * `\bpro\b` anchor when it was not — and the anchor is gone. It could only
+   * help a build that reports no modes *and* still calls its top model Pro,
+   * which is a narrower case than the word lists it sat in front of, and it
+   * bought a third answer for the same question.
+   */
   if (effortId === 'low') return models[0];
-  if (effortId === 'medium') return models[Math.max(0, proIndex - 1)];
+  if (effortId === 'high') return models[models.length - 1];
+  // The rung below the heaviest. Clamped, never wrapped: on a two-entry plan
+  // the middle collapses onto the lightest, which is honest, where wrapping
+  // would send it to the heaviest — the pairing CLAUDE.md calls the worst.
+  if (effortId === 'medium') return models[Math.max(0, models.length - 2)];
   return null;
 }
 
@@ -217,21 +201,14 @@ export function pickModelFor(effortId, models = [], pin = '') {
       : `config pins "${pin}", which matches ${hits.length} of the options offered`;
   }
 
-  const intent = INTENT[effortId];
-  if (!intent) return null;
-
   /*
-   * Order first, words second.
-   *
-   * The word lists survive a rename only if the new name happens to contain a
-   * word they know, which is a weaker promise than it looks — `lite` and
-   * `flash` are Google's product names this month, not guarantees. The picker's
-   * running order, anchored on Pro, does not depend on any of them.
-   *
-   * The words are kept as the fallback rather than deleted: a plan with no
-   * entry named Pro is precisely the case they were written for, and they are
-   * the only thing that can read a vocabulary nobody has seen yet.
+   * An id this ladder does not have is not a rung, and must not be guessed at.
+   * `INTENT[effortId]` used to serve as this check by accident — an unknown id
+   * found no word list and fell out — which CLAUDE.md flagged as the thing a
+   * rung rename would break silently. It is explicit now.
    */
+  if (!EFFORT_IDS.has(effortId)) return null;
+
   const byOrder = byPickerOrder(effortId, options);
   if (byOrder) {
     return {
@@ -243,30 +220,20 @@ export function pickModelFor(effortId, models = [], pin = '') {
     };
   }
 
-  let best = null;
-  for (const model of options) {
-    const text = haystack(model);
-    if (intent.avoid.some((word) => text.includes(word))) continue;
-
-    // Earlier words are worth more, so "fastest" beats a bare "flash" and
-    // "extended" beats "pro" for the deep rung.
-    let score = 0;
-    intent.prefer.forEach((word, i) => {
-      if (text.includes(word)) score += intent.prefer.length - i;
-    });
-    if (score === 0) continue;
-
-    if (!best || score > best.score) best = { model, score };
-  }
-
-  if (!best) return null;
-  return {
-    model: best.model,
-    pinned: false,
-    ...(pinMissed ? { pinMissed } : {}),
-    why: `${best.model.label} — closest to ${effortId} among ${options.length} offered`
-      + (pinMissed ? ` (${pinMissed})` : ''),
-  };
+  /*
+   * Nothing matched, and that is an answer.
+   *
+   * There used to be a scored word match here — `prefer`/`avoid` lists per
+   * rung, earliest word worth most — and it was the original strategy. It is
+   * gone with the names it depended on. Every case it could still answer is one
+   * where `byPickerOrder` already declined, which now means the picker offered
+   * no models at all; guessing from vocabulary at that point is how a rung
+   * lands on a mode.
+   *
+   * `planModelSwitch` turns this into `unavailable`, which the CLI reports
+   * honestly rather than acting on.
+   */
+  return null;
 }
 
 /**

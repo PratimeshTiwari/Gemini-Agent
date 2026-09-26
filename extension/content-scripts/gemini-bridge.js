@@ -1504,28 +1504,39 @@ async function selectModelByLabel(label) {
     throw new Error(`[switch_model] the picker has no option called "${label}"`);
   }
 
+  // What the trigger said before, so "has it settled" can be asked without
+  // knowing any product names — see the wait below.
+  const labelBefore = currentModelLabel();
+
   // Clicking an option closes the menu itself — no close needed, and calling
   // one would re-open it.
   hit.click();
 
   /*
-   * Wait for the trigger to agree, not for 300ms.
+   * Wait for the trigger to change, not for 300ms and not for a name.
    *
-   * The sleep was a guess at how long the component takes, and in a hidden tab
-   * it is not 300ms — chained page timers are clamped to a second or worse, and
-   * this one sat in front of the `readModelOptions()` that produces the answer.
-   * The trigger's own label carries the current model, so the switch landing is
-   * observable; matched loosely because the picker says "2.5 Pro" where the
-   * server asked for "Pro", which is the same comparison `selectModelInTab`
-   * makes on the worker side.
+   * The sleep it replaced was a guess at how long the component takes, and in
+   * a hidden tab it is not 300ms — chained page timers are clamped to a second
+   * or worse.
    *
-   * A timeout here is not a failure: the trigger is read again below either
-   * way, so what goes back is what the picker says rather than what we asked.
+   * It then compared the new label against the one we asked for, which needed
+   * a loose name match because the picker says "3.1 Pro" where the server said
+   * "Pro". That comparison is gone: `markSelected` below answers *which* option
+   * is selected, authoritatively and by position, so all this needs is to know
+   * the component has finished moving. "Different from before" says that
+   * without knowing a single product name, which is the same footing
+   * everything else here now stands on.
+   *
+   * A timeout is not a failure — the trigger is read either way, so what goes
+   * back is what the picker says rather than what we asked for.
    */
-  await waitForDom(() => {
-    const now = (currentModelLabel() || '').trim().toLowerCase();
-    return now && sameModelName(now, wanted) ? now : null;
-  }, MODEL_SETTLE_BUDGET_MS);
+  await waitForDom(
+    () => {
+      const now = currentModelLabel();
+      return now && now !== labelBefore ? now : null;
+    },
+    MODEL_SETTLE_BUDGET_MS,
+  );
 
   /*
    * The selection, re-derived from the trigger rather than from a second menu.
@@ -1541,18 +1552,6 @@ async function selectModelByLabel(label) {
 
 /** Lower-cased and trimmed, the only normalisation any of this needs. */
 const norm = (s) => String(s || '').trim().toLowerCase();
-
-/**
- * Is the trigger reporting something like this name? Used only for "has it
- * changed yet", where a false positive costs nothing — the list below is what
- * decides which entry is actually selected.
- */
-function sameModelName(a, b) {
-  const x = norm(a);
-  const y = norm(b);
-  if (!x || !y) return false;
-  return x === y || x.includes(y) || y.includes(x);
-}
 
 /**
  * Which option is the trigger's label naming — exactly one, or none.
@@ -1950,15 +1949,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true, deferred: true });
         return false;
       }
-      // Traced from inside the page: "the read ran and returned N options" is
-      // the one fact no other layer can report, and its absence is what
-      // separates a failed read from a message that never arrived.
-      safeSend({ type: 'picker_trace', payload: { op: 'read_start' } });
       readModelOptions()
-        .then((models) => safeSend({
-          type: 'model_options',
-          payload: { models, trace: { op: 'read_done', count: models.length } },
-        }))
+        .then((models) => safeSend({ type: 'model_options', payload: { models } }))
         .catch((err) => safeSend({
           type: 'error',
           payload: { op: 'discover_models', message: err.message },
